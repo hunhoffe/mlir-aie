@@ -19,6 +19,10 @@ At the top of this Python source, we include modules that define the IRON AIE la
 from aie.dialects.aie import * # primary mlir-aie dialect definitions
 from aie.extras.context import mlir_mod_ctx # mlir-aie context
 ```
+
+<!-- MARKDOWN-AUTO-DOCS:START (CODE:src=./aie2.py&lines=10-20) -->
+<!-- MARKDOWN-AUTO-DOCS:END -->
+
 Then we declare a structural design function that will expand into MLIR code when it will get called from within an mlir-aie context (see last part of this subsection).
 ```python
 # AI Engine structural design function
