@@ -8,6 +8,8 @@ from analysis.iron_examples import generate_iron_example_collection
 
 if __name__ == "__main__":
     ie = generate_iron_example_collection()
-    for e in ie:
-        print(e)
+    print("=========== Running IRON ===============")
     ie.run_all()
+    print("========================================")
+    print("=========== Running IRON ext ===========")
+    ie.run_all(True)
