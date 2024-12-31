@@ -13,14 +13,10 @@ from aie.dialects.aie import *
 from aie.dialects.aiex import *
 from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
-from aie.helpers.taplib import TensorAccessPattern
 
 
 def my_passthrough(M, K, N):
     tensor_ty = np.ndarray[(M, K), np.dtype[np.int32]]
-    data_transform = TensorAccessPattern(
-        (M, K), offset=0, sizes=[1, 1, K, M], strides=[1, 1, 1, K]
-    )
 
     with mlir_mod_ctx() as ctx:
 
@@ -49,7 +45,7 @@ def my_passthrough(M, K, N):
                 # The strides below are configured to read across all rows in the same column
                 # Stride of K in dim/wrap 2 skips an entire row to read a full column
                 in_task = shim_dma_single_bd_task(
-                    of_in, A, tap=data_transform, issue_token=True
+                    of_in, A, sizes=[1, 1, K, M], strides=[1, 1, 1, K], issue_token=True
                 )
                 out_task = shim_dma_single_bd_task(
                     of_out, C, sizes=[1, 1, 1, N], issue_token=True

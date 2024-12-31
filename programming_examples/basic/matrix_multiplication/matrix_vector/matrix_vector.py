@@ -25,15 +25,10 @@ def my_matmul():
     C_sz = M
     C_sz_div_n_cores = C_sz // n_cores
 
-    M_div_m = M // m
     M_div_m_div_n_cores = M // (m * n_cores)
     K_div_k = K // k
 
-    m_x_k = m * k
     m_x_K = m * K
-
-    # FIXME vectorized kernel is currently erroneous
-    vectorized = False
 
     dtype_in = np.dtype[np.int16]
     dtype_in_str = "i16"
@@ -50,10 +45,9 @@ def my_matmul():
             A_ty = np.ndarray[(m, k), dtype_in]
 
             # AIE Core Function declarations
-            func_type = "vectorized" if vectorized else "scalar"
-            zero = external_func(f"zero_{func_type}_{dtype_out_str}", inputs=[outC_ty])
+            zero = external_func(f"zero_scalar_{dtype_out_str}", inputs=[outC_ty])
             matvec = external_func(
-                f"matvec_{func_type}_{dtype_in_str}_{dtype_out_str}",
+                f"matvec_scalar_{dtype_in_str}_{dtype_out_str}",
                 inputs=[A_ty, inB_ty, outC_ty],
             )
 
@@ -90,15 +84,7 @@ def my_matmul():
                         cores[i],
                         2,
                         A_ty,
-                        (
-                            [
-                                (k // 2 // 2, 2),
-                                (m, k),
-                                (2, 1),
-                            ]
-                            if vectorized
-                            else []
-                        ),  # transpose at 4-byte (2xbf16) granularity
+                        [],
                     )
                 )
                 object_fifo_link(memA_fifos[i], inA_fifos[i])

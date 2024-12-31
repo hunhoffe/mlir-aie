@@ -7,14 +7,12 @@
 import argparse
 from ml_dtypes import bfloat16
 import numpy as np
-import sys
 
 from aie.extras.context import mlir_mod_ctx
 
 from aie.dialects.aie import *
 from aie.dialects.aiex import *
 from aie.helpers.dialects.ext.scf import _for as range_
-from aie.helpers.taplib import TensorAccessPattern, TensorAccessSequence
 
 dtype_map = {
     "bf16": bfloat16,
@@ -47,16 +45,9 @@ def main():
         choices=["bf16", "i8", "i16", "f32", "i32"],
         default="i16",
     )
-    argparser.add_argument("--trace_size", type=int, default=0)
-    argparser.add_argument(
-        "--generate-taps",
-        action="store_true",
-        help="Generate TensorAccessPatterns, a Python object to represent each data transfer"
-        "of the input/output matrices. These objects can be used for visualization.",
-    )
     args = argparser.parse_args()
     with mlir_mod_ctx() as ctx:
-        maybe_taps = my_matmul(
+        my_matmul(
             args.M,
             args.K,
             args.N,
@@ -67,14 +58,9 @@ def main():
             args.dtype_in,
             args.dtype_out,
             args.b_col_maj,
-            args.trace_size,
-            args.generate_taps,
         )
         # print(ctx.module.operation.verify())
         print(ctx.module)
-
-    if args.generate_taps:
-        return maybe_taps
 
 
 def ceildiv(a, b):
@@ -92,8 +78,6 @@ def my_matmul(
     dtype_in_str,
     dtype_out_str,
     b_col_maj,
-    trace_size,
-    generate_taps=False,
 ):
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -168,12 +152,6 @@ def my_matmul(
         dev = AIEDevice.npu1_2col
     elif n_aie_cols == 4:
         dev = AIEDevice.npu1_4col
-
-    # These will hold TensorAccessPattern objects that represent the runtime
-    # npu_dma_memcpy_nd operations of this design. They are only used if generate_taps is true
-    A_taps = []
-    B_taps = []
-    C_taps = []
 
     @device(dev)
     def device_body():
@@ -412,17 +390,6 @@ def my_matmul(
                             sizes=C_sizes,
                             strides=C_strides,
                         )
-                        # Use the calculated sizes/strides/offsets to record the data movement
-                        # caused by the above call to npu_dma_memcpy_nd.
-                        # This line does not change MLIR output at all.
-                        C_taps.append(
-                            TensorAccessPattern(
-                                (M, N),
-                                offset=C_offset,
-                                sizes=C_sizes,
-                                strides=C_strides,
-                            )
-                        )
 
                         for tile_row in range(tb_n_rows):
 
@@ -466,17 +433,6 @@ def my_matmul(
                                 sizes=A_sizes,
                                 strides=A_strides,
                             )
-                            # Use the calculated sizes/strides/offsets to record the data movement
-                            # caused by the above call to npu_dma_memcpy_nd.
-                            # This line does not change MLIR output at all.
-                            A_taps.append(
-                                TensorAccessPattern(
-                                    (M, K),
-                                    offset=A_offset,
-                                    sizes=A_sizes,
-                                    strides=A_strides,
-                                )
-                            )
 
                             # B input transfer:
                             # Transfer the first a (n)-wide block of columns of B,
@@ -512,29 +468,9 @@ def my_matmul(
                                 sizes=B_sizes,
                                 strides=B_strides,
                             )
-                            # Use the calculated sizes/strides/offsets to record the data movement
-                            # caused by the above call to npu_dma_memcpy_nd.
-                            # This line does not change MLIR output at all.
-                            B_taps.append(
-                                TensorAccessPattern(
-                                    (K, N),
-                                    offset=B_col_offset,
-                                    sizes=B_sizes,
-                                    strides=B_strides,
-                                )
-                            )
                     if tb > 0 or (tb == 0 and pingpong > 0):
                         dma_wait(*C_l2l3_fifos)
             dma_wait(*C_l2l3_fifos)
-
-    if generate_taps:
-        # If generate_taps is true, return a representation of tensor tiles
-        # representing all the npu_dma_memcpy_nd runtime sequence operations per input/ouput tensor.
-        return (
-            TensorAccessSequence.from_taps(A_taps),
-            TensorAccessSequence.from_taps(B_taps),
-            TensorAccessSequence.from_taps(C_taps),
-        )
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ def generate_iron_example_collection():
     e = Example(
         name="MVMul",
         dir="../basic/matrix_multiplication/matrix_vector",
-        iron_src="matrix_vector_alt.py",
+        iron_src="matrix_vector.py",
         iron_ext_src="matrix_vector_iron.py",
         iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
@@ -134,7 +134,7 @@ def generate_iron_example_collection():
     e = Example(
         name="GEMMSingle",
         dir="../basic/matrix_multiplication/single_core",
-        iron_src="single_core_alt.py",
+        iron_src="single_core.py",
         iron_ext_src="single_core_iron.py",
         iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
@@ -179,7 +179,7 @@ def generate_iron_example_collection():
     e = Example(
         name="GEMM",
         dir="../basic/matrix_multiplication/whole_array",
-        iron_src="whole_array_alt.py",
+        iron_src="whole_array.py",
         iron_ext_src="whole_array_iron.py",
         iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
