@@ -36,8 +36,6 @@ include ${current_dir}../../makefile-common
 
 dtype_in?=i16
 dtype_out?=i16
-trace_size?=65536
-
 
 ifeq ($(dtype_in),bf16)
 	dtype_in_cpp=std::bfloat16_t
@@ -96,11 +94,11 @@ build/%.o: ${kernels_dir}/%.cc
 
 ${mlir_target}: ${srcdir}/${aie_py_src}
 	mkdir -p ${@D}
-	python3 $< ${aieargs} --trace_size 0 > $@
+	python3 $< ${aieargs} > $@
 
 ${trace_mlir_target}: ${srcdir}/${aie_py_src}
 	mkdir -p ${@D}
-	python3 $< ${aieargs} --trace_size ${trace_size} > $@
+	python3 $< ${aieargs} > $@
 
 ${xclbin_target}: ${mlir_target} ${kernels:%=build/%.o}
 	mkdir -p ${@D}
