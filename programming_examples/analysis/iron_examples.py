@@ -8,11 +8,11 @@ from analysis.example import Example, ExampleCollection
 
 
 def generate_iron_example_collection():
+    iron_examples = ExampleCollection()
 
     ################# Blocks
 
     # Passthrough x4
-    iron_examples = ExampleCollection()
     e = Example(
         name="DMA",
         category="Passthrough",
@@ -177,15 +177,53 @@ def generate_iron_example_collection():
     ############### Advanced Designs
 
     # GEMM
+    e = Example(
+        name="GEMM",
+        dir="../basic/matrix_multiplication/whole_array",
+        iron_src="whole_array_alt.py",
+        iron_ext_src="whole_array_iron.py",
+        iron_build_env="use_alt=1",
+        iron_ext_build_env="use_iron=1",
+    )
+    iron_examples.append(e)
 
     # BottleneckBlock
+    e = Example(
+        name="BottleneckBlock",
+        dir="../ml/bottleneck",
+        run_cmd="run_py",
+    )
+    iron_examples.append(e)
 
     # ResNet Conv2x Layer
+    e = Example(
+        name="ResNetConv2x",
+        dir="../ml/resnet/layers_conv2_x",
+        iron_src="resnet_alt.py",
+        iron_ext_src="resnet.py",
+        run_cmd="run_py",
+    )
+    iron_examples.append(e)
 
     # ColorDetect
+    e = Example(
+        name="ColorDetect",
+        dir="../vision/color_detect",
+    )
+    iron_examples.append(e)
 
     # EdgeDetect
+    e = Example(
+        name="EdgeDetect",
+        dir="../vision/edge_detect",
+    )
+    iron_examples.append(e)
 
     # ColorThreshold
+    e = Example(
+        name="ColorThreshold",
+        dir="../vision/color_threshold",
+    )
+    iron_examples.append(e)
 
     return iron_examples
