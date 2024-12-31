@@ -57,6 +57,14 @@ class Example:
         if not os.path.isfile(self._iron_ext_src):
             raise ValueError(f"IRON ext src is not a file: {self._iron_ext_src}")
 
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def category(self) -> str:
+        return self._category
+
     def _run(self, build_env: str, verbose: bool = True):
         if verbose:
             print(f"Running {str(self)}...")
@@ -157,10 +165,11 @@ class ExampleCollection(abc.MutableSequence, abc.Iterable):
     def __ne__(self, other):
         return not self.__eq__(other)
 
-    def filter_category(self, category) -> ExampleCollection:
+    def filter(self, term: str) -> ExampleCollection:
         ec = ExampleCollection()
+        term = term.lower()
         for e in self._examples:
-            if e.category == category:
+            if term in e.category or term in e.name:
                 ec.add(e)
         return ec
 
