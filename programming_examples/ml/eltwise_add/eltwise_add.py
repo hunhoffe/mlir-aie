@@ -6,7 +6,6 @@
 # (c) Copyright 2024 AMD Inc.
 from ml_dtypes import bfloat16
 import numpy as np
-import sys
 
 from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
@@ -15,7 +14,7 @@ from aie.iron.controlflow import range_
 from aie.helpers.util import np_ndarray_type_get_shape
 
 
-def my_eltwise_add(trace_size):
+def my_eltwise_add():
     N = 65536
 
     # Tile sizes
@@ -118,9 +117,5 @@ def my_eltwise_add(trace_size):
     return Program(NPU1Col1(), rt).resolve_program(SequentialPlacer())
 
 
-try:
-    trace_size = 0 if (len(sys.argv) < 2) else int(sys.argv[1])
-except ValueError:
-    print("Argument is not an integer")
-module = my_eltwise_add(trace_size)
+module = my_eltwise_add()
 print(module)

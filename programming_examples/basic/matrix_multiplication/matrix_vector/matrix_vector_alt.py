@@ -25,15 +25,9 @@ def my_matmul():
     C_sz = M
     C_sz_div_n_cores = C_sz // n_cores
 
-    M_div_m = M // m
     M_div_m_div_n_cores = M // (m * n_cores)
     K_div_k = K // k
-
-    m_x_k = m * k
     m_x_K = m * K
-
-    # FIXME vectorized kernel is currently erroneous
-    vectorized = False
 
     dtype_in = np.dtype[np.int16]
     dtype_in_str = "i16"
@@ -50,10 +44,9 @@ def my_matmul():
             A_ty = np.ndarray[(m, k), dtype_in]
 
             # AIE Core Function declarations
-            func_type = "vectorized" if vectorized else "scalar"
-            zero = external_func(f"zero_{func_type}_{dtype_out_str}", inputs=[outC_ty])
+            zero = external_func(f"zero_scalar_{dtype_out_str}", inputs=[outC_ty])
             matvec = external_func(
-                f"matvec_{func_type}_{dtype_in_str}_{dtype_out_str}",
+                f"matvec_scalar_{dtype_in_str}_{dtype_out_str}",
                 inputs=[A_ty, inB_ty, outC_ty],
             )
 
@@ -90,15 +83,6 @@ def my_matmul():
                         cores[i],
                         2,
                         A_ty,
-                        (
-                            [
-                                (k // 2 // 2, 2),
-                                (m, k),
-                                (2, 1),
-                            ]
-                            if vectorized
-                            else []
-                        ),  # transpose at 4-byte (2xbf16) granularity
                     )
                 )
                 object_fifo_link(memA_fifos[i], inA_fifos[i])
@@ -149,7 +133,7 @@ def my_matmul():
                     strides=[0, 0, 0, 1],
                 )
 
-                a_tasks = []
+                ab_tasks = [b_task]
                 c_tasks = []
                 for i in range(n_cores):
                     A_offset = i * M_div_m_div_n_cores * m * K
@@ -162,7 +146,7 @@ def my_matmul():
                         sizes=[M_div_m_div_n_cores, K_div_k, m, k],
                         strides=[m_x_K, k, K, 1],
                     )
-                    a_tasks.append(a_task)
+                    ab_tasks.append(a_task)
 
                     c_task = shim_dma_single_bd_task(
                         outC_fifos[i],
@@ -173,13 +157,11 @@ def my_matmul():
                     )
                     c_tasks.append(c_task)
 
-                dma_start_task(b_task)
-                dma_start_task(*a_tasks)
+                dma_start_task(*ab_tasks)
                 dma_start_task(*c_tasks)
 
                 dma_await_task(*c_tasks)
-                dma_free_task(b_task)
-                dma_free_task(*a_tasks)
+                dma_free_task(*ab_tasks)
 
     print(ctx.module)
 

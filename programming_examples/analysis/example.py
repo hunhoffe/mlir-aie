@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections import abc
 from copy import deepcopy
+import datetime
 import os
+import shutil
 import subprocess
 
 
 class Example:
-    DEFAULT_MLIR = "aie2.mlir"
+    DEFAULT_MLIR = "build/aie.mlir"
     DEFAULT_RUN = "run"
     DEFAULT_IRON_BUILD = "use_alt=1"
     DEFAULT_IRON_EXT_BUILD = ""
@@ -57,6 +59,9 @@ class Example:
         if not os.path.isfile(self._iron_ext_src):
             raise ValueError(f"IRON ext src is not a file: {self._iron_ext_src}")
 
+        # Can't check mlir source yet if not generated
+        self._mlir_src = os.path.join(self._dir, self._mlir_src)
+
     @property
     def name(self) -> str:
         return self._name
@@ -65,9 +70,24 @@ class Example:
     def category(self) -> str:
         return self._category
 
-    def _run(self, build_env: str, verbose: bool = True):
+    @property
+    def mlir_src(self) -> str:
+        return self._mlir_src
+
+    @property
+    def iron_src(self) -> str:
+        return self._iron_src
+
+    @property
+    def iron_ext_src(self) -> str:
+        return self._iron_ext_src
+
+    def _run(self, build_env: str, is_iron_ext: bool, verbose: bool = True):
         if verbose:
-            print(f"Running {str(self)}...")
+            ext_str = "IRON"
+            if is_iron_ext:
+                ext_str = "IRON(ext)"
+            print(f"Running {str(self)} {ext_str}...")
 
         result = subprocess.run(
             "make clean", shell=True, env=os.environ, cwd=self._dir, capture_output=True
@@ -79,6 +99,12 @@ class Example:
             return False
         elif verbose:
             print(f"\t Cleaned successfully!")
+
+        if os.path.isfile(self._mlir_src):
+            print(
+                f"============= MLIR source file ({self._mlir_src}) exists even after clean?"
+            )
+            return False
 
         result = subprocess.run(
             f"env {build_env} make",
@@ -94,6 +120,12 @@ class Example:
             return False
         elif verbose:
             print(f"\t Built successfully!")
+
+        if not os.path.isfile(self._mlir_src):
+            print(
+                f"============= MLIR source file ({self._mlir_src}) does not exist even after build?"
+            )
+            return False
 
         result = subprocess.run(
             f"make {self._run_cmd}",
@@ -114,11 +146,11 @@ class Example:
             print(f"Done running {str(self)}!")
         return True
 
-    def run_iron(self) -> bool:
-        return self._run(self._iron_build_env)
+    def run_iron(self, verbose: bool = True) -> bool:
+        return self._run(self._iron_build_env, is_iron_ext=False, verbose=verbose)
 
-    def run_iron_ext(self) -> bool:
-        return self._run(self._iron_ext_build_env)
+    def run_iron_ext(self, verbose: bool = True) -> bool:
+        return self._run(self._iron_ext_build_env, is_iron_ext=True, verbose=verbose)
 
     def cmp_srcs(self):
         pass
@@ -173,11 +205,51 @@ class ExampleCollection(abc.MutableSequence, abc.Iterable):
                 ec.add(e)
         return ec
 
-    def run_all(self, use_iron_ext: bool = False) -> None:
+    def run_all(self, use_iron_ext: bool = False, verbose: bool = True) -> None:
         for e in self._examples:
             if use_iron_ext:
-                if not e.run_iron_ext():
+                if not e.run_iron_ext(verbose=verbose):
                     raise Exception("Failed to run example!")
             else:
-                if not e.run_iron():
+                if not e.run_iron(verbose=verbose):
                     raise Exception("Failed to run example!")
+
+    def collect_files(self, verbose: bool = True):
+        # Create top-level dir
+        my_dir = os.path.join(
+            os.getcwd(), datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        )
+        os.makedirs(my_dir)
+
+        # Create one subdir per file type
+        iron_dir = os.path.join(my_dir, "iron")
+        os.makedirs(iron_dir)
+        iron_mlir_dir = os.path.join(my_dir, "iron_mlir")
+        os.makedirs(iron_mlir_dir)
+        iron_ext_dir = os.path.join(my_dir, "iron_ext")
+        os.makedirs(iron_ext_dir)
+        iron_ext_mlir_dir = os.path.join(my_dir, "iron_ext_mlir")
+        os.makedirs(iron_ext_mlir_dir)
+
+        if verbose:
+            print(f"Collecting files in {my_dir}")
+
+        # Generate the MLIR and copy files
+        self.run_all(use_iron_ext=False, verbose=verbose)
+        for e in self._examples:
+            shutil.copyfile(e.mlir_src, os.path.join(iron_mlir_dir, f"{str(e)}.mlir"))
+            shutil.copyfile(e.iron_src, os.path.join(iron_dir, f"{str(e)}.py"))
+        print(f"Collected IRON src in {iron_dir} and IRON MLIR in {iron_mlir_dir}")
+
+        # Generate the MLIR and copy files for ext
+        self.run_all(use_iron_ext=True, verbose=verbose)
+        for e in self._examples:
+            shutil.copyfile(
+                e.mlir_src, os.path.join(iron_ext_mlir_dir, f"{str(e)}.mlir")
+            )
+            shutil.copyfile(e.iron_ext_src, os.path.join(iron_ext_dir, f"{str(e)}.py"))
+        print(
+            f"Collected IRON(ext) src in {iron_ext_dir} and IRON(ext) MLIR in {iron_ext_mlir_dir}"
+        )
+
+        print(f"Done!")

@@ -14,10 +14,8 @@ from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.util import np_ndarray_type_get_shape
 
-import aie.utils.trace as trace_utils
 
-
-def vector_softmax(trace_size):
+def vector_softmax():
 
     word_size_in = 2
     N = 262144  # *1024
@@ -86,10 +84,6 @@ def vector_softmax(trace_size):
         object_fifo_link(inA, inA_fifos, [], of_a_offsets)
         object_fifo_link(outC_fifos, outC, of_c_offsets, [])
 
-        # Set up a circuit-switched flow from core to shim for tracing information
-        if trace_size > 0:
-            flow(cores[0], WireBundle.Trace, 0, ShimTile, WireBundle.DMA, 1)
-
         # Set up compute tiles
         for i in range(n_cores):
             # Compute tile i
@@ -110,16 +104,6 @@ def vector_softmax(trace_size):
 
         @runtime_sequence(tensor_ty, tensor_ty)
         def sequence(A, C):
-
-            if trace_size > 0:
-                trace_utils.configure_simple_tracing_aie2(
-                    cores[0],
-                    ShimTile,
-                    ddr_id=1,
-                    size=trace_size,
-                    offset=N_in_bytes,
-                )
-
             in_task = shim_dma_single_bd_task(
                 inA, A, sizes=[1, 1, 1, N], issue_token=True
             )
@@ -133,13 +117,8 @@ def vector_softmax(trace_size):
             dma_await_task(in_task, out_task)
 
 
-try:
-    trace_size = 0 if (len(sys.argv) != 2) else int(sys.argv[1])
-except ValueError:
-    print("Argument is not an integer")
-
 with mlir_mod_ctx() as ctx:
-    vector_softmax(trace_size)
+    vector_softmax()
     res = ctx.module.operation.verify()
     if res == True:
         print(ctx.module)

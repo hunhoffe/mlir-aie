@@ -13,11 +13,6 @@ from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.util import np_ndarray_type_get_shape
 
-# tracing definitions
-trace_sz_in_bytes = 8192
-trace_sz_in_i32s = trace_sz_in_bytes // 4
-enableTrace = False
-
 # Define bottleneck layer sizes
 tensorInW = 32
 tensorInH = 32
@@ -246,9 +241,6 @@ def resnet_conv_x():
                 [ComputeTile15, ComputeTile14, ComputeTile13, ComputeTile12],
                 [ComputeTile22, ComputeTile23, ComputeTile24, ComputeTile25],
             ]
-
-            if enableTrace:
-                flow(ComputeTile04, WireBundle.Trace, 0, ShimTile00, WireBundle.DMA, 1)
 
             # runtime parameters
 

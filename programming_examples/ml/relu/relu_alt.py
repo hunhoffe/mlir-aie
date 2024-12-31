@@ -14,10 +14,8 @@ from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.util import np_ndarray_type_get_shape
 
-import aie.utils.trace as trace_utils
 
-
-def my_relu(trace_size):
+def my_relu():
 
     word_size_in = 2
     N = 65536
@@ -87,10 +85,6 @@ def my_relu(trace_size):
             of_offsets = []
         object_fifo_link(outC_fifos, outC, of_offsets, [])
 
-        # Set up a circuit-switched flow from core to shim for tracing information
-        if trace_size > 0:
-            flow(cores[0], WireBundle.Trace, 0, ShimTile, WireBundle.DMA, 1)
-
         # Set up compute tiles
         for i in range(n_cores):
             # Compute tile i
@@ -111,16 +105,6 @@ def my_relu(trace_size):
 
         @runtime_sequence(tensor_ty, tensor_ty)
         def sequence(A, C):
-
-            if trace_size > 0:
-                trace_utils.configure_simple_tracing_aie2(
-                    cores[0],
-                    ShimTile,
-                    ddr_id=1,
-                    size=trace_size,
-                    offset=N_in_bytes,
-                )
-
             in_task = shim_dma_single_bd_task(
                 inA,
                 A,
@@ -135,13 +119,8 @@ def my_relu(trace_size):
             dma_await_task(in_task, out_task)
 
 
-try:
-    trace_size = 0 if (len(sys.argv) != 2) else int(sys.argv[1])
-except ValueError:
-    print("Argument is not an integer")
-
 with mlir_mod_ctx() as ctx:
-    my_relu(trace_size)
+    my_relu()
     res = ctx.module.operation.verify()
     if res == True:
         print(ctx.module)

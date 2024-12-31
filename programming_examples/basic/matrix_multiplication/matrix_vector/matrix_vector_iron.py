@@ -19,14 +19,10 @@ def my_matmul():
     m = 32
     k = 32
 
-    # TODO: increase this
     n_cores = 1
     M_div_n_cores = M // n_cores
     M_div_m_div_n_cores = M // (m * n_cores)
     K_div_k = K // k
-
-    # FIXME vectorized kernel is currently erroneous
-    vectorized = False
 
     # Define types
     dtype_in = np.dtype[np.int16]
@@ -42,10 +38,9 @@ def my_matmul():
     A_ty = np.ndarray[(m, k), dtype_in]
 
     # AIE Core Function declarations
-    func_type = "vectorized" if vectorized else "scalar"
-    zero = Kernel(f"zero_{func_type}_{dtype_out_str}", f"mv_{m}x{k}.o", [outC_ty])
+    zero = Kernel(f"zero_scalar_{dtype_out_str}", f"mv_{m}x{k}.o", [outC_ty])
     matvec = Kernel(
-        f"matvec_{func_type}_{dtype_in_str}_{dtype_out_str}",
+        f"matvec_scalar_{dtype_in_str}_{dtype_out_str}",
         f"mv_{m}x{k}.o",
         [A_ty, inB_ty, outC_ty],
     )
@@ -71,7 +66,7 @@ def my_matmul():
     for i in range(n_cores):
         a_fifo = ObjectFifo(inA_ty, name=f"memA{i}")
         memA_fifos.append(a_fifo)
-        coreA_fifos.append(a_fifo.cons().forward())  # TODO: transform if vectorized
+        coreA_fifos.append(a_fifo.cons().forward())
         outC_fifos.append(ObjectFifo(outC_ty, name=f"outC{i}"))
         w = Worker(
             core_fn,

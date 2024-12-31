@@ -12,7 +12,7 @@ def generate_iron_example_collection():
 
     ################# Blocks
 
-    # Passthrough x4
+    # Passthrough x3
     e = Example(
         name="DMA",
         category="Passthrough",
@@ -23,18 +23,13 @@ def generate_iron_example_collection():
         name="Kernel",
         category="Passthrough",
         dir="../basic/passthrough_kernel",
+        mlir_src="build/aie2_lineBased_8b_4096.mlir",
     )
     iron_examples.append(e)
     e = Example(
         name="PyKernel",
         category="Passthrough",
         dir="../basic/passthrough_pykernel",
-    )
-    iron_examples.append(e)
-    e = Example(
-        name="SubVectors",
-        category="Passthrough",
-        dir="../vision/vision_passthrough",
     )
     iron_examples.append(e)
 
@@ -80,6 +75,7 @@ def generate_iron_example_collection():
         name="Mul",
         category="VSOp",
         dir="../basic/vector_scalar_mul",
+        mlir_src="build/aie_4096.mlir",
     )
     iron_examples.append(e)
 
@@ -130,6 +126,7 @@ def generate_iron_example_collection():
         iron_ext_src="matrix_vector_iron.py",
         iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
+        mlir_src="build/aie_288x288x1.mlir",
     )
     iron_examples.append(e)
 
@@ -141,6 +138,7 @@ def generate_iron_example_collection():
         iron_ext_src="single_core_iron.py",
         iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
+        mlir_src="build/aie_512x512x512_64x64x64.mlir",
     )
     iron_examples.append(e)
 
@@ -171,6 +169,7 @@ def generate_iron_example_collection():
         category="Conv2D",
         dir="../ml/conv2d_fused_relu",
         run_cmd="run_py",
+        mlir_src="build/aieWithTrace_1core.mlir",
     )
     iron_examples.append(e)
 
@@ -184,6 +183,7 @@ def generate_iron_example_collection():
         iron_ext_src="whole_array_iron.py",
         iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
+        mlir_src="build/aie_512x512x512_64x64x64_4c.mlir",
     )
     iron_examples.append(e)
 
@@ -209,6 +209,7 @@ def generate_iron_example_collection():
     e = Example(
         name="ColorDetect",
         dir="../vision/color_detect",
+        mlir_src="build/aie2_lineBased_8b_1920.mlir",
     )
     iron_examples.append(e)
 
@@ -216,6 +217,7 @@ def generate_iron_example_collection():
     e = Example(
         name="EdgeDetect",
         dir="../vision/edge_detect",
+        mlir_src="build/aie2_lineBased_8b_1920.mlir",
     )
     iron_examples.append(e)
 
@@ -223,6 +225,7 @@ def generate_iron_example_collection():
     e = Example(
         name="ColorThreshold",
         dir="../vision/color_threshold",
+        mlir_src="build/aie2_1920.mlir",
     )
     iron_examples.append(e)
 

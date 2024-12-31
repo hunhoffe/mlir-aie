@@ -12,7 +12,7 @@ from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.device import NPU1Col4
 from aie.iron.controlflow import range_
-from aie.helpers.taplib import TensorAccessSequence, TensorTiler2D
+from aie.helpers.taplib import TensorTiler2D
 
 dtype_map = {
     "bf16": bfloat16,
@@ -43,13 +43,6 @@ def main():
         choices=["bf16", "i8", "i16", "f32", "i32"],
         default="i32",
     )
-    argparser.add_argument("--trace_size", type=int, default=0)
-    argparser.add_argument(
-        "--generate-taps",
-        action="store_true",
-        help="Generate TensorAccessPatterns, a Python object to represent each data transfer"
-        "of the input/output matrices. These objects can be used for visualization.",
-    )
     args = argparser.parse_args()
     maybe_module = my_matmul(
         args.M,
@@ -60,15 +53,8 @@ def main():
         args.n,
         args.dtype_in,
         args.dtype_out,
-        args.trace_size,
-        args.generate_taps,
     )
-    if args.generate_taps:
-        # maybe_module is actually taps
-        return maybe_module
-    else:
-        # print mlir
-        print(maybe_module)
+    print(maybe_module)
 
 
 # Need ceildiv to capture partial tiling patterns
@@ -76,9 +62,7 @@ def ceildiv(a, b):
     return (a + b - 1) // b
 
 
-def my_matmul(
-    M, K, N, m, k, n, dtype_in_str, dtype_out_str, trace_size, generate_taps=False
-):
+def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
 
     assert M % m == 0
     assert K % k == 0
@@ -102,7 +86,6 @@ def my_matmul(
     assert n % t == 0
 
     vectorized = True
-    enable_tracing = True if trace_size > 0 else False
 
     dtype_in = dtype_map[dtype_in_str]
     dtype_out = dtype_map[dtype_out_str]
@@ -118,12 +101,6 @@ def my_matmul(
     K_div_k = K // k
     N_div_n = N // n
     tiles = M_div_m * N_div_n
-
-    # These will hold TensorAccessPattern objects that represent the runtime
-    # npu_dma_memcpy_nd operations of this design. They are only used if generate_taps is true
-    A_taps = []
-    B_taps = []
-    C_taps = []
 
     # Define tensor types
     A_ty = np.ndarray[(M * K,), np.dtype[dtype_in]]
@@ -223,17 +200,14 @@ def my_matmul(
                     # -- A --
                     tile_offset = (row_base + tile_row) % len(A_taps)
                     rt.fill(inA.prod(), A, tap=A_taps[tile_offset], task_group=tgs[-1])
-                    A_taps.append(A_taps[tile_offset])
 
                     # -- B --
                     rt.fill(inB.prod(), B, tap=b_tap, task_group=tgs[-1])
-                    B_taps.append(b_tap)
 
                 # -- C --
                 rt.drain(
                     outC.cons(), C, tap=C_taps[c_index], task_group=tgs[-1], wait=True
                 )
-                C_taps.append(C_taps[c_index])
                 c_index += 1
 
                 if tile_row_block > 0 or (tile_row_block == 0 and pingpong > 0):
@@ -242,15 +216,6 @@ def my_matmul(
 
         rt.finish_task_group(tgs[-1])
         del tgs[-1]
-
-    if generate_taps:
-        # If generate taps is true, return a representation of tensor access patterns
-        # representing all the npu_dma_memcpy_nd runtime sequence operations per input/ouput tensor.
-        return (
-            TensorAccessSequence.from_taps(A_taps),
-            TensorAccessSequence.from_taps(B_taps),
-            TensorAccessSequence.from_taps(C_taps),
-        )
 
     # Create the program from the device type and runtime
     my_program = Program(NPU1Col4(), rt)

@@ -32,10 +32,6 @@ bufOut = actOut * 2  # double buffer
 
 tensorSize = width * height * in_channels
 
-enableTrace = False
-trace_size = 16384
-traceSizeInInt32s = trace_size // 4
-
 
 def conv2dk1():
     # Define types

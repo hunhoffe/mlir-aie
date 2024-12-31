@@ -13,11 +13,6 @@ from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.util import np_ndarray_type_get_shape
 
-# tracing definitions
-trace_sz_in_bytes = 8192
-trace_sz_in_i32s = trace_sz_in_bytes // 4
-enableTrace = False
-
 # Define bottleneck layer sizes
 
 tensorInW = 32
@@ -136,9 +131,6 @@ def bottleneck4AIEs():
             ComputeTile3 = tile(0, 3)
             ComputeTile4 = tile(0, 4)
             ComputeTile5 = tile(0, 5)
-
-            if enableTrace:
-                flow(ComputeTile4, WireBundle.Trace, 0, ShimTile, WireBundle.DMA, 1)
 
             # runtime parameters
 
@@ -463,86 +455,6 @@ def bottleneck4AIEs():
             # instruction stream generation
             @runtime_sequence(activationsInL3_ty, weightsInL3_ty, activationsInL3_ty)
             def sequence(inputFromL3, weightsFromL3, outputToL3):
-
-                if enableTrace:
-                    # Trace output
-
-                    # Trace_Event0, Trace_Event1: Select which events to trace.
-                    # Note that the event buffers only appear to be transferred to DDR in
-                    # bursts of 256 bytes. If less than 256 bytes are written, you may not
-                    # see trace output, or only see it on the next iteration of your
-                    # kernel invocation, as the buffer gets filled up. Note that, even
-                    # though events are encoded as 4 byte words, it may take more than 64
-                    # events to fill the buffer to 256 bytes and cause a flush, since
-                    # multiple repeating events can be 'compressed' by the trace mechanism.
-                    # In order to always generate sufficient events, we add the "assert
-                    # TRUE" event to one slot, which fires every cycle, and thus fills our
-                    # buffer quickly.
-
-                    # Some events:
-                    # TRUE                       (0x01)
-                    # STREAM_STALL               (0x18)
-                    # LOCK_STALL                 (0x1A)
-                    # EVENTS_CORE_INSTR_EVENT_1  (0x22)
-                    # EVENTS_CORE_INSTR_EVENT_0  (0x21)
-                    # INSTR_VECTOR               (0x25)  Core executes a vecotr MAC, ADD or compare instruction
-                    # INSTR_LOCK_ACQUIRE_REQ     (0x2C)  Core executes a lock .acquire instruction
-                    # INSTR_LOCK_.release_REQ     (0x2D)  Core executes a lock .release instruction
-                    # EVENTS_CORE_PORT_RUNNING_1 (0x4F)
-                    # EVENTS_CORE_PORT_RUNNING_0 (0x4B)
-
-                    # Trace_Event0  (4 slots)
-                    npu_write32(0, 4, 0x340E0, 0x4B222125)
-                    # Trace_Event1  (4 slots)
-                    npu_write32(0, 4, 0x340E4, 0x2D2C1A4F)
-
-                    # Event slots as configured above:
-                    # 0: Kernel executes vector instruction
-                    # 1: Event 0 -- Kernel starts
-                    # 2: Event 1 -- Kernel done
-                    # 3: Port_Running_0
-                    # 4: Port_Running_1
-                    # 5: Lock Stall
-                    # 6: Lock .acquire Instr
-                    # 7: Lock .release Instr
-
-                    # Stream_Switch_Event_Port_Selection_0
-                    # This is necessary to capture the Port_Running_0 and Port_Running_1 events
-                    npu_write32(0, 4, 0x3FF00, 0x121)
-
-                    # Trace_Control0: Define trace start and stop triggers. Set start event TRUE.
-                    npu_write32(0, 4, 0x340D0, 0x10000)
-
-                    # Start trace copy out.
-                    npu_writebd(
-                        bd_id=3,
-                        buffer_length=trace_sz_in_i32s,
-                        buffer_offset=acitivationsOut,
-                        enable_packet=0,
-                        out_of_order_id=0,
-                        packet_id=0,
-                        packet_type=0,
-                        column=0,
-                        row=0,
-                        d0_stepsize=0,
-                        d0_wrap=0,
-                        d1_stepsize=0,
-                        d1_wrap=0,
-                        d2_stepsize=0,
-                        iteration_current=0,
-                        iteration_stepsize=0,
-                        iteration_wrap=0,
-                        lock_acq_enable=0,
-                        lock_acq_id=0,
-                        lock_acq_val=0,
-                        lock_rel_id=0,
-                        lock_rel_val=0,
-                        next_bd=0,
-                        use_next_bd=0,
-                        valid_bd=1,
-                    )
-                    npu_write32(0, 2, 0x1D20C, 0x3)
-
                 # write RTP parameters
                 rtpComputeTile2[0] = 1  # scale
                 rtpComputeTile3[0] = 1  # scale

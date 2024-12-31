@@ -35,7 +35,7 @@ tensorSize = width * height * in_channels
 N_in_bytes = tensorSize  # Number of bytes of output data (1 byte/elem)
 
 
-def conv2dk1(trace_size: int):
+def conv2dk1():
     # Type definitions
     actIn_ty = np.ndarray[(actIn,), np.dtype[np.int8]]
     bufIn_ty = np.ndarray[(bufIn,), np.dtype[np.int8]]
@@ -134,5 +134,4 @@ def conv2dk1(trace_size: int):
 
 
 if __name__ == "__main__":
-    trace_size = 0 if (len(sys.argv) != 2) else int(sys.argv[1])
-    print(conv2dk1(trace_size=trace_size))
+    print(conv2dk1())

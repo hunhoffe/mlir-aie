@@ -14,7 +14,7 @@ from aie.iron.device import NPU1Col1
 from aie.iron.controlflow import range_
 
 
-def vector_softmax(trace_size):
+def vector_softmax():
     N = 262144  # *1024
 
     # Tile sizes
@@ -91,10 +91,5 @@ def vector_softmax(trace_size):
     return Program(NPU1Col1(), rt).resolve_program(SequentialPlacer())
 
 
-try:
-    trace_size = 0 if (len(sys.argv) != 2) else int(sys.argv[1])
-except ValueError:
-    print("Argument is not an integer")
-
-module = vector_softmax(trace_size)
+module = vector_softmax()
 print(module)

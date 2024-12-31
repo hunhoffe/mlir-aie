@@ -16,16 +16,11 @@ from aie.helpers.dialects.ext.scf import _for as range_
 from aie.helpers.taplib import TensorAccessPattern
 
 
-def my_passthrough(M, K, N, generate_access_map=False):
+def my_passthrough(M, K, N):
     tensor_ty = np.ndarray[(M, K), np.dtype[np.int32]]
     data_transform = TensorAccessPattern(
         (M, K), offset=0, sizes=[1, 1, K, M], strides=[1, 1, 1, K]
     )
-    if generate_access_map:
-        data_transform.visualize(
-            show_arrows=True, plot_access_count=False, file_path="transpose_data.png"
-        )
-        return
 
     with mlir_mod_ctx() as ctx:
 
@@ -69,11 +64,6 @@ def my_passthrough(M, K, N, generate_access_map=False):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("dims", help="M K", type=int, nargs="*", default=[64, 64])
-    p.add_argument(
-        "--generate-access-map",
-        action="store_true",
-        help="Produce a file showing data access order",
-    )
     args = p.parse_args()
 
     if len(args.dims) != 2:
@@ -81,9 +71,4 @@ if __name__ == "__main__":
             "ERROR: Must provide either no dimensions or both M and K", file=sys.stderr
         )
         exit(-1)
-    my_passthrough(
-        M=args.dims[0],
-        K=args.dims[1],
-        N=args.dims[0] * args.dims[1],
-        generate_access_map=args.generate_access_map,
-    )
+    my_passthrough(M=args.dims[0], K=args.dims[1], N=args.dims[0] * args.dims[1])

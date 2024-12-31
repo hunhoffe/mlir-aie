@@ -24,7 +24,6 @@ try:
     if vector_size % 64 != 0 or vector_size < 512:
         print("Vector size must be a multiple of 64 and greater than or equal to 512")
         raise ValueError
-    trace_size = 0 if (len(sys.argv) != 4) else int(sys.argv[3])
 except ValueError:
     print("Argument has inappropriate value")
 

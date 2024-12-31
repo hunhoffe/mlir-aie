@@ -19,10 +19,6 @@ def edge_detect(dev, width, height):
     lineWidthInBytes = width * 4
     tensorSize = width * height * 4  # 4 channels
 
-    enableTrace = False
-    traceSizeInBytes = 8192
-    traceSizeInInt32s = traceSizeInBytes // 4
-
     @device(dev)
     def device_body():
         line_bytes_ty = np.ndarray[(lineWidthInBytes,), np.dtype[np.uint8]]

@@ -13,10 +13,8 @@ from aie.dialects.aiex import *
 from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
 
-import aie.utils.trace as trace_utils
 
-
-def my_vector_scalar(dev, vector_size, trace_size):
+def my_vector_scalar(dev, vector_size):
     N = vector_size
     N_in_bytes = N * 2
     N_div_n = 4  # chop input vector into 4 sub-vectors
@@ -51,11 +49,6 @@ def my_vector_scalar(dev, vector_size, trace_size):
         )
         of_out = object_fifo("out", ComputeTile2, ShimTile, buffer_depth, tile_ty)
 
-        # Set up a packet-switched flow from core to shim for tracing information
-        tiles_to_trace = [ComputeTile2]
-        if trace_size > 0:
-            trace_utils.configure_packet_tracing_flow(tiles_to_trace, ShimTile)
-
         # Set up compute tiles
 
         # Compute tile 2
@@ -76,12 +69,6 @@ def my_vector_scalar(dev, vector_size, trace_size):
         # To/from AIE-array data movement
         @runtime_sequence(tensor_ty, scalar_ty, tensor_ty)
         def sequence(A, F, C):
-
-            if trace_size > 0:
-                trace_utils.configure_packet_tracing_aie2(
-                    tiles_to_trace, ShimTile, trace_size, N_in_bytes
-                )
-
             in_task = shim_dma_single_bd_task(
                 of_in, A, sizes=[1, 1, 1, N], issue_token=True
             )
@@ -108,9 +95,8 @@ try:
     if vector_size % 64 != 0 or vector_size < 512:
         print("Vector size must be a multiple of 64 and greater than or equal to 512")
         raise ValueError
-    trace_size = 0 if (len(sys.argv) != 4) else int(sys.argv[3])
 except ValueError:
     print("Argument has inappropriate value")
 with mlir_mod_ctx() as ctx:
-    my_vector_scalar(dev, vector_size, trace_size)
+    my_vector_scalar(dev, vector_size)
 print(ctx.module)

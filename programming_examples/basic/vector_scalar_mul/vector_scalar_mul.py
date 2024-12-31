@@ -14,9 +14,7 @@ from aie.iron.device import NPU1Col1, NPU2
 from aie.iron.controlflow import range_
 
 
-def my_vector_scalar(dev, vector_size, trace_size):
-    if trace_size != 0:
-        raise NotImplementedError("Trace not supported yet.")
+def my_vector_scalar(dev, vector_size):
     N = vector_size
     N_div_n = 4  # chop input vector into 4 sub-vectors
     n = N // N_div_n
@@ -81,8 +79,7 @@ try:
     if vector_size % 64 != 0 or vector_size < 512:
         print("Vector size must be a multiple of 64 and greater than or equal to 512")
         raise ValueError
-    trace_size = 0 if (len(sys.argv) != 4) else int(sys.argv[3])
 except ValueError:
     print("Argument has inappropriate value")
-module = my_vector_scalar(dev, vector_size, trace_size)
+module = my_vector_scalar(dev, vector_size)
 print(module)

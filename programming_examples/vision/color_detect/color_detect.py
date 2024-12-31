@@ -21,8 +21,6 @@ lineWidth = width
 lineWidthInBytes = width * 4
 tensorSize = width * height * 4  # 4 channels
 
-traceSize = 1024
-
 
 def color_detect():
 

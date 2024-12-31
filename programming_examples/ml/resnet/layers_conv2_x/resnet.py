@@ -13,11 +13,6 @@ from aie.iron.controlflow import range_
 from aie.helpers.util import np_ndarray_type_get_shape
 from aie.helpers.taplib import TensorAccessPattern
 
-# tracing definitions
-trace_sz_in_bytes = 8192
-trace_sz_in_i32s = trace_sz_in_bytes // 4
-enableTrace = False
-
 # Define bottleneck layer sizes
 tensorInW = 32
 tensorInH = 32

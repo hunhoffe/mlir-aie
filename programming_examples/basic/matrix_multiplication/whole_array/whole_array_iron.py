@@ -45,13 +45,6 @@ def main():
         choices=["bf16", "i8", "i16", "f32", "i32"],
         default="i16",
     )
-    argparser.add_argument("--trace_size", type=int, default=0)
-    argparser.add_argument(
-        "--generate-taps",
-        action="store_true",
-        help="Generate TensorAccessPatterns, a Python object to represent each data transfer"
-        "of the input/output matrices. These objects can be used for visualization.",
-    )
     args = argparser.parse_args()
     maybe_module = my_matmul(
         args.M,
@@ -64,13 +57,8 @@ def main():
         args.dtype_in,
         args.dtype_out,
         args.b_col_maj,
-        args.trace_size,
-        args.generate_taps,
     )
-    if args.generate_taps:
-        return maybe_module
-    else:
-        print(maybe_module)
+    print(maybe_module)
 
 
 def ceildiv(a, b):
@@ -88,8 +76,6 @@ def my_matmul(
     dtype_in_str,
     dtype_out_str,
     b_col_maj,
-    trace_size,
-    generate_taps=False,
 ):
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -164,12 +150,6 @@ def my_matmul(
         dev = NPU1Col2()
     elif n_aie_cols == 4:
         dev = NPU1Col4()
-
-    # These will hold TensorAccessPattern objects that represent the runtime
-    # npu_dma_memcpy_nd operations of this design. They are only used if generate_taps is true
-    A_taps = []
-    B_taps = []
-    C_taps = []
 
     # Define tensor types
     A_ty = np.ndarray[(M * K,), np.dtype[dtype_in]]
@@ -386,10 +366,6 @@ def my_matmul(
                 )
 
                 for col in range(n_aie_cols):
-
-                    # This line does not change MLIR output at all - it's just for recording data movement
-                    C_taps.append(C_tiles[c_index])
-
                     # C Output Transfer:
                     # The smallest transfer unit is a (m*n_aie_rows)-x-(n)-sized sub-tile of the matrix.
                     # Transfer one such tile for every (n_aie_cols)-th column, evenly spaced,
@@ -479,23 +455,10 @@ def my_matmul(
                             task_group=tg,
                             placement=Tile(col, 0),
                         )
-
-                        # These lines do not change MLIR output at all - they are just for recording data movement
-                        A_taps.append(A_tiles[tile_offset])
-                        B_taps.append(B_tiles[col])
                 if tb > 0 or (tb == 0 and pingpong > 0):
                     rt.finish_task_group(tg)
                     tg = rt.task_group()
         rt.finish_task_group(tg)
-
-    if generate_taps:
-        # If generate taps is true, return a representation of tensor access patterns
-        # representing all the npu_dma_memcpy_nd runtime sequence operations per input/ouput tensor.
-        return (
-            TensorAccessSequence.from_taps(A_taps),
-            TensorAccessSequence.from_taps(B_taps),
-            TensorAccessSequence.from_taps(C_taps),
-        )
 
     # Create the program from the device type and runtime
     my_program = Program(dev, rt)
