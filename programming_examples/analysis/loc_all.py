@@ -29,7 +29,7 @@ def calc_metrics(collection_dir: str, output_file: str):
 
     with open(output_file, "w") as of:
         of.write(
-            "name,pygount_loc_baseline, pygount_loc_ext, radon_loc_baseline, radon_loc_ext\n"
+            "name,pygount_loc_baseline,pygount_loc_ext,radon_loc_baseline,radon_loc_ext\n"
         )
         for d in iron_design_files:
             iron_design = os.path.join(iron_dir, d)
@@ -51,7 +51,7 @@ def calc_metrics(collection_dir: str, output_file: str):
 
             design_name = d.removesuffix(".py")
             of.write(
-                f"{design_name}, {pygount_loc_iron}, {pygount_loc_iron_ext}, {radon_loc_iron}, {radon_loc_iron_ext}\n"
+                f"{design_name},{pygount_loc_iron},{pygount_loc_iron_ext},{radon_loc_iron},{radon_loc_iron_ext}\n"
             )
 
 
@@ -70,7 +70,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.isdir(args.dir):
-        print(f"Error: Collection directory {args.dir} does not exist.")
+        print(f"Error: Collection directory {args.dir} is not a directory.")
         exit(-1)
     if os.path.exists(args.output):
         print(f"Error: Output file {args.output} already exists.")

@@ -82,31 +82,31 @@ def generate_iron_example_collection():
     # VVop x5
     e = Example(
         name="Add",
-        category="VVop",
+        category="VVOp",
         dir="../basic/vector_vector_add",
     )
     iron_examples.append(e)
     e = Example(
         name="Mod",
-        category="VVop",
+        category="VVOp",
         dir="../basic/vector_vector_modulo",
     )
     iron_examples.append(e)
     e = Example(
         name="Mul",
-        category="VVop",
+        category="VVOp",
         dir="../basic/vector_vector_mul",
     )
     iron_examples.append(e)
     e = Example(
         name="AddKern",
-        category="VVop",
+        category="VVOp",
         dir="../ml/eltwise_add",
     )
     iron_examples.append(e)
     e = Example(
         name="MulKern",
-        category="VVop",
+        category="VVOp",
         dir="../ml/eltwise_mul",
     )
     iron_examples.append(e)
@@ -165,7 +165,7 @@ def generate_iron_example_collection():
     )
     iron_examples.append(e)
     e = Example(
-        name="FusedRelu",
+        name="FusedReLU",
         category="Conv2D",
         dir="../ml/conv2d_fused_relu",
         run_cmd="run_py",
