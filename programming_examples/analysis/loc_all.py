@@ -25,7 +25,6 @@ def calc_metrics(collection_dir: str, output_file: str):
     ]
     if iron_design_files != iron_ext_design_files:
         print(f"IRON and IRON ext design names don't match perfectly.")
-    print(iron_design_files)
 
     with open(output_file, "w") as of:
         of.write(
