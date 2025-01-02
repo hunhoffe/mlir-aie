@@ -6,7 +6,7 @@ import os
 import pandas as pd
 
 
-def plot_loc(input_file: str, output_file: str):
+def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute: str):
     # Read in data
     df = pd.read_csv(input_file)
 
@@ -17,6 +17,11 @@ def plot_loc(input_file: str, output_file: str):
     df["radon_loc_ratio"] = (df["radon_loc_ext"] / df["radon_loc_baseline"]) - 1
     df["pygount_loc_ratio"] = (df["pygount_loc_ext"] / df["pygount_loc_baseline"]) - 1
     df["avg_loc_ratio"] = (df["radon_loc_ratio"] + df["pygount_loc_ratio"]) / 2
+
+    # Create absolute differences in LoC
+    df["radon_abs"] = df["radon_loc_ext"] - df["radon_loc_baseline"]
+    df["pygount_abs"] = df["pygount_loc_ext"] - df["pygount_loc_baseline"]
+    df["avg_loc_abs"] = (df["radon_abs"] + df["pygount_abs"]) / 2
 
     block = [
         # Block
@@ -29,18 +34,18 @@ def plot_loc(input_file: str, output_file: str):
         "VReduce(Min)",
         "VSOp(Add)",
         "VSOp(Mul)",
-        "VVop(Add)",
-        "VVop(Mul)",
-        "VVop(Mod)",
-        "VVop(AddKern)",
-        "VVop(MulKern)",
+        "VVOp(Add)",
+        "VVOp(Mul)",
+        "VVOp(Mod)",
+        "VVOp(AddKern)",
+        "VVOp(MulKern)",
         "MVAdd",
         "MVMul",
         "GEMMSingle",
         "VSoftMax",
         "VReLU",
         "Conv2D()",
-        "Conv2D(FusedRelu)",
+        "Conv2D(FusedReLU)",
     ]
     advanced = [
         # Advanced
@@ -68,12 +73,15 @@ def plot_loc(input_file: str, output_file: str):
 
     df = df.sort_values(by="name", key=sorter)
 
+    ############################### For Ratios/Percentage
+
     # Create the bar chart
     ax = df.plot.bar(x="name", y=["radon_loc_ratio", "pygount_loc_ratio"])
 
     # Calculate and plot the average line
     average = np.mean(df["avg_loc_ratio"])
     ax.axhline(average, color="gray", linestyle="--")
+    print(f"Average percentage difference: {average}")
 
     # Add the rectangle for advanced designs
     rect = patches.Rectangle(
@@ -88,6 +96,7 @@ def plot_loc(input_file: str, output_file: str):
     ax.add_patch(rect)
 
     # Color labels for advanced designs
+    plt.xticks(fontfamily="monospace")
     for ticklabel in ax.get_xticklabels():
         if ticklabel.get_text() in advanced:
             ticklabel.set_color("darkgreen")
@@ -103,7 +112,58 @@ def plot_loc(input_file: str, output_file: str):
     plt.xlabel("Design")
     plt.ylabel("Percentage Difference in LoC")
     plt.tight_layout()
-    plt.savefig(output_file)
+    plt.savefig(output_file_percentage)
+
+    ############################### For Absolute
+
+    # Create the bar chart
+    ax = df.plot.bar(x="name", y=["radon_abs", "pygount_abs"])
+
+    # Calculate and plot the average line
+    average = np.mean(df["avg_loc_abs"])
+    ax.axhline(average, color="gray", linestyle="--")
+    print(f"Average absolute difference: {average}")
+
+    # Adjusted average
+    loc_abs_values = df["avg_loc_abs"]
+    loc_abs_values = list(loc_abs_values)
+    loc_abs_values.sort()
+    print(loc_abs_values)
+    loc_abs_values = loc_abs_values[3:]
+    print(loc_abs_values)
+    adjusted_average = np.mean(loc_abs_values)
+    print(f"Average absolute difference (adjusted): {adjusted_average}")
+
+    # Add the rectangle for advanced designs
+    rect = patches.Rectangle(
+        (len(block) - 0.5, -0.53),
+        len(advanced) + 0.25,
+        0.55,
+        linewidth=1,
+        edgecolor="darkgreen",
+        facecolor="honeydew",
+        zorder=0,
+    )
+    ax.add_patch(rect)
+
+    # Color labels for advanced designs
+    plt.xticks(fontfamily="monospace")
+    for ticklabel in ax.get_xticklabels():
+        if ticklabel.get_text() in advanced:
+            ticklabel.set_color("darkgreen")
+            ticklabel.set_fontweight("bold")
+
+    # plt.title("Percentage Difference in LoC")
+    plt.legend(
+        labels=["average", "advanced", "radon", "pygount"],
+        bbox_to_anchor=(0.5, 1.05),
+        loc="lower center",
+        ncol=4,
+    )
+    plt.xlabel("Design")
+    plt.ylabel("Absolute Difference in LoC")
+    plt.tight_layout()
+    plt.savefig(output_file_absolute)
 
 
 def main():
@@ -114,7 +174,16 @@ def main():
         "-i", "--input", help="Path to the input CSV file", required=True
     )
     parser.add_argument(
-        "-o", "--output", help="Path to the output file", default="loc.png"
+        "-p",
+        "--percentage-output",
+        help="Path to the output file (percentage)",
+        default="percentage_loc.png",
+    )
+    parser.add_argument(
+        "-a",
+        "--absolute-output",
+        help="Path to the output file (absolute)",
+        default="absolute_loc.png",
     )
 
     # Parse arguments
@@ -123,11 +192,14 @@ def main():
     if not os.path.isfile(args.input):
         print(f"Error: Input CSV file {args.input} is not a file.")
         exit(-1)
-    if os.path.exists(args.output):
-        print(f"Error: Output file {args.output} already exists.")
+    if os.path.exists(args.percentage_output):
+        print(f"Error: Output file {args.percentage_output} already exists.")
+        exit(-1)
+    if os.path.exists(args.absolute_output):
+        print(f"Error: Output file {args.absolute_output} already exists.")
         exit(-1)
 
-    plot_loc(args.input, args.output)
+    plot_loc(args.input, args.percentage_output, args.absolute_output)
 
 
 if __name__ == "__main__":
