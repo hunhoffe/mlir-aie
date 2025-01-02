@@ -35,10 +35,14 @@ def calc_metrics(collection_dir: str, output_file: str):
         "length",
         "calculated_length",
         "volume",
+        "difficulty",
+        "effort",
+        "time",
+        "bugs",
     ]
 
     with open(output_file, "w") as of:
-        of.write(f"name,{','.join(halstead_keys)}\n")
+        of.write(f"name,design,{','.join(halstead_keys)}\n")
         # Calculate halstead for radon
         metrics = get_radon_halstead_metrics(iron_dir)
         for src in metrics:
@@ -61,6 +65,7 @@ def get_radon_halstead_metrics(src_dir: str):
         capture_output=True,
     )
     iron_radon_metrics = json.loads(iron_result.stdout)
+    print(iron_radon_metrics)
 
     if iron_result.returncode != 0:
         print(

@@ -1,0 +1,15 @@
+# Calculated with radon
+
+The average change in mean for h1 is: -0.6296296296296297
+The average change in mean for h2 is: -5.407407407407407
+The average change in mean for N1 is: -3.2222222222222223
+The average change in mean for N2 is: -6.666666666666667
+The average change in mean for vocabulary is: -6.037037037037037
+The average change in mean for length is: -9.88888888888889
+The average change in mean for calculated_length is: -34.12316919670084
+The average change in mean for volume is: -68.30267178470727
+The average change in mean for difficulty is: -0.19773079744815344
+The average change in mean for effort is: -287.53678624083443
+The average change in mean for time is: -15.97426590226859
+The average change in mean for bugs is: -0.022767557261569076
+
