@@ -109,8 +109,8 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
         loc="lower center",
         ncol=4,
     )
-    plt.xlabel("Design")
-    plt.ylabel("Percentage Difference in LoC")
+    plt.xlabel("Designs")
+    plt.ylabel("Percentage Difference in SLoC")
     plt.tight_layout()
     plt.savefig(output_file_percentage)
 
@@ -158,8 +158,8 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
         loc="lower center",
         ncol=4,
     )
-    plt.xlabel("Design")
-    plt.ylabel("Absolute Difference in LoC")
+    plt.xlabel("Designs")
+    plt.ylabel("Absolute Difference in SLoC")
     plt.tight_layout()
     plt.savefig(output_file_absolute)
 
