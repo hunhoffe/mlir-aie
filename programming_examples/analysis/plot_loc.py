@@ -85,9 +85,9 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
 
     # Add the rectangle for advanced designs
     rect = patches.Rectangle(
-        (len(block) - 0.5, -0.53),
+        (len(block) - 0.5, -0.6),
         len(advanced) + 0.25,
-        0.55,
+        0.6,
         linewidth=1,
         edgecolor="darkgreen",
         facecolor="honeydew",
@@ -128,17 +128,15 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
     loc_abs_values = df["avg_loc_abs"]
     loc_abs_values = list(loc_abs_values)
     loc_abs_values.sort()
-    print(loc_abs_values)
     loc_abs_values = loc_abs_values[3:]
-    print(loc_abs_values)
     adjusted_average = np.mean(loc_abs_values)
     print(f"Average absolute difference (adjusted): {adjusted_average}")
 
     # Add the rectangle for advanced designs
     rect = patches.Rectangle(
-        (len(block) - 0.5, -0.53),
+        (len(block) - 0.5, -350),
         len(advanced) + 0.25,
-        0.55,
+        350,
         linewidth=1,
         edgecolor="darkgreen",
         facecolor="honeydew",
