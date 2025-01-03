@@ -20,12 +20,7 @@ def my_matmul():
     k = 32
 
     n_cores = 1
-
-    A_sz = M * K
-    B_sz = K
-    C_sz = M
-    C_sz_div_n_cores = C_sz // n_cores
-
+    C_sz_div_n_cores = M // n_cores
     M_div_m_div_n_cores = M // (m * n_cores)
     K_div_k = K // k
     m_x_K = m * K
@@ -115,9 +110,9 @@ def my_matmul():
             # To/from AIE-array data movement
 
             @runtime_sequence(
-                np.ndarray[(A_sz,), dtype_in],
-                np.ndarray[(B_sz,), dtype_in],
-                np.ndarray[(C_sz,), dtype_out],
+                np.ndarray[(M, K), dtype_in],
+                np.ndarray[(K,), dtype_in],
+                np.ndarray[(M,), dtype_out],
             )
             def sequence(A, B, C):
                 b_task = shim_dma_single_bd_task(

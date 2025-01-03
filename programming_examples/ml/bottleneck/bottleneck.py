@@ -107,12 +107,12 @@ def bottleneck4AIEs():
     # Buffers used to hold runtime parameters
     rtp2 = GlobalBuffer(
         np.ndarray[(16,), np.dtype[np.int32]],
-        name="rtp2",
+        name="rtpComputeTile2",
         use_write_rtp=True,
     )
     rtp4 = GlobalBuffer(
         np.ndarray[(16,), np.dtype[np.int32]],
-        name="rtp4",
+        name="rtpComputeTile4",
         use_write_rtp=True,
     )
 

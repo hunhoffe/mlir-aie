@@ -74,8 +74,12 @@ def mlir_diffs(collection_dir: str, output_file: str):
 
         if len(updated_one) > 0 or len(two) > 0:
             print("FOUND MLIR MISMATCH")
-            print(f"From one: {updated_one}")
-            print(f"From two: {two}")
+            print(f"From one: ")
+            for line in updated_one:
+                print(f"\t{line}")
+            print(f"From two:")
+            for line in two:
+                print(f"\t{line}")
             diff_count += 1
         else:
             same_count += 1

@@ -140,22 +140,10 @@ def bottleneck4AIEs():
                 "rtpComputeTile2",
                 use_write_rtp=True,
             )
-            rtpComputeTile3 = buffer(
-                ComputeTile3,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile3",
-                use_write_rtp=True,
-            )
             rtpComputeTile4 = buffer(
                 ComputeTile4,
                 np.ndarray[(16,), np.dtype[np.int32]],
                 "rtpComputeTile4",
-                use_write_rtp=True,
-            )
-            rtpComputeTile5 = buffer(
-                ComputeTile5,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile5",
                 use_write_rtp=True,
             )
 
@@ -457,8 +445,6 @@ def bottleneck4AIEs():
             def sequence(inputFromL3, weightsFromL3, outputToL3):
                 # write RTP parameters
                 rtpComputeTile2[0] = 1  # scale
-                rtpComputeTile3[0] = 1  # scale
-                rtpComputeTile5[0] = 1  # scale
                 # scale: conv1x1 with the same scale as the input so we match the scaling factor of output after conv1x1 and the initial input
                 rtpComputeTile4[0] = 1
                 rtpComputeTile4[1] = 0  # skip_scale

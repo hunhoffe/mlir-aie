@@ -29,20 +29,16 @@ def my_matmul():
     dtype_in_str = "i16"
     dtype_out = np.dtype[np.int32]
     dtype_out_str = "i32"
-    A_ty = np.ndarray[(M, K), dtype_in]
-    B_ty = np.ndarray[(1, K), dtype_in]
-    C_ty = np.ndarray[(1, M), dtype_out]
     inA_ty = np.ndarray[(m, k), dtype_in]
     inB_ty = np.ndarray[(k,), dtype_in]
     outC_ty = np.ndarray[(m,), dtype_out]
-    A_ty = np.ndarray[(m, k), dtype_in]
 
     # AIE Core Function declarations
     zero = Kernel(f"zero_scalar_{dtype_out_str}", f"mv_{m}x{k}.o", [outC_ty])
     matvec = Kernel(
         f"matvec_scalar_{dtype_in_str}_{dtype_out_str}",
         f"mv_{m}x{k}.o",
-        [A_ty, inB_ty, outC_ty],
+        [inA_ty, inB_ty, outC_ty],
     )
 
     # Define the work each core will do
@@ -62,11 +58,11 @@ def my_matmul():
     coreA_fifos = []
     outC_fifos = []
     workers = []
-    B_fifo = ObjectFifo(inB_ty)
+    B_fifo = ObjectFifo(inB_ty, name="inB")
     for i in range(n_cores):
         a_fifo = ObjectFifo(inA_ty, name=f"memA{i}")
         memA_fifos.append(a_fifo)
-        coreA_fifos.append(a_fifo.cons().forward())
+        coreA_fifos.append(a_fifo.cons().forward(name=f"inA{i}"))
         outC_fifos.append(ObjectFifo(outC_ty, name=f"outC{i}"))
         w = Worker(
             core_fn,
@@ -81,7 +77,11 @@ def my_matmul():
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
-    with rt.sequence(A_ty, B_ty, C_ty) as (a_in, b_in, c_out):
+    with rt.sequence(
+        np.ndarray[(M, K), dtype_in],
+        np.ndarray[(K,), dtype_in],
+        np.ndarray[(M,), dtype_out],
+    ) as (a_in, b_in, c_out):
         rt.start(*workers)
 
         # there is only one b tile

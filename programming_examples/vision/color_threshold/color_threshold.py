@@ -56,7 +56,7 @@ def color_threshold(dev, width, height):
         rtps.append(
             GlobalBuffer(
                 np.ndarray[(16,), np.dtype[np.int32]],
-                name=f"rtp{i}",
+                name=f"rtpComputeTile{i + 2}",
                 use_write_rtp=True,
             )
         )

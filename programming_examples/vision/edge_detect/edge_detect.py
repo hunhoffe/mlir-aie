@@ -74,7 +74,7 @@ def edge_detect(dev, width, height):
         ObjectFifo(line_ty, default_depth=depths[i], name=f"OF_{i + 2}to{i + 3}")
         for i in range(3)
     ]
-    of_local = ObjectFifo(line_bytes_ty, default_depth=1, name="OF_local")
+    of_local = ObjectFifo(line_bytes_ty, default_depth=1, name="OF_5to5")
 
     workers = []
 

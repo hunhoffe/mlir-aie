@@ -33,12 +33,6 @@ def my_passthrough(M, K):
 
             # Set up compute tiles
 
-            # Compute tile 2
-            @core(ComputeTile2)
-            def core_body():
-                for _ in range_(sys.maxsize):
-                    pass
-
             # To/from AIE-array data movement
             @runtime_sequence(tensor_ty, tensor_ty, tensor_ty)
             def sequence(A, B, C):

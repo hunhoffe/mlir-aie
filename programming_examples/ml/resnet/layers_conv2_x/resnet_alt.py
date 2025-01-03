@@ -250,41 +250,16 @@ def resnet_conv_x():
                 "rtpComputeTile02",
                 use_write_rtp=True,
             )
-            rtpComputeTile03 = buffer(
-                ComputeTile03,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile03",
-                use_write_rtp=True,
-            )
-            rtpComputeTile04 = buffer(
-                ComputeTile05,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile04",
-                use_write_rtp=True,
-            )
             rtpComputeTile05 = buffer(
                 ComputeTile04,
                 np.ndarray[(16,), np.dtype[np.int32]],
                 "rtpComputeTile05",
                 use_write_rtp=True,
             )
-
-            rtpComputeTile12 = buffer(
-                ComputeTile12,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile12",
-                use_write_rtp=True,
-            )
             rtpComputeTile13 = buffer(
                 ComputeTile13,
                 np.ndarray[(16,), np.dtype[np.int32]],
                 "rtpComputeTile13",
-                use_write_rtp=True,
-            )
-            rtpComputeTile14 = buffer(
-                ComputeTile14,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile14",
                 use_write_rtp=True,
             )
             rtpComputeTile15 = buffer(
@@ -300,43 +275,31 @@ def resnet_conv_x():
                 "rtpComputeTile22",
                 use_write_rtp=True,
             )
-            rtpComputeTile23 = buffer(
-                ComputeTile23,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile23",
-                use_write_rtp=True,
-            )
             rtpComputeTile24 = buffer(
                 ComputeTile24,
                 np.ndarray[(16,), np.dtype[np.int32]],
                 "rtpComputeTile24",
                 use_write_rtp=True,
             )
-            rtpComputeTile25 = buffer(
-                ComputeTile25,
-                np.ndarray[(16,), np.dtype[np.int32]],
-                "rtpComputeTile25",
-                use_write_rtp=True,
-            )
 
             rtp = [
                 [
                     rtpComputeTile02,
-                    rtpComputeTile03,
-                    rtpComputeTile04,
+                    None,
+                    None,
                     rtpComputeTile05,
                 ],
                 [
                     rtpComputeTile15,
-                    rtpComputeTile14,
+                    None,
                     rtpComputeTile13,
-                    rtpComputeTile12,
+                    None,
                 ],
                 [
                     rtpComputeTile22,
-                    rtpComputeTile23,
+                    None,
                     rtpComputeTile24,
-                    rtpComputeTile25,
+                    None,
                 ],
             ]
 
@@ -859,21 +822,15 @@ def resnet_conv_x():
             def sequence(inputFromL3, weightsFromL3, outputToL3):
 
                 rtpComputeTile02[0] = 1
-                rtpComputeTile03[0] = 1
-                rtpComputeTile04[0] = 1
                 rtpComputeTile05[0] = 1
                 rtpComputeTile05[1] = 0
                 rtpComputeTile05[2] = 1
 
                 rtpComputeTile15[0] = 1
-                rtpComputeTile14[0] = 1
-                rtpComputeTile12[0] = 1
                 rtpComputeTile13[0] = 1
                 rtpComputeTile13[1] = 0
 
                 rtpComputeTile22[0] = 1
-                rtpComputeTile23[0] = 1
-                rtpComputeTile25[0] = 1
                 rtpComputeTile24[0] = 1
                 rtpComputeTile24[1] = 0
 
