@@ -44,8 +44,8 @@ def my_vector_scalar(dev, vector_size):
 
         # Number of sub-vector "tile" iterations
         for _ in range_(N_div_n):
-            elem_in = of_in.acquire(1)
             elem_out = of_out.acquire(1)
+            elem_in = of_in.acquire(1)
             scale_fn(elem_in, elem_out, elem_factor, n)
             of_in.release(1)
             of_out.release(1)

@@ -68,18 +68,15 @@ def my_vector_mod():
         # To/from AIE-array data movement
         @runtime_sequence(tensor_ty, tensor_ty, tensor_ty)
         def sequence(A, B, C):
-            in1_task = shim_dma_single_bd_task(
-                of_in1, A, sizes=[1, 1, 1, N], issue_token=True
-            )
-            in2_task = shim_dma_single_bd_task(
-                of_in2, B, sizes=[1, 1, 1, N], issue_token=True
-            )
+            in1_task = shim_dma_single_bd_task(of_in1, A, sizes=[1, 1, 1, N])
+            in2_task = shim_dma_single_bd_task(of_in2, B, sizes=[1, 1, 1, N])
             out_task = shim_dma_single_bd_task(
                 of_out, C, sizes=[1, 1, 1, N], issue_token=True
             )
 
             dma_start_task(in1_task, in2_task, out_task)
-            dma_await_task(in1_task, in2_task, out_task)
+            dma_await_task(out_task)
+            dma_free_task(in1_task, in2_task)
 
 
 with mlir_mod_ctx() as ctx:

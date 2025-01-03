@@ -53,15 +53,14 @@ def passthroughKernel(dev, vector_size):
 
         @runtime_sequence(vector_ty, vector_ty, vector_ty)
         def sequence(inTensor, outTensor, notUsed):
-            in_task = shim_dma_single_bd_task(
-                of_in, inTensor, sizes=[1, 1, 1, N], issue_token=True
-            )
+            in_task = shim_dma_single_bd_task(of_in, inTensor, sizes=[1, 1, 1, N])
             out_task = shim_dma_single_bd_task(
                 of_out, outTensor, sizes=[1, 1, 1, N], issue_token=True
             )
 
             dma_start_task(in_task, out_task)
-            dma_await_task(in_task, out_task)
+            dma_await_task(out_task)
+            dma_free_task(in_task)
 
 
 try:
