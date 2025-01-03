@@ -130,17 +130,20 @@ def generate_iron_example_collection():
     )
     iron_examples.append(e)
 
+    """
     # GEMMSingle
+    # Removing because version without tiler doesn't seem to work currently?
     e = Example(
         name="GEMMSingle",
         dir="../basic/matrix_multiplication/single_core",
-        iron_src="single_core.py",
+        iron_src="single_core_alt.py",
         iron_ext_src="single_core_iron.py",
         iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
         mlir_src="build/aie_512x512x512_64x64x64.mlir",
     )
     iron_examples.append(e)
+    """
 
     # VSoftMax
     e = Example(

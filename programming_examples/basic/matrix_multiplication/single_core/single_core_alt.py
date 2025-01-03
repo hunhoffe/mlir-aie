@@ -4,10 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 # (c) Copyright 2024 AMD Inc.
-
-# This alternative implementation uses configure_task instructions instead of
-# dma_memcpy_nd in the runtime sequence configuration. It is otherwise
-# identical.
 import argparse
 from ml_dtypes import bfloat16
 import numpy as np
@@ -16,7 +12,6 @@ import sys
 from aie.extras.context import mlir_mod_ctx
 from aie.dialects.aie import *
 from aie.dialects.aiex import *
-from aie.helpers.taplib import TensorTiler2D
 from aie.helpers.dialects.ext.scf import _for as range_
 
 dtype_map = {
@@ -111,6 +106,12 @@ def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
     N_div_n = N // n
     tiles = M_div_m * N_div_n
 
+    # Matrix B: KxN, submatrices b: kxn
+    k_x_N = k * N
+
+    # Output Matrix C: MxN
+    m_x_N = m * N
+
     @device(AIEDevice.npu1_1col)
     def device_body():
         a_ty = np.ndarray[(m, k), np.dtype[dtype_in]]
@@ -128,8 +129,7 @@ def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
         # Tile declarations
         shim_tile = tile(0, 0)
         mem_tile = tile(0, 1)
-        compute_tile2_col, compute_tile2_row = 0, 2
-        compute_tile2 = tile(compute_tile2_col, compute_tile2_row)
+        compute_tile2 = tile(0, 2)
 
         # AIE-array data movement with object fifos
         # Input A
@@ -216,39 +216,28 @@ def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
                     memC.release(ObjectFifoPort.Produce, 1)
 
         # To/from AIE-array data movement
-
         @runtime_sequence(
             np.ndarray[(A_sz,), np.dtype[dtype_in]],
             np.ndarray[(B_sz,), np.dtype[dtype_in]],
             np.ndarray[(C_sz,), np.dtype[dtype_out]],
         )
         def sequence(A, B, C):
-            # only do 4 tile rows at a time before synchronizing, so we can reuse BDs
-            rows_per_block = 4
 
-            # These lists will hold handles to the DMA tasks we configure
-            # on the shim. We can later use these handles to start those
-            # tasks and wait for their completion.
+            # These lists will hold handles to the DMA tasks we configure on the shim.
             a_tasks = []
             b_tasks = []
             c_tasks = []
 
-            A_taps = TensorTiler2D.group_tiler(
-                (M, K), (m, k), (1, K_div_k), pattern_repeat=N_div_n
-            )
-            # There is only one access pattern for B - it tiles the entire matrix in (k x n) tiles.
-            b_tap = TensorTiler2D.group_tiler(
-                (K, N), (k, n), (K_div_k, N_div_n), tile_group_col_major=True
-            )[0]
-            C_taps = TensorTiler2D.group_tiler(
-                (M, N), (m, n), (rows_per_block // 2, N_div_n)
-            )
-            c_index = 0
-
+            # only do 4 tile rows at a time before synchronizing, so we can reuse BDs
+            rows_per_block = 4
             for tile_row_block in range(ceildiv(M_div_m, rows_per_block)):
                 # we only sync on half the BDs before reusing them, so the other half can concurrently keep running
                 # that's what this loop is for
                 for pingpong in [0, 1]:
+                    C_row_offset = (
+                        tile_row_block * rows_per_block * m * N
+                        + pingpong * rows_per_block // 2 * m * N
+                    )
                     row_base = (
                         tile_row_block * rows_per_block + pingpong * rows_per_block // 2
                     )
@@ -257,34 +246,37 @@ def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
                         # At the very last iteration, we may not need a 'pong' iteration
                         break
 
-                    # -- C --
-                    # Configure a task on the same channel wehere the
-                    # objectFifo "outC" expects its data to be streamed in
-                    # from. Repeat count is how often to repeat this task,
-                    # hence for 1 iteration, repeat count is 0. The highest
-                    # dimension stride/wrap is applied at every repeat of
-                    # the BD. We need to set issue_token=True to be able to
-                    # await completion of the task later on using
-                    # dma_await_task.
-
+                    # Configure a task on the same channel wehere the objectFifo "outC" expects
+                    # its data to be streamed in from.
                     c_task = shim_dma_single_bd_task(
-                        outC, C, tap=C_taps[c_index], issue_token=True
+                        outC,
+                        C,
+                        offset=C_row_offset,
+                        sizes=[num_tile_rows, N_div_n, m, n],
+                        strides=[m_x_N, n, N, 1],
+                        issue_token=True,
                     )
-                    c_index += 1
                     dma_start_task(c_task)
                     c_tasks.append(c_task)
 
                     for tile_row in range(num_tile_rows):
-                        # -- A --
-                        tile_offset = (row_base + tile_row) % len(A_taps)
+                        A_row_offset = (row_base + tile_row) * m * K
                         a_task = shim_dma_single_bd_task(
-                            inA, A, tap=A_taps[tile_offset]
+                            inA,
+                            A,
+                            offset=A_row_offset,
+                            sizes=[N_div_n, K_div_k, m, k],
+                            strides=[0, k, K, 1],
                         )
                         dma_start_task(a_task)
                         a_tasks.append(a_task)
 
-                        # -- B --
-                        b_task = shim_dma_single_bd_task(inB, B, tap=b_tap)
+                        b_task = shim_dma_single_bd_task(
+                            inB,
+                            B,
+                            sizes=[N_div_n, K_div_k, k, n],
+                            strides=[n, k_x_N, N, 1],
+                        )
                         dma_start_task(b_task)
                         b_tasks.append(b_task)
 

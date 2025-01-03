@@ -216,7 +216,7 @@ def color_threshold(dev, width, height):
             rtpComputeTile5[2] = 0
 
             in_task = shim_dma_single_bd_task(
-                inOOB_L3L2, inTensor, sizes=[1, 1, 1, tensorSize], issue_token=True
+                inOOB_L3L2, inTensor, sizes=[1, 1, 1, tensorSize]
             )
             out_task = shim_dma_single_bd_task(
                 outOOB_L2L3,
@@ -226,7 +226,8 @@ def color_threshold(dev, width, height):
             )
 
             dma_start_task(in_task, out_task)
-            dma_await_task(in_task, out_task)
+            dma_await_task(out_task)
+            dma_free_task(in_task)
 
 
 try:

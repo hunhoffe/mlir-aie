@@ -41,7 +41,7 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
         "VVOp(MulKern)",
         "MVAdd",
         "MVMul",
-        "GEMMSingle",
+        # "GEMMSingle",
         "VSoftMax",
         "VReLU",
         "Conv2D()",

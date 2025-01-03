@@ -34,16 +34,15 @@ def my_matmul():
 
         @device(AIEDevice.npu1_4col)
         def device_body():
-            inA_ty = np.ndarray[(m * k,), dtype_in]
+            inA_ty = np.ndarray[(m, k), dtype_in]
             inB_ty = np.ndarray[(k,), dtype_in]
             outC_ty = np.ndarray[(m,), dtype_out]
-            A_ty = np.ndarray[(m, k), dtype_in]
 
             # AIE Core Function declarations
             zero = external_func(f"zero_scalar_{dtype_out_str}", inputs=[outC_ty])
             matvec = external_func(
                 f"matvec_scalar_{dtype_in_str}_{dtype_out_str}",
-                inputs=[A_ty, inB_ty, outC_ty],
+                inputs=[inA_ty, inB_ty, outC_ty],
             )
 
             # Tile declarations
@@ -71,7 +70,7 @@ def my_matmul():
                         MemTiles[i],
                         cores[i],
                         2,
-                        A_ty,
+                        inA_ty,
                     )
                 )
                 object_fifo_link(memA_fifos[i], inA_fifos[i])

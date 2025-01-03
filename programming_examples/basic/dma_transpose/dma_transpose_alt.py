@@ -39,7 +39,7 @@ def my_passthrough(M, K):
                 # The strides below are configured to read across all rows in the same column
                 # Stride of K in dim/wrap 2 skips an entire row to read a full column
                 in_task = shim_dma_single_bd_task(
-                    of_in, A, sizes=[1, 1, K, M], strides=[1, 1, 1, K]
+                    of_in, A, sizes=[1, 1, K, M], strides=[0, 0, 1, K]
                 )
                 out_task = shim_dma_single_bd_task(
                     of_out, C, sizes=[1, 1, 1, M * K], issue_token=True

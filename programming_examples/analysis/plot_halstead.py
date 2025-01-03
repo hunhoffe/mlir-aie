@@ -37,7 +37,7 @@ def plot_halstead(input_file: str, output_file):
         "VVOp(MulKern)",
         "MVAdd",
         "MVMul",
-        "GEMMSingle",
+        # "GEMMSingle",
         "VSoftMax",
         "VReLU",
         "Conv2D()",
