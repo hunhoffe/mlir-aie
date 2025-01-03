@@ -45,14 +45,15 @@ def my_passthrough(M, K, N):
                 # The strides below are configured to read across all rows in the same column
                 # Stride of K in dim/wrap 2 skips an entire row to read a full column
                 in_task = shim_dma_single_bd_task(
-                    of_in, A, sizes=[1, 1, K, M], strides=[1, 1, 1, K], issue_token=True
+                    of_in, A, sizes=[1, 1, K, M], strides=[1, 1, 1, K]
                 )
                 out_task = shim_dma_single_bd_task(
                     of_out, C, sizes=[1, 1, 1, N], issue_token=True
                 )
 
                 dma_start_task(in_task, out_task)
-                dma_await_task(in_task, out_task)
+                dma_await_task(out_task)
+                dma_free_task(in_task)
 
     print(ctx.module)
 

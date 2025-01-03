@@ -16,10 +16,7 @@ from aie.helpers.util import np_ndarray_type_get_shape
 
 
 def my_eltwise_mul():
-
-    word_size_in = 2
     N = 65536
-    N_in_bytes = N * word_size_in
 
     # Tile sizes
     n = 1024
@@ -44,10 +41,6 @@ def my_eltwise_mul():
         C_memTile_ty = np.ndarray[(n * n_cores,), np.dtype[bfloat16]]
 
         # AIE Core Function declarations
-
-        eltwise_mul_bf16_scalar = external_func(
-            "eltwise_mul_bf16_scalar", inputs=[tile_ty, tile_ty, tile_ty]
-        )
         eltwise_mul_bf16_vector = external_func(
             "eltwise_mul_bf16_vector", inputs=[tile_ty, tile_ty, tile_ty]
         )
@@ -128,24 +121,15 @@ def my_eltwise_mul():
 
         @runtime_sequence(tensor_ty, tensor_ty, tensor_ty)
         def sequence(A, B, C):
-            a_task = shim_dma_single_bd_task(
-                inA,
-                A,
-                sizes=[1, 1, 1, N],
-                issue_token=True,
-            )
-            b_task = shim_dma_single_bd_task(
-                inB,
-                B,
-                sizes=[1, 1, 1, N],
-                issue_token=True,
-            )
+            a_task = shim_dma_single_bd_task(inA, A, sizes=[1, 1, 1, N])
+            b_task = shim_dma_single_bd_task(inB, B, sizes=[1, 1, 1, N])
             c_task = shim_dma_single_bd_task(
                 outC, C, sizes=[1, 1, 1, N], issue_token=True
             )
 
             dma_start_task(a_task, b_task, c_task)
-            dma_await_task(a_task, b_task, c_task)
+            dma_await_task(c_task)
+            dma_free_task(a_task, b_task)
 
 
 with mlir_mod_ctx() as ctx:

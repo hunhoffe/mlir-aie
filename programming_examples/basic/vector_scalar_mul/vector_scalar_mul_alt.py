@@ -16,13 +16,11 @@ from aie.helpers.dialects.ext.scf import _for as range_
 
 def my_vector_scalar(dev, vector_size):
     N = vector_size
-    N_in_bytes = N * 2
     N_div_n = 4  # chop input vector into 4 sub-vectors
     n = N // N_div_n
+    vectorized = True
 
     buffer_depth = 2
-
-    vectorized = True
 
     @device(dev)
     def device_body():
@@ -69,18 +67,15 @@ def my_vector_scalar(dev, vector_size):
         # To/from AIE-array data movement
         @runtime_sequence(tensor_ty, scalar_ty, tensor_ty)
         def sequence(A, F, C):
-            in_task = shim_dma_single_bd_task(
-                of_in, A, sizes=[1, 1, 1, N], issue_token=True
-            )
-            in_factor_task = shim_dma_single_bd_task(
-                of_factor, F, sizes=[1, 1, 1, 1], issue_token=True
-            )
+            in_task = shim_dma_single_bd_task(of_in, A, sizes=[1, 1, 1, N])
+            in_factor_task = shim_dma_single_bd_task(of_factor, F, sizes=[1, 1, 1, 1])
             out_task = shim_dma_single_bd_task(
                 of_out, C, sizes=[1, 1, 1, N], issue_token=True
             )
 
             dma_start_task(in_task, in_factor_task, out_task)
-            dma_await_task(in_task, in_factor_task, out_task)
+            dma_await_task(out_task)
+            dma_free_task(in_task, in_factor_task)
 
 
 try:

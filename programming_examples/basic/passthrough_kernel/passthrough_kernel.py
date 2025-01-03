@@ -12,6 +12,49 @@ from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker
 from aie.iron.placers import SequentialPlacer
 from aie.iron.device import NPU1Col1, NPU2
 
+
+def passthroughKernel(dev, vector_size):
+    # Define tensor types
+    line_size = vector_size // 4
+    line_type = np.ndarray[(line_size,), np.dtype[np.uint8]]
+    vector_type = np.ndarray[(vector_size,), np.dtype[np.uint8]]
+
+    # Dataflow with ObjectFifos
+    of_in = ObjectFifo(line_type, name="in")
+    of_out = ObjectFifo(line_type, name="out")
+
+    # External, binary kernel definition
+    passthrough_fn = Kernel(
+        "passThroughLine",
+        "passThrough.cc.o",
+        [line_type, line_type, np.int32],
+    )
+
+    # Task for the core to perform
+    def core_fn(of_in, of_out, passThroughLine):
+        elemOut = of_out.acquire(1)
+        elemIn = of_in.acquire(1)
+        passThroughLine(elemIn, elemOut, line_size)
+        of_in.release(1)
+        of_out.release(1)
+
+    # Create a worker to perform the task
+    my_worker = Worker(core_fn, [of_in.cons(), of_out.prod(), passthrough_fn])
+
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(vector_type, vector_type, vector_type) as (a_in, b_out, _):
+        rt.start(my_worker)
+        rt.fill(of_in.prod(), a_in)
+        rt.drain(of_out.cons(), b_out, wait=True)
+
+    # Create the program from the device type and runtime
+    my_program = Program(dev, rt)
+
+    # Place components (assign them resources on the device) and generate an MLIR module
+    return my_program.resolve_program(SequentialPlacer())
+
+
 try:
     device_name = str(sys.argv[1])
     if device_name == "npu":
@@ -26,48 +69,4 @@ try:
         raise ValueError
 except ValueError:
     print("Argument has inappropriate value")
-
-# Define tensor types
-line_size = vector_size // 4
-line_type = np.ndarray[(line_size,), np.dtype[np.uint8]]
-vector_type = np.ndarray[(vector_size,), np.dtype[np.uint8]]
-
-# Dataflow with ObjectFifos
-of_in = ObjectFifo(line_type, name="in")
-of_out = ObjectFifo(line_type, name="out")
-
-# External, binary kernel definition
-passthrough_fn = Kernel(
-    "passThroughLine",
-    "passThrough.cc.o",
-    [line_type, line_type, np.int32],
-)
-
-
-# Task for the core to perform
-def core_fn(of_in, of_out, passThroughLine):
-    elemOut = of_out.acquire(1)
-    elemIn = of_in.acquire(1)
-    passThroughLine(elemIn, elemOut, line_size)
-    of_in.release(1)
-    of_out.release(1)
-
-
-# Create a worker to perform the task
-my_worker = Worker(core_fn, [of_in.cons(), of_out.prod(), passthrough_fn])
-
-# Runtime operations to move data to/from the AIE-array
-rt = Runtime()
-with rt.sequence(vector_type, vector_type, vector_type) as (a_in, b_out, _):
-    rt.start(my_worker)
-    rt.fill(of_in.prod(), a_in)
-    rt.drain(of_out.cons(), b_out, wait=True)
-
-# Create the program from the device type and runtime
-my_program = Program(dev, rt)
-
-# Place components (assign them resources on the device) and generate an MLIR module
-module = my_program.resolve_program(SequentialPlacer())
-
-# Print the generated MLIR
-print(module)
+print(passthroughKernel(dev, vector_size))

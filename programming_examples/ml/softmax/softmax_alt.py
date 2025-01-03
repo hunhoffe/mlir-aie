@@ -104,9 +104,7 @@ def vector_softmax():
 
         @runtime_sequence(tensor_ty, tensor_ty)
         def sequence(A, C):
-            in_task = shim_dma_single_bd_task(
-                inA, A, sizes=[1, 1, 1, N], issue_token=True
-            )
+            in_task = shim_dma_single_bd_task(inA, A, sizes=[1, 1, 1, N])
             out_task = shim_dma_single_bd_task(
                 outC,
                 C,
@@ -114,7 +112,8 @@ def vector_softmax():
                 issue_token=True,
             )
             dma_start_task(in_task, out_task)
-            dma_await_task(in_task, out_task)
+            dma_await_task(out_task)
+            dma_free_task(in_task)
 
 
 with mlir_mod_ctx() as ctx:

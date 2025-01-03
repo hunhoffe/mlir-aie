@@ -16,10 +16,7 @@ from aie.helpers.util import np_ndarray_type_get_shape
 
 
 def my_relu():
-
-    word_size_in = 2
     N = 65536
-    N_in_bytes = N * word_size_in
 
     # Tile sizes
     n = 1024
@@ -105,18 +102,14 @@ def my_relu():
 
         @runtime_sequence(tensor_ty, tensor_ty)
         def sequence(A, C):
-            in_task = shim_dma_single_bd_task(
-                inA,
-                A,
-                sizes=[1, 1, 1, N],
-                issue_token=True,
-            )
+            in_task = shim_dma_single_bd_task(inA, A, sizes=[1, 1, 1, N])
             out_task = shim_dma_single_bd_task(
                 outC, C, sizes=[1, 1, 1, N], issue_token=True
             )
 
             dma_start_task(in_task, out_task)
-            dma_await_task(in_task, out_task)
+            dma_await_task(out_task)
+            dma_free_task(in_task)
 
 
 with mlir_mod_ctx() as ctx:

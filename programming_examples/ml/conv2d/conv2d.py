@@ -76,7 +76,7 @@ def conv2dk1():
     # Setup a global buffer to hold runtime parameters
     rtp = GlobalBuffer(
         np.ndarray[(16,), np.dtype[np.int32]],
-        name="rtp",
+        name="rtp2",
         use_write_rtp=True,
     )
 

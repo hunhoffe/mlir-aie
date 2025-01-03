@@ -98,5 +98,4 @@ def my_relu():
     return Program(NPU1Col1(), rt).resolve_program(SequentialPlacer())
 
 
-module = my_relu()
-print(module)
+print(my_relu())

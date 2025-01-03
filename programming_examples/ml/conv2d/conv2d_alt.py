@@ -126,16 +126,10 @@ def conv2dk1():
                 rtp2[0] = 10
 
                 in_act_task = shim_dma_single_bd_task(
-                    of_inOF_act_L3L2,
-                    I,
-                    sizes=[1, 1, 1, tensorSize],
-                    issue_token=True,
+                    of_inOF_act_L3L2, I, sizes=[1, 1, 1, tensorSize]
                 )
                 in_wts_task = shim_dma_single_bd_task(
-                    of_inOF_wts_0_L3L2,
-                    W,
-                    sizes=[1, 1, 1, weights],
-                    issue_token=True,
+                    of_inOF_wts_0_L3L2, W, sizes=[1, 1, 1, weights]
                 )
                 out_task = shim_dma_single_bd_task(
                     of_outOFL2L3,
@@ -145,7 +139,8 @@ def conv2dk1():
                 )
 
                 dma_start_task(in_act_task, in_wts_task, out_task)
-                dma_await_task(in_act_task, in_wts_task, out_task)
+                dma_await_task(out_task)
+                dma_free_task(in_act_task, in_wts_task)
 
     #    print(ctx.module.operation.verify())
     print(ctx.module)
