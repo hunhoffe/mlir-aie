@@ -24,8 +24,8 @@ def my_passthrough(M, K):
     tap_in = TensorTiler2D.simple_tiler((M, K), tile_col_major=True)[0]
 
     # Dataflow with ObjectFifos
-    of_in = ObjectFifo(tensor_ty)
-    of_out = of_in.cons().forward(AnyComputeTile)
+    of_in = ObjectFifo(tensor_ty, name="in")
+    of_out = of_in.cons().forward(AnyComputeTile, name="out")
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
@@ -53,7 +53,4 @@ if __name__ == "__main__":
             "ERROR: Must provide either no dimensions or both M and K", file=sys.stderr
         )
         exit(-1)
-    my_passthrough(
-        M=args.dims[0],
-        K=args.dims[1],
-    )
+    my_passthrough(M=args.dims[0], K=args.dims[1])

@@ -28,7 +28,7 @@ def passthroughKernel(vector_size):
     # A python function which will be treated as a callable function on the AIE
     # e.g., a kernel written in python
     @func
-    def passthrough_fn(input: line_type, output: line_type, lineWidth: np.int32):
+    def passThroughLine(input: line_type, output: line_type, lineWidth: np.int32):
         for i in range_(lineWidth):
             output[i] = input[i]
 
@@ -41,7 +41,7 @@ def passthroughKernel(vector_size):
         of_out.release(1)
 
     # Create a worker to run the task
-    my_worker = Worker(core_fn, [of_in.cons(), of_out.prod(), passthrough_fn])
+    my_worker = Worker(core_fn, [of_in.cons(), of_out.prod(), passThroughLine])
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()

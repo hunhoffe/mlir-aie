@@ -24,11 +24,11 @@ def my_vector_bias_add():
     all_data_ty = np.ndarray[(PROBLEM_SIZE,), np.dtype[np.int32]]
 
     # AIE-array data movement with object fifos
-    of_in0 = ObjectFifo(mem_tile_ty, name="in")
-    of_in1 = of_in0.cons().forward(obj_type=aie_tile_ty)
+    of_in0 = ObjectFifo(mem_tile_ty, name="in0")
+    of_in1 = of_in0.cons().forward(obj_type=aie_tile_ty, name="in1")
 
-    of_out0 = ObjectFifo(aie_tile_ty, name="out")
-    of_out1 = of_out0.cons().forward(obj_type=mem_tile_ty)
+    of_out0 = ObjectFifo(aie_tile_ty, name="out0")
+    of_out1 = of_out0.cons().forward(obj_type=mem_tile_ty, name="out1")
 
     # Define a compute task to perform
     def core_body(of_in1, of_out0):

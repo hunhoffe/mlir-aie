@@ -15,7 +15,7 @@ from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
 
 
-def my_passthrough(M, K, N):
+def my_passthrough(M, K):
     tensor_ty = np.ndarray[(M, K), np.dtype[np.int32]]
 
     with mlir_mod_ctx() as ctx:
@@ -48,7 +48,7 @@ def my_passthrough(M, K, N):
                     of_in, A, sizes=[1, 1, K, M], strides=[1, 1, 1, K]
                 )
                 out_task = shim_dma_single_bd_task(
-                    of_out, C, sizes=[1, 1, 1, N], issue_token=True
+                    of_out, C, sizes=[1, 1, 1, M * K], issue_token=True
                 )
 
                 dma_start_task(in_task, out_task)
@@ -68,4 +68,4 @@ if __name__ == "__main__":
             "ERROR: Must provide either no dimensions or both M and K", file=sys.stderr
         )
         exit(-1)
-    my_passthrough(M=args.dims[0], K=args.dims[1], N=args.dims[0] * args.dims[1])
+    my_passthrough(M=args.dims[0], K=args.dims[1])
