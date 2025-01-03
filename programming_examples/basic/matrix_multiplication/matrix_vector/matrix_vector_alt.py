@@ -52,21 +52,14 @@ def my_matmul():
             )
 
             # Tile declarations
-            ShimTile0 = tile(0, 0)
-            ShimTile1 = tile(1, 0)
-            ShimTile2 = tile(2, 0)
-            ShimTile3 = tile(3, 0)
-            ShimTiles = [ShimTile0, ShimTile1, ShimTile2, ShimTile3]
-            MemTile0 = tile(0, 1)
-            MemTile1 = tile(1, 1)
-            MemTile2 = tile(2, 1)
-            MemTile3 = tile(3, 1)
-            MemTiles = [MemTile0, MemTile1, MemTile2, MemTile3]
-            ComputeTile0 = tile(0, 2)
-            ComputeTile1 = tile(1, 2)
-            ComputeTile2 = tile(2, 2)
-            ComputeTile3 = tile(3, 2)
-            cores = [ComputeTile0, ComputeTile1, ComputeTile2, ComputeTile3]
+            ShimTiles = []
+            MemTiles = []
+            cores = []
+            for i in range(n_cores):
+                ShimTiles.append(tile(i, 0))
+                MemTiles.append(tile(i, 1))
+                cores.append(tile(i, 2))
+
             memA_fifos = []
             inA_fifos = []
             outC_fifos = []

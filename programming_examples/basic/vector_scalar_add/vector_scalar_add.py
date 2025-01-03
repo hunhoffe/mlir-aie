@@ -27,8 +27,8 @@ def my_vector_bias_add():
     of_in0 = ObjectFifo(mem_tile_ty, name="in0")
     of_in1 = of_in0.cons().forward(obj_type=aie_tile_ty, name="in1")
 
-    of_out0 = ObjectFifo(aie_tile_ty, name="out0")
-    of_out1 = of_out0.cons().forward(obj_type=mem_tile_ty, name="out1")
+    of_out0 = ObjectFifo(aie_tile_ty, name="out1")
+    of_out1 = of_out0.cons().forward(obj_type=mem_tile_ty, name="out0")
 
     # Define a compute task to perform
     def core_body(of_in1, of_out0):

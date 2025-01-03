@@ -52,11 +52,6 @@ def my_passthrough():
 
             # Set up compute tiles
 
-            # Compute tile 2
-            @core(ComputeTile2)
-            def core_body():
-                pass
-
             # To/from AIE-array data movement
             @runtime_sequence(vector_ty, vector_ty, vector_ty)
             def sequence(A, B, C):
