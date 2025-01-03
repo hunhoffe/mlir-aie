@@ -52,7 +52,7 @@ def my_reduce_max():
         # Compute tile 2
         @core(ComputeTile2, "reduce_max.cc.o")
         def core_body():
-            for _ in range_(0xFFFFFFFF):
+            for _ in range_(sys.maxsize):
                 elem_out = of_out.acquire(ObjectFifoPort.Produce, 1)
                 elem_in = of_in.acquire(ObjectFifoPort.Consume, 1)
                 reduce_max_vector(elem_in, elem_out, N)

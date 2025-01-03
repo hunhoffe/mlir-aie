@@ -7,6 +7,7 @@
 import argparse
 from ml_dtypes import bfloat16
 import numpy as np
+import sys
 
 from aie.extras.context import mlir_mod_ctx
 from aie.dialects.aie import *
@@ -202,7 +203,7 @@ def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
             # Compute tile 2
             @core(compute_tile2, f"mm_{m}x{k}x{n}.o")
             def core_body():
-                for _ in range_(0xFFFFFFFF):
+                for _ in range_(sys.maxsize):
                     for _ in range_(tiles) if tiles > 1 else range(1):  # issue #1547
 
                         elem_out = memC.acquire(ObjectFifoPort.Produce, 1)

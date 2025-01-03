@@ -38,7 +38,7 @@ def row_wise_bias_add(M, N, m, n):
 
         @core(compute_tile, "kernel.o")
         def core_body():
-            for _ in range_(0xFFFFFFFF):
+            for _ in range_(sys.maxsize):
                 for _ in range_(N // n):
                     elem_bias = bias_fifo.acquire(ObjectFifoPort.Consume, 1)
                     for _ in range_(M // m):

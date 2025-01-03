@@ -5,6 +5,7 @@
 #
 # (c) Copyright 2023 AMD Inc.
 import numpy as np
+import sys
 
 from aie.extras.context import mlir_mod_ctx
 from aie.dialects.aie import *
@@ -104,7 +105,7 @@ def my_matmul():
                 # Compute tile i
                 @core(cores[i], f"mv_{m}x{k}.o")
                 def core_body():
-                    for _ in range_(0xFFFFFFFF):
+                    for _ in range_(sys.maxsize):
                         elem_out = outC_fifos[i].acquire(
                             ObjectFifoPort.Produce,
                             1,

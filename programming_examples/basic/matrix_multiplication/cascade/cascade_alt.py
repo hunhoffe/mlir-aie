@@ -7,6 +7,7 @@
 import argparse
 from ml_dtypes import bfloat16
 import numpy as np
+import sys
 
 from aie.extras.context import mlir_mod_ctx
 from aie.dialects.aie import *
@@ -310,7 +311,7 @@ def my_matmul(
 
                 @core(core_tiles[row][col], f"mm_{m}x{k}x{n}.o")
                 def core_body():
-                    for _ in range_(0xFFFFFFFF):
+                    for _ in range_(sys.maxsize):
                         loop = (
                             range_(n_tiles_per_core)
                             if n_tiles_per_core > 1

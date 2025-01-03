@@ -87,7 +87,7 @@ def my_relu():
             # Compute tile i
             @core(cores[i], "relu.o")
             def core_body():
-                for _ in range_(0xFFFFFFFF):
+                for _ in range_(sys.maxsize):
                     for _ in range_(tiles):
                         elem_out = outC_fifos[i].acquire(ObjectFifoPort.Produce, 1)
                         elem_in_a = inA_fifos[i].acquire(ObjectFifoPort.Consume, 1)

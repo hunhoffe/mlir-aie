@@ -52,7 +52,7 @@ def my_reduce_min():
         # Compute tile 2
         @core(ComputeTile2, "reduce_min.cc.o")
         def core_body():
-            for _ in range_(0xFFFFFFFF):
+            for _ in range_(sys.maxsize):
                 elem_out = of_out.acquire(ObjectFifoPort.Produce, 1)
                 elem_in = of_in.acquire(ObjectFifoPort.Consume, 1)
                 reduce_min_vector(elem_in, elem_out, N)

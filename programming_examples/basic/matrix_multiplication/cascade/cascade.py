@@ -282,7 +282,7 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str, trace_s
 
                 @core(core_tiles[row][col], f"mm_{m}x{k}x{n}.o")
                 def core_body():
-                    for _ in range_(0xFFFFFFFF):
+                    for _ in range_(sys.maxsize):
                         loop = (
                             range_(n_tiles_per_core)
                             if n_tiles_per_core > 1

@@ -7,6 +7,7 @@
 # (c) Copyright 2024 Advanced Micro Devices, Inc. or its affiliates
 import numpy as np
 from ml_dtypes import bfloat16
+import sys
 
 from aie.dialects.aie import *  # primary mlir-aie dialect definitions
 from aie.extras.context import mlir_mod_ctx  # mlir ctx wrapper
@@ -94,7 +95,7 @@ def my_eltwise_exp():
             # Compute tile i
             @core(cores[i], "kernels.a")
             def core_body():
-                for _ in range_(0xFFFFFFFF):
+                for _ in range_(sys.maxsize):
                     for _ in range_(tiles):
                         elem_out = outC_fifos[i].acquire(ObjectFifoPort.Produce, 1)
                         elem_in_a = inA_fifos[i].acquire(ObjectFifoPort.Consume, 1)

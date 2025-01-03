@@ -101,7 +101,7 @@ def conv2dk1():
                 ci = 64
                 co = 64
 
-                for _ in range_(0xFFFFFFFF):
+                for _ in range_(sys.maxsize):
                     elemWts = of_inOF_wts_0_L3L2.acquire(ObjectFifoPort.Consume, 1)
 
                     scale = rtp2[0]

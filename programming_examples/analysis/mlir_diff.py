@@ -37,14 +37,11 @@ def mlir_diffs(collection_dir: str, output_file: str):
         with open(mlir_ext_file, "r") as f:
             mlir_ext_code = f.read()
 
-        # Uniform constants for while(true)
-        mlir_code = mlir_code.replace("4294967295", "9223372036854775807")
         mlir_code_lines = mlir_code.splitlines(keepends=True)
-        mlir_ext_code = mlir_ext_code.replace("4294967295", "9223372036854775807")
         mlir_ext_code_lines = mlir_ext_code.splitlines(keepends=True)
 
         for i, line in enumerate(mlir_ext_code_lines):
-            # Normalize offsets for object fifo link
+            # Normalize offsets for object fifo link: [0] is functionally equivalent to []
             if "aie.objectfifo.link [" in line:
                 mlir_ext_code_lines[i] = line.replace("[0]", "[]")
 

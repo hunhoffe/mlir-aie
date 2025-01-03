@@ -6,6 +6,7 @@
 # (c) Copyright 2023 AMD Inc.
 from ml_dtypes import bfloat16
 import numpy as np
+import sys
 
 from aie.dialects.aie import *
 from aie.dialects.aiex import *
@@ -105,7 +106,7 @@ def my_eltwise_add():
             # Compute tile i
             @core(cores[i], "add.o")
             def core_body():
-                for _ in range_(0xFFFFFFFF):
+                for _ in range_(sys.maxsize):
                     for _ in range_(tiles):
                         elem_out = outC_fifos[i].acquire(ObjectFifoPort.Produce, 1)
                         elem_in_a = inA_fifos[i].acquire(ObjectFifoPort.Consume, 1)
