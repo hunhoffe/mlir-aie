@@ -3,14 +3,14 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2023 AMD Inc.
+# (c) Copyright 2024 Advanced Micro Devices, Inc. or its affiliates
 import numpy as np
-import sys
 
-from aie.extras.context import mlir_mod_ctx
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker
+from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col4
+from aie.iron.controlflow import range_
+from aie.helpers.taplib import TensorTiler2D
 
 
 def my_matmul():
@@ -20,144 +20,85 @@ def my_matmul():
     k = 32
 
     n_cores = 1
-
-    A_sz = M * K
-    B_sz = K
-    C_sz = M
-    C_sz_div_n_cores = C_sz // n_cores
-
+    M_div_n_cores = M // n_cores
     M_div_m_div_n_cores = M // (m * n_cores)
     K_div_k = K // k
 
-    m_x_K = m * K
-
+    # Define types
     dtype_in = np.dtype[np.int16]
     dtype_in_str = "i16"
     dtype_out = np.dtype[np.int32]
     dtype_out_str = "i32"
+    inA_ty = np.ndarray[(m, k), dtype_in]
+    inB_ty = np.ndarray[(k,), dtype_in]
+    outC_ty = np.ndarray[(m,), dtype_out]
 
-    with mlir_mod_ctx() as ctx:
+    # AIE Core Function declarations
+    zero = Kernel(f"zero_scalar_{dtype_out_str}", f"mv_{m}x{k}.o", [outC_ty])
+    matvec = Kernel(
+        f"matvec_scalar_{dtype_in_str}_{dtype_out_str}",
+        f"mv_{m}x{k}.o",
+        [inA_ty, inB_ty, outC_ty],
+    )
 
-        @device(AIEDevice.npu1_4col)
-        def device_body():
-            inA_ty = np.ndarray[(m * k,), dtype_in]
-            inB_ty = np.ndarray[(k,), dtype_in]
-            outC_ty = np.ndarray[(m,), dtype_out]
-            A_ty = np.ndarray[(m, k), dtype_in]
+    # Define the work each core will do
+    def core_fn(of_a, of_b, of_c, zero, matvec):
+        elem_out = of_c.acquire(1)
+        zero(elem_out)
+        for _ in range_(K_div_k):
+            elem_in_a = of_a.acquire(1)
+            elem_in_b = of_b.acquire(1)
+            matvec(elem_in_a, elem_in_b, elem_out)
+            of_a.release(1)
+            of_b.release(1)
+        of_c.release(1)
 
-            # AIE Core Function declarations
-            zero = external_func(f"zero_scalar_{dtype_out_str}", inputs=[outC_ty])
-            matvec = external_func(
-                f"matvec_scalar_{dtype_in_str}_{dtype_out_str}",
-                inputs=[A_ty, inB_ty, outC_ty],
-            )
+    # Create object fifos and workers for each core
+    memA_fifos = []
+    coreA_fifos = []
+    outC_fifos = []
+    workers = []
+    B_fifo = ObjectFifo(inB_ty, name="inB")
+    for i in range(n_cores):
+        a_fifo = ObjectFifo(inA_ty, name=f"memA{i}")
+        memA_fifos.append(a_fifo)
+        coreA_fifos.append(a_fifo.cons().forward(name=f"inA{i}"))
+        outC_fifos.append(ObjectFifo(outC_ty, name=f"outC{i}"))
+        w = Worker(
+            core_fn,
+            [coreA_fifos[i].cons(), B_fifo.cons(), outC_fifos[i].prod(), zero, matvec],
+        )
+        workers.append(w)
 
-            # Tile declarations
-            ShimTile0 = tile(0, 0)
-            ShimTile1 = tile(1, 0)
-            ShimTile2 = tile(2, 0)
-            ShimTile3 = tile(3, 0)
-            ShimTiles = [ShimTile0, ShimTile1, ShimTile2, ShimTile3]
-            MemTile0 = tile(0, 1)
-            MemTile1 = tile(1, 1)
-            MemTile2 = tile(2, 1)
-            MemTile3 = tile(3, 1)
-            MemTiles = [MemTile0, MemTile1, MemTile2, MemTile3]
-            ComputeTile0 = tile(0, 2)
-            ComputeTile1 = tile(1, 2)
-            ComputeTile2 = tile(2, 2)
-            ComputeTile3 = tile(3, 2)
-            cores = [ComputeTile0, ComputeTile1, ComputeTile2, ComputeTile3]
-            memA_fifos = []
-            inA_fifos = []
-            outC_fifos = []
+    # Define the tiling access patterns for input and output tensors
+    A_taps = TensorTiler2D.group_tiler((M, K), (m, k), (M_div_m_div_n_cores, K_div_k))
+    C_taps = TensorTiler2D.simple_tiler((1, M), (1, M_div_n_cores))
+    b_tap = TensorTiler2D.simple_tiler((1, K), pattern_repeat=M_div_m_div_n_cores)[0]
 
-            # AIE-array data movement with object fifos
-            # Input A
-            for i in range(n_cores):
-                memA_fifos.append(
-                    object_fifo(f"memA{i}", ShimTiles[i], MemTiles[i], 2, inA_ty)
-                )
-                inA_fifos.append(
-                    object_fifo(
-                        f"inA{i}",
-                        MemTiles[i],
-                        cores[i],
-                        2,
-                        A_ty,
-                        [],
-                    )
-                )
-                object_fifo_link(memA_fifos[i], inA_fifos[i])
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(
+        np.ndarray[(M, K), dtype_in],
+        np.ndarray[(K,), dtype_in],
+        np.ndarray[(M,), dtype_out],
+    ) as (a_in, b_in, c_out):
+        rt.start(*workers)
 
-                # Output C
-                outC_fifos.append(
-                    object_fifo(f"outC{i}", cores[i], ShimTiles[i], 2, outC_ty)
-                )
+        # there is only one b tile
+        rt.fill(B_fifo.prod(), b_in, b_tap)
 
-            # Input B
-            inB_fifo = object_fifo(
-                "inB", ShimTiles[1 % n_cores], cores[0:n_cores], 2, inB_ty
-            )
+        for i, (a_tap, c_tap) in enumerate(zip(A_taps, C_taps)):
+            rt.fill(memA_fifos[i].prod(), a_in, a_tap)
+            rt.drain(outC_fifos[i].cons(), c_out, c_tap, wait=True)
 
-            # Set up compute tiles
-            for i in range(n_cores):
-                # Compute tile i
-                @core(cores[i], f"mv_{m}x{k}.o")
-                def core_body():
-                    for _ in range_(sys.maxsize):
-                        elem_out = outC_fifos[i].acquire(
-                            ObjectFifoPort.Produce,
-                            1,
-                        )
-                        zero(elem_out)
+    # Create the program from the device type and runtime
+    my_program = Program(NPU1Col4(), rt)
 
-                        for _ in range_(K_div_k):
-                            elem_in_a = inA_fifos[i].acquire(ObjectFifoPort.Consume, 1)
-                            elem_in_b = inB_fifo.acquire(ObjectFifoPort.Consume, 1)
-                            matvec(elem_in_a, elem_in_b, elem_out)
-                            inA_fifos[i].release(ObjectFifoPort.Consume, 1)
-                            inB_fifo.release(ObjectFifoPort.Consume, 1)
+    # Place components (assign them resources on the device) and generate an MLIR module
+    module = my_program.resolve_program(SequentialPlacer())
 
-                        outC_fifos[i].release(ObjectFifoPort.Produce, 1)
-
-            # To/from AIE-array data movement
-
-            @runtime_sequence(
-                np.ndarray[(A_sz,), dtype_in],
-                np.ndarray[(B_sz,), dtype_in],
-                np.ndarray[(C_sz,), dtype_out],
-            )
-            def sequence(A, B, C):
-                npu_dma_memcpy_nd(
-                    metadata=inB_fifo,
-                    bd_id=2,
-                    mem=B,
-                    sizes=[M_div_m_div_n_cores, 1, 1, K],
-                    strides=[0, 0, 0, 1],
-                )
-                for i in range(n_cores):
-                    A_offset = i * M_div_m_div_n_cores * m * K
-                    C_offset = i * M_div_m_div_n_cores * m
-                    npu_dma_memcpy_nd(
-                        metadata=memA_fifos[i],
-                        bd_id=1,
-                        mem=A,
-                        offsets=[0, 0, 0, A_offset],
-                        sizes=[M_div_m_div_n_cores, K_div_k, m, k],
-                        strides=[m_x_K, k, K, 1],
-                    )
-                    npu_dma_memcpy_nd(
-                        metadata=outC_fifos[i],
-                        bd_id=0,
-                        mem=C,
-                        offsets=[0, 0, 0, C_offset],
-                        sizes=[1, 1, 1, C_sz_div_n_cores],
-                        strides=[0, 0, 0, 1],
-                    )
-                dma_wait(*outC_fifos)
-
-    print(ctx.module)
+    # Print the generated MLIR
+    print(module)
 
 
 my_matmul()

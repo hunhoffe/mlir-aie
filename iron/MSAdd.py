@@ -1,4 +1,4 @@
-# matrix_scalar_add/matrix_scalar_add_alt.py -*- Python -*-
+# matrix_scalar_add/matrix_scalar_add.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -8,10 +8,11 @@
 import numpy as np
 import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import ObjectFifo, Program, Runtime, Worker
+from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col1, XCVC1902
+from aie.iron.controlflow import range_
+from aie.helpers.taplib import TensorTiler2D
 
 # Size of the entire matrix
 MATRIX_HEIGHT = 16
@@ -25,67 +26,49 @@ TILE_SHAPE = (TILE_HEIGHT, TILE_WIDTH)
 
 
 def my_matrix_add_one():
+
     if len(sys.argv) != 3:
         raise ValueError("[ERROR] Need 2 command line arguments (Device name, Col)")
     if sys.argv[1] == "npu":
-        dev = AIEDevice.npu1_1col
+        dev = NPU1Col1()
     elif sys.argv[1] == "xcvc1902":
-        dev = AIEDevice.xcvc1902
+        dev = XCVC1902()
     else:
-        raise ValueError("[ERROR] Device name {} is unknown".format(sys.argv[1]))
+        raise ValueError(f"[ERROR] Device name {sys.argv[1]} is unknown")
 
-    @device(dev)
-    def device_body():
-        # Define tensor types
-        matrix_ty = np.ndarray[MATRIX_SHAPE, np.dtype[np.int32]]
-        tile_ty = np.ndarray[TILE_SHAPE, np.dtype[np.int32]]
+    # Define tensor types
+    matrix_ty = np.ndarray[MATRIX_SHAPE, np.dtype[np.int32]]
+    tile_ty = np.ndarray[TILE_SHAPE, np.dtype[np.int32]]
 
-        # Tile declarations
-        ShimTile = tile(int(sys.argv[2]), 0)
-        ComputeTile2 = tile(int(sys.argv[2]), 2)
+    # AIE-array data movement with object fifos
+    of_in = ObjectFifo(tile_ty, name="in0")
+    of_out = ObjectFifo(tile_ty, name="out0")
 
-        # AIE-array data movement with object fifos
-        of_in = object_fifo("in", ShimTile, ComputeTile2, 2, tile_ty)
-        of_out = object_fifo("out", ComputeTile2, ShimTile, 2, tile_ty)
+    # Define a task to perform
+    def core_fn(of_in1, of_out1):
+        elem_in = of_in1.acquire(1)
+        elem_out = of_out1.acquire(1)
+        for i in range_(TILE_HEIGHT):
+            for j in range_(TILE_WIDTH):
+                elem_out[i, j] = elem_in[i, j] + 1
+        of_in1.release(1)
+        of_out1.release(1)
 
-        # Set up compute tile 2
-        @core(ComputeTile2)
-        def core_body():
-            # Effective while(1)
-            for _ in range_(sys.maxsize):
-                elem_in = of_in.acquire(ObjectFifoPort.Consume, 1)
-                elem_out = of_out.acquire(ObjectFifoPort.Produce, 1)
-                for i in range_(TILE_HEIGHT):
-                    for j in range_(TILE_WIDTH):
-                        elem_out[i, j] = elem_in[i, j] + 1
-                of_in.release(ObjectFifoPort.Consume, 1)
-                of_out.release(ObjectFifoPort.Produce, 1)
+    # Create a worker to perform the task
+    my_worker = Worker(core_fn, fn_args=[of_in.cons(), of_out.prod()])
 
-        # To/from AIE-array data movement
-        @runtime_sequence(matrix_ty, matrix_ty, matrix_ty)
-        def sequence(inTensor, _, outTensor):
-            in_task = shim_dma_single_bd_task(
-                of_in,
-                inTensor,
-                sizes=[1, 1, TILE_HEIGHT, TILE_WIDTH],
-                strides=[0, 0, MATRIX_WIDTH, 1],
-            )
-            out_task = shim_dma_single_bd_task(
-                of_out,
-                outTensor,
-                sizes=[1, 1, TILE_HEIGHT, TILE_WIDTH],
-                strides=[0, 0, MATRIX_WIDTH, 1],
-                issue_token=True,
-            )
-            dma_start_task(in_task, out_task)
-            dma_await_task(out_task)
-            dma_free_task(in_task)
+    # Define the data access pattern for input/output
+    tap = TensorTiler2D.simple_tiler(MATRIX_SHAPE, TILE_SHAPE)[0]
+
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(matrix_ty, matrix_ty, matrix_ty) as (in_tensor, _, out_tensor):
+        rt.start(my_worker)
+        rt.fill(of_in.prod(), in_tensor, tap)
+        rt.drain(of_out.cons(), out_tensor, tap, wait=True)
+
+    # Place components (assign them resources on the device) and generate an MLIR module
+    return Program(dev, rt).resolve_program(SequentialPlacer())
 
 
-with mlir_mod_ctx() as ctx:
-    my_matrix_add_one()
-    res = ctx.module.operation.verify()
-    if res == True:
-        print(ctx.module)
-    else:
-        print(res)
+print(my_matrix_add_one())

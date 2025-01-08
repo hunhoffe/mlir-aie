@@ -3,14 +3,13 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2023 Xilinx Inc.
+# (c) Copyright 2024 AMD Inc.
 import numpy as np
 import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker
+from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col1
 
 width = 64
 height = 36
@@ -24,203 +23,195 @@ tensorSize = width * height * 4  # 4 channels
 
 
 def color_detect():
-    with mlir_mod_ctx() as ctx:
 
-        @device(AIEDevice.npu1_1col)
-        def deviceBody():
-            line_bytes_ty = np.ndarray[(lineWidthInBytes,), np.dtype[np.uint8]]
-            line_ty = np.ndarray[(lineWidth,), np.dtype[np.uint8]]
+    # Define types
+    line_bytes_ty = np.ndarray[(lineWidthInBytes,), np.dtype[np.uint8]]
+    line_ty = np.ndarray[(lineWidth,), np.dtype[np.uint8]]
+    tensor_ty = np.ndarray[(tensorSize,), np.dtype[np.int8]]
+    tensor_16x16_ty = np.ndarray[(16, 16), np.dtype[np.int32]]
 
-            tensor_ty = np.ndarray[(tensorSize,), np.dtype[np.int8]]
-            tensor_16x16_ty = np.ndarray[(16, 16), np.dtype[np.int32]]
+    # AIE Core Function declarations
+    rgba2hueLine = Kernel(
+        "rgba2hueLine", "rgba2hue.cc.o", [line_bytes_ty, line_ty, np.int32]
+    )
+    thresholdLine = Kernel(
+        "thresholdLine",
+        "threshold.cc.o",
+        [line_ty, line_ty, np.int32, np.int16, np.int16, np.int8],
+    )
+    bitwiseORLine = Kernel(
+        "bitwiseORLine",
+        "combined_bitwiseOR_gray2rgba_bitwiseAND.a",
+        [line_ty, line_ty, line_ty, np.int32],
+    )
+    gray2rgbaLine = Kernel(
+        "gray2rgbaLine",
+        "combined_bitwiseOR_gray2rgba_bitwiseAND.a",
+        [line_ty, line_bytes_ty, np.int32],
+    )
+    bitwiseANDLine = Kernel(
+        "bitwiseANDLine",
+        "combined_bitwiseOR_gray2rgba_bitwiseAND.a",
+        [line_bytes_ty, line_bytes_ty, line_bytes_ty, np.int32],
+    )
 
-            # AIE Core Function declarations
-            rgba2hueLine = external_func(
-                "rgba2hueLine", inputs=[line_bytes_ty, line_ty, np.int32]
-            )
-            thresholdLine = external_func(
-                "thresholdLine",
-                inputs=[line_ty, line_ty, np.int32, np.int16, np.int16, np.int8],
-            )
-            bitwiseORLine = external_func(
-                "bitwiseORLine", inputs=[line_ty, line_ty, line_ty, np.int32]
-            )
-            gray2rgbaLine = external_func(
-                "gray2rgbaLine", inputs=[line_ty, line_bytes_ty, np.int32]
-            )
-            bitwiseANDLine = external_func(
-                "bitwiseANDLine",
-                inputs=[line_bytes_ty, line_bytes_ty, line_bytes_ty, np.int32],
-            )
+    # AIE-array data movement with object fifos
+    # Input
+    inOF_L3L2 = ObjectFifo(line_bytes_ty, name="inOF_L3L2")
+    inOF_L2L1 = inOF_L3L2.cons(6).forward(depth=6, name="inOF_L2L1")
 
-            # Tile declarations
-            ShimTile = tile(0, 0)
-            MemTile = tile(0, 1)
-            ComputeTile2 = tile(0, 2)
-            ComputeTile3 = tile(0, 3)
-            ComputeTile4 = tile(0, 4)
-            ComputeTile5 = tile(0, 5)
+    # Output
+    outOF_L1L2 = ObjectFifo(line_bytes_ty, name="outOF_L1L2")
+    outOF_L2L3 = outOF_L1L2.cons().forward(name="outOF_L2L3")
 
-            # AIE-array data movement with object fifos
+    # Intermediate
+    OF_2to34 = ObjectFifo(line_ty, name="OF_2to34")
+    OF_3to3 = ObjectFifo(line_ty, name="OF_3to3", default_depth=1)
+    OF_3to5 = ObjectFifo(line_ty, name="OF_3to5")
+    OF_4to4 = ObjectFifo(line_ty, name="OF_4to4", default_depth=1)
+    OF_4to5 = ObjectFifo(line_ty, name="OF_4to5")
+    OF_5to5a = ObjectFifo(line_ty, name="OF_5to5a", default_depth=1)
+    OF_5to5b = ObjectFifo(line_bytes_ty, name="OF_5to5b", default_depth=1)
 
-            # Input
-            inOF_L3L2 = object_fifo(
-                "inOF_L3L2",
-                ShimTile,
-                [ComputeTile2, MemTile],
-                [2, 2, 6],
-                line_bytes_ty,
-            )
-            inOF_L2L1 = object_fifo(
-                "inOF_L2L1", MemTile, ComputeTile5, 6, line_bytes_ty
-            )
-            object_fifo_link(inOF_L3L2, inOF_L2L1)
+    # Compute task for cores to perform
+    def rgba2hue_fn(of_in, of_out, rgba2hueLine_kernel):
+        elemIn = of_in.acquire(1)
+        elemOut = of_out.acquire(1)
+        rgba2hueLine_kernel(elemIn, elemOut, lineWidth)
+        of_in.release(1)
+        of_out.release(1)
 
-            # Output
-            outOF_L2L3 = object_fifo("outOF_L2L3", MemTile, ShimTile, 2, line_bytes_ty)
-            outOF_L1L2 = object_fifo(
-                "outOF_L1L2", ComputeTile5, MemTile, 2, line_bytes_ty
-            )
-            object_fifo_link(outOF_L1L2, outOF_L2L3)
+    # worker to perform the task
+    worker2 = Worker(rgba2hue_fn, [inOF_L3L2.cons(), OF_2to34.prod(), rgba2hueLine])
 
-            # Intermediate
-            OF_2to34 = object_fifo(
-                "OF_2to34", ComputeTile2, [ComputeTile3, ComputeTile4], 2, line_ty
-            )
-            OF_3to3 = object_fifo("OF_3to3", ComputeTile3, ComputeTile3, 1, line_ty)
-            OF_3to5 = object_fifo("OF_3to5", ComputeTile3, ComputeTile5, 2, line_ty)
-            OF_4to4 = object_fifo("OF_4to4", ComputeTile4, ComputeTile4, 1, line_ty)
-            OF_4to5 = object_fifo("OF_4to5", ComputeTile4, ComputeTile5, 2, line_ty)
-            OF_5to5a = object_fifo("OF_5to5a", ComputeTile5, ComputeTile5, 1, line_ty)
-            OF_5to5b = object_fifo(
-                "OF_5to5b", ComputeTile5, ComputeTile5, 1, line_bytes_ty
-            )
+    # Compute task for cores to perform
+    def threshold_fn(of_in, of_in3, of_out3, of_out5, threshold_kernel, is_first=True):
+        if is_first:
+            thresholdValueUpper1 = 40
+            thresholdValueLower1 = 30
+        else:
+            thresholdValueUpper1 = 160
+            thresholdValueLower1 = 90
+        thresholdMaxvalue = 255
+        thresholdModeToZeroInv = 4
+        thresholdModeBinary = 0
 
-            # Set up compute tiles
+        elemIn = of_in.acquire(1)
+        elemOutTmp = of_in3.acquire(1)
+        threshold_kernel(
+            elemIn,
+            elemOutTmp,
+            lineWidth,
+            thresholdValueUpper1,
+            thresholdMaxvalue,
+            thresholdModeToZeroInv,
+        )
+        of_in.release(1)
+        of_in3.release(1)
+        elemInTmp = of_out3.acquire(1)
+        elemOut = of_out5.acquire(1)
+        threshold_kernel(
+            elemInTmp,
+            elemOut,
+            lineWidth,
+            thresholdValueLower1,
+            thresholdMaxvalue,
+            thresholdModeBinary,
+        )
+        of_out3.release(1)
+        of_out5.release(1)
 
-            # Compute tile 2
-            @core(ComputeTile2, "rgba2hue.cc.o")
-            def coreBody():
-                for _ in range_(sys.maxsize):
-                    elemIn = inOF_L3L2.acquire(ObjectFifoPort.Consume, 1)
-                    elemOut = OF_2to34.acquire(ObjectFifoPort.Produce, 1)
-                    rgba2hueLine(elemIn, elemOut, lineWidth)
-                    inOF_L3L2.release(ObjectFifoPort.Consume, 1)
-                    OF_2to34.release(ObjectFifoPort.Produce, 1)
+    # worker to perform the task
+    worker3 = Worker(
+        threshold_fn,
+        [
+            OF_2to34.cons(),
+            OF_3to3.prod(),
+            OF_3to3.cons(),
+            OF_3to5.prod(),
+            thresholdLine,
+            True,
+        ],
+    )
 
-            # Compute tile 3
-            @core(ComputeTile3, "threshold.cc.o")
-            def coreBody():
-                thresholdValueUpper1 = 40
-                thresholdValueLower1 = 30
-                thresholdMaxvalue = 255
-                thresholdModeToZeroInv = 4
-                thresholdModeBinary = 0
-                for _ in range_(sys.maxsize):
-                    elemIn = OF_2to34.acquire(ObjectFifoPort.Consume, 1)
-                    elemOutTmp = OF_3to3.acquire(ObjectFifoPort.Produce, 1)
-                    thresholdLine(
-                        elemIn,
-                        elemOutTmp,
-                        lineWidth,
-                        thresholdValueUpper1,
-                        thresholdMaxvalue,
-                        thresholdModeToZeroInv,
-                    )
-                    OF_2to34.release(ObjectFifoPort.Consume, 1)
-                    OF_3to3.release(ObjectFifoPort.Produce, 1)
-                    elemInTmp = OF_3to3.acquire(ObjectFifoPort.Consume, 1)
-                    elemOut = OF_3to5.acquire(ObjectFifoPort.Produce, 1)
-                    thresholdLine(
-                        elemInTmp,
-                        elemOut,
-                        lineWidth,
-                        thresholdValueLower1,
-                        thresholdMaxvalue,
-                        thresholdModeBinary,
-                    )
-                    OF_3to3.release(ObjectFifoPort.Consume, 1)
-                    OF_3to5.release(ObjectFifoPort.Produce, 1)
+    # worker to perform the task
+    worker4 = Worker(
+        threshold_fn,
+        [
+            OF_2to34.cons(),
+            OF_4to4.prod(),
+            OF_4to4.cons(),
+            OF_4to5.prod(),
+            thresholdLine,
+            False,
+        ],
+    )
 
-            # Compute tile 4
-            @core(ComputeTile4, "threshold.cc.o")
-            def coreBody():
-                thresholdValueUpper1 = 160
-                thresholdValueLower1 = 90
-                thresholdMaxvalue = 255
-                thresholdModeToZeroInv = 4
-                thresholdModeBinary = 0
-                for _ in range_(sys.maxsize):
-                    elemIn = OF_2to34.acquire(ObjectFifoPort.Consume, 1)
-                    elemOutTmp = OF_4to4.acquire(ObjectFifoPort.Produce, 1)
-                    thresholdLine(
-                        elemIn,
-                        elemOutTmp,
-                        lineWidth,
-                        thresholdValueUpper1,
-                        thresholdMaxvalue,
-                        thresholdModeToZeroInv,
-                    )
-                    OF_2to34.release(ObjectFifoPort.Consume, 1)
-                    OF_4to4.release(ObjectFifoPort.Produce, 1)
-                    elemInTmp = OF_4to4.acquire(ObjectFifoPort.Consume, 1)
-                    elemOut = OF_4to5.acquire(ObjectFifoPort.Produce, 1)
-                    thresholdLine(
-                        elemInTmp,
-                        elemOut,
-                        lineWidth,
-                        thresholdValueLower1,
-                        thresholdMaxvalue,
-                        thresholdModeBinary,
-                    )
-                    OF_4to4.release(ObjectFifoPort.Consume, 1)
-                    OF_4to5.release(ObjectFifoPort.Produce, 1)
+    # Compute task for cores to perform
+    def or_gray2rgba_and_fn(
+        of_in,
+        of_in2,
+        of_in_self,
+        of_out_self,
+        of_in_self2,
+        of_out_self2,
+        of_in3,
+        of_out,
+        bitwiseORLine_kernel,
+        gray2rgbaLine_kernel,
+        bitwiseANDLine_kernel,
+    ):
+        # bitwise OR
+        elemIn1 = of_in.acquire(1)
+        elemIn2 = of_in2.acquire(1)
+        elemOutTmpA = of_in_self.acquire(1)
+        bitwiseORLine_kernel(elemIn1, elemIn2, elemOutTmpA, lineWidth)
+        of_in.release(1)
+        of_in2.release(1)
+        of_in_self.release(1)
+        # gray2rgba
+        elemInTmpA = of_out_self.acquire(1)
+        elemOutTmpB = of_in_self2.acquire(1)
+        gray2rgbaLine_kernel(elemInTmpA, elemOutTmpB, lineWidth)
+        of_out_self.release(1)
+        of_in_self2.release(1)
+        # bitwise AND
+        elemInTmpB1 = of_out_self2.acquire(1)
+        elemInTmpB2 = of_in3.acquire(1)
+        elemOut = of_out.acquire(1)
+        bitwiseANDLine_kernel(elemInTmpB1, elemInTmpB2, elemOut, lineWidthInBytes)
+        of_out_self2.release(1)
+        of_in3.release(1)
+        of_out.release(1)
 
-            # Compute tile 5
-            @core(ComputeTile5, "combined_bitwiseOR_gray2rgba_bitwiseAND.a")
-            def coreBody():
-                for _ in range_(sys.maxsize):
-                    # bitwise OR
-                    elemIn1 = OF_3to5.acquire(ObjectFifoPort.Consume, 1)
-                    elemIn2 = OF_4to5.acquire(ObjectFifoPort.Consume, 1)
-                    elemOutTmpA = OF_5to5a.acquire(ObjectFifoPort.Produce, 1)
-                    bitwiseORLine(elemIn1, elemIn2, elemOutTmpA, lineWidth)
-                    OF_3to5.release(ObjectFifoPort.Consume, 1)
-                    OF_4to5.release(ObjectFifoPort.Consume, 1)
-                    OF_5to5a.release(ObjectFifoPort.Produce, 1)
-                    # gray2rgba
-                    elemInTmpA = OF_5to5a.acquire(ObjectFifoPort.Consume, 1)
-                    elemOutTmpB = OF_5to5b.acquire(ObjectFifoPort.Produce, 1)
-                    gray2rgbaLine(elemInTmpA, elemOutTmpB, lineWidth)
-                    OF_5to5a.release(ObjectFifoPort.Consume, 1)
-                    OF_5to5b.release(ObjectFifoPort.Produce, 1)
-                    # bitwise AND
-                    elemInTmpB1 = OF_5to5b.acquire(ObjectFifoPort.Consume, 1)
-                    elemInTmpB2 = inOF_L2L1.acquire(ObjectFifoPort.Consume, 1)
-                    elemOut = outOF_L1L2.acquire(ObjectFifoPort.Produce, 1)
-                    bitwiseANDLine(elemInTmpB1, elemInTmpB2, elemOut, lineWidthInBytes)
-                    OF_5to5b.release(ObjectFifoPort.Consume, 1)
-                    inOF_L2L1.release(ObjectFifoPort.Consume, 1)
-                    outOF_L1L2.release(ObjectFifoPort.Produce, 1)
+    # worker to perform the task
+    worker5 = Worker(
+        or_gray2rgba_and_fn,
+        [
+            OF_3to5.cons(),
+            OF_4to5.cons(),
+            OF_5to5a.prod(),
+            OF_5to5a.cons(),
+            OF_5to5b.prod(),
+            OF_5to5b.cons(),
+            inOF_L2L1.cons(),
+            outOF_L1L2.prod(),
+            bitwiseORLine,
+            gray2rgbaLine,
+            bitwiseANDLine,
+        ],
+    )
 
-            # To/from AIE-array data movement
-            @runtime_sequence(tensor_ty, tensor_16x16_ty, tensor_ty)
-            def sequence(I, B, O):
-                in_task = shim_dma_single_bd_task(
-                    inOF_L3L2, I, sizes=[1, 1, 1, height * lineWidthInBytes]
-                )
-                out_task = shim_dma_single_bd_task(
-                    outOF_L2L3,
-                    O,
-                    sizes=[1, 1, 1, height * lineWidthInBytes],
-                    issue_token=True,
-                )
-                dma_start_task(in_task, out_task)
-                # outOF_L2L3 will only complete after inOF_L3L2 completes, so we just wait on outOF_L2L3 instead of all
-                dma_await_task(out_task)
-                dma_free_task(in_task)
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(tensor_ty, tensor_16x16_ty, tensor_ty) as (I, B, O):
+        rt.start(worker2, worker3, worker4, worker5)
+        rt.fill(inOF_L3L2.prod(), I)
+        rt.drain(outOF_L2L3.cons(), O, wait=True)
 
-    print(ctx.module)
+    # Place components (assign them resources on the device) and generate an MLIR module
+    return Program(NPU1Col1(), rt).resolve_program(SequentialPlacer())
 
 
-color_detect()
+module = color_detect()
+print(module)
