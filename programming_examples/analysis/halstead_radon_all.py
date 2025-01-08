@@ -42,17 +42,17 @@ def calc_metrics(collection_dir: str, output_file: str):
     ]
 
     with open(output_file, "w") as of:
-        of.write(f"name,design,tool,{','.join(halstead_keys)}\n")
+        of.write(f"name,design,tool,{','.join(halstead_keys)},mi\n")
         # Calculate halstead for radon
         metrics = get_radon_halstead_metrics(iron_dir)
         for src in metrics:
             of.write(
-                f"{os.path.basename(src).removesuffix(".py")},iron,radon,{','.join([str(metrics[src]["total"][key]) for key in halstead_keys])}\n"
+                f"iron,{os.path.basename(src).removesuffix(".py")},radon,{','.join([str(metrics[src]["total"][key]) for key in halstead_keys])},mi\n"
             )
         metrics = get_radon_halstead_metrics(iron_ext_dir)
         for src in metrics:
             of.write(
-                f"{os.path.basename(src).removesuffix(".py")},iron_ext,radon,{','.join([str(metrics[src]["total"][key]) for key in halstead_keys])}\n"
+                f"iron_ext,{os.path.basename(src).removesuffix(".py")},radon,{','.join([str(metrics[src]["total"][key]) for key in halstead_keys])},mi\n"
             )
 
 

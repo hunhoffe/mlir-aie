@@ -52,3 +52,30 @@ python3 plot_halstead.py -i <halstead_csv>
 # MLIR Analysis
 
 TODO
+
+## Wily Halstead Metrics
+
+Install with:
+```bash
+pip install wily
+```
+
+Now create a directory with the IRON source files, e.g. `wily_iron`.
+Make a commit with these files.
+Now overwrite those files with the corresponded IRON with extensions designs.
+Make a second commit with these files.
+
+Now you are ready to use wily.
+Change directories to root of the git repository (this is important).
+
+Build the wily index with `wily_iron` being the path to the directory:
+```bash
+wily build -a git -n 2 wily_iron
+```
+
+Now you can get metrics between the two commits with:
+```bash
+wily report -n 2 wily_iron
+```
+
+We want to report halstead metrics per file, so let's give it a shot.
