@@ -1,4 +1,4 @@
-# dma_transpose/dma_transpose_alt.py -*- Python -*-
+# dma_transpose/dma_transpose_iron.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -9,47 +9,38 @@ import argparse
 import numpy as np
 import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import ObjectFifo, Program, Runtime
+from aie.iron.device import NPU1Col1, AnyComputeTile
+from aie.iron.placers import SequentialPlacer
+from aie.helpers.taplib import TensorTiler2D
 
 
 def my_passthrough(M, K):
+
+    # Define types
     tensor_ty = np.ndarray[(M, K), np.dtype[np.int32]]
 
-    with mlir_mod_ctx() as ctx:
+    # Define tensor access pattern
+    tap_in = TensorTiler2D.simple_tiler((M, K), tile_col_major=True)[0]
 
-        @device(AIEDevice.npu1_1col)
-        def device_body():
-            # Tile declarations
-            ShimTile = tile(0, 0)
-            ComputeTile2 = tile(0, 2)
+    # Dataflow with ObjectFifos
+    of_in = ObjectFifo(tensor_ty, name="in")
+    of_out = of_in.cons().forward(AnyComputeTile, name="out")
 
-            # AIE-array data movement with object fifos
-            of_in = object_fifo("in", ShimTile, ComputeTile2, 2, tensor_ty)
-            of_out = object_fifo("out", ComputeTile2, ShimTile, 2, tensor_ty)
-            object_fifo_link(of_in, of_out)
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(tensor_ty, tensor_ty, tensor_ty) as (a_in, _, c_out):
+        rt.fill(of_in.prod(), a_in, tap_in)
+        rt.drain(of_out.cons(), c_out, wait=True)
 
-            # Set up compute tiles
+    # Create the program from the device type and runtime
+    my_program = Program(NPU1Col1(), rt)
 
-            # To/from AIE-array data movement
-            @runtime_sequence(tensor_ty, tensor_ty, tensor_ty)
-            def sequence(A, B, C):
-                # The strides below are configured to read across all rows in the same column
-                # Stride of K in dim/wrap 2 skips an entire row to read a full column
-                in_task = shim_dma_single_bd_task(
-                    of_in, A, sizes=[1, 1, K, M], strides=[0, 0, 1, K]
-                )
-                out_task = shim_dma_single_bd_task(
-                    of_out, C, sizes=[1, 1, 1, M * K], issue_token=True
-                )
+    # Place program components (assign them resources on the device) and generate an MLIR module
+    module = my_program.resolve_program(SequentialPlacer())
 
-                dma_start_task(in_task, out_task)
-                dma_await_task(out_task)
-                dma_free_task(in_task)
-
-    print(ctx.module)
+    # Print the generated MLIR
+    print(module)
 
 
 if __name__ == "__main__":
