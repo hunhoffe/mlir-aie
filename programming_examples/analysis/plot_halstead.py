@@ -11,19 +11,25 @@ def plot_halstead(input_file: str, output_file):
     df = pd.read_csv(input_file)
 
     # CSV format:
-    # name,design,h1,h2,N1,N2,vocabulary,length,calculated_length,volume,difficulty,effort,time,bugs
+    # name,design,tool,h1,h2,N1,N2,vocabulary,length,calculated_length,volume,difficulty,effort,time,bugs,mi
 
-    df_iron = df[df["design"] == "iron"]
-    df_iron.drop("design", axis=1, inplace=True)
+    df_iron = df[df["name"] == "iron"]
+    df_iron.drop("name", axis=1, inplace=True)
+    df_iron.drop("tool", axis=1, inplace=True)
+    df_iron.drop("mi", axis=1, inplace=True)
+    #df_iron = df_iron[['design', 'vocabulary', 'difficulty']]
 
-    df_iron_ext = df[df["design"] == "iron_ext"]
-    df_iron_ext.drop("design", axis=1, inplace=True)
+    df_iron_ext = df[df["name"] == "iron_ext"]
+    df_iron_ext.drop("name", axis=1, inplace=True)
+    df_iron_ext.drop("tool", axis=1, inplace=True)
+    df_iron_ext.drop("mi", axis=1, inplace=True)
+    #df_iron_ext = df_iron_ext[['design', 'vocabulary', 'difficulty']]
 
     block = [
         # Block
-        "Passthrough(DMA)",
-        "Passthrough(Kernel)",
-        "Passthrough(PyKernel)",
+        "Copy(DMA)",
+        "Copy(Kern)",
+        "Copy(ExtKern)",
         "MTranspose",
         "VReduce(Add)",
         "VReduce(Max)",
@@ -35,6 +41,7 @@ def plot_halstead(input_file: str, output_file):
         "VVOp(Mod)",
         "VVOp(AddKern)",
         "VVOp(MulKern)",
+        "MSAdd",
         "MVAdd",
         "MVMul",
         # "GEMMSingle",
@@ -46,7 +53,7 @@ def plot_halstead(input_file: str, output_file):
     advanced = [
         # Advanced
         "GEMM",
-        "BottleneckBlock",
+        "BBlock",
         "ResNetConv2x",
         "ColorDetect",
         "EdgeDetect",
@@ -54,7 +61,7 @@ def plot_halstead(input_file: str, output_file):
     ]
     designlist = block + advanced
 
-    names = df["name"].unique()
+    names = df["design"].unique()
     for d in designlist:
         if d not in names:
             print(f"MISSING d: {d}")
@@ -67,17 +74,19 @@ def plot_halstead(input_file: str, output_file):
         cat = pd.Categorical(column, categories=designlist, ordered=True)
         return pd.Series(cat)
 
-    df_iron = df_iron.sort_values(by="name", key=sorter)
+    df_iron = df_iron.sort_values(by="design", key=sorter)
     df_iron.reset_index(drop=True, inplace=True)
 
-    df_iron_ext = df_iron_ext.sort_values(by="name", key=sorter)
+    df_iron_ext = df_iron_ext.sort_values(by="design", key=sorter)
     df_iron_ext.reset_index(drop=True, inplace=True)
 
-    df_iron = df_iron.drop(columns=["name"])
-    df_iron_ext = df_iron_ext.drop(columns=["name"])
+    df_iron = df_iron.drop(columns=["design"])
+    df_iron_ext = df_iron_ext.drop(columns=["design"])
 
+    print(df_iron_ext)
+    print(df_iron)
     df_diff = df_iron_ext - df_iron
-    df_diff["name"] = designlist
+    df_diff["design"] = designlist
 
     # This is for one plot per metrics
     # Create the bar chart
@@ -97,7 +106,7 @@ def plot_halstead(input_file: str, output_file):
     ]
     os.mkdir("halstead_graphs")
     for metric in halstead_metrics:
-        ax = df_diff.plot.bar(x="name", y=[metric])
+        ax = df_diff.plot.bar(x="design", y=[metric])
 
         # Color labels for advanced designs
         plt.xticks(fontfamily="monospace")
@@ -113,7 +122,7 @@ def plot_halstead(input_file: str, output_file):
             ncol=4,
         )
         plt.xlabel("Designs")
-        plt.ylabel("Absolute Differences in Haldstead Metrics")
+        plt.ylabel(f"Differences in {metric}")
         plt.tight_layout()
         plt.savefig(os.path.join("halstead_graphs", f"{metric}{output_file}"))
 
