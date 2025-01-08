@@ -1,4 +1,4 @@
-# passthrough_pykernel/passthrough_pykernel_alt.py -*- Python -*-
+# passthrough_pykernel/passthrough_pykernel.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -8,61 +8,53 @@
 import numpy as np
 import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
+from aie.iron import ObjectFifo, Program, Runtime, Worker
+from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col1
+from aie.iron.controlflow import range_
 from aie.helpers.dialects.ext.func import func
-from aie.helpers.dialects.ext.scf import _for as range_
 
 
 def passthroughKernel(vector_size):
-    N = vector_size
-    lineWidthInBytes = N // 4  # chop input in 4 sub-tensors
+    # Define tensor types
+    line_size = vector_size // 4
+    line_type = np.ndarray[(line_size,), np.dtype[np.uint8]]
+    vector_type = np.ndarray[(vector_size,), np.dtype[np.uint8]]
 
-    @device(AIEDevice.npu1_1col)
-    def device_body():
-        # define types
-        line_ty = np.ndarray[(lineWidthInBytes,), np.dtype[np.uint8]]
+    # Dataflow with ObjectFifos
+    of_in = ObjectFifo(line_type, name="in")
+    of_out = ObjectFifo(line_type, name="out")
 
-        # AIE Core Python Function declarations
-        @func(emit=True)
-        def passThroughLine(input: line_ty, output: line_ty, lineWidth: np.int32):
-            for i in range_(lineWidth):
-                output[i] = input[i]
+    # A python function which will be treated as a callable function on the AIE
+    # e.g., a kernel written in python
+    @func
+    def passThroughLine(input: line_type, output: line_type, lineWidth: np.int32):
+        for i in range_(lineWidth):
+            output[i] = input[i]
 
-        # Tile declarations
-        ShimTile = tile(0, 0)
-        ComputeTile2 = tile(0, 2)
+    # The task for the core to perform (the core entry point, if you will)
+    def core_fn(of_in, of_out, passthrough_fn):
+        elemOut = of_out.acquire(1)
+        elemIn = of_in.acquire(1)
+        passthrough_fn(elemIn, elemOut, line_size)
+        of_in.release(1)
+        of_out.release(1)
 
-        # AIE-array data movement with object fifos
-        of_in = object_fifo("in", ShimTile, ComputeTile2, 2, line_ty)
-        of_out = object_fifo("out", ComputeTile2, ShimTile, 2, line_ty)
+    # Create a worker to run the task
+    my_worker = Worker(core_fn, [of_in.cons(), of_out.prod(), passThroughLine])
 
-        # Set up compute tiles
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(vector_type, vector_type, vector_type) as (a_in, b_out, _):
+        rt.start(my_worker)
+        rt.fill(of_in.prod(), a_in)
+        rt.drain(of_out.cons(), b_out, wait=True)
 
-        # Compute tile 2
-        @core(ComputeTile2)
-        def core_body():
-            for _ in range_(sys.maxsize):
-                elemOut = of_out.acquire(ObjectFifoPort.Produce, 1)
-                elemIn = of_in.acquire(ObjectFifoPort.Consume, 1)
-                passThroughLine(elemIn, elemOut, lineWidthInBytes)
-                of_in.release(ObjectFifoPort.Consume, 1)
-                of_out.release(ObjectFifoPort.Produce, 1)
+    # Create the program from the device type and runtime
+    my_program = Program(NPU1Col1(), rt)
 
-        #    print(ctx.module.operation.verify())
-
-        vector_ty = np.ndarray[(N,), np.dtype[np.uint8]]
-
-        @runtime_sequence(vector_ty, vector_ty, vector_ty)
-        def sequence(inTensor, outTensor, notUsed):
-            in_task = shim_dma_single_bd_task(of_in, inTensor, sizes=[1, 1, 1, N])
-            out_task = shim_dma_single_bd_task(
-                of_out, outTensor, sizes=[1, 1, 1, N], issue_token=True
-            )
-            dma_start_task(in_task, out_task)
-            dma_await_task(out_task)
-            dma_free_task(in_task)
+    # Place components (assign them resources on the device) and generate an MLIR module
+    return my_program.resolve_program(SequentialPlacer())
 
 
 try:
@@ -72,6 +64,4 @@ try:
         raise ValueError
 except ValueError:
     print("Argument has inappropriate value")
-with mlir_mod_ctx() as ctx:
-    passthroughKernel(vector_size)
-    print(ctx.module)
+print(passthroughKernel(vector_size))
