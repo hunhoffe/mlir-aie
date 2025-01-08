@@ -3,6 +3,7 @@ import os
 import subprocess
 import pandas as pd
 from bs4 import BeautifulSoup
+import re
 
 
 def calc_metrics(collection_dir: str, output_file: str):
@@ -19,7 +20,7 @@ def calc_metrics(collection_dir: str, output_file: str):
     # Generate HTML
     for design in design_files:
         run_halstead = subprocess.run(
-            f"wily report 'iron/{design}' -n 2 halstead.h1 halstead.h2 halstead.N1 halstead.N2 halstead.volume halstead.complexity halstead.length halstead.effort halstead.difficulty --format HTML -o 'iron_out/{design}'",
+            f"wily report 'iron/{design}' -n 2 halstead.h1 halstead.h2 halstead.N1 halstead.N2 halstead.volume halsted.vocabulary halstead.complexity halstead.length halstead.effort halstead.difficulty maintainability.mi --format HTML -o 'iron_out/{design}'",
             shell=True,
             env=os.environ,
             capture_output=True,
@@ -85,11 +86,33 @@ def calc_metrics(collection_dir: str, output_file: str):
 
     with open(output_file, "w") as of:
         # Write headers
-        of.write(f"name,design,tool,{','.join(halstead_keys)}\n")
+        of.write(f"name,design,tool,{','.join(halstead_keys)},mi\n")
 
         for df in dfs:
-            print(
-                f"iron_ext,{df.iloc[0]['name']},wily,h1,h2,N1,N2,{df.iloc[0]['Vocabulary']},length,calculated_length,volume,{df.iloc[0]['Difficulty']},effort,time,bugs\n"
+            vocabulary = df.iloc[0]["Unique vocabulary (h1 + h2)"]
+            iron_ext_vocab = float(vocabulary.split(" ")[0])
+            iron_vocab = float(vocabulary.split(" ")[1].rstrip(")").lstrip("("))
+            iron_vocab = iron_ext_vocab + iron_vocab
+            print(f"{vocabulary} {iron_ext_vocab} {iron_vocab}")
+
+            difficulty = df.iloc[0]["Difficulty"]
+            iron_ext_diff = float(difficulty.split(" ")[0])
+            iron_diff = float(difficulty.split(" ")[1].rstrip(")").lstrip("("))
+            iron_diff = iron_ext_diff + iron_diff
+            print(f"{difficulty} {iron_ext_diff} {iron_diff}")
+
+            mi = df.iloc[0]["Maintainability Index"]
+            print(f"MI: {mi}")
+            iron_ext_mi = float(mi.split(" ")[0])
+            iron_mi = float(mi.split(" ")[1].rstrip(")").lstrip("("))
+            iron_mi = iron_ext_mi + iron_mi
+            print(f"{mi} {iron_ext_mi} {iron_mi}")
+
+            of.write(
+                f"iron_ext,{df.iloc[0]['name']},wily,h1,h2,N1,N2,{iron_ext_vocab},length,calculated_length,volume,{iron_ext_diff},effort,time,bugs,{iron_ext_mi}\n"
+            )
+            of.write(
+                f"iron,{df.iloc[0]['name']},wily,h1,h2,N1,N2,{iron_vocab},length,calculated_length,volume,{iron_diff},effort,time,bugs,{iron_mi}\n"
             )
 
 
