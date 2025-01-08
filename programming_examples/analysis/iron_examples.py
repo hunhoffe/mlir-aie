@@ -15,20 +15,20 @@ def generate_iron_example_collection():
     # Passthrough x3
     e = Example(
         name="DMA",
-        category="Passthrough",
+        category="Copy",
         dir="../basic/passthrough_dmas",
     )
     iron_examples.append(e)
     e = Example(
-        name="Kernel",
-        category="Passthrough",
+        name="ExtKernel",
+        category="Copy",
         dir="../basic/passthrough_kernel",
         mlir_src="build/aie2_lineBased_8b_4096.mlir",
     )
     iron_examples.append(e)
     e = Example(
-        name="PyKernel",
-        category="Passthrough",
+        name="Kernel",
+        category="Copy",
         dir="../basic/passthrough_pykernel",
     )
     iron_examples.append(e)
@@ -108,6 +108,13 @@ def generate_iron_example_collection():
         name="MulKern",
         category="VVOp",
         dir="../ml/eltwise_mul",
+    )
+    iron_examples.append(e)
+
+    # MSAdd
+    e = Example(
+        name="MSAdd",
+        dir="../basic/matrix_scalar_add",
     )
     iron_examples.append(e)
 
@@ -192,7 +199,7 @@ def generate_iron_example_collection():
 
     # BottleneckBlock
     e = Example(
-        name="BottleneckBlock",
+        name="BBlock",
         dir="../ml/bottleneck",
         run_cmd="run_py",
     )

@@ -12,7 +12,6 @@ from aie.dialects.aie import *
 from aie.dialects.aiex import *
 from aie.extras.context import mlir_mod_ctx
 from aie.helpers.dialects.ext.scf import _for as range_
-from aie.helpers.taplib import TensorTiler2D
 
 # Size of the entire matrix
 MATRIX_HEIGHT = 16
@@ -63,18 +62,24 @@ def my_matrix_add_one():
                 of_out.release(ObjectFifoPort.Produce, 1)
 
         # To/from AIE-array data movement
-        tap = TensorTiler2D.simple_tiler(MATRIX_SHAPE, TILE_SHAPE)[0]
-
         @runtime_sequence(matrix_ty, matrix_ty, matrix_ty)
         def sequence(inTensor, _, outTensor):
             in_task = shim_dma_single_bd_task(
-                of_in, inTensor, tap=tap, issue_token=True
+                of_in,
+                inTensor,
+                sizes=[1, 1, TILE_HEIGHT, TILE_WIDTH],
+                strides=[0, 0, MATRIX_WIDTH, 1],
             )
             out_task = shim_dma_single_bd_task(
-                of_out, outTensor, tap=tap, issue_token=True
+                of_out,
+                outTensor,
+                sizes=[1, 1, TILE_HEIGHT, TILE_WIDTH],
+                strides=[0, 0, MATRIX_WIDTH, 1],
+                issue_token=True,
             )
             dma_start_task(in_task, out_task)
-            dma_await_task(in_task, out_task)
+            dma_await_task(out_task)
+            dma_free_task(in_task)
 
 
 with mlir_mod_ctx() as ctx:
