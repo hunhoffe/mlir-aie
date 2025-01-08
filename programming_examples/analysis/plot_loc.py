@@ -25,9 +25,9 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
 
     block = [
         # Block
-        "Passthrough(DMA)",
-        "Passthrough(Kernel)",
-        "Passthrough(PyKernel)",
+        "Copy(DMA)",
+        "Copy(Kern)",
+        "Copy(ExtKern)",
         "MTranspose",
         "VReduce(Add)",
         "VReduce(Max)",
@@ -39,6 +39,7 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
         "VVOp(Mod)",
         "VVOp(AddKern)",
         "VVOp(MulKern)",
+        "MSAdd",
         "MVAdd",
         "MVMul",
         # "GEMMSingle",
@@ -50,7 +51,7 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
     advanced = [
         # Advanced
         "GEMM",
-        "BottleneckBlock",
+        "BBlock",
         "ResNetConv2x",
         "ColorDetect",
         "EdgeDetect",
@@ -81,7 +82,7 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
     # Calculate and plot the average line
     average = np.mean(df["avg_loc_ratio"])
     ax.axhline(average, color="gray", linestyle="--")
-    print(f"Average percentage difference: {average}")
+    print(f"Average percent decrease: {average}")
 
     # Add the rectangle for advanced designs
     rect = patches.Rectangle(
@@ -110,7 +111,7 @@ def plot_loc(input_file: str, output_file_percentage: str, output_file_absolute:
         ncol=4,
     )
     plt.xlabel("Designs")
-    plt.ylabel("Percentage Difference in SLoC")
+    plt.ylabel("Percent Decrease (SLoC)")
     plt.tight_layout()
     plt.savefig(output_file_percentage)
 

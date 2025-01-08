@@ -20,14 +20,14 @@ def generate_iron_example_collection():
     )
     iron_examples.append(e)
     e = Example(
-        name="ExtKernel",
+        name="ExtKern",
         category="Copy",
         dir="../basic/passthrough_kernel",
         mlir_src="build/aie2_lineBased_8b_4096.mlir",
     )
     iron_examples.append(e)
     e = Example(
-        name="Kernel",
+        name="Kern",
         category="Copy",
         dir="../basic/passthrough_pykernel",
     )
