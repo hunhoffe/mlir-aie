@@ -1,4 +1,4 @@
-# vector_vector_modulo/vector_vector_modulo_alt.py -*- Python -*-
+# vector_vector_modulo/vector_vector_modulo.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -8,10 +8,10 @@
 import numpy as np
 import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import ObjectFifo, Program, Runtime, Worker
+from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col1, XCVC1902
+from aie.iron.controlflow import range_
 
 
 def my_vector_mod():
@@ -19,70 +19,52 @@ def my_vector_mod():
     n = 16
     N_div_n = N // n
 
-    buffer_depth = 2
-
     if len(sys.argv) != 3:
         raise ValueError("[ERROR] Need 2 command line arguments (Device name, Col)")
 
     if sys.argv[1] == "npu":
-        dev = AIEDevice.npu1_1col
+        dev = NPU1Col1()
     elif sys.argv[1] == "xcvc1902":
-        dev = AIEDevice.xcvc1902
+        dev = XCVC1902()
     else:
         raise ValueError("[ERROR] Device name {} is unknown".format(sys.argv[1]))
 
-    @device(dev)
-    def device_body():
-        tensor_ty = np.ndarray[(N,), np.dtype[np.int32]]
-        tile_ty = np.ndarray[(n,), np.dtype[np.int32]]
+    # Define tensor types
+    tensor_ty = np.ndarray[(N,), np.dtype[np.int32]]
+    tile_ty = np.ndarray[(n,), np.dtype[np.int32]]
 
-        # AIE Core Function declarations
+    # AIE-array data movement with object fifos
+    of_in1 = ObjectFifo(tile_ty, name="in1")
+    of_in2 = ObjectFifo(tile_ty, name="in2")
+    of_out = ObjectFifo(tile_ty, name="out")
 
-        # Tile declarations
-        ShimTile = tile(int(sys.argv[2]), 0)
-        ComputeTile2 = tile(int(sys.argv[2]), 2)
+    # Define a task that can run on a compute tile
+    def core_body(of_in1, of_in2, of_out):
+        # Number of sub-vector "tile" iterations
+        for _ in range_(N_div_n):
+            elem_in1 = of_in1.acquire(1)
+            elem_in2 = of_in2.acquire(1)
+            elem_out = of_out.acquire(1)
+            for i in range_(n):
+                elem_out[i] = elem_in1[i] % elem_in2[i]
+            of_in1.release(1)
+            of_in2.release(1)
+            of_out.release(1)
 
-        # AIE-array data movement with object fifos
-        of_in1 = object_fifo("in1", ShimTile, ComputeTile2, buffer_depth, tile_ty)
-        of_in2 = object_fifo("in2", ShimTile, ComputeTile2, buffer_depth, tile_ty)
-        of_out = object_fifo("out", ComputeTile2, ShimTile, buffer_depth, tile_ty)
+    # Create a worker to run the task on a compute tile
+    worker = Worker(core_body, fn_args=[of_in1.cons(), of_in2.cons(), of_out.prod()])
 
-        # Set up compute tiles
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(tensor_ty, tensor_ty, tensor_ty) as (A, B, C):
+        rt.start(worker)
+        rt.fill(of_in1.prod(), A)
+        rt.fill(of_in2.prod(), B)
+        rt.drain(of_out.cons(), C, wait=True)
 
-        # Compute tile 2
-        @core(ComputeTile2)
-        def core_body():
-            # Effective while(1)
-            for _ in range_(sys.maxsize):
-                # Number of sub-vector "tile" iterations
-                for _ in range_(N_div_n):
-                    elem_in1 = of_in1.acquire(ObjectFifoPort.Consume, 1)
-                    elem_in2 = of_in2.acquire(ObjectFifoPort.Consume, 1)
-                    elem_out = of_out.acquire(ObjectFifoPort.Produce, 1)
-                    for i in range_(n):
-                        elem_out[i] = elem_in1[i] % elem_in2[i]
-                    of_in1.release(ObjectFifoPort.Consume, 1)
-                    of_in2.release(ObjectFifoPort.Consume, 1)
-                    of_out.release(ObjectFifoPort.Produce, 1)
-
-        # To/from AIE-array data movement
-        @runtime_sequence(tensor_ty, tensor_ty, tensor_ty)
-        def sequence(A, B, C):
-            in1_task = shim_dma_single_bd_task(of_in1, A, sizes=[1, 1, 1, N])
-            in2_task = shim_dma_single_bd_task(of_in2, B, sizes=[1, 1, 1, N])
-            out_task = shim_dma_single_bd_task(
-                of_out, C, sizes=[1, 1, 1, N], issue_token=True
-            )
-
-            dma_start_task(in1_task, in2_task, out_task)
-            dma_await_task(out_task)
-            dma_free_task(in1_task, in2_task)
+    # Place program components (assign them resources on the device) and generate an MLIR module
+    return Program(dev, rt).resolve_program(SequentialPlacer())
 
 
-with mlir_mod_ctx() as ctx:
-    my_vector_mod()
-    res = ctx.module.operation.verify()
-    if res == True:
-        print(ctx.module)
-    else:
-        print(res)
+module = my_vector_mod()
+print(module)

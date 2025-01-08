@@ -1,4 +1,4 @@
-# passthrough_dmas/passthrough_dmas_alt.py -*- Python -*-
+# passthrough_dmas/passthrough_dmas.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -8,13 +8,11 @@
 import numpy as np
 import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import ObjectFifo, Program, Runtime
+from aie.iron.placers import SequentialPlacer, AnyComputeTile
+from aie.iron.device import NPU1Col1, XCVC1902
 
 N = 4096
-col = 0
 line_size = 1024
 
 if len(sys.argv) > 1:
@@ -23,47 +21,34 @@ if len(sys.argv) > 1:
 
 if len(sys.argv) > 2:
     if sys.argv[2] == "npu":
-        dev = AIEDevice.npu1_1col
+        dev = NPU1Col1()
     elif sys.argv[2] == "xcvc1902":
-        dev = AIEDevice.xcvc1902
+        dev = XCVC1902()
     else:
         raise ValueError("[ERROR] Device name {} is unknown".format(sys.argv[2]))
 
-if len(sys.argv) > 3:
-    col = int(sys.argv[3])
-
 
 def my_passthrough():
-    with mlir_mod_ctx() as ctx:
+    # Define tensor types
+    vector_ty = np.ndarray[(N,), np.dtype[np.int32]]
+    line_ty = np.ndarray[(line_size,), np.dtype[np.int32]]
 
-        @device(dev)
-        def device_body():
-            vector_ty = np.ndarray[(N,), np.dtype[np.int32]]
-            line_ty = np.ndarray[(line_size,), np.dtype[np.int32]]
+    # Data movement with ObjectFifos
+    of_in = ObjectFifo(line_ty, name="in")
+    of_out = of_in.cons().forward(AnyComputeTile, name="out")
 
-            # Tile declarations
-            ShimTile = tile(col, 0)
-            ComputeTile2 = tile(col, 2)
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(vector_ty, vector_ty, vector_ty) as (a_in, _, c_out):
+        rt.fill(of_in.prod(), a_in)
+        rt.drain(of_out.cons(), c_out, wait=True)
 
-            # AIE-array data movement with object fifos
-            of_in = object_fifo("in", ShimTile, ComputeTile2, 2, line_ty)
-            of_out = object_fifo("out", ComputeTile2, ShimTile, 2, line_ty)
-            object_fifo_link(of_in, of_out)
+    # Create the program from the device type and runtime
+    my_program = Program(dev, rt)
 
-            # Set up compute tiles
-
-            # To/from AIE-array data movement
-            @runtime_sequence(vector_ty, vector_ty, vector_ty)
-            def sequence(A, B, C):
-                in_task = shim_dma_single_bd_task(of_in, A, sizes=[1, 1, 1, N])
-                out_task = shim_dma_single_bd_task(
-                    of_out, C, sizes=[1, 1, 1, N], issue_token=True
-                )
-                dma_start_task(in_task, out_task)
-                dma_await_task(out_task)
-                dma_free_task(in_task)
-
-    print(ctx.module)
+    # Place components (assign them resources on the device) and generate an MLIR module
+    return my_program.resolve_program(SequentialPlacer())
 
 
-my_passthrough()
+# Print the generated MLIR
+print(my_passthrough())

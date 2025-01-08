@@ -1,4 +1,4 @@
-# vector_scalar_add/vector_scalar_add_alt.py -*- Python -*-
+# vector_scalar_add/vector_scalar_add.py -*- Python -*-
 #
 # This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -6,12 +6,11 @@
 #
 # (c) Copyright 2024 Advanced Micro Devices, Inc. or its affiliates
 import numpy as np
-import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import ObjectFifo, Program, Runtime, Worker
+from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col1
+from aie.iron.controlflow import range_
 
 PROBLEM_SIZE = 1024
 MEM_TILE_WIDTH = 64
@@ -19,62 +18,44 @@ AIE_TILE_WIDTH = 32
 
 
 def my_vector_bias_add():
-    @device(AIEDevice.npu1_1col)
-    def device_body():
-        mem_tile_ty = np.ndarray[(MEM_TILE_WIDTH,), np.dtype[np.int32]]
-        aie_tile_ty = np.ndarray[(AIE_TILE_WIDTH,), np.dtype[np.int32]]
-        all_data_ty = np.ndarray[(PROBLEM_SIZE,), np.dtype[np.int32]]
+    # Define tensor types
+    mem_tile_ty = np.ndarray[(MEM_TILE_WIDTH,), np.dtype[np.int32]]
+    aie_tile_ty = np.ndarray[(AIE_TILE_WIDTH,), np.dtype[np.int32]]
+    all_data_ty = np.ndarray[(PROBLEM_SIZE,), np.dtype[np.int32]]
 
-        # Tile declarations
-        ShimTile = tile(0, 0)
-        MemTile = tile(0, 1)
-        ComputeTile2 = tile(0, 2)
+    # AIE-array data movement with object fifos
+    of_in0 = ObjectFifo(mem_tile_ty, name="in0")
+    of_in1 = of_in0.cons().forward(obj_type=aie_tile_ty, name="in1")
 
-        # AIE-array data movement with object fifos
-        # Input
-        of_in0 = object_fifo("in0", ShimTile, MemTile, 2, mem_tile_ty)
-        of_in1 = object_fifo("in1", MemTile, ComputeTile2, 2, aie_tile_ty)
-        object_fifo_link(of_in0, of_in1)
+    of_out0 = ObjectFifo(aie_tile_ty, name="out1")
+    of_out1 = of_out0.cons().forward(obj_type=mem_tile_ty, name="out0")
 
-        # Output
-        of_out0 = object_fifo("out0", MemTile, ShimTile, 2, mem_tile_ty)
-        of_out1 = object_fifo("out1", ComputeTile2, MemTile, 2, aie_tile_ty)
-        object_fifo_link(of_out1, of_out0)
+    # Define a compute task to perform
+    def core_body(of_in1, of_out0):
+        elem_in = of_in1.acquire(1)
+        elem_out = of_out0.acquire(1)
+        for i in range_(AIE_TILE_WIDTH):
+            elem_out[i] = elem_in[i] + 1
+        of_in1.release(1)
+        of_out0.release(1)
 
-        # Set up compute tiles
+    # Create a worker to run the task
+    worker = Worker(core_body, fn_args=[of_in1.cons(), of_out0.prod()])
 
-        # Compute tile 2
-        @core(ComputeTile2)
-        def core_body():
-            # Effective while(1)
-            for _ in range_(sys.maxsize):
-                elem_in = of_in1.acquire(ObjectFifoPort.Consume, 1)
-                elem_out = of_out1.acquire(ObjectFifoPort.Produce, 1)
-                for i in range_(AIE_TILE_WIDTH):
-                    elem_out[i] = elem_in[i] + 1
-                of_in1.release(ObjectFifoPort.Consume, 1)
-                of_out1.release(ObjectFifoPort.Produce, 1)
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(all_data_ty, all_data_ty) as (inTensor, outTensor):
+        rt.start(worker)
+        rt.fill(of_in0.prod(), inTensor)
+        rt.drain(of_out1.cons(), outTensor, wait=True)
 
-        # To/from AIE-array data movement
-        @runtime_sequence(all_data_ty, all_data_ty)
-        def sequence(inTensor, outTensor):
-            in_task = shim_dma_single_bd_task(
-                of_in0, inTensor, sizes=[1, 1, 1, PROBLEM_SIZE]
-            )
-            out_task = shim_dma_single_bd_task(
-                of_out0, outTensor, sizes=[1, 1, 1, PROBLEM_SIZE], issue_token=True
-            )
-
-            dma_start_task(in_task, out_task)
-            dma_await_task(out_task)
-            dma_free_task(in_task)
+    # Place program components (assign them resources on the device) and generate an MLIR module
+    return Program(NPU1Col1(), rt).resolve_program(SequentialPlacer())
 
 
-# Declares that subsequent code is in mlir-aie context
-with mlir_mod_ctx() as ctx:
-    my_vector_bias_add()
-    res = ctx.module.operation.verify()
-    if res == True:
-        print(ctx.module)
-    else:
-        print(res)
+module = my_vector_bias_add()
+res = module.operation.verify()
+if res == True:
+    print(module)
+else:
+    print(res)

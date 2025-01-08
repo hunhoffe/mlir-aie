@@ -3,15 +3,14 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2023 AMD Inc.
+# (c) Copyright 2024 AMD Inc.
 from ml_dtypes import bfloat16
 import numpy as np
-import sys
 
-from aie.dialects.aie import *
-from aie.dialects.aiex import *
-from aie.extras.context import mlir_mod_ctx
-from aie.helpers.dialects.ext.scf import _for as range_
+from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker
+from aie.iron.placers import SequentialPlacer
+from aie.iron.device import NPU1Col1
+from aie.iron.controlflow import range_
 from aie.helpers.util import np_ndarray_type_get_shape
 
 
@@ -24,118 +23,99 @@ def my_eltwise_add():
 
     n_cores = 2
     tiles = N_div_n // n_cores
-    buffer_depth = 2
 
-    @device(AIEDevice.npu1_1col)
-    def device_body():
-        tile_ty = np.ndarray[(n,), np.dtype[bfloat16]]
+    tensor_ty = np.ndarray[(N,), np.dtype[bfloat16]]
+    tile_ty = np.ndarray[(n,), np.dtype[bfloat16]]
 
-        # Type used in the tile memory
-        A_ty = np.ndarray[(n,), np.dtype[bfloat16]]
-        B_ty = np.ndarray[(n,), np.dtype[bfloat16]]
-        C_ty = np.ndarray[(n,), np.dtype[bfloat16]]
+    # Type used in the tile memory
+    A_ty = np.ndarray[(n,), np.dtype[bfloat16]]
+    B_ty = np.ndarray[(n,), np.dtype[bfloat16]]
+    C_ty = np.ndarray[(n,), np.dtype[bfloat16]]
 
-        # Type used in the memory tile which aggregates across the 2 cores
-        A_memTile_ty = np.ndarray[(n * n_cores,), np.dtype[bfloat16]]
-        B_memTile_ty = np.ndarray[(n * n_cores,), np.dtype[bfloat16]]
-        C_memTile_ty = np.ndarray[(n * n_cores,), np.dtype[bfloat16]]
+    # Type used in the memory tile which aggregates across the 2 cores
+    A_memTile_ty = np.ndarray[(n * n_cores,), np.dtype[bfloat16]]
+    B_memTile_ty = np.ndarray[(n * n_cores,), np.dtype[bfloat16]]
+    C_memTile_ty = np.ndarray[(n * n_cores,), np.dtype[bfloat16]]
 
-        # AIE Core Function declarations
-        eltwise_add_bf16_vector = external_func(
-            "eltwise_add_bf16_vector", inputs=[tile_ty, tile_ty, tile_ty]
+    # AIE Core Function declarations
+    eltwise_add_bf16_vector = Kernel(
+        "eltwise_add_bf16_vector", "add.o", [tile_ty, tile_ty, tile_ty]
+    )
+
+    # AIE-array data movement with object fifos
+    # Input A
+    inA = ObjectFifo(A_memTile_ty, name="inA")
+    of_offsets = [
+        (np.prod(np_ndarray_type_get_shape(A_memTile_ty)) // n_cores) * i
+        for i in range(n_cores)
+    ]
+    inA_fifos = inA.cons().split(
+        of_offsets,
+        obj_types=[A_ty] * n_cores,
+        names=[f"memA{i}" for i in range(n_cores)],
+    )
+
+    # Input B
+    inB = ObjectFifo(B_memTile_ty, name="inB")
+    of_offsets = [
+        (np.prod(np_ndarray_type_get_shape(B_memTile_ty)) // n_cores) * i
+        for i in range(n_cores)
+    ]
+    inB_fifos = inB.cons().split(
+        of_offsets,
+        obj_types=[B_ty] * n_cores,
+        names=[f"memB{i}" for i in range(n_cores)],
+    )
+
+    # Output C
+    outC = ObjectFifo(C_memTile_ty, name="outC")
+    of_offsets = [
+        (np.prod(np_ndarray_type_get_shape(C_memTile_ty)) // n_cores) * i
+        for i in range(n_cores)
+    ]
+    outC_fifos = outC.prod().join(
+        of_offsets,
+        obj_types=[C_ty] * n_cores,
+        names=[f"memC{i}" for i in range(n_cores)],
+    )
+
+    # Task for the cores to perform
+    def core_fn(of_a, of_b, of_c, eltwise_add):
+        for _ in range_(tiles):
+            elem_out = of_c.acquire(1)
+            elem_in_a = of_a.acquire(1)
+            elem_in_b = of_b.acquire(1)
+            eltwise_add(elem_in_a, elem_in_b, elem_out)
+            of_a.release(1)
+            of_b.release(1)
+            of_c.release(1)
+
+    # Set up workers to perform the tasks
+    workers = []
+    for i in range(n_cores):
+        workers.append(
+            Worker(
+                core_fn,
+                fn_args=[
+                    inA_fifos[i].cons(),
+                    inB_fifos[i].cons(),
+                    outC_fifos[i].prod(),
+                    eltwise_add_bf16_vector,
+                ],
+            )
         )
 
-        # Tile declarations
-        ShimTile = tile(0, 0)
+    # Runtime operations to move data to/from the AIE-array
+    rt = Runtime()
+    with rt.sequence(tensor_ty, tensor_ty, tensor_ty) as (A, B, C):
+        rt.start(*workers)
+        rt.fill(inA.prod(), A)
+        rt.fill(inB.prod(), B)
+        rt.drain(outC.cons(), C, wait=True)
 
-        MemTile = tile(0, 1)
-        cores = [tile(0, 2 + i) for i in range(n_cores)]
-
-        inA_fifos = []
-        inB_fifos = []
-        outC_fifos = []
-
-        # AIE-array data movement with object fifos
-        # Input A
-        inA = object_fifo("inA", ShimTile, MemTile, buffer_depth, A_memTile_ty)
-        for i in range(n_cores):
-            inA_fifos.append(
-                object_fifo(f"memA{i}", MemTile, cores[i], buffer_depth, A_ty)
-            )
-        if n_cores > 1:
-            of_offsets = [
-                (np.prod(np_ndarray_type_get_shape(A_memTile_ty)) // n_cores) * i
-                for i in range(n_cores)
-            ]
-        else:
-            of_offsets = []
-        object_fifo_link(inA, inA_fifos, [], of_offsets)
-
-        # Input B
-        inB = object_fifo("inB", ShimTile, MemTile, buffer_depth, B_memTile_ty)
-        for i in range(n_cores):
-            inB_fifos.append(
-                object_fifo(f"memB{i}", MemTile, cores[i], buffer_depth, B_ty)
-            )
-        if n_cores > 1:
-            of_offsets = [
-                (np.prod(np_ndarray_type_get_shape(B_memTile_ty)) // n_cores) * i
-                for i in range(n_cores)
-            ]
-        else:
-            of_offsets = []
-        object_fifo_link(inB, inB_fifos, [], of_offsets)
-
-        # Output C
-        for i in range(n_cores):
-            outC_fifos.append(
-                object_fifo(f"memC{i}", cores[i], MemTile, buffer_depth, C_ty)
-            )
-        outC = object_fifo("outC", MemTile, ShimTile, buffer_depth, C_memTile_ty)
-        if n_cores > 1:
-            of_offsets = [
-                (np.prod(np_ndarray_type_get_shape(C_memTile_ty)) // n_cores) * i
-                for i in range(n_cores)
-            ]
-        else:
-            of_offsets = []
-        object_fifo_link(outC_fifos, outC, of_offsets, [])
-
-        # Set up compute tiles
-        for i in range(n_cores):
-            # Compute tile i
-            @core(cores[i], "add.o")
-            def core_body():
-                for _ in range_(sys.maxsize):
-                    for _ in range_(tiles):
-                        elem_out = outC_fifos[i].acquire(ObjectFifoPort.Produce, 1)
-                        elem_in_a = inA_fifos[i].acquire(ObjectFifoPort.Consume, 1)
-                        elem_in_b = inB_fifos[i].acquire(ObjectFifoPort.Consume, 1)
-                        eltwise_add_bf16_vector(elem_in_a, elem_in_b, elem_out)
-                        inA_fifos[i].release(ObjectFifoPort.Consume, 1)
-                        inB_fifos[i].release(ObjectFifoPort.Consume, 1)
-                        outC_fifos[i].release(ObjectFifoPort.Produce, 1)
-
-        # To/from AIE-array data movement
-        tensor_ty = np.ndarray[(N,), np.dtype[bfloat16]]
-
-        @runtime_sequence(tensor_ty, tensor_ty, tensor_ty)
-        def sequence(A, B, C):
-            a_task = shim_dma_single_bd_task(inA, A, sizes=[1, 1, 1, N])
-            b_task = shim_dma_single_bd_task(inB, B, sizes=[1, 1, 1, N])
-            c_task = shim_dma_single_bd_task(
-                outC, C, sizes=[1, 1, 1, N], issue_token=True
-            )
-
-            dma_start_task(a_task, b_task, c_task)
-            dma_await_task(c_task)
-            dma_free_task(a_task, b_task)
+    # Place components (assign them resources on the device) and generate an MLIR module
+    return Program(NPU1Col1(), rt).resolve_program(SequentialPlacer())
 
 
-with mlir_mod_ctx() as ctx:
-    my_eltwise_add()
-    res = ctx.module.operation.verify()
-    if res == True:
-        print(ctx.module)
-    else:
-        print(res)
+module = my_eltwise_add()
+print(module)
