@@ -35,6 +35,10 @@ class Example:
         self._run_cmd = run_cmd
         self._iron_build_env = iron_build_env
         self._iron_ext_build_env = iron_ext_build_env
+        self._iron_stdout = None
+        self._iron_stderr = None
+        self._iron_ext_stdout = None
+        self._iron_ext_stderr = None
 
         # Make sure paths are valid
         self._dir = os.path.abspath(self._dir)
@@ -142,6 +146,13 @@ class Example:
         elif verbose:
             print(f"\t Ran successfully!")
 
+        if is_iron_ext:
+            self._iron_ext_stdout = result.stdout.decode("utf-8")
+            self._iron_ext_stderr = result.stderr.decode("utf-8")
+        else:
+            self._iron_stdout = result.stdout.decode("utf-8")
+            self._iron_stderr = result.stderr.decode("utf-8")
+
         if verbose:
             print(f"Done running {str(self)}!")
         return True
@@ -151,6 +162,29 @@ class Example:
 
     def run_iron_ext(self, verbose: bool = True) -> bool:
         return self._run(self._iron_ext_build_env, is_iron_ext=True, verbose=verbose)
+
+    def write_results(self, iron_dir: str, iron_ext_dir: str) -> None:
+        with open(os.path.join(iron_dir, f"{str(self)}.stderr.txt"), "w") as f:
+            if self._iron_stderr is None:
+                f.write("")
+            else:
+                f.write(self._iron_stderr)
+        with open(os.path.join(iron_dir, f"{str(self)}.stdout.txt"), "w") as f:
+            if self._iron_stdout is None:
+                f.write("")
+            else:
+                f.write(self._iron_stdout)
+
+        with open(os.path.join(iron_ext_dir, f"{str(self)}.stderr.txt"), "w") as f:
+            if self._iron_ext_stderr is None:
+                f.write("")
+            else:
+                f.write(self._iron_ext_stderr)
+        with open(os.path.join(iron_ext_dir, f"{str(self)}.stdout.txt"), "w") as f:
+            if self._iron_ext_stdout is None:
+                f.write("")
+            else:
+                f.write(self._iron_ext_stdout)
 
     def cmp_srcs(self):
         pass
@@ -226,10 +260,14 @@ class ExampleCollection(abc.MutableSequence, abc.Iterable):
         os.makedirs(iron_dir)
         iron_mlir_dir = os.path.join(my_dir, "iron_mlir")
         os.makedirs(iron_mlir_dir)
+        iron_result_dir = os.path.join(my_dir, "iron_result")
+        os.makedirs(iron_result_dir)
         iron_ext_dir = os.path.join(my_dir, "iron_ext")
         os.makedirs(iron_ext_dir)
         iron_ext_mlir_dir = os.path.join(my_dir, "iron_ext_mlir")
         os.makedirs(iron_ext_mlir_dir)
+        iron_ext_result_dir = os.path.join(my_dir, "iron_ext_result")
+        os.makedirs(iron_ext_result_dir)
 
         if verbose:
             print(f"Collecting files in {my_dir}")
@@ -239,6 +277,7 @@ class ExampleCollection(abc.MutableSequence, abc.Iterable):
         for e in self._examples:
             shutil.copyfile(e.mlir_src, os.path.join(iron_mlir_dir, f"{str(e)}.mlir"))
             shutil.copyfile(e.iron_src, os.path.join(iron_dir, f"{str(e)}.py"))
+            e.write_results(iron_result_dir, iron_ext_result_dir)
         print(f"Collected IRON src in {iron_dir} and IRON MLIR in {iron_mlir_dir}")
 
         # Generate the MLIR and copy files for ext

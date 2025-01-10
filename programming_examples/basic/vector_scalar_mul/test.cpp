@@ -122,7 +122,7 @@ int main(int argc, const char *argv[]) {
       std::cout << "Kernel did not complete. Returned status: " << r << "\n";
       return 1;
     }
-    bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    bo_outC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
     if (iter < n_warmup_iterations) {
       /* Warmup iterations do not count towards average runtime. */
