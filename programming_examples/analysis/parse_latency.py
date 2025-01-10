@@ -23,6 +23,7 @@ def parse_latency(collection_dir: str, output_file: str):
     if iron_design_files != iron_ext_design_files:
         print(f"IRON and IRON ext design names don't match perfectly.")
 
+    results_dict = {}
     with open(output_file, "w") as of:
         of.write(f"name,design,latency\n")
         for f in iron_design_files:
@@ -32,6 +33,7 @@ def parse_latency(collection_dir: str, output_file: str):
                     timing_result = result.split("ParseHere")[1]
                     latency = timing_result.split("|")[1]
                     of.write(f"iron,{f.split('.')[0]},{latency}\n")
+                    results_dict[f.split(".")[0]] = {"iron": latency}
         for f in iron_ext_design_files:
             if "stdout" in f:
                 with open(os.path.join(iron_ext_dir, f), "r") as fi:
@@ -39,6 +41,28 @@ def parse_latency(collection_dir: str, output_file: str):
                     timing_result = result.split("ParseHere")[1]
                     latency = timing_result.split("|")[1]
                     of.write(f"iron_ext,{f.split('.')[0]},{latency}\n")
+                    results_dict[f.split(".")[0]]["iron_ext"] = latency
+
+    differences = []
+    for design in results_dict.keys():
+        iron_lat = float(results_dict[design]["iron"])
+        iron_ext_lat = float(results_dict[design]["iron_ext"])
+        if iron_lat == 0.0:
+            iron_lat = 1.0
+            print(f"Lat is zero: {design}")
+        if iron_ext_lat == 0.0:
+            iron_ext_lat == 1.0
+            print(f"Ext lat is zero: {design}")
+        percentage_difference = (
+            abs(iron_lat - iron_ext_lat) / ((iron_lat + iron_ext_lat) / 2)
+        ) * 100
+        if percentage_difference > 5.0:
+            print(f"HIGH DIFF: {design} {percentage_difference}")
+        differences.append(percentage_difference)
+    print(f"Percentage difference per design: {differences}")
+    import statistics
+
+    print(f"Average percentage difference: {statistics.mean(differences)}")
 
 
 def main():

@@ -1,6 +1,0 @@
-python3 /home/hunhoffe/Documents/mlir-aie/programming_examples/ml/resnet/layers_conv2_x/test.py -x build/final.xclbin -i build/insts.txt -k MLIR_AIE
-
-ParseHere Avg NPU time: |3251|us ParseHere.
-
-PASS!
-
