@@ -118,6 +118,8 @@ def main(opts):
     # ------------------------------------------------------
     # Main run loop
     # ------------------------------------------------------
+    n_warmups = 10
+    n_iterations = 100
     for i in range(num_iter):
         start = time.time_ns()
         aie_output = execute(app, ifm_mem_fmt, total_wts) * relu_scale
@@ -129,8 +131,9 @@ def main(opts):
             )
             write_out_trace(trace, trace_file)
 
-        npu_time = stop - start
-        npu_time_total = npu_time_total + npu_time
+        if i > n_warmups:
+            npu_time = stop - start
+            npu_time_total = npu_time_total + npu_time
 
     # ------------------------------------------------------
     # Reorder output data-layout
@@ -146,7 +149,11 @@ def main(opts):
     # ------------------------------------------------------
     # Compare the AIE output and the golden reference
     # ------------------------------------------------------
-    print("\nAvg NPU time: {}us.".format(int((npu_time_total / num_iter) / 1000)))
+    print(
+        "\nParseHere Avg NPU time: |{}|us ParseHere.".format(
+            int((npu_time_total / n_iterations) / 1000)
+        )
+    )
 
     if np.allclose(
         ofm_mem_fmt_out.detach().numpy(),
