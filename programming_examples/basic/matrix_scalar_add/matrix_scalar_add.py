@@ -41,8 +41,8 @@ def my_matrix_add_one():
     tile_ty = np.ndarray[TILE_SHAPE, np.dtype[np.int32]]
 
     # AIE-array data movement with object fifos
-    of_in = ObjectFifo(tile_ty, name="in0")
-    of_out = ObjectFifo(tile_ty, name="out0")
+    of_in = ObjectFifo(tile_ty, name="in")
+    of_out = ObjectFifo(tile_ty, name="out")
 
     # Define a task to perform
     def core_fn(of_in1, of_out1):

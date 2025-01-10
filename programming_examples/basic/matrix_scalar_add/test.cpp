@@ -161,13 +161,48 @@ int main(int argc, const char *argv[]) {
   bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_inA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-  if (verbosity >= 1)
-    std::cout << "Running Kernel.\n";
-  unsigned int opcode = 3;
-  auto run = kernel(opcode, bo_instr, instr_v.size(), bo_inA, bo_inB, bo_out);
-  run.wait();
+  /* RESUABLE TEST CODE START HERE */
+  float npu_time_min = 9999999;
+  float npu_time_max = 0;
+  float npu_time_total = 0;
+  int n_warmup_iterations = 10;
+  int n_iterations = 100;
+  int num_iter = n_warmup_iterations + n_iterations;
 
-  bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  unsigned int opcode = 3;
+  for (unsigned iter = 0; iter < num_iter; iter++) {
+
+    // run the kernel
+    auto start = std::chrono::high_resolution_clock::now();
+    auto run = kernel(opcode, bo_instr, instr_v.size(), bo_inA, bo_inB, bo_out);
+    ert_cmd_state r = run.wait();
+    auto stop = std::chrono::high_resolution_clock::now();
+
+    // check output and fetch results
+    if (r != ERT_CMD_STATE_COMPLETED) {
+      std::cout << "Kernel did not complete. Returned status: " << r << "\n";
+      return 1;
+    }
+    bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+
+    if (iter < n_warmup_iterations) {
+      /* Warmup iterations do not count towards average runtime. */
+      continue;
+    }
+
+    float npu_time =
+        std::chrono::duration_cast<std::chrono::microseconds>(stop - start)
+            .count();
+
+    npu_time_total += npu_time;
+    npu_time_min = (npu_time < npu_time_min) ? npu_time : npu_time_min;
+    npu_time_max = (npu_time > npu_time_max) ? npu_time : npu_time_max;
+  }
+  std::cout << std::endl
+            << "ParseHere Avg NPU time: |" << npu_time_total / n_iterations
+            << "|us. ParseHere" << std::endl;
+
+  /* RESUABLE TEST CODE ENDS HERE */
 
   uint32_t *bufOut = bo_out.map<uint32_t *>();
 

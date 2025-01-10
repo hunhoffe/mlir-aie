@@ -17,13 +17,13 @@ def plot_halstead(input_file: str, output_file):
     df_iron.drop("name", axis=1, inplace=True)
     df_iron.drop("tool", axis=1, inplace=True)
     df_iron.drop("mi", axis=1, inplace=True)
-    #df_iron = df_iron[['design', 'vocabulary', 'difficulty']]
+    # df_iron = df_iron[['design', 'vocabulary', 'difficulty']]
 
     df_iron_ext = df[df["name"] == "iron_ext"]
     df_iron_ext.drop("name", axis=1, inplace=True)
     df_iron_ext.drop("tool", axis=1, inplace=True)
     df_iron_ext.drop("mi", axis=1, inplace=True)
-    #df_iron_ext = df_iron_ext[['design', 'vocabulary', 'difficulty']]
+    # df_iron_ext = df_iron_ext[['design', 'vocabulary', 'difficulty']]
 
     block = [
         # Block
@@ -126,8 +126,13 @@ def plot_halstead(input_file: str, output_file):
         plt.tight_layout()
         plt.savefig(os.path.join("halstead_graphs", f"{metric}{output_file}"))
 
+        df_diff["percent_decrease"] = df_diff[metric] / df_iron[metric]
         average = np.mean(df_diff[metric])
         print(f"The average change in mean for {metric} is: {average}")
+        average_percent_reduction = np.mean(df_diff["percent_decrease"])
+        print(
+            f"The average percent reduction for {metric} is: {average_percent_reduction}"
+        )
 
 
 def main():

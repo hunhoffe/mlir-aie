@@ -205,6 +205,9 @@ int main(int argc, const char *argv[]) {
   float npu_time_min = 9999999;
   float npu_time_max = 0;
 
+  n_warmup_iterations = 10;
+  n_iterations = 100;
+  num_iter = n_warmup_iterations + n_iterations;
   int errors = 0;
   float macs = 2.0 * float(M) * float(K) * float(N);
 
@@ -217,11 +220,11 @@ int main(int argc, const char *argv[]) {
     unsigned int opcode = 3;
     auto run = kernel(opcode, bo_instr, instr_v.size(), bo_a, bo_b, bo_out);
     ert_cmd_state r = run.wait();
+    auto stop = std::chrono::high_resolution_clock::now();
     if (r != ERT_CMD_STATE_COMPLETED) {
       std::cout << "Kernel did not complete. Returned status: " << r << "\n";
       return 1;
     }
-    auto stop = std::chrono::high_resolution_clock::now();
     bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
     if (iter < n_warmup_iterations) {
@@ -279,8 +282,8 @@ int main(int argc, const char *argv[]) {
   }
 
   std::cout << std::endl
-            << "Avg NPU matmul time: " << npu_time_total / n_iterations << "us."
-            << std::endl;
+            << "ParseHere Avg NPU time: |" << npu_time_total / n_iterations
+            << "|us. ParseHere" << std::endl;
   std::cout << "Avg NPU gflops: "
             << macs / (1000 * npu_time_total / n_iterations) << std::endl;
 

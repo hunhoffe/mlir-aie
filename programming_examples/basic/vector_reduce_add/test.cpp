@@ -116,6 +116,8 @@ int main(int argc, const char *argv[]) {
   // ------------------------------------------------------
   // Initialize run configs
   // ------------------------------------------------------
+  n_iterations = 100;
+  n_warmup_iterations = 10;
   unsigned num_iter = n_iterations + n_warmup_iterations;
   float npu_time_total = 0;
   float npu_time_min = 9999999;
@@ -195,8 +197,8 @@ int main(int argc, const char *argv[]) {
   float macs = 0;
 
   std::cout << std::endl
-            << "Avg NPU time: " << npu_time_total / n_iterations << "us."
-            << std::endl;
+            << "ParseHere Avg NPU time: |" << npu_time_total / n_iterations
+            << "|us. ParseHere" << std::endl;
   if (macs > 0)
     std::cout << "Avg NPU gflops: "
               << macs / (1000 * npu_time_total / n_iterations) << std::endl;
