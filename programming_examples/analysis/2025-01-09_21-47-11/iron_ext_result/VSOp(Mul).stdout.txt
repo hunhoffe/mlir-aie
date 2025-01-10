@@ -1,0 +1,39 @@
+rm -rf _build
+mkdir -p _build
+cd _build &&  cmake /home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul -DTARGET_NAME=vector_scalar_mul_4096 -DVECTORSCALARMUL_SIZE=4096
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/gcc-13 - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/g++-13 - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found Boost: /usr/lib/x86_64-linux-gnu/cmake/Boost-1.83.0/BoostConfig.cmake (found version "1.83.0")
+-- Configuring done (0.2s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build
+cd _build &&  cmake --build . --config Release
+gmake[1]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+gmake[2]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+gmake[3]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+gmake[3]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+gmake[3]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+[ 33%] Building CXX object CMakeFiles/vector_scalar_mul_4096.dir/home/hunhoffe/Documents/mlir-aie/runtime_lib/test_lib/test_utils.cpp.o
+[ 66%] Building CXX object CMakeFiles/vector_scalar_mul_4096.dir/test.cpp.o
+[100%] Linking CXX executable vector_scalar_mul_4096
+gmake[3]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+[100%] Built target vector_scalar_mul_4096
+gmake[2]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+gmake[1]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/basic/vector_scalar_mul/_build'
+cp _build/vector_scalar_mul_4096 vector_scalar_mul_4096.exe 
+./vector_scalar_mul_4096.exe -x build/final_4096.xclbin -i build/insts_4096.txt -k MLIR_AIE
+
+ParseHere Avg NPU time: |116.77|us. ParseHere
+
+PASS!
+

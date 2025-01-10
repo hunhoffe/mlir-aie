@@ -1,0 +1,4 @@
+./build/test
+
+ParseHere Avg NPU time: |2998.89|us. ParseHere
+PASS!

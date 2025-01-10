@@ -1,0 +1,6 @@
+python3 /home/hunhoffe/Documents/mlir-aie/programming_examples/ml/conv2d/test.py -x build/final.xclbin -i build/insts.txt -k MLIR_AIE
+
+ParseHere Avg NPU time: |177|us ParseHere.
+
+PASS!
+

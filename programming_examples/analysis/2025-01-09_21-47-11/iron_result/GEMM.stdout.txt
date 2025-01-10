@@ -1,0 +1,14 @@
+export XRT_HACK_UNSECURE_LOADING_XCLBIN=1 && \
+ ./whole_array.exe -x build/final_512x512x512_64x64x64_4c.xclbin -i build/insts_512x512x512_64x64x64_4c.txt -k MLIR_AIE -M 512 -K 512 -N 512 --b_col_maj 0
+
+ParseHere Avg NPU time: |413.04|us. ParseHere
+Avg NPU gflops: 649.902
+
+Min NPU matmul time: 326us.
+Max NPU gflops: 823.422
+
+Max NPU matmul time: 571us.
+Min NPU gflops: 470.115
+
+PASS!
+

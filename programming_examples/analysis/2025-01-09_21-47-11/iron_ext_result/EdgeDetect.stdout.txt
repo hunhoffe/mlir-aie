@@ -1,0 +1,46 @@
+rm -rf _build
+mkdir -p _build
+cd _build &&  cmake /home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect -DTARGET_NAME=edge_detect -DEDGEDETECT_WIDTH=1920 -DEDGEDETECT_HEIGHT=1080 -D CMAKE_C_COMPILER=gcc-13 -D CMAKE_CXX_COMPILER=g++-13
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/gcc-13 - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/g++-13 - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found Boost: /usr/lib/x86_64-linux-gnu/cmake/Boost-1.83.0/BoostConfig.cmake (found version "1.83.0")
+-- Found OpenCV: /usr (found version "4.6.0")
+-- Configuring done (0.2s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build
+cd _build &&  cmake --build . --config Release
+gmake[1]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+gmake[2]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+gmake[3]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+gmake[3]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+gmake[3]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+[ 25%] Building CXX object CMakeFiles/edge_detect.dir/home/hunhoffe/Documents/mlir-aie/programming_examples/utils/OpenCVUtils.cpp.o
+[ 50%] Building CXX object CMakeFiles/edge_detect.dir/home/hunhoffe/Documents/mlir-aie/runtime_lib/test_lib/test_utils.cpp.o
+[ 75%] Building CXX object CMakeFiles/edge_detect.dir/test.cpp.o
+[100%] Linking CXX executable edge_detect
+gmake[3]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+[100%] Built target edge_detect
+gmake[2]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+gmake[1]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/edge_detect/_build'
+cp _build/edge_detect edge_detect.exe 
+./edge_detect.exe -x build/final_1920.xclbin -i build/insts.txt -k MLIR_AIE
+Running edgeDetect for resolution: 1920x1080
+Load input image RANDOM and run edgeDetect
+
+ParseHere Avg NPU time: |7467.29|us. ParseHere
+Mismatach at (0,192) channel: 0 golden: 142 test: 255
+Mismatach at (0,192) channel: 1 golden: 142 test: 255
+Mismatach at (0,192) channel: 2 golden: 103 test: 255
+Number of differences: 17571, average L1 error: 1.093529
+PASS!
+Testing edgeDetect done!

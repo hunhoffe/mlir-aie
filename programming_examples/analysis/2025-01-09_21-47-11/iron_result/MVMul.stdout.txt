@@ -1,0 +1,360 @@
+export XRT_HACK_UNSECURE_LOADING_XCLBIN=1 && \
+ ./matrix_vector.exe -x build/final_288x288x1.xclbin -i build/insts_288x288x1.txt -k MLIR_AIE -M 288 -K 288 -N 1 -v 2 --warmup 1 --iters 1
+Matrix size 288x288x1
+Sequence instr count: 72
+Loading xclbin: build/final_288x288x1.xclbin
+Kernel opcode: MLIR_AIE
+Name: MLIR_AIE
+Registering xclbin: build/final_288x288x1.xclbin
+Getting hardware context.
+Getting handle to kernel:MLIR_AIE
+Writing data into buffer objects.
+DTYPE_IN  = int16_t
+DTYPE_OUT = int16_t
+Verification tolerance 0 absolute, 0 relative.
+A = 
+       0         1         2         3         4   ...      283       284       285       286       287  
+     288       289       290       291       292   ...      571       572       573       574       575  
+     576       577       578       579       580   ...      859       860       861       862       863  
+     864       865       866       867       868   ...     1147      1148      1149      1150      1151  
+    1152      1153      1154      1155      1156   ...     1435      1436      1437      1438      1439  
+    ...       ...       ...       ...       ...    ...     ...       ...       ...       ...       ...   
+   15968     15969     15970     15971     15972   ...    16251     16252     16253     16254     16255  
+   16256     16257     16258     16259     16260   ...    16539     16540     16541     16542     16543  
+   16544     16545     16546     16547     16548   ...    16827     16828     16829     16830     16831  
+   16832     16833     16834     16835     16836   ...    17115     17116     17117     17118     17119  
+   17120     17121     17122     17123     17124   ...    17403     17404     17405     17406     17407  
+B = 
+       0  
+  -28205  
+   26204  
+    -615  
+  -20312  
+    ...   
+   30346  
+   25212  
+  -31610  
+  -28226  
+     -78  
+Running Kernel (iteration 0).
+Running Kernel (iteration 1).
+Running Kernel (iteration 2).
+Running Kernel (iteration 3).
+Running Kernel (iteration 4).
+Running Kernel (iteration 5).
+Running Kernel (iteration 6).
+Running Kernel (iteration 7).
+Running Kernel (iteration 8).
+Running Kernel (iteration 9).
+Running Kernel (iteration 10).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 11).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 12).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 13).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 14).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 15).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 16).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 17).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 18).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 19).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 20).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 21).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 22).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 23).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 24).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 25).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 26).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 27).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 28).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 29).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 30).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 31).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 32).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 33).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 34).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 35).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 36).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 37).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 38).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 39).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 40).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 41).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 42).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 43).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 44).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 45).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 46).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 47).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 48).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 49).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 50).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 51).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 52).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 53).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 54).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 55).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 56).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 57).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 58).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 59).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 60).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 61).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 62).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 63).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 64).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 65).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 66).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 67).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 68).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 69).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 70).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 71).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 72).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 73).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 74).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 75).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 76).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 77).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 78).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 79).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 80).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 81).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 82).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 83).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 84).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 85).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 86).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 87).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 88).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 89).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 90).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 91).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 92).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 93).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 94).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 95).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 96).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 97).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 98).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 99).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 100).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 101).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 102).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 103).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 104).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 105).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 106).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 107).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 108).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+Running Kernel (iteration 109).
+Verifying against reference matmul ...
+Verify time: 0.00 s.
+
+ParseHere Avg NPU time: |661.71|us. ParseHere
+Avg NPU gflops: 0.25
+
+Min NPU matmul time: 630.00us.
+Max NPU gflops: 0.26
+
+Max NPU matmul time: 768.00us.
+Min NPU gflops: 0.22
+
+PASS!
+

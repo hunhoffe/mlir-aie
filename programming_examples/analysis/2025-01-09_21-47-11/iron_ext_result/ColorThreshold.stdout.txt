@@ -1,0 +1,41 @@
+rm -rf _build
+mkdir -p _build
+cd _build &&  cmake /home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold -DTARGET_NAME=color_threshold -DCOLORTHRESHOLD_WIDTH=1920 -DCOLORTHRESHOLD_HEIGHT=1080 -D CMAKE_C_COMPILER=gcc-13 -D CMAKE_CXX_COMPILER=g++-13
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/gcc-13 - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/g++-13 - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found Boost: /usr/lib/x86_64-linux-gnu/cmake/Boost-1.83.0/BoostConfig.cmake (found version "1.83.0")
+-- Found OpenCV: /usr (found version "4.6.0")
+-- Configuring done (0.2s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build
+cd _build &&  cmake --build . --config Release
+gmake[1]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+gmake[2]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+gmake[3]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+gmake[3]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+gmake[3]: Entering directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+[ 25%] Building CXX object CMakeFiles/color_threshold.dir/home/hunhoffe/Documents/mlir-aie/programming_examples/utils/OpenCVUtils.cpp.o
+[ 50%] Building CXX object CMakeFiles/color_threshold.dir/home/hunhoffe/Documents/mlir-aie/runtime_lib/test_lib/test_utils.cpp.o
+[ 75%] Building CXX object CMakeFiles/color_threshold.dir/test.cpp.o
+[100%] Linking CXX executable color_threshold
+gmake[3]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+[100%] Built target color_threshold
+gmake[2]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+gmake[1]: Leaving directory '/home/hunhoffe/Documents/mlir-aie/programming_examples/vision/color_threshold/_build'
+cp _build/color_threshold color_threshold.exe 
+./color_threshold.exe -x build/final_1920.xclbin -i build/insts.txt -k MLIR_AIE
+
+ParseHere Avg NPU time: |677.56|us. ParseHere
+
+PASS!
+
