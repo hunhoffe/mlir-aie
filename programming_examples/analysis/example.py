@@ -147,11 +147,15 @@ class Example:
             print(f"\t Ran successfully!")
 
         if is_iron_ext:
-            self._iron_ext_stdout = result.stdout.decode("utf-8")
-            self._iron_ext_stderr = result.stderr.decode("utf-8")
+            self._iron_ext_stdout = result.stdout
+            self._iron_ext_stderr = result.stderr
+            print(self._iron_ext_stdout)
+            print(self._iron_ext_stderr)
         else:
-            self._iron_stdout = result.stdout.decode("utf-8")
-            self._iron_stderr = result.stderr.decode("utf-8")
+            self._iron_stdout = result.stdout
+            self._iron_stderr = result.stderr
+            print(self._iron_stdout)
+            print(self._iron_stderr)
 
         if verbose:
             print(f"Done running {str(self)}!")
@@ -164,27 +168,18 @@ class Example:
         return self._run(self._iron_ext_build_env, is_iron_ext=True, verbose=verbose)
 
     def write_results(self, iron_dir: str, iron_ext_dir: str) -> None:
-        with open(os.path.join(iron_dir, f"{str(self)}.stderr.txt"), "w") as f:
-            if self._iron_stderr is None:
-                f.write("")
-            else:
+        print(self)
+        if self._iron_stderr:
+            with open(os.path.join(iron_dir, f"{str(self)}.stderr.txt"), "wb") as f:
                 f.write(self._iron_stderr)
-        with open(os.path.join(iron_dir, f"{str(self)}.stdout.txt"), "w") as f:
-            if self._iron_stdout is None:
-                f.write("")
-            else:
-                f.write(self._iron_stdout)
+        with open(os.path.join(iron_dir, f"{str(self)}.stdout.txt"), "wb") as f:
+            f.write(self._iron_stdout)
 
-        with open(os.path.join(iron_ext_dir, f"{str(self)}.stderr.txt"), "w") as f:
-            if self._iron_ext_stderr is None:
-                f.write("")
-            else:
+        if self._iron_ext_stderr:
+            with open(os.path.join(iron_ext_dir, f"{str(self)}.stderr.txt"), "wb") as f:
                 f.write(self._iron_ext_stderr)
-        with open(os.path.join(iron_ext_dir, f"{str(self)}.stdout.txt"), "w") as f:
-            if self._iron_ext_stdout is None:
-                f.write("")
-            else:
-                f.write(self._iron_ext_stdout)
+        with open(os.path.join(iron_ext_dir, f"{str(self)}.stdout.txt"), "wb") as f:
+            f.write(self._iron_ext_stdout)
 
     def cmp_srcs(self):
         pass
@@ -277,7 +272,6 @@ class ExampleCollection(abc.MutableSequence, abc.Iterable):
         for e in self._examples:
             shutil.copyfile(e.mlir_src, os.path.join(iron_mlir_dir, f"{str(e)}.mlir"))
             shutil.copyfile(e.iron_src, os.path.join(iron_dir, f"{str(e)}.py"))
-            e.write_results(iron_result_dir, iron_ext_result_dir)
         print(f"Collected IRON src in {iron_dir} and IRON MLIR in {iron_mlir_dir}")
 
         # Generate the MLIR and copy files for ext
@@ -287,6 +281,7 @@ class ExampleCollection(abc.MutableSequence, abc.Iterable):
                 e.mlir_src, os.path.join(iron_ext_mlir_dir, f"{str(e)}.mlir")
             )
             shutil.copyfile(e.iron_ext_src, os.path.join(iron_ext_dir, f"{str(e)}.py"))
+            e.write_results(iron_result_dir, iron_ext_result_dir)
         print(
             f"Collected IRON(ext) src in {iron_ext_dir} and IRON(ext) MLIR in {iron_ext_mlir_dir}"
         )
