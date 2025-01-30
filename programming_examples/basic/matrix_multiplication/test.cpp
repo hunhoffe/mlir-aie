@@ -205,8 +205,8 @@ int main(int argc, const char *argv[]) {
   float npu_time_min = 9999999;
   float npu_time_max = 0;
 
-  n_warmup_iterations = 10;
-  n_iterations = 100;
+  n_warmup_iterations = 100;
+  n_iterations = 1000;
   num_iter = n_warmup_iterations + n_iterations;
   int errors = 0;
   float macs = 2.0 * float(M) * float(K) * float(N);

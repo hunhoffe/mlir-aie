@@ -219,8 +219,8 @@ int main(int argc, const char *argv[]) {
     float npu_time_min = 9999999;
     float npu_time_max = 0;
     float npu_time_total = 0;
-    int n_warmup_iterations = 10;
-    int n_iterations = 100;
+    int n_warmup_iterations = 100;
+    int n_iterations = 1000;
     int num_iter = n_warmup_iterations + n_iterations;
 
     unsigned int opcode = 3;

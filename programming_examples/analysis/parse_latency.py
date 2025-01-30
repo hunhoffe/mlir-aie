@@ -44,9 +44,19 @@ def parse_latency(collection_dir: str, output_file: str):
                     results_dict[f.split(".")[0]]["iron_ext"] = latency
 
     differences = []
+    iron_latencies = []
+    iron_ext_latencies = []
+    higher_ext = 0
+    lower_ext = 0
     for design in results_dict.keys():
         iron_lat = float(results_dict[design]["iron"])
         iron_ext_lat = float(results_dict[design]["iron_ext"])
+        iron_latencies.append(iron_lat)
+        iron_ext_latencies.append(iron_ext_lat)
+        if iron_lat > iron_ext_lat:
+            lower_ext += 1
+        else:
+            higher_ext += 1
         if iron_lat == 0.0:
             iron_lat = 1.0
             print(f"Lat is zero: {design}")
@@ -63,6 +73,12 @@ def parse_latency(collection_dir: str, output_file: str):
     import statistics
 
     print(f"Average percentage difference: {statistics.mean(differences)}")
+    print(iron_latencies)
+    print(iron_ext_latencies)
+    print(
+        f"Average across designs: {statistics.mean(iron_latencies)} {statistics.mean(iron_ext_latencies)}"
+    )
+    print(f"Higher ext: {higher_ext}/{higher_ext + lower_ext}")
 
 
 def main():

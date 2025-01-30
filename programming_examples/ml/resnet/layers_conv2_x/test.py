@@ -440,8 +440,8 @@ def main(opts):
     # ------------------------------------------------------
     # Main run loop
     # ------------------------------------------------------
-    n_warmups = 10
-    n_iterations = 100
+    n_warmups = 100
+    n_iterations = 1000
     num_iter = n_warmups + n_iterations
     for i in range(num_iter):
         start = time.time_ns()

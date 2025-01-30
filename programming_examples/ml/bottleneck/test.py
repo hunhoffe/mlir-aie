@@ -159,13 +159,14 @@ def main(opts):
     # ------------------------------------------------------
     # Main run loop
     # ------------------------------------------------------
-    n_warmups = 10
-    n_iterations = 100
+    n_warmups = 100
+    n_iterations = 1000
     num_iter = n_warmups + n_iterations
     for i in range(num_iter):
         start = time.time_ns()
-        aie_output = execute(app, ifm_mem_fmt, total_wts) * inp_scale4
+        aie_output = execute(app, ifm_mem_fmt, total_wts)
         stop = time.time_ns()
+        aie_output = aie_output * inp_scale4
 
         if enable_trace:
             aie_output, trace = extract_trace(

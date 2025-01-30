@@ -142,8 +142,8 @@ int main(int argc, const char *argv[]) {
   // ------------------------------------------------------
   // Initialize run configs
   // ------------------------------------------------------
-  n_warmup_iterations = 10;
-  n_iterations = 100;
+  n_warmup_iterations = 100;
+  n_iterations = 1000;
   unsigned num_iter = n_iterations + n_warmup_iterations;
   float npu_time_total = 0;
   float npu_time_min = 9999999;
