@@ -83,4 +83,15 @@ Many of these results rely on a "corpus of example designs" - these designs were
   This will generate a file, ```loc.csv``` using ```pygount``` and ```radon``` to calculate the SLOC. The SLOC reported in Table I is from ```pygount```, corresponding to the columns ```pygount_loc_baseline``` and ```pygount_loc_ext``` in the csv file.
 
 5. Figure 4 - Average percent decrease to Single Lines of Code (SLOC)
-   
+
+  A graph can be generated from the previous step using ```loc.csv``` with the command:
+  ```bash
+  python plot_loc.py -i loc.csv
+  ```
+
+  This will print out statistics (average percent decrease being around 25%, average difference in SLOC is ~30 lines) and produce a ```percentage_loc.png```, which is what is included in the paper.
+
+6. Figure 5 - Differences in Halstead vocabulary and effort
+
+  Reproducing Figure 5 happens in two stages: calculate Halstead metrics, and plot them.
+  
