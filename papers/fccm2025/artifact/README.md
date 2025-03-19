@@ -16,6 +16,8 @@ Make sure you have checked out the ```fccm-2025-artifact``` branch.
 
 Install IRON according to the quickstart instructions described in the primary repo [README](../../../README.md). Since the extensions to IRON have already been accepted into the code base, this will install Python wheels that contain the source code linked to above, a user is ready to use the extensions.
 
+**We assume all commands are run with the environment variables sourced according to the quickstart script and within the Python env, ```ironenv```, activated.**
+
 ### Using the extensions
 
 In the general sense (not for replicating paper results) there are examples using the new IRON API found throughout the [```programming examples```](../../../programming_examples/), generally denoted with the name ending in ```_iron``` or without a suffix (as opposed to the ```_placed``` designs, which generally refer to designs written with IRON without extensions). Instructions for running these examples are found in their local directories.
@@ -30,7 +32,7 @@ The primary results to verify from the paper are:
 3. Functionality of code snippets for ```taplib``` from Section V.5, and generation of graphics in Figure 3
 
 The primary results to verify from the evaluation are:
-4. Table II - Features found in example designs
+4. Table I and Table II - Features found in example designs
 5. Figure 4 - Average percent decrease to Single Lines of Code (SLOC)
 6. Figure 5 - Differences in Halstead vocabulary and effort
 7. Performance results from the last paragraph in Section VI.B
@@ -68,4 +70,17 @@ Many of these results rely on a "corpus of example designs" - these designs were
   ```
   This will create ```tap00.py``` and ```taps0.py```, which have been combined to form Figure 3.
 
-4. 
+4. Table I and Table II - Features found in example designs
+
+  The only way to verify examples are as described is to manually review the desings in [```example_designs```](example designs). However, there is a script to generate the SLOC counts in Table 1.
+
+  To generate the SLOC counts for all example designs:
+  ```bash
+  pip install -r requirements.txt
+  python sloc_all.py -d example_designs
+  ```
+
+  This will generate a file, ```loc.csv``` using ```pygount``` and ```radon``` to calculate the SLOC. The SLOC reported in Table I is from ```pygount```, corresponding to the columns ```pygount_loc_baseline``` and ```pygount_loc_ext``` in the csv file.
+
+5. Figure 4 - Average percent decrease to Single Lines of Code (SLOC)
+   
