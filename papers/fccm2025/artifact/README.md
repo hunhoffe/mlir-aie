@@ -35,9 +35,10 @@ The primary results to verify from the evaluation are:
 4. Table I and Table II - Features found in example designs
 5. Figure 4 - Average percent decrease to Single Lines of Code (SLOC)
 6. Figure 5 - Differences in Halstead vocabulary and effort
-7. Performance results from the last paragraph in Section VI.B
-8. Functionality of the ```Placer``` described in Section VI.C
-9. Functionality of the ```TensorTiler2D``` described in Section VI.D
+7. MLIR analysis from Section VI.B
+8. Performance results from the last paragraph in Section VI.B
+9. Functionality of the ```Placer``` described in Section VI.C
+10. Functionality of the ```TensorTiler2D``` described in Section VI.D
 
 Many of these results rely on a "corpus of example designs" - these designs were based on the existing set of [```programming_examples```](../../../programming_examples/). However, to remove unnecessary configuration details, remove designs that were too similar, and remove tracing artifacts and debugging setup from designs that would distract from the analysis, we use a separately currated set of designs found [here](example_designs).
 
@@ -95,3 +96,15 @@ Many of these results rely on a "corpus of example designs" - these designs were
 
   Reproducing Figure 5 happens in two stages: calculate Halstead metrics, and plot them.
   
+  To calculate the Halstead metrics using ```radon```, run:
+  ```bash
+  pip install -r requirements.txt
+  python halstead_all.py -d example_designs/
+  ```
+
+  This will produce a ```halstead.csv``` file. To produce the graphs in Figure 5, run:
+  ```bash
+  python plot_halstead.py -i halstead.csv
+  ```
+
+  This will produce a graph for effort and vocabulary (in separate files but otherwise idential to the joint graph in the paper) in a ```halstead_graphs``` directory.
