@@ -45,20 +45,27 @@ Many of these results rely on a "corpus of example designs" - these designs were
   Source code is primarily found [here](../../../python/iron). This includes the ```Placer``` interface, which is integrated throughout the source code. Core placement classes are found [here](../../../python/iron/placers.py) and [here](../../../python/iron/placeable.py). ```taplib``` (and useful extensions) are  [here](../../../python/helpers/taplib), with an instructional notebook [here](../../../programming_examples/basic/tiling_exploration/introduction/).
 
 2. **Figure 2 Designs**
-  The designs in Figure 2 are pared down examples from the [```example_designs```](example designs). We include nearly identical versions (but with some additional imports/constant defintions omitted from the paper due to space) in [```fig2```](fig2) directory. These are functional examples - you can run them and verify the results.
+  The designs in Figure 2 are pared down examples from [```example_designs/iron/MSAdd.py```](example designs/iron/MSAdd.py) and [```example_designs/iron_ext/MSAdd.py```](example designs/iron_ext/MSAdd.py). We include nearly identical versions (but with some additional imports/constant defintions omitted from the paper due to space) in [```fig2```](fig2) directory. These are functional examples - you can use them to generate MLIR (while we leave full functionality tests to the examples in ```example_designs```).
 
-  For IRON without contributions:
+  We can verify the Python yields valid MLIR of the ```mlir-aie``` dialect by running:
   ```bash
-  cd fig2
-  make
-  make run
+  python fig2/fig2_iron.py > orig.mlir
+  python fig2/fig2_iron_ext.py > ext.mlir
   ```
 
-  For IRON with contributions:
+  If these were not valid designs (e.g., not supported by the API) they would throw errors and would not successfully generate MLIR.
+  Example MLIR generation on our system (for comparison) is found at ```fig2/ext.mlir``` and ```fig2/orig.mlir```.
+
+3. **```taplib`` Code Snippets and Figure 3
+  The code snippets for ```taplib``` found in Section V are found in [```taplib/snippets.py```](taplib/snippets.py) and can be run (to check validity) with:
   ```bash
-  cd fig2
-  make
-  make run
+  python taplib/snippets.py
   ```
 
-3. **
+  To generate the graphics from Figure 3, run:
+  ```bash
+  python taplib/fig3.py
+  ```
+  This will create ```tap00.py``` and ```taps0.py```, which have been combined to form Figure 3.
+
+4. 
