@@ -1,4 +1,4 @@
-matplotlib
-numpy
-pygount
-radon
+matplotlib==3.10.1
+numpy==1.26.4
+pygount==2.0.0
+radon==6.0.1
