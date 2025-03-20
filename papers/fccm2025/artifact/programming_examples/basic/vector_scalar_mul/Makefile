@@ -17,7 +17,6 @@ VPATH := ${srcdir}/../../../../../../aie_kernels/aie2
 device = npu
 targetname = vector_scalar_mul
 data_size = 4096
-trace_size = 8192
 CHESS ?= true
 
 aie_py_src=${targetname}.py
@@ -49,10 +48,6 @@ build/aie_${data_size}.mlir: ${srcdir}/${aie_py_src}
 	mkdir -p ${@D}
 	python3 $< ${device} ${data_size} 0 > $@
 
-build/aie_trace_${data_size}.mlir: ${srcdir}/${aie_py_src}
-	mkdir -p ${@D}
-	python3 $< ${device} ${data_size} ${trace_size} > $@
-
 #build/insts_${data_size}.txt: build/final_${data_size}.xclbin
 build/final_${data_size}.xclbin: build/aie_${data_size}.mlir build/scale.o
 	mkdir -p ${@D}
@@ -62,17 +57,6 @@ ifeq ($(CHESS), true)
 else
 	cd ${@D} && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=${@F} \
     	  --no-xchesscc --no-xbridge \
-				--aie-generate-npu --npu-insts-name=insts_${data_size}.txt $(<:%=../%)
-endif
-
-build/final_trace_${data_size}.xclbin: build/aie_trace_${data_size}.mlir build/scale.o
-	mkdir -p ${@D}
-ifeq ($(CHESS), true)
-	cd ${@D} && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=${@F} \
-				--aie-generate-npu --npu-insts-name=insts_${data_size}.txt $(<:%=../%)
-else
-	cd ${@D} && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=${@F} \
-    		--no-xchesscc --no-xbridge \
 				--aie-generate-npu --npu-insts-name=insts_${data_size}.txt $(<:%=../%)
 endif
 

@@ -16,7 +16,6 @@ device = npu
 targetname = passthrough_kernel
 VPATH := ${srcdir}/../../../../../../aie_kernels/generic
 data_size = 4096
-trace_size = 8192
 PASSTHROUGH_SIZE = ${data_size}
 
 aie_py_src=${targetname}.py
@@ -33,10 +32,6 @@ all: build/final_${data_size}.xclbin
 build/aie2_lineBased_8b_${data_size}.mlir: ${srcdir}/${aie_py_src}
 	mkdir -p ${@D}
 	python3 $< ${device} ${data_size} 0 > $@
-
-build/aie_trace__lineBased_8b_${data_size}.mlir: ${srcdir}/${aie_py_src}
-	mkdir -p ${@D}
-	python3 $< ${device} ${data_size} ${trace_size} > $@
 
 build/passThrough.cc.o: passThrough.cc
 	mkdir -p ${@D}
@@ -58,18 +53,6 @@ else
 	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu --no-compile-host \
 		--xclbin-name=${@F} --npu-insts-name=insts_${data_size}.txt $(<:%=../%)
 endif
-
-build/final_trace_${data_size}.xclbin: build/aie2_lineBased_8b_${data_size}.mlir build/passThrough.cc.o
-	mkdir -p ${@D}
-ifeq ($(device),npu)
-	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu --no-compile-host \
-		--no-xchesscc --no-xbridge \
-		--xclbin-name=${@F} --npu-insts-name=insts_${data_size}.txt $(<:%=../%)
-else
-	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu --no-compile-host \
-		--xclbin-name=${@F} --npu-insts-name=insts_${data_size}.txt $(<:%=../%)
-endif
-
 
 ${targetname}_${data_size}.exe: ${srcdir}/test.cpp
 	rm -rf _build
