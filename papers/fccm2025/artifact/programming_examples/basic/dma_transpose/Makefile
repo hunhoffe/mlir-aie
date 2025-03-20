@@ -1,0 +1,67 @@
+##===- Makefile -----------------------------------------------------------===##
+# 
+# This file licensed under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# 
+##===----------------------------------------------------------------------===##
+
+srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+
+include ${srcdir}/../../makefile-common
+
+SHELL := /bin/bash
+
+all: build/final.xclbin build/insts.txt
+
+targetname = dma_transpose
+M ?= 64
+K ?= 32
+
+aie_py_src=${targetname}.py
+use_alt?=0
+use_iron?=0
+
+ifeq (${use_alt}, 1)
+aie_py_src=${targetname}_alt.py
+ifeq (${use_iron}, 1)
+$(error Cannot specify both alternative design and IRON)
+endif
+endif
+
+ifeq (${use_iron}, 1)
+aie_py_src=${targetname}_iron.py
+endif
+
+build/aie.mlir: ${srcdir}/${aie_py_src}
+	mkdir -p ${@D}
+	python3 $< ${M} ${K} > $@
+
+build/final.xclbin: build/aie.mlir
+	mkdir -p ${@D}
+	cd ${@D} && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=${@F} \
+				--no-xchesscc --no-xbridge \
+				--aie-generate-npu --npu-insts-name=insts.txt $(<:%=../%)
+
+${targetname}.exe: ${srcdir}/test.cpp
+	rm -rf _build
+	mkdir -p _build
+	cd _build && ${powershell} cmake ${srcdir} -DTARGET_NAME=${targetname}
+	cd _build && ${powershell} cmake --build . --config Release
+ifeq "${powershell}" "powershell.exe"
+	cp _build/${targetname}.exe $@
+else
+	cp _build/${targetname} $@ 
+endif
+
+run: ${targetname}.exe build/final.xclbin
+	${powershell} ./$< -x build/final.xclbin -i build/insts.txt -k MLIR_AIE --M ${M} --K ${K}
+
+generate_access_map: ${srcdir}/${aie_py_src}
+	mkdir -p ${@D}
+	python3 $< --generate-access-map ${M} ${K}
+
+clean:
+	rm -rf build _build inst ${targetname}.exe

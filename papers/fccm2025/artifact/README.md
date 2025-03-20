@@ -108,3 +108,7 @@ Many of these results rely on a "corpus of example designs" - these designs were
   ```
 
   This will produce a graph for effort and vocabulary (in separate files but otherwise idential to the joint graph in the paper) in a ```halstead_graphs``` directory.
+
+7. MLIR analysis from Section VI.B
+
+  MLIR analysis between corresponding examples is done through a mix of scripts and manual inspections. 
