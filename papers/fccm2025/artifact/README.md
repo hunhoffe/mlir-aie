@@ -26,8 +26,6 @@ The primary results to verify from the paper are:
 1. The source code (the primary artifact)
 2. Functionality of examples designs from Figure 2
 3. Functionality of code snippets for ```taplib``` from Section V.5, and generation of graphics in Figure 3
-
-The primary results to verify from the evaluation are:
 4. Table I and Table II - Features found in example designs
 5. Figure 4 - Average percent decrease to Single Lines of Code (SLOC)
 6. Figure 5 - Differences in Halstead vocabulary and effort
