@@ -56,11 +56,7 @@ class Example:
 
         # Check validity of source file path.
         self._iron_src = os.path.join(self._dir, self._iron_src)
-        if not os.path.isfile(self._iron_src):
-            raise ValueError(f"IRON src is not a file: {self._iron_src}")
         self._iron_ext_src = os.path.join(self._dir, self._iron_ext_src)
-        if not os.path.isfile(self._iron_ext_src):
-            raise ValueError(f"IRON ext src is not a file: {self._iron_ext_src}")
 
         # Can't check mlir source yet if not generated
         self._mlir_src = os.path.join(self._dir, self._mlir_src)

@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(SCRIPT_DIR))
 
 from artifact.example import Example, ExampleCollection
 
-PROGRAMMING_EXAMPLES_DIR = "../../../programming_examples"
+PROGRAMMING_EXAMPLES_DIR = "./programming_examples"
 
 
 def generate_iron_example_collection():
