@@ -133,26 +133,26 @@ The steps are as follows:
 * For the design with different orderings of ```ObjectFifo``` endpoints, manually review the results to see the differences in orderings.
 
 ### 8. Performance results from the last paragraph in Section VI.B
-  TODO
+
+The performance results were already generated in the previous step, and can be found in ```example_designs/*_result``` directories. What remains is to parse the result and get average latencies, which can be done with a script:
+```bash
+python3 parse_latency.py -d example_designs/
+```
 
 ### 9. Functionality of the ```Placer``` described in Section VI.C
 
-  Verification that the ```SequentialPlacer``` is successfully used in examples can be found from:
-  * Reviewing the ```SequentialPlacer``` source code, found at [```SequentialPlacer```](../../../python/iron/placers.py).
-  * Verifying that examples use the ```SequentialPlacer```:
-    This can be done through analyzing the source code in the [```example_designs/iron_ext```](./example_designs/iron_ext/) directory. As a quick hack, to count the examples that use the ```SequentialPlacer```, run: TODO
-    ```bash
-    find . -iname example_designs/iron_ext/*.py -exec bash -c 'grep -r SequentialPlacer {}' \;
-    ```
-  * Running the examples that use the ```SequentialPlacer``` successfully to verify placements are valid: (this is already done in step 8 above)
+Verification that the ```SequentialPlacer``` is successfully used in examples can be found from:
+* Reviewing the ```SequentialPlacer``` source code, found at [```SequentialPlacer```](../../../python/iron/placers.py).
+* Verifying that examples use the ```SequentialPlacer```: This can be done through analyzing the source code in the [```example_designs/iron_ext```](./example_designs/iron_ext/) directory.
+* Running the examples that use the ```SequentialPlacer``` successfully to verify placements are valid: (this is already done in step 8 above)
 
 ### 10. Functionality of the ```TensorTiler2D``` described in Section VI.D
 
-  Verification of the use of the ```TensorTiler2D``` is successfully used in examples can be found from:
-  * Reviewing the ```TensorTiler2D``` source code, found at [```TensorTiler2D```](../../../python/helpers/taplib/tensortiler2d.py)
-  * Verifying that examples use the ```TensorTiler2D```:
-    This can be done through analyzing the source code in the [```example_designs/iron_ext```](./example_designs/iron_ext/) directory. As a quick hack, to count the examples that use the ```TensorTiler2D```, run: TODO
-    ```bash
-    find . -iname example_designs/iron_ext/*.py -exec bash -c 'grep -r TensorTiler2D {}' \;
-    ```
-  * Running the examples that use the ```TensorTiler2D``` successfully to verify the data movements are valid: (this is already done in step 8 above)
+Verification of the use of the ```TensorTiler2D``` is successfully used in examples can be found from:
+* Reviewing the ```TensorTiler2D``` source code, found at [```TensorTiler2D```](../../../python/helpers/taplib/tensortiler2d.py)
+* Verifying that examples use the ```TensorTiler2D```:
+  This can be done through analyzing the source code in the [```example_designs/iron_ext```](./example_designs/iron_ext/) directory. As a quick hack, to count the examples that use the ```TensorTiler2D```, run:
+  ```bash
+  find example_designs/iron_ext -iname '*.py' -exec bash -c 'grep TensorTiler2D "{}" && echo "==== {} uses the TensorTiler2D!"' \;
+  ```
+* Running the examples that use the ```TensorTiler2D``` successfully to verify the data movements are valid: (this is already done in step 8 above)
