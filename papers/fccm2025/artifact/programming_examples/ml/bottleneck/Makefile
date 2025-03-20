@@ -26,7 +26,7 @@ build/${mlirFileName}.mlir: ${srcdir}/${aie_py_src}
 	mkdir -p ${@D}
 	python3 $< > $@
 
-insts.txt: build/${mlirFileName}.mlir
+insts.bin: build/${mlirFileName}.mlir
 	aiecc.py -v --aie-only-generate-npu --npu-insts-name=$@ $<
 
 build/conv2dk1.o: conv2dk1.cc
@@ -46,12 +46,12 @@ build/final.xclbin: build/${mlirFileName}.mlir build/conv2dk1.o build/conv2dk3.o
 	cd ${@D} && aiecc.py -v --aie-generate-xclbin --aie-generate-npu --no-compile-host \
 		--alloc-scheme=basic-sequential \
 		--no-xchesscc --no-xbridge \
-		--xclbin-name=${@F} --npu-insts-name=insts.txt $(<:%=../%) 
+		--xclbin-name=${@F} --npu-insts-name=insts.bin $(<:%=../%) 
 
 clean:
 	rm -rf build *.elf* *.lst *.bif ${mlirFileName}.mlir.prj log .xclbin sim \
-		chess* *.o insts.txt \
+		chess* *.o insts.bin \
 		*.log aie_partition.json *.bin BOOT.BIN _x test.exe
 
 run_py: build/final.xclbin
-	${powershell} python3 ${srcdir}/test.py -x build/final.xclbin -i build/insts.txt -k MLIR_AIE
+	${powershell} python3 ${srcdir}/test.py -x build/final.xclbin -i build/insts.bin -k MLIR_AIE

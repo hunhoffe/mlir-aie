@@ -48,10 +48,10 @@ build/final_${COLORTHRESHOLD_WIDTH}.xclbin: build/aie2_${COLORTHRESHOLD_WIDTH}.m
 ifeq ($(device),npu)
 	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu --no-compile-host --alloc-scheme=basic-sequential \
 		--no-xchesscc --no-xbridge \
-		--xclbin-name=${@F} --npu-insts-name=insts.txt $(<:%=../%)
+		--xclbin-name=${@F} --npu-insts-name=insts.bin $(<:%=../%)
 else
 	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu --no-compile-host --alloc-scheme=basic-sequential \
-		--xclbin-name=${@F} --npu-insts-name=insts.txt $(<:%=../%)
+		--xclbin-name=${@F} --npu-insts-name=insts.bin $(<:%=../%)
 endif
 
 ${targetname}.exe: ${srcdir}/test.cpp
@@ -66,7 +66,7 @@ else
 endif
 
 run: ${targetname}.exe build/final_${COLORTHRESHOLD_WIDTH}.xclbin
-	${powershell} ./$< -x build/final_${COLORTHRESHOLD_WIDTH}.xclbin -i build/insts.txt -k MLIR_AIE
+	${powershell} ./$< -x build/final_${COLORTHRESHOLD_WIDTH}.xclbin -i build/insts.bin -k MLIR_AIE
 
 clean:
 	rm -rf build _build ${targetname}.exe

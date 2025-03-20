@@ -18,7 +18,7 @@
 #endif
 
 #ifndef INSTS_TXT
-#define INSTS_TXT "build/insts.txt"
+#define INSTS_TXT "build/insts.bin"
 #endif
 
 #ifndef KERNEL_NAME

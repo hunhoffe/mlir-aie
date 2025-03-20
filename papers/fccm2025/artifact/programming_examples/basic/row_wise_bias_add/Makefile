@@ -29,7 +29,7 @@ CXX=g++-13 -ggdb
 
 mlir_target?=build/aie.mlir
 xclbin_target?=build/final.xclbin
-insts_target?=build/insts.txt
+insts_target?=build/insts.bin
 host_target?=build/test
 
 M=768

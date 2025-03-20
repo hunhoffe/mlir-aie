@@ -44,7 +44,7 @@ build/final_${COLORDETECT_WIDTH}.xclbin: build/aie2_lineBased_8b_${COLORDETECT_W
 	mkdir -p ${@D}
 	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu --no-compile-host --alloc-scheme=basic-sequential \
 		--no-xchesscc --no-xbridge \
-		--xclbin-name=${@F} --npu-insts-name=insts.txt $(<:%=../%)
+		--xclbin-name=${@F} --npu-insts-name=insts.bin $(<:%=../%)
 
 ${targetname}.exe: ${srcdir}/test.cpp
 	mkdir -p ${@D}
@@ -59,7 +59,7 @@ else
 endif
 
 run: ${targetname}.exe build/final_${COLORDETECT_WIDTH}.xclbin
-	${powershell} ./$< -x build/final_${COLORDETECT_WIDTH}.xclbin -i build/insts.txt -k MLIR_AIE
+	${powershell} ./$< -x build/final_${COLORDETECT_WIDTH}.xclbin -i build/insts.bin -k MLIR_AIE
 
 clean:
 	rm -rf build _build ${targetname}.exe colorDetectOut_test.jpg
