@@ -127,7 +127,7 @@ class Example:
             return False
 
         result = subprocess.run(
-            f"make {self._run_cmd}",
+            f"env {build_env} make {self._run_cmd}",
             shell=True,
             env=os.environ,
             cwd=self._dir,

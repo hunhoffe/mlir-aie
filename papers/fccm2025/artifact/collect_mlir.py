@@ -21,4 +21,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ie = generate_iron_example_collection()
-    ie.collect_mlir_and_results(example_dir=args.dir)
+    ie.collect_mlir_and_results(example_dir=args.dir, verbose=True)

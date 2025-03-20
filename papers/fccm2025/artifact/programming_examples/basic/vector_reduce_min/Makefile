@@ -25,7 +25,7 @@ endif
 
 all: build/final.xclbin build/insts.txt
 
-VPATH := ${srcdir}/../../../aie_kernels/aie2
+VPATH := ${srcdir}/../../../../../../aie_kernels/aie2
 
 build/%.cc.o: %.cc
 	mkdir -p ${@D}
