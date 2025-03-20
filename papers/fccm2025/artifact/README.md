@@ -114,14 +114,23 @@ This will produce a graph for effort and vocabulary (in separate files but other
 MLIR analysis between corresponding examples is done through a mix of scripts and manual inspections. 
 
 The steps are as follows:
-* Generate this MLIR: The script to generate the MLIR also runs all of the examples, so **it can take some time** and the results are also used in the next step.
+* Generate this MLIR: The script to generate the MLIR also runs all of the examples, so it can take some time (approx. 30 min on our machine) and the results are also used in the next step.
   ```bash
   python collect_mlir.py -d example_designs/
   ```
   MLIR for all the example designs is copied into ```example_designs/iron_ext_mlir/``` and ```example_designs/iron_mlir``` by the [```collect_mlir.py```](./collect_mlir.py) script.
 
   Note: This is the first step in the verification process so far that requires running examples on the NPU. This script works by copying the IRON and IRON(ext) files into the local [```programming_examples```](./programming_examples/) tree, which contains the Makefiles and other associated files needed to build, run, and collect performance data on all example designs.
-  * TODO
+* There is a script that can automatically look at diffs of all the designs and summarize results:
+  ```bash
+  python mlir_diff.py -d example_designs/
+  ```
+  Review the results. As reported in the paper, you should see 20/27 designs marked as the same. Specific diffs for the designs that are NOT the same are reported
+* For the three designs with differing DMA transformations, we can translate the different MLIR ```aie.dma_bd``` arguments into ```TensorAccessPattern``` objects and compare access patterns between the corresponding operations. This is automated in a script:
+  ```bash
+  python mlir_compare_taps.py
+  ```
+* For the design with different orderings of ```ObjectFifo``` endpoints, manually review the results to see the differences in orderings.
 
 ### 8. Performance results from the last paragraph in Section VI.B
   TODO

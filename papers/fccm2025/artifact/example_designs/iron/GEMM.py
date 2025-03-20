@@ -3,7 +3,7 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2023 AMD Inc.
+# (c) Copyright 2024 Advanced Micro Devices, Inc. or its affiliates
 import argparse
 from ml_dtypes import bfloat16
 import numpy as np
@@ -346,9 +346,11 @@ def my_matmul(
             tb_max_n_rows = (
                 4  # tb = transfer block; block of transfers before sync call
             )
+
+            in_tasks = []
+            out_tasks = []
             for tb in range(ceildiv(M // m // n_aie_rows, tb_max_n_rows)):
                 for pingpong in [0, 1]:
-                    M // m // n_aie_rows // tb_max_n_rows
                     row_base = tb * tb_max_n_rows + pingpong * tb_max_n_rows // 2
                     bd_id_base = 8 * pingpong
                     tb_n_rows = min(
@@ -358,7 +360,6 @@ def my_matmul(
                         # for small input sizes, we may not even need a "pong" iteration
                         break
                     for col in range(n_aie_cols):
-
                         # C Output Transfer:
                         # The smallest transfer unit is a (m*n_aie_rows)-x-(n)-sized sub-tile of the matrix.
                         # Transfer one such tile for every (n_aie_cols)-th column, evenly spaced,
@@ -383,15 +384,18 @@ def my_matmul(
                         C_offset = C_col_offset + C_row_offset
                         C_sizes = [tb_n_rows, N // n // n_aie_cols, m * n_aie_rows, n]
                         C_strides = [m * n_aie_rows * N, n * n_aie_cols, N, 1]
-                        npu_dma_memcpy_nd(
-                            metadata=C_l2l3_fifos[col],
-                            bd_id=bd_id_base,
-                            mem=C,
-                            offsets=[0, 0, 0, C_offset],
+
+                        c_task = shim_dma_single_bd_task(
+                            C_l2l3_fifos[col],
+                            C,
                             sizes=C_sizes,
                             strides=C_strides,
+                            offset=C_offset,
+                            issue_token=True,
                         )
 
+                        dma_start_task(c_task)
+                        out_tasks.append(c_task)
                         for tile_row in range(tb_n_rows):
 
                             # A input transfer:
@@ -426,14 +430,19 @@ def my_matmul(
                                 k,
                             ]
                             A_strides = [0, k, K, 1]
-                            npu_dma_memcpy_nd(
-                                metadata=A_l3l2_fifos[col],
-                                bd_id=bd_id_base + 2 * tile_row + 1,
-                                mem=A,
-                                offsets=[0, 0, 0, A_offset],
+
+                            a_task = shim_dma_single_bd_task(
+                                A_l3l2_fifos[col],
+                                A,
+                                offset=A_offset,
                                 sizes=A_sizes,
                                 strides=A_strides,
                             )
+                            dma_start_task(a_task)
+                            in_tasks.append(a_task)
+                            # Use the calculated sizes/strides/offsets to record the data movement
+                            # caused by the above call to npu_dma_memcpy_nd.
+                            # This line does not change MLIR output at all.
 
                             # B input transfer:
                             # Transfer the first a (n)-wide block of columns of B,
@@ -461,17 +470,24 @@ def my_matmul(
                                 B_sizes = [N // n // n_aie_cols, K // k, n, k]
                                 B_strides = [n * n_aie_cols * K, k, K, 1]
 
-                            npu_dma_memcpy_nd(
-                                metadata=B_l3l2_fifos[col],
-                                bd_id=bd_id_base + 2 * tile_row + 2,
-                                mem=B,
-                                offsets=[0, 0, 0, B_col_offset],
+                            b_task = shim_dma_single_bd_task(
+                                B_l3l2_fifos[col],
+                                B,
                                 sizes=B_sizes,
                                 strides=B_strides,
+                                offset=B_col_offset,
                             )
+                            dma_start_task(b_task)
+                            in_tasks.append(b_task)
                     if tb > 0 or (tb == 0 and pingpong > 0):
-                        dma_wait(*C_l2l3_fifos)
-            dma_wait(*C_l2l3_fifos)
+                        dma_await_task(*out_tasks)
+                        out_tasks = []
+                        dma_free_task(*in_tasks)
+                        in_tasks = []
+            if len(out_tasks) > 0:
+                dma_await_task(*out_tasks)
+            if len(in_tasks) > 0:
+                dma_free_task(*in_tasks)
 
 
 if __name__ == "__main__":

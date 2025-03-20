@@ -58,10 +58,9 @@ def mlir_diffs(collection_dir: str, output_file: str):
         updated_one = []
         for line in one:
             if line in two:
-                # Declarations. Doesn't matter unless incorrect, which would be caught be functionality tests.
+                # Declarations. Ordering doesn't matter unless incorrect, which would be caught be functionality tests.
                 if (
                     "func.func private @" in line
-                    # or "aiex.dma_start_task" in line
                     or " = aie.tile("
                     or "aie.objectfifo.link [" in line
                     or "func.func @" in line
