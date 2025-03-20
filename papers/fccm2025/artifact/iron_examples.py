@@ -19,6 +19,10 @@ def generate_iron_example_collection():
         name="DMA",
         category="Copy",
         dir=f"{PROGRAMMING_EXAMPLES_DIR}/basic/passthrough_dmas",
+        iron_src="dma_transpose_alt.py",
+        iron_ext_src="dma_transpose_iron.py",
+        iron_build_env="use_alt=1",
+        iron_ext_build_env="use_iron=1",
     )
     iron_examples.append(e)
     e = Example(
