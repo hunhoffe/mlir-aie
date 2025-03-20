@@ -14,36 +14,24 @@ include ${srcdir}/../../makefile-common
 
 SHELL := /bin/bash
 
-all: build/final.xclbin build/insts.txt
-
-targetname = dma_transpose
-M ?= 64
-K ?= 32
+targetname = matrix_scalar_add
+devicename = npu
+col = 0
 
 aie_py_src=${targetname}.py
 use_alt?=0
-use_iron?=0
 
 ifeq (${use_alt}, 1)
 aie_py_src=${targetname}_alt.py
-ifeq (${use_iron}, 1)
-$(error Cannot specify both alternative design and IRON)
-endif
 endif
 
-ifeq (${use_iron}, 1)
-aie_py_src=${targetname}_iron.py
-endif
-
-build/aie.mlir: ${srcdir}/${aie_py_src}
-	mkdir -p ${@D}
-	python3 $< ${M} ${K} > $@
+all: build/final.xclbin
 
 build/final.xclbin: build/aie.mlir
 	mkdir -p ${@D}
-	cd ${@D} && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=${@F} \
-				--no-xchesscc --no-xbridge \
-				--aie-generate-npu --npu-insts-name=insts.txt $(<:%=../%)
+	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu --no-compile-host \
+		--no-xchesscc --no-xbridge \
+		--xclbin-name=${@F} --npu-insts-name=insts.txt ${<F}
 
 ${targetname}.exe: ${srcdir}/test.cpp
 	rm -rf _build
@@ -56,8 +44,12 @@ else
 	cp _build/${targetname} $@ 
 endif
 
+build/aie.mlir: ${srcdir}/${aie_py_src}
+	mkdir -p ${@D}
+	python3 $< ${devicename} ${col} > $@
+
 run: ${targetname}.exe build/final.xclbin
-	${powershell} ./$< -x build/final.xclbin -i build/insts.txt -k MLIR_AIE --M ${M} --K ${K}
+	${powershell} ./$< -x build/final.xclbin -i build/insts.txt -k MLIR_AIE
 
 clean:
-	rm -rf build _build inst ${targetname}.exe
+	rm -rf build _build inst aie.mlir.prj core_* test.elf ${targetname}.exe

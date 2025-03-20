@@ -12,37 +12,33 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 include ${srcdir}/../../makefile-common
 
-SHELL := /bin/bash
-
-all: build/final.xclbin build/insts.txt
-
-targetname = dma_transpose
-M ?= 64
-K ?= 32
+targetname = vector_reduce_add
+devicename = npu
+col = 0
 
 aie_py_src=${targetname}.py
 use_alt?=0
-use_iron?=0
 
 ifeq (${use_alt}, 1)
 aie_py_src=${targetname}_alt.py
-ifeq (${use_iron}, 1)
-$(error Cannot specify both alternative design and IRON)
-endif
 endif
 
-ifeq (${use_iron}, 1)
-aie_py_src=${targetname}_iron.py
-endif
+all: build/final.xclbin build/insts.txt
+
+VPATH := ${srcdir}/../../../../../../aie_kernels/aie2
+
+build/%.cc.o: %.cc
+	mkdir -p ${@D}
+	cd ${@D} && ${PEANO_INSTALL_DIR}/bin/clang++ ${PEANOWRAP2_FLAGS}  -c $< -o ${@F}
 
 build/aie.mlir: ${srcdir}/${aie_py_src}
 	mkdir -p ${@D}
-	python3 $< ${M} ${K} > $@
+	python3 $< ${devicename} ${col} > $@
 
-build/final.xclbin: build/aie.mlir
+build/final.xclbin: build/aie.mlir build/reduce_add.cc.o
 	mkdir -p ${@D}
 	cd ${@D} && aiecc.py --aie-generate-xclbin --no-compile-host --xclbin-name=${@F} \
-				--no-xchesscc --no-xbridge \
+    	--no-xchesscc --no-xbridge --peano ${PEANO_INSTALL_DIR} \
 				--aie-generate-npu --npu-insts-name=insts.txt $(<:%=../%)
 
 ${targetname}.exe: ${srcdir}/test.cpp
@@ -57,7 +53,7 @@ else
 endif
 
 run: ${targetname}.exe build/final.xclbin
-	${powershell} ./$< -x build/final.xclbin -i build/insts.txt -k MLIR_AIE --M ${M} --K ${K}
+	${powershell} ./$< -x build/final.xclbin -i build/insts.txt -k MLIR_AIE
 
 clean:
-	rm -rf build _build inst ${targetname}.exe
+	rm -rf build _build inst aie.mlir.prj core_* test.elf ${targetname}.exe

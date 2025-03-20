@@ -32,7 +32,7 @@ endif()
 
 set(TARGET_NAME test CACHE STRING "Target to be built")
 
-SET (ProjectName proj_${TARGET_NAME})
+SET (ProjectName ${TARGET_NAME})
 SET (currentTarget ${TARGET_NAME})
 
 if ( WSL )
