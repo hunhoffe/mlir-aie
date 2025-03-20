@@ -55,7 +55,7 @@ python fig2/fig2_iron_ext.py
 If these were not valid designs (e.g., not supported by the API) they would throw errors and would not successfully generate MLIR.
 Example MLIR generation on our system (for comparison) is found at [```fig2/ext.mlir```](./fig2/ext.mlir) and [```fig2/orig.mlir```](./fig2/orig.mlir).
 
-### 3. ```taplib`` Code Snippets and Figure 3
+### 3. ```taplib``` Code Snippets and Figure 3
 
 The code snippets for ```taplib``` found in Section V are found in [```taplib/snippets.py```](taplib/snippets.py) and can be run (to check validity) with:
 ```bash
@@ -67,7 +67,7 @@ To generate the graphics from Figure 3, run:
 python taplib/fig3.py
 ```
 
-This will create ```tap00.py``` and ```taps0.py```, which have been combined to form Figure 3.
+This will create ```tap00.png``` and ```taps0.png```, which have been combined to form Figure 3.
 
 ### 4. Table I and Table II - Features found in example designs
 
