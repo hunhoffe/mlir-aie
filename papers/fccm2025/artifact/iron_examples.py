@@ -39,9 +39,9 @@ def generate_iron_example_collection():
     e = Example(
         name="MTranspose",
         dir=f"{PROGRAMMING_EXAMPLES_DIR}/basic/dma_transpose",
-        iron_src="dma_transpose_placed.py",
+        iron_src="dma_transpose_alt.py",
         iron_ext_src="dma_transpose_iron.py",
-        iron_build_env="use_placed=1",
+        iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
     )
     iron_examples.append(e)
@@ -133,7 +133,7 @@ def generate_iron_example_collection():
         dir=f"{PROGRAMMING_EXAMPLES_DIR}/basic/matrix_multiplication/matrix_vector",
         iron_src="matrix_vector.py",
         iron_ext_src="matrix_vector_iron.py",
-        iron_build_env="use_placed=1",
+        iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
         mlir_src="build/aie_288x288x1.mlir",
     )
@@ -178,7 +178,7 @@ def generate_iron_example_collection():
         dir=f"{PROGRAMMING_EXAMPLES_DIR}/basic/matrix_multiplication/whole_array",
         iron_src="whole_array.py",
         iron_ext_src="whole_array_iron.py",
-        iron_build_env="use_placed=1",
+        iron_build_env="use_alt=1",
         iron_ext_build_env="use_iron=1",
         mlir_src="build/aie_512x512x512_64x64x64_4c.mlir",
     )
@@ -196,7 +196,7 @@ def generate_iron_example_collection():
     e = Example(
         name="ResNetConv2x",
         dir=f"{PROGRAMMING_EXAMPLES_DIR}/ml/resnet/layers_conv2_x",
-        iron_src="resnet_placed.py",
+        iron_src="resnet_alt.py",
         iron_ext_src="resnet.py",
         run_cmd="run_py",
     )

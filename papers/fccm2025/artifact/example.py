@@ -10,7 +10,7 @@ import subprocess
 class Example:
     DEFAULT_MLIR = "build/aie.mlir"
     DEFAULT_RUN = "run"
-    DEFAULT_IRON_BUILD = "use_placed=1"
+    DEFAULT_IRON_BUILD = "use_alt=1"
     DEFAULT_IRON_EXT_BUILD = ""
 
     def __init__(
@@ -50,7 +50,7 @@ class Example:
         if self._iron_src is None or self._iron_ext_src is None:
             design_name = self._dir.split(os.path.sep)[-1]
             if self._iron_src is None:
-                self._iron_src = f"{design_name}_placed.py"
+                self._iron_src = f"{design_name}_alt.py"
             if self._iron_ext_src is None:
                 self._iron_ext_src = f"{design_name}.py"
 
