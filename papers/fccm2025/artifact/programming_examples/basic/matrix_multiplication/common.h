@@ -92,7 +92,7 @@ void parse_options(int argc, const char *argv[], po::options_description &desc,
 // AIE Specifics
 // --------------------------------------------------------------------------
 
-std::vector<uint32_t> load_instr_sequence(std::string instr_path) {
+std::vector<uint32_t> load_instr_binary(std::string instr_path) {
   std::ifstream instr_file(instr_path);
   std::string line;
   std::vector<uint32_t> instr_v;
