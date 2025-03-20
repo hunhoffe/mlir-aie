@@ -40,11 +40,11 @@ Many of these results rely on a "corpus of example designs" - these designs are 
 
 ### 1. Source Code
 
-Source code is primarily found [here](../../../python/iron). This includes the ```Placer``` interface, which is integrated throughout the source code. Core placement classes are found [here](../../../python/iron/placers.py) and [here](../../../python/iron/placeable.py). ```taplib``` (and useful extensions) are [here](../../../python/helpers/taplib).
+Source code is primarily found [here](../../../python/iron). This includes the ```Placer``` interface, which is integrated throughout the source code. Core placement classes are found [here](../../../python/iron/placers.py) and [here](../../../python/iron/placeable.py). ```taplib``` (including useful extensions) is found [here](../../../python/helpers/taplib).
 
 ### 2. Figure 2 Designs
 
-The designs in Figure 2 are pared down examples from [```example_designs/iron/MSAdd.py```](,/example_designs/iron/MSAdd.py) and [```example_designs/iron_ext/MSAdd.py```](./example_designs/iron_ext/MSAdd.py). We include nearly identical versions (but with some additional imports/constant defintions omitted from the paper due to space) in [```fig2```](fig2) directory. These are functional examples - you can use them to generate MLIR (while we leave full functionality tests to the examples in ```example_designs```).
+The designs in Figure 2 are pared down examples from [```example_designs/iron/MSAdd.py```](./example_designs/iron/MSAdd.py) and [```example_designs/iron_ext/MSAdd.py```](./example_designs/iron_ext/MSAdd.py). We include nearly identical versions (but with some additional imports/constant defintions omitted from the paper due to space) in [```fig2```](fig2) directory. These are functional examples - you can use them to generate MLIR (while we leave full functionality tests to the examples in ```example_designs```).
 
 We can verify the Python yields valid MLIR of the ```mlir-aie``` dialect by running:
 ```bash
