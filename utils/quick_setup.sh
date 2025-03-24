@@ -11,9 +11,27 @@
 # Please have the Vitis tools and XRT environment setup before sourcing the 
 # script.
 #
-# source ./utils/quick_setup.sh
+# source ./utils/quick_setup.sh <mlir-aie-pip-version> <llvm-aie-pip-version>
+# Version arguments are optional.
 #
 ##===----------------------------------------------------------------------===##
+
+if [ $# -eq 0 ]
+then
+    echo "No arguments supplied - using latest pip releases for mlir-aie and llvm-aie"
+fi
+
+MLIR_AIE_PIP_VER=""
+if [ $# -gt 0 ]
+then
+  MLIR_AIE_PIP_VER="-v \"mlir-aie==$1\""
+fi
+
+LLVM_AIE_PIP_VER=""
+if [ $# -gt 1 ]
+then
+  LLVM_AIE_PIP_VER="-v \"llvm-aie==$2\""
+fi
 
 echo "Setting up RyzenAI developement tools..."
 if [[ $WSL_DISTRO_NAME == "" ]]; then
@@ -58,10 +76,10 @@ $my_python -m venv ironenv
 source ironenv/bin/activate
 python3 -m pip install --upgrade pip
 
-python3 -m pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels/ 
+python3 -m pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels/ $MLIR_AIE_PIP_VER
 export MLIR_AIE_INSTALL_DIR="$(pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
 
-python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly $LLVM_AIE_PIP_VER
 export PEANO_INSTALL_DIR="$(pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
 
 python3 -m pip install -r python/requirements.txt

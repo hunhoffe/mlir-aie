@@ -10,7 +10,12 @@ Source code is primarily found [here](../../../python/iron). This includes the `
 
 ### Environment Setup
 
-Install IRON according to the quickstart instructions described in the primary repo [README](../../../README.md). Since the extensions to IRON have already been accepted into the code base, this will install Python wheels that contain the source code linked to above.
+Install IRON according to the quickstart instructions described in the primary repo [README](../../../README.md) with one change: run the quickstart script with additional arguments (to pin to a stable release for IRON and peano):
+```bash
+source ./utils/quick_setup.sh 0.0.1.2025032404+4e6c2c6 19.0.0.2025032301+56eaeb7b
+```
+
+Since the extensions to IRON have already been accepted into the code base, this will install Python wheels that contain the source code linked to above.
 
 **We assume all commands below are run with the environment variables sourced according to the quickstart script and within the Python env, ```ironenv```, activated.**
 
