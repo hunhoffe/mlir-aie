@@ -15,22 +15,21 @@
 # Version arguments are optional.
 #
 ##===----------------------------------------------------------------------===##
-
 if [ $# -eq 0 ]
 then
-    echo "No arguments supplied - using latest pip releases for mlir-aie and llvm-aie"
+    echo "No arguments supplied - using latest pip releases for mlir_aie and llvm-aie"
 fi
 
 MLIR_AIE_PIP_VER=""
 if [ $# -gt 0 ]
 then
-  MLIR_AIE_PIP_VER="-v \"mlir-aie==$1\""
+  MLIR_AIE_PIP_VER="-v mlir_aie==$1"
 fi
 
 LLVM_AIE_PIP_VER=""
 if [ $# -gt 1 ]
 then
-  LLVM_AIE_PIP_VER="-v \"llvm-aie==$2\""
+  LLVM_AIE_PIP_VER="-v llvm-aie==$2"
 fi
 
 echo "Setting up RyzenAI developement tools..."
