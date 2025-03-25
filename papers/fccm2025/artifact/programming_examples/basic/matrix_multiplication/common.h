@@ -31,19 +31,6 @@ namespace po = boost::program_options;
 // Command Line Argument Handling
 // --------------------------------------------------------------------------
 
-void check_arg_file_exists(po::variables_map &vm_in, std::string name) {
-  if (!vm_in.count(name)) {
-    throw std::runtime_error("Error: no " + name + " file was provided\n");
-  } else {
-    std::ifstream test(vm_in[name].as<std::string>());
-    if (!test) {
-      throw std::runtime_error("The " + name + " file " +
-                               vm_in[name].as<std::string>() +
-                               " does not exist.\n");
-    }
-  }
-}
-
 void add_default_options(po::options_description &desc) {
   desc.add_options()("help,h", "produce help message")(
       "xclbin,x", po::value<std::string>()->required(),
@@ -84,8 +71,8 @@ void parse_options(int argc, const char *argv[], po::options_description &desc,
     std::exit(1);
   }
 
-  check_arg_file_exists(vm, "xclbin");
-  check_arg_file_exists(vm, "instr");
+  test_utils::check_arg_file_exists(vm, "xclbin");
+  test_utils::check_arg_file_exists(vm, "instr");
 }
 
 // --------------------------------------------------------------------------
@@ -363,8 +350,7 @@ void print_error_summary(std::ostream &os, int n_errors,
 void print_progress_bar(std::ostream &os, double progress, int len = 75) {
   os << "\r" << std::string((int)(progress * len), '|')
      << std::string(len - (int)(progress * len), ' ') << std::setw(4)
-     << std::fixed << std::setprecision(0) << progress * 100 << "%"
-     << "\r";
+     << std::fixed << std::setprecision(0) << progress * 100 << "%" << "\r";
 }
 
 template <typename Tin, typename Tout, typename Tacc>
