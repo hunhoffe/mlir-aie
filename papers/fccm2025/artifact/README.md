@@ -128,7 +128,8 @@ The steps are as follows:
   In case of failure: if this step fails because a design fails:
   * I've had VSoftMax fail, rarely. It seems that maybe there is a runtime parameter timing bug that hasn't been identified (but is shared by both versions)
   * Rarely the NPU ends up in a bad state for unknown reasons
-  Regardless of reason, if this happens, please the results and try again:
+
+  Regardless of reason, if this happens, please clear any partial results and try again:
   ```bash
   rm -rf example_designs/*_mlir example_designs/*_result
   python collect_mlir.py -d example_designs/
