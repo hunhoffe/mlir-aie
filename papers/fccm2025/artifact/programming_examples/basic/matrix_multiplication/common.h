@@ -23,6 +23,8 @@
 #include <ostream>
 #include <stdfloat>
 
+#include "test_utils.h"
+
 namespace matmul_common {
 
 namespace po = boost::program_options;

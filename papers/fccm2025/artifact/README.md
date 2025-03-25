@@ -124,6 +124,21 @@ The steps are as follows:
   MLIR for all the example designs is copied into ```example_designs/iron_ext_mlir/``` and ```example_designs/iron_mlir``` by the [```collect_mlir.py```](./collect_mlir.py) script.
 
   Note: This is the first step in the verification process so far that requires running examples on the NPU. This script works by copying the IRON and IRON(ext) files into the local [```programming_examples```](./programming_examples/) tree, which contains the Makefiles and other associated files needed to build, run, and collect performance data on all example designs.
+
+  In case of failure: if this step fails because a design fails:
+  * I've had VSoftMax fail, rarely. It seems that maybe there is a runtime parameter timing bug that hasn't been identified (but is shared by both versions)
+  * Rarely the NPU ends up in a bad state for unknown reasons
+  Regardless of reason, if this happens, please the results and try again:
+  ```bash
+  rm -rf example_designs/*_mlir example_designs/*_result
+  python collect_mlir.py -d example_designs/
+  ```
+  If the NPU remains in a bad state, you can reset the NPU (below) or reboot the machine before trying again:
+  ```bash
+  # run from mlir-aie root
+  ./utils/reset_npu.sh
+  ```
+
 * There is a script that can automatically look at diffs of all the designs and summarize results:
   ```bash
   python mlir_diff.py -d example_designs/
