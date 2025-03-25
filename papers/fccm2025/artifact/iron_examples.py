@@ -39,10 +39,6 @@ def generate_iron_example_collection():
     e = Example(
         name="MTranspose",
         dir=f"{PROGRAMMING_EXAMPLES_DIR}/basic/dma_transpose",
-        iron_src="dma_transpose_alt.py",
-        iron_ext_src="dma_transpose_iron.py",
-        iron_build_env="use_alt=1",
-        iron_ext_build_env="use_iron=1",
     )
     iron_examples.append(e)
 
