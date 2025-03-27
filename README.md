@@ -1,3 +1,8 @@
+# Information on this Fork
+
+## This fork for exists for the purpose of artifact evaluation for FCCM'25. If you want to use extended IRON as a user, please use the [official mlir-aie github repo](https://github.com/Xilinx/mlir-aie).
+
+
 # MLIR-based AI Engine toolchain
 
 [![Build and Test across Python versions](https://github.com/Xilinx/mlir-aie/actions/workflows/buildAndTestPythons.yml/badge.svg)](https://github.com/Xilinx/mlir-aie/actions/workflows/buildAndTestPythons.yml)
