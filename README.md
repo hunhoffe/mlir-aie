@@ -2,6 +2,7 @@
 
 ## This fork for exists for the purpose of artifact evaluation for FCCM'25. If you want to use extended IRON as a user, please use the [official mlir-aie github repo](https://github.com/Xilinx/mlir-aie).
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15098619.svg)](https://doi.org/10.5281/zenodo.15098619)
 
 # MLIR-based AI Engine toolchain
 
