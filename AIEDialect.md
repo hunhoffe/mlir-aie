@@ -547,7 +547,7 @@ is 0). All counts are expressed in multiples of the element width.
 
 | Operand | Description |
 | :-----: | ----------- |
-| `buffer` | memref of any type values |
+| `buffer` | ranked or unranked memref of any type values |
 
 
 
@@ -1263,7 +1263,7 @@ the specified tile's memory module.
 
 In the following example the objects of @of4 will be allocated on %tile14:
 ```
-  aie.objectfifo @of4 (%tile13, {%tile14}, 2 : i32) : !aie.objectfifo<memref<256xi32>>
+  aie.objectfifo @of4 (%tile13, { %tile14 }, 2 : i32) : !aie.objectfifo<memref<256xi32>>
   aie.objectfifo.allocate @of4 (%tile14)
 ```
 
@@ -1313,6 +1313,10 @@ To achieve a broadcast pattern through the link tile, the output `objectFifo` sh
 To achieve a distribute pattern from the link tile, there should be multiple output `objectFifos` in the OjbectFifoLinkOp. In this case,
 parts will be taken out of the input `objectFifo`'s buffers based on dst_offsets input array.
 The join pattern is the exact inverse of the distribute one and uses the src_offsets input array instead.
+
+In the cases of the join and distribute patterns, the link has some special restrictions on `toStream` and `fromStream` dimensions:
+- join: the `toStream` dimensions of the output `objectFifo` cannot access an index beyond the length of the minimum transfer length in the src_offsets.
+- distribute: the `fromStream` dimensions of the input `objectFifo` cannot access an index beyond the length of the minimum transfer length in dst_offsets.
 
 Traits: `HasParent<DeviceOp>`
 
