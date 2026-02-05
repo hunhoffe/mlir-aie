@@ -13,8 +13,8 @@
 ##===----------------------------------------------------------------------===##
 
 # The LLVM commit to use.
-LLVM_PROJECT_COMMIT=ebf5d9ef7de29b55fd9e9d504f83689b4013e0de
-DATETIME=2025120518
+LLVM_PROJECT_COMMIT=ac5dc54d509169d387fcfd495d71853d81c46484
+DATETIME=2026012919
 WHEEL_VERSION=22.0.0.$DATETIME+${LLVM_PROJECT_COMMIT:0:8}
 
 ############################################################################################
