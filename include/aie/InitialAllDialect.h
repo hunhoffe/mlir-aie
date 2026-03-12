@@ -19,6 +19,7 @@
 #include "aie/Dialect/AIEVec/AIE1/IR/AIEVecAIE1Dialect.h"
 #include "aie/Dialect/AIEVec/IR/AIEVecDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+#include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 #include "aie/Dialect/XLLVM/XLLVMDialect.h"
 
 #include "mlir/IR/Dialect.h"
@@ -34,6 +35,7 @@ inline void registerAllDialects(mlir::DialectRegistry &registry) {
     aievec::AIEVecDialect,
     aievec::aie1::AIEVecAIE1Dialect,
     AIEX::AIEXDialect,
+    conduit::ConduitDialect,
     xllvm::XLLVMDialect
   >();
   // clang-format on
