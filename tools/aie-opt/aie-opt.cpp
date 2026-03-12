@@ -20,6 +20,7 @@
 #include "aie/Dialect/AIEVec/TransformOps/DialectExtension.h"
 #include "aie/Dialect/AIEVec/Transforms/Passes.h"
 #include "aie/Dialect/AIEX/Transforms/AIEXPasses.h"
+#include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 #include "aie/InitialAllDialect.h"
 #include "aie/version.h"
 
@@ -35,6 +36,7 @@ int main(int argc, char **argv) {
   registerAllPasses();
   xilinx::registerConversionPasses();
   xilinx::AIE::registerAIEPasses();
+  xilinx::conduit::registerConduitPasses();
   xilinx::AIEX::registerAIEXPasses();
   xilinx::aievec::registerAIEVecAnalysisPasses();
   xilinx::aievec::registerAIEVecPasses();

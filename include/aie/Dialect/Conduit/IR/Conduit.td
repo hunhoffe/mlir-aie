@@ -205,10 +205,14 @@ def Conduit_ObjectFifoLink : Conduit_Op<"objectfifo_link"> {
     - offsets : optional byte offsets
     - lock_id : optional integer
 
+    Invariants:
+    - distribute mode: when offsets is non-empty, offsets.size() == dsts.size()
+    - join mode: when offsets is non-empty, offsets.size() == srcs.size()
+
     Example:
       conduit.objectfifo_link {srcs = ["of_in"], dsts = ["of_out0", "of_out1"],
                                mode = "distribute", memtile = "tile(0,1)",
-                               offsets = [0 : i64, 1024 : i64]}
+                               offsets = array<i64: 0, 1024>}
   }];
   let arguments = (ins StrArrayAttr:$srcs,
                        StrArrayAttr:$dsts,
@@ -217,6 +221,7 @@ def Conduit_ObjectFifoLink : Conduit_Op<"objectfifo_link"> {
                        OptionalAttr<DenseI64ArrayAttr>:$offsets,
                        OptionalAttr<I64Attr>:$lock_id);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def Conduit_PutMemref : Conduit_Op<"put_memref"> {
@@ -314,6 +319,28 @@ def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {
   let arguments = (ins StrAttr:$name, I64Attr:$index);
   let results   = (outs I64:$result);
   let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+def Conduit_RegisterExternalBuffers : Conduit_Op<"register_external_buffers"> {
+  let summary = "register host-side external buffers with a shim-DMA conduit";
+  let description = [{
+    Covers 249 corpus files that use aie.external_buffer / shimDMA registration
+    for host<->shim data transfer.
+
+    Attributes:
+    - name        : conduit channel name (typically a shim DMA channel)
+    - num_buffers : number of external host buffers to register
+    - base_addr   : base address of the first buffer (0 = runtime-determined)
+
+    Example:
+      conduit.register_external_buffers {name = "shim_chan",
+                                         num_buffers = 2 : i64,
+                                         base_addr = 0 : i64}
+  }];
+  let arguments = (ins StrAttr:$name,
+                       I64Attr:$num_buffers,
+                       I64Attr:$base_addr);
+  let assemblyFormat = "attr-dict";
 }
 
 #endif // CONDUIT_DIALECT

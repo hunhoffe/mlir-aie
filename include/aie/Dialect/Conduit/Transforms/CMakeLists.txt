@@ -5,4 +5,8 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc.
 
-# No Conduit transformation passes exist yet.
+set(LLVM_TARGET_DEFINITIONS Passes.td)
+mlir_tablegen(ConduitPasses.h.inc -gen-pass-decls -name Conduit)
+add_public_tablegen_target(MLIRConduitPassIncGen)
+
+add_mlir_doc(Passes ConduitPasses ./ -gen-pass-doc)
