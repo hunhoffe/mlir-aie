@@ -5,9 +5,25 @@
 #
 # (c) Copyright 2026 Advanced Micro Devices, Inc.
 
-add_mlir_dialect(Conduit conduit)
 add_mlir_doc(Conduit ConduitDialect ./ -gen-dialect-doc -dialect=conduit)
+
+# Dialect declaration and definition
 set(LLVM_TARGET_DEFINITIONS Conduit.td)
-mlir_tablegen(ConduitOps.cpp.inc -gen-op-defs)
+mlir_tablegen(ConduitOpsDialect.h.inc -gen-dialect-decls -dialect=conduit)
+mlir_tablegen(ConduitOpsDialect.cpp.inc -gen-dialect-defs -dialect=conduit)
+add_public_tablegen_target(MLIRConduitDialectIncGen)
+add_dependencies(aie-headers MLIRConduitDialectIncGen)
+
+# Op declarations and definitions
+set(LLVM_TARGET_DEFINITIONS Conduit.td)
 mlir_tablegen(ConduitOps.h.inc -gen-op-decls)
+mlir_tablegen(ConduitOps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(MLIRConduitIncGen)
+add_dependencies(aie-headers MLIRConduitIncGen)
+
+# Type declarations and definitions
+set(LLVM_TARGET_DEFINITIONS Conduit.td)
+mlir_tablegen(ConduitTypes.h.inc -gen-typedef-decls -typedefs-dialect=conduit)
+mlir_tablegen(ConduitTypes.cpp.inc -gen-typedef-defs -typedefs-dialect=conduit)
+add_public_tablegen_target(MLIRConduitTypesIncGen)
+add_dependencies(aie-headers MLIRConduitTypesIncGen)

@@ -16,11 +16,16 @@
 #ifndef MLIR_CONDUIT_DIALECT_H
 #define MLIR_CONDUIT_DIALECT_H
 
-// Include generated dialect declarations (ConduitDialect.h.inc)
-#include "aie/Dialect/Conduit/IR/ConduitOpsDialect.h.inc"
-
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Dialect.h"
+#include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/Types.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+
+// Include generated dialect declarations
+#include "aie/Dialect/Conduit/IR/ConduitOpsDialect.h.inc"
 
 // Include generated type class declarations
 #define GET_TYPEDEF_CLASSES
