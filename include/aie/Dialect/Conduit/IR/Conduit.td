@@ -284,7 +284,7 @@ def Conduit_Wait : Conduit_Op<"wait"> {
 def Conduit_WaitAll : Conduit_Op<"wait_all"> {
   let summary = "blocking wait for all tokens in a list to complete";
   let arguments = (ins Variadic<Conduit_AsyncTokenType>:$tokens);
-  let assemblyFormat = "operands attr-dict (`:` type(operands)^)?";
+  let assemblyFormat = "$tokens attr-dict";
 }
 
 def Conduit_WaitAllAsync : Conduit_Op<"wait_all_async"> {
@@ -303,7 +303,7 @@ def Conduit_Chain : Conduit_Op<"chain"> {
   let arguments = (ins Variadic<Conduit_AsyncTokenType>:$producers,
                        Conduit_AsyncTokenType:$consumer);
   let assemblyFormat = "`[` $producers `]` `->` $consumer attr-dict "
-                       "`:` functional-type($producers, type($consumer))";
+                       "`:` functional-type($producers, $consumer)";
 }
 
 def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {

@@ -12,7 +12,9 @@ add_mlir_dialect_library(Conduit
   ${AIE_BINARY_DIR}/include
 
   DEPENDS
+  MLIRConduitDialectIncGen
   MLIRConduitIncGen
+  MLIRConduitTypesIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR
