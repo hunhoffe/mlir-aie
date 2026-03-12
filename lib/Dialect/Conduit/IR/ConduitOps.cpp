@@ -45,11 +45,37 @@ void ConduitDialect::initialize() {
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "aie/Dialect/Conduit/IR/ConduitTypes.cpp.inc"
-  >();
+      >();
   addOperations<
 #define GET_OP_LIST
 #include "aie/Dialect/Conduit/IR/ConduitOps.cpp.inc"
-  >();
+      >();
+}
+
+//===----------------------------------------------------------------------===//
+// Conduit ops — custom verifiers
+//===----------------------------------------------------------------------===//
+
+::mlir::LogicalResult ObjectFifoLink::verify() {
+  auto modeStr = getMode();
+  auto srcs = getSrcs();
+  auto dsts = getDsts();
+  auto offsets = getOffsets();
+
+  if (offsets.has_value() && !offsets->empty()) {
+    if (modeStr == "distribute") {
+      if (offsets->size() != dsts.size())
+        return emitOpError("distribute mode: offsets count (")
+               << offsets->size() << ") must equal dsts count (" << dsts.size()
+               << ")";
+    } else if (modeStr == "join") {
+      if (offsets->size() != srcs.size())
+        return emitOpError("join mode: offsets count (")
+               << offsets->size() << ") must equal srcs count (" << srcs.size()
+               << ")";
+    }
+  }
+  return ::mlir::success();
 }
 
 //===----------------------------------------------------------------------===//

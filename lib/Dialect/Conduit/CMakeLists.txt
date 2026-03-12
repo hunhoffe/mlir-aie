@@ -6,3 +6,4 @@
 # (c) Copyright 2026 Advanced Micro Devices, Inc.
 
 add_subdirectory(IR)
+add_subdirectory(Transforms)
