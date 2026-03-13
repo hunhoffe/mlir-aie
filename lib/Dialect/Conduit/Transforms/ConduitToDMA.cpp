@@ -601,31 +601,54 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //
     // For the distribute case (1 src → N dsts):
     //   One S2MM channel ingests the full buffer.
-    //   N MM2S channels send slices to each dst.
+    //   N MM2S channels each send their own slice to one dst.
     //
-    // The BD chain pattern (depth-1 for now):
+    //   FIXED (Defects 1, 2, 3): N independent lock pairs on the MemTile —
+    //   one pair per destination slice.  The S2MM sequences through all N
+    //   slices per buffer slot (depth*N total ingest BD blocks).  Each MM2S
+    //   channel i uses its own independent cons_lock_i/prod_lock_i so the
+    //   channels can run concurrently without racing.  aie.flow ops connect
+    //   each MM2S channel i to the corresponding compute tile's DMA S2MM 0.
+    //
+    // For the join case (N srcs → 1 dst):
+    //   N S2MM channels each ingest their own slice.
+    //   One MM2S channel outputs the joined buffer.
+    //   Lock protocol uses the src conduit's existing lock pair (simple ring).
+    //
+    // The BD chain pattern (distribute, depth=D, N destinations):
     //   aie.memtile_dma(%memtile) {
-    //     %0 = aie.dma_start(S2MM, 0, ^ingest, ^mm2s_0_start)
-    //   ^ingest:
-    //     aie.use_lock(%link_cons_prod_lock, AcquireGreaterEqual, 1)
-    //     aie.dma_bd(%link_cons_buff : memref, offset, len)
-    //     aie.use_lock(%link_cons_cons_lock, Release, 1)
-    //     aie.next_bd ^ingest           // depth-1: loop back to self
-    //   ^mm2s_0_start:
-    //     %1 = aie.dma_start(MM2S, 0, ^send_0, ^end)
-    //   ^send_0:
-    //     aie.use_lock(%link_cons_cons_lock, AcquireGreaterEqual, 1)
-    //     aie.dma_bd(%link_cons_buff, dst_offset, dst_len)
-    //     aie.use_lock(%link_cons_prod_lock, Release, 1)
-    //     aie.next_bd ^send_0
+    //     %s = aie.dma_start(S2MM, 0, ^ingest_0_0, ^mm2s_chain_0)
+    //   ^ingest_0_0:   // buff_0, slice 0
+    //     use_lock(prod_lock_0, AcquireGreaterEqual, 1)
+    //     dma_bd(buff_0, off_0, len_0)
+    //     use_lock(cons_lock_0, Release, 1)
+    //     next_bd ^ingest_0_1
+    //   ^ingest_0_1:   // buff_0, slice 1
+    //     use_lock(prod_lock_1, AcquireGreaterEqual, 1)
+    //     dma_bd(buff_0, off_1, len_1)
+    //     use_lock(cons_lock_1, Release, 1)
+    //     next_bd ^ingest_0_{N-1}
+    //   ...
+    //   ^ingest_{D-1}_{N-1}:   // last buff, last slice
+    //     ...
+    //     next_bd ^ingest_0_0  // ring back to buff_0, slice_0
+    //   ^mm2s_chain_0:
+    //     %0 = aie.dma_start(MM2S, 0, ^send_0_0, ^mm2s_chain_1)
+    //   ^send_0_0:   // MM2S ch 0, buff_0
+    //     use_lock(cons_lock_0, AcquireGreaterEqual, 1)  // independent lock
+    //     dma_bd(buff_0, off_0, len_0)
+    //     use_lock(prod_lock_0, Release, 1)
+    //     next_bd ^send_0_1
+    //   ...
+    //   ^mm2s_chain_1:
+    //     %1 = aie.dma_start(MM2S, 1, ^send_1_0, ^mm2s_chain_2)
+    //   ...
     //   ^end: aie.end
     //   }
     //
-    // NOTE: For channels > 0 (multiple destinations), only the first
-    // destination's MM2S channel is emitted in this skeleton.  Supporting
-    // N destinations requires N independent DMA start chains (each starting
-    // from the previous chain's "chain" successor block).  This is a known
-    // gap — see the TODO below.
+    //   aie.flow(memtile, DMA:0, compute_tile_0, DMA:0)
+    //   aie.flow(memtile, DMA:1, compute_tile_1, DMA:0)
+    //   ...
     // -----------------------------------------------------------------------
 
     // Collect link source names here, BEFORE the Phase 5 walk erases the link
@@ -645,6 +668,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       auto srcs = linkOp.getSrcs();
       auto dsts = linkOp.getDsts();
       llvm::StringRef memtileStr = linkOp.getMemtile();
+      llvm::StringRef mode = linkOp.getMode();
       auto offsets = linkOp.getOffsets();
 
       AIE::TileOp memtile = lookupTile(memtileStr);
@@ -670,10 +694,113 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
       ConduitInfo &srcInfo = srcIt->second;
 
+      // Determine depth from the src conduit (clamped to at least 1).
+      int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
+      // Per-buffer element count (capacity / depth).
+      int64_t perBufLen =
+          srcInfo.capacity > 0 ? srcInfo.capacity / linkDepth : 1;
+
+      // -----------------------------------------------------------------------
+      // FIX — Defects 1 & 3: Per-destination independent lock pairs on the
+      // MemTile for distribute mode.
+      //
+      // The stateful transform allocates 2*N locks on the MemTile for an
+      // 1→N distribute link: lock pair [i*2, i*2+1] is dedicated to slice i.
+      // This allows all N MM2S channels to operate independently without
+      // racing on a shared lock — a shared lock causes deadlock when N > 1.
+      //
+      // We allocate the per-slice locks here, BEFORE creating the memtile_dma,
+      // so the lock SSA values are available in both the S2MM and MM2S BD
+      // bodies.
+      //
+      // For join mode (N→1), we use the existing srcInfo locks (single pair
+      // is correct: all S2MM channels compete for the same buffer slot, so
+      // one cons_lock and one prod_lock is the right protocol).
+      // -----------------------------------------------------------------------
+
+      bool isDistribute = (mode == "distribute");
+      unsigned numDsts = static_cast<unsigned>(dsts.size());
+
+      // Per-slice lock pairs for distribute.  Index i → (prod_lock_i, cons_lock_i).
+      llvm::SmallVector<AIE::LockOp> sliceProdLocks; // init = depth (free slots)
+      llvm::SmallVector<AIE::LockOp> sliceConsLocks; // init = 0 (nothing filled)
+
+      mlir::Value memtileVal = memtile.getResult();
+
+      if (isDistribute && numDsts > 0) {
+        // Insert lock allocs before the memtile_dma so they dominate the DMA body.
+        builder.setInsertionPoint(deviceBody.getTerminator());
+        for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx) {
+          // prod_lock_i: producer (S2MM) acquires before filling slice i.
+          // init = depth → depth free slots available at startup.
+          {
+            int lockIdx = lockIdCounter[memtileVal]++;
+            std::string symName = srcName + "_link_prod_lock_" +
+                                  std::to_string(sliceIdx);
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), memtileVal, lockIdx,
+                static_cast<int>(linkDepth));
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            sliceProdLocks.push_back(lk);
+          }
+          // cons_lock_i: consumer (MM2S) acquires when slice i is filled.
+          // init = 0 → nothing filled yet.
+          {
+            int lockIdx = lockIdCounter[memtileVal]++;
+            std::string symName = srcName + "_link_cons_lock_" +
+                                  std::to_string(sliceIdx);
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), memtileVal, lockIdx, 0);
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            sliceConsLocks.push_back(lk);
+          }
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // FIX — Defect 2: Emit aie.flow from MemTile MM2S channel i to each
+      // destination compute tile's DMA S2MM channel 0.
+      //
+      // The stateful transform emits one aie.flow per (producer, consumer) pair
+      // in splitFifos.  For a distribute link, each dst conduit is a separate
+      // consumer fifo whose producer is the MemTile; the flow connects
+      // MemTile MM2S channel i → compute_tile_i DMA S2MM 0.
+      //
+      // Without these flows, the MM2S channels have no NoC routing and no data
+      // reaches the compute tiles.
+      // -----------------------------------------------------------------------
+
+      if (isDistribute) {
+        builder.setInsertionPoint(deviceBody.getTerminator());
+        for (unsigned dstIdx = 0; dstIdx < numDsts; ++dstIdx) {
+          // Look up the dst conduit to find the consumer (compute) tile.
+          std::string dstName =
+              mlir::cast<mlir::StringAttr>(dsts[dstIdx]).getValue().str();
+          auto dstIt = conduitMap.find(dstName);
+          if (dstIt == conduitMap.end() ||
+              dstIt->second.consumerTileCoords.empty())
+            continue;
+
+          auto [dstConsCol, dstConsRow] =
+              dstIt->second.consumerTileCoords[0];
+          AIE::TileOp dstConsTile =
+              lookupTileByCoord(dstConsCol, dstConsRow);
+          if (!dstConsTile)
+            continue;
+
+          // aie.flow(%memtile, DMA : dstIdx, %compute_tile, DMA : 0)
+          builder.create<AIE::FlowOp>(
+              deviceOp.getLoc(), memtileVal, AIE::WireBundle::DMA,
+              static_cast<int32_t>(dstIdx), dstConsTile.getResult(),
+              AIE::WireBundle::DMA, static_cast<int32_t>(0));
+        }
+      }
+
       // Create aie.memtile_dma block.
       // MemTileDMAOp builder: (Value tile) — result type inferred.
+      builder.setInsertionPoint(deviceBody.getTerminator());
       auto memtileDMA =
-          builder.create<AIE::MemTileDMAOp>(loc, memtile.getResult());
+          builder.create<AIE::MemTileDMAOp>(loc, memtileVal);
       mlir::Region &dmaRegion = memtileDMA.getBody();
 
       // Helper: create a new basic block in the DMA region.
@@ -681,40 +808,59 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         return builder.createBlock(&dmaRegion);
       };
 
-      // Determine depth from the src conduit (clamped to at least 1).
-      int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
-      // Per-buffer element count (capacity / depth).
-      int64_t perBufLen =
-          srcInfo.capacity > 0 ? srcInfo.capacity / linkDepth : 1;
-
       // Build the BD chain for the S2MM (ingest) path.
       //
-      // Pattern for depth=N (double-buffering when N=2):
-      //   ^entry: dma_start(S2MM, 0, ^ingest_0, ^mm2s_chain_start)
-      //   ^ingest_0:
-      //     use_lock(prod_lock, AcquireGreaterEqual, 1)
-      //     dma_bd(buff_0, 0, perBufLen)
-      //     use_lock(cons_lock, Release, 1)
-      //     next_bd ^ingest_1          ← for depth>1; else next_bd ^ingest_0
-      //   ^ingest_1:  (depth >= 2)
-      //     use_lock(prod_lock, AcquireGreaterEqual, 1)
-      //     dma_bd(buff_1, 0, perBufLen)
-      //     use_lock(cons_lock, Release, 1)
-      //     next_bd ^ingest_0          ← ring back to first
-      //   ...
+      // For distribute mode with N destinations:
+      //   The S2MM ingests one full buffer slot at a time.  For each buffer
+      //   slot, it must transfer N slices (one per destination) and signal
+      //   each destination's independent cons_lock_i before the MM2S channel i
+      //   can start.  This mirrors the stateful transform's pattern where the
+      //   S2MM block iterates r=0..N-1 within each buffer slot:
       //
-      // The MM2S (send) path mirrors this ring with its own depth-N BD blocks.
+      //   ^entry: dma_start(S2MM, 0, ^ingest_0_0, ^mm2s_chain_start)
+      //   ^ingest_0_0:  (buff_0, slice 0)
+      //     use_lock(prod_lock_0, AcquireGreaterEqual, 1)
+      //     dma_bd(buff_0, offset_0, len_0)
+      //     use_lock(cons_lock_0, Release, 1)
+      //     next_bd ^ingest_0_1
+      //   ^ingest_0_1:  (buff_0, slice 1)
+      //     use_lock(prod_lock_1, AcquireGreaterEqual, 1)
+      //     dma_bd(buff_0, offset_1, len_1)
+      //     use_lock(cons_lock_1, Release, 1)
+      //     next_bd ^ingest_0_2
+      //   ...
+      //   ^ingest_0_{N-1}: (buff_0, slice N-1)
+      //     ...
+      //     next_bd ^ingest_1_0   ← advance to buff_1 for depth>1
+      //   ...
+      //   ^ingest_{depth-1}_{N-1}:
+      //     ...
+      //     next_bd ^ingest_0_0  ← ring back to buff_0
+      //
+      // For join mode (or single-destination distribute):
+      //   Simple ring over depth-many blocks (one per buffer slot).
 
       mlir::Block *entryBlock = addBlock();
 
-      // Create depth-many ingest BD blocks.
+      // For distribute mode: depth * numDsts ingest BD blocks.
+      // For simple (join/single-dst) mode: depth ingest BD blocks.
+      //
+      // ingestBlocks[bufIdx * numSlices + sliceIdx] for distribute,
+      // ingestBlocks[bufIdx] for join/simple.
       llvm::SmallVector<mlir::Block *> ingestBlocks;
-      for (int64_t i = 0; i < linkDepth; ++i)
-        ingestBlocks.push_back(addBlock());
 
-      // ^entry: dma_start(S2MM, 0, ^ingest_0, ^mm2s_chain_start)
-      // The "chain" successor points to the block that will hold the first
-      // MM2S dma_start; we create it now as a placeholder and fill it next.
+      if (isDistribute && numDsts > 0) {
+        // Create depth * numDsts ingest blocks.
+        for (int64_t bufIdx = 0; bufIdx < linkDepth; ++bufIdx)
+          for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx)
+            ingestBlocks.push_back(addBlock());
+      } else {
+        // Simple ring: one block per depth slot.
+        for (int64_t i = 0; i < linkDepth; ++i)
+          ingestBlocks.push_back(addBlock());
+      }
+
+      // ^entry: dma_start(S2MM, 0, ^ingest_first, ^mm2s_chain_start)
       mlir::Block *mm2sChainStartBlock = addBlock();
 
       builder.setInsertionPointToEnd(entryBlock);
@@ -724,58 +870,102 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                                       ingestBlocks[0], mm2sChainStartBlock);
 
       // Fill each ingest BD block.
-      for (int64_t i = 0; i < linkDepth; ++i) {
-        builder.setInsertionPointToEnd(ingestBlocks[i]);
-        // Acquire a free slot (prod_lock).
-        builder.create<AIE::UseLockOp>(loc, srcInfo.prodLock.getResult(),
-                                       AIE::LockAction::AcquireGreaterEqual,
-                                       static_cast<int32_t>(1));
-        // DMA descriptor for buff_i.
-        builder.create<AIE::DMABDOp>(loc, srcInfo.buffers[i].getResult(),
-                                     /*offset=*/0,
-                                     static_cast<int>(perBufLen));
-        // Mark the slot filled (cons_lock).
-        builder.create<AIE::UseLockOp>(loc, srcInfo.consLock.getResult(),
-                                       AIE::LockAction::Release,
-                                       static_cast<int32_t>(1));
-        // Ring: next buffer, wrapping back to 0.
-        mlir::Block *nextIngest = ingestBlocks[(i + 1) % linkDepth];
-        builder.create<AIE::NextBDOp>(loc, nextIngest);
+      if (isDistribute && numDsts > 0) {
+        // For each buffer slot, emit numDsts BD blocks — one per slice.
+        // Block [bufIdx * numDsts + sliceIdx] acquires prod_lock_sliceIdx,
+        // writes buff[bufIdx] at the slice offset/len, releases cons_lock_sliceIdx.
+        // The last slice block of the last buffer wraps back to block 0.
+        unsigned totalIngest = static_cast<unsigned>(linkDepth) * numDsts;
+        for (unsigned blkIdx = 0; blkIdx < totalIngest; ++blkIdx) {
+          unsigned bufIdx   = blkIdx / numDsts;
+          unsigned sliceIdx = blkIdx % numDsts;
+
+          // Compute slice offset and length for this destination.
+          int64_t dstOffset = 0;
+          int64_t dstLen    = perBufLen;
+          if (offsets.has_value() && !offsets->empty()) {
+            if (sliceIdx < static_cast<unsigned>(offsets->size()))
+              dstOffset = (*offsets)[sliceIdx];
+            if (sliceIdx + 1 < static_cast<unsigned>(offsets->size()))
+              dstLen = (*offsets)[sliceIdx + 1] - dstOffset;
+            else
+              dstLen = perBufLen - dstOffset;
+          }
+
+          builder.setInsertionPointToEnd(ingestBlocks[blkIdx]);
+          // Acquire a free slot for this slice (prod_lock_sliceIdx).
+          builder.create<AIE::UseLockOp>(
+              loc, sliceProdLocks[sliceIdx].getResult(),
+              AIE::LockAction::AcquireGreaterEqual,
+              static_cast<int32_t>(1));
+          // DMA descriptor for buff[bufIdx] at slice offset/len.
+          builder.create<AIE::DMABDOp>(
+              loc, srcInfo.buffers[bufIdx].getResult(),
+              static_cast<int>(dstOffset),
+              static_cast<int>(dstLen));
+          // Signal this slice is ready (cons_lock_sliceIdx).
+          builder.create<AIE::UseLockOp>(
+              loc, sliceConsLocks[sliceIdx].getResult(),
+              AIE::LockAction::Release,
+              static_cast<int32_t>(1));
+          // Ring: advance to next block, wrapping back to 0.
+          mlir::Block *nextIngest = ingestBlocks[(blkIdx + 1) % totalIngest];
+          builder.create<AIE::NextBDOp>(loc, nextIngest);
+        }
+      } else {
+        // Simple ring: one BD per buffer slot.
+        for (int64_t i = 0; i < linkDepth; ++i) {
+          builder.setInsertionPointToEnd(ingestBlocks[i]);
+          builder.create<AIE::UseLockOp>(loc, srcInfo.prodLock.getResult(),
+                                         AIE::LockAction::AcquireGreaterEqual,
+                                         static_cast<int32_t>(1));
+          builder.create<AIE::DMABDOp>(loc, srcInfo.buffers[i].getResult(),
+                                       /*offset=*/0,
+                                       static_cast<int>(perBufLen));
+          builder.create<AIE::UseLockOp>(loc, srcInfo.consLock.getResult(),
+                                         AIE::LockAction::Release,
+                                         static_cast<int32_t>(1));
+          mlir::Block *nextIngest = ingestBlocks[(i + 1) % linkDepth];
+          builder.create<AIE::NextBDOp>(loc, nextIngest);
+        }
       }
 
       // Build MM2S send chains — one chain per destination (dst) fifo.
       // Each chain: dma_start(MM2S, ch, ^bd_0, ^next_chain_or_end)
-      //             ^bd_0 .. ^bd_{N-1}: use_lock / dma_bd / use_lock / next_bd
+      //             ^bd_0 .. ^bd_{depth-1}: use_lock / dma_bd / use_lock / next_bd
       //
-      // Offsets list encodes per-dst slice boundaries:
-      //   distribute: offsets[i] is the start offset for dst[i];
-      //               slice len = offsets[i+1] - offsets[i]  (or capacity -
-      //               offset for last).
-      // If no offsets are specified, each destination gets the full buffer.
+      // FIX — Defects 1 & 3 (MM2S side): each MM2S chain uses its own
+      // independent lock pair (sliceConsLocks[dstIdx] / sliceProdLocks[dstIdx])
+      // for distribute mode.  For join mode, the single shared lock pair from
+      // srcInfo is used (same as before).
 
-      // We need to track the previous chain's "chain" successor block so we
-      // can fill it with the next dma_start.  The entry block already pointed
-      // its chain successor to mm2sChainStartBlock; that becomes the start of
-      // channel 0's dma_start.
       mlir::Block *prevChainBlock = mm2sChainStartBlock;
-      // endBlock is created last so it appears at the end of the block list.
       mlir::Block *endBlock = nullptr;
 
       for (unsigned dstIdx = 0; dstIdx < dsts.size(); ++dstIdx) {
         // Compute slice offset and length for this destination.
-        // Offsets are specified in units of elements within a single buffer
-        // slot (not the total depth-scaled capacity).  perBufLen is the size
-        // of one buffer slot.
         int64_t dstOffset = 0;
         int64_t dstLen = perBufLen;
         if (offsets.has_value() && !offsets->empty()) {
           if (dstIdx < static_cast<unsigned>(offsets->size()))
             dstOffset = (*offsets)[dstIdx];
-          // Length extends to next offset boundary (or end of slot).
           if (dstIdx + 1 < static_cast<unsigned>(offsets->size()))
             dstLen = (*offsets)[dstIdx + 1] - dstOffset;
           else
             dstLen = perBufLen - dstOffset;
+        }
+
+        // Select the lock pair for this destination.
+        // Distribute: independent per-slice locks prevent cross-channel racing.
+        // Join/simple: shared locks from srcInfo (single S2MM → single MM2S).
+        AIE::LockOp mm2sAcqLock; // MM2S acquires: data ready (cons_lock)
+        AIE::LockOp mm2sRelLock; // MM2S releases: slot free (prod_lock)
+        if (isDistribute && dstIdx < sliceConsLocks.size()) {
+          mm2sAcqLock = sliceConsLocks[dstIdx];
+          mm2sRelLock = sliceProdLocks[dstIdx];
+        } else {
+          mm2sAcqLock = srcInfo.consLock;
+          mm2sRelLock = srcInfo.prodLock;
         }
 
         // Create depth-many send BD blocks for this dst channel.
@@ -783,19 +973,16 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         for (int64_t i = 0; i < linkDepth; ++i)
           sendBDBlocks.push_back(addBlock());
 
-        // The next chain block after this dst's chain.  For the last dst,
-        // create the end block now (so it is placed last); for intermediate
-        // dsts, create a new chain-start block.
+        // The next chain block after this dst's chain.
         mlir::Block *nextChainBlock;
         if (dstIdx + 1 == dsts.size()) {
-          endBlock = addBlock(); // created last → appears last in IR
+          endBlock = addBlock();
           nextChainBlock = endBlock;
         } else {
           nextChainBlock = addBlock();
         }
 
-        // Fill prevChainBlock with dma_start(MM2S, dstIdx, ^bd_0,
-        // ^nextChain).
+        // Fill prevChainBlock with dma_start(MM2S, dstIdx, ^bd_0, ^nextChain).
         builder.setInsertionPointToEnd(prevChainBlock);
         builder.create<AIE::DMAStartOp>(
             loc, AIE::DMAChannelDir::MM2S,
@@ -806,16 +993,16 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         // Fill each send BD block for this destination.
         for (int64_t i = 0; i < linkDepth; ++i) {
           builder.setInsertionPointToEnd(sendBDBlocks[i]);
-          // Acquire a filled slot (cons_lock).
-          builder.create<AIE::UseLockOp>(loc, srcInfo.consLock.getResult(),
+          // Acquire: wait for this slice to be filled (cons_lock_dstIdx).
+          builder.create<AIE::UseLockOp>(loc, mm2sAcqLock.getResult(),
                                          AIE::LockAction::AcquireGreaterEqual,
                                          static_cast<int32_t>(1));
           // DMA descriptor: slice of buff_i for this dst.
           builder.create<AIE::DMABDOp>(loc, srcInfo.buffers[i].getResult(),
                                        static_cast<int>(dstOffset),
                                        static_cast<int>(dstLen));
-          // Release the slot (prod_lock).
-          builder.create<AIE::UseLockOp>(loc, srcInfo.prodLock.getResult(),
+          // Release: signal this slot is free again (prod_lock_dstIdx).
+          builder.create<AIE::UseLockOp>(loc, mm2sRelLock.getResult(),
                                          AIE::LockAction::Release,
                                          static_cast<int32_t>(1));
           // Ring back.

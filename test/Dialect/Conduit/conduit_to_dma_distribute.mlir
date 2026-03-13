@@ -5,32 +5,72 @@
 //
 // After --objectfifo-to-conduit --conduit-to-dma the module should contain:
 //   - aie.buffer ops for each conduit (depth-many per consumer)
-//   - aie.lock pairs for each conduit
+//   - Independent lock pairs per destination slice on the MemTile (2*N=6 locks)
 //   - aie.memtile_dma for the distribute MemTile DMA BD chain
-//   - aie.flow ops connecting tiles
+//   - Per-destination aie.flow ops: MemTile MM2S ch i → compute_tile_i DMA 0
 //
 // Resource comparison target (from --aie-objectFifo-stateful-transform):
-//   aie.buffer:  8  (2 per conduit × 4 conduits)
-//   aie.lock:   10  (link1: 2+2+2 for 3 dst-slices; link2,3,4: 1 pair each)
-//   aie.flow:    4  (shim→memtile + memtile→tile22, 23, 33)
-//   aie.dma_bd:  ≥4 (at least one per BD chain)
+//   aie.buffer:  ≥8  (depth-many per conduit)
+//   aie.lock:   ≥6   on MemTile (2 per destination × 3 destinations)
+//   aie.flow:    4   (shim→memtile + memtile→tile22, 23, 33)
+//   aie.dma_bd:  ≥6  (6 BD blocks in S2MM ingest chain for depth=2 × 3 slices)
 
 // CHECK-LABEL: module @link_distribute_offsets
 // CHECK:   aie.device(xcve2302) {
-// CHECK:     aie.buffer({{.*}})
-// CHECK:     aie.lock({{.*}}) {init = 2
+
+// -- per-destination independent lock pairs on MemTile (Defects 1 & 3) --
+// CHECK:     aie.lock({{.*}}) {init = 2{{.*}}sym_name = "link1_link_prod_lock_0"
+// CHECK:     aie.lock({{.*}}) {init = 0{{.*}}sym_name = "link1_link_cons_lock_0"
+// CHECK:     aie.lock({{.*}}) {init = 2{{.*}}sym_name = "link1_link_prod_lock_1"
+// CHECK:     aie.lock({{.*}}) {init = 0{{.*}}sym_name = "link1_link_cons_lock_1"
+// CHECK:     aie.lock({{.*}}) {init = 2{{.*}}sym_name = "link1_link_prod_lock_2"
+// CHECK:     aie.lock({{.*}}) {init = 0{{.*}}sym_name = "link1_link_cons_lock_2"
+
+// -- per-destination flows from MemTile MM2S channels (Defect 2) --
+// CHECK:     aie.flow(%mem_tile_2_1, DMA : 0, %tile_2_2, DMA : 0)
+// CHECK:     aie.flow(%mem_tile_2_1, DMA : 1, %tile_2_3, DMA : 0)
+// CHECK:     aie.flow(%mem_tile_2_1, DMA : 2, %tile_3_3, DMA : 0)
+
+// -- MemTile DMA BD chain --
 // CHECK:     aie.memtile_dma({{.*}}) {
 // CHECK:       aie.dma_start(S2MM, 0
-// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       aie.dma_bd({{.*}}, 0, 48)
-// CHECK:       aie.use_lock({{.*}}, Release, 1)
-// CHECK:       aie.next_bd
-// CHECK:       aie.dma_start(MM2S, 0
+
+// S2MM ingest: slice 0 of buff_0 (offset 0, len 16)
+// CHECK:       aie.use_lock({{.*link1_link_prod_lock_0.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.dma_bd({{.*}}, 0, 16)
-// CHECK:       aie.dma_start(MM2S, 1
+// CHECK:       aie.use_lock({{.*link1_link_cons_lock_0.*}}, Release, 1)
+// CHECK:       aie.next_bd
+
+// S2MM ingest: slice 1 of buff_0 (offset 16, len 20)
+// CHECK:       aie.use_lock({{.*link1_link_prod_lock_1.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.dma_bd({{.*}}, 16, 20)
-// CHECK:       aie.dma_start(MM2S, 2
+// CHECK:       aie.use_lock({{.*link1_link_cons_lock_1.*}}, Release, 1)
+// CHECK:       aie.next_bd
+
+// S2MM ingest: slice 2 of buff_0 (offset 36, len 12)
+// CHECK:       aie.use_lock({{.*link1_link_prod_lock_2.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.dma_bd({{.*}}, 36, 12)
+// CHECK:       aie.use_lock({{.*link1_link_cons_lock_2.*}}, Release, 1)
+// CHECK:       aie.next_bd
+
+// MM2S ch 0: independent lock pair for slice 0
+// CHECK:       aie.dma_start(MM2S, 0
+// CHECK:       aie.use_lock({{.*link1_link_cons_lock_0.*}}, AcquireGreaterEqual, 1)
+// CHECK:       aie.dma_bd({{.*}}, 0, 16)
+// CHECK:       aie.use_lock({{.*link1_link_prod_lock_0.*}}, Release, 1)
+
+// MM2S ch 1: independent lock pair for slice 1
+// CHECK:       aie.dma_start(MM2S, 1
+// CHECK:       aie.use_lock({{.*link1_link_cons_lock_1.*}}, AcquireGreaterEqual, 1)
+// CHECK:       aie.dma_bd({{.*}}, 16, 20)
+// CHECK:       aie.use_lock({{.*link1_link_prod_lock_1.*}}, Release, 1)
+
+// MM2S ch 2: independent lock pair for slice 2
+// CHECK:       aie.dma_start(MM2S, 2
+// CHECK:       aie.use_lock({{.*link1_link_cons_lock_2.*}}, AcquireGreaterEqual, 1)
+// CHECK:       aie.dma_bd({{.*}}, 36, 12)
+// CHECK:       aie.use_lock({{.*link1_link_prod_lock_2.*}}, Release, 1)
+
 // CHECK:       aie.end
 // CHECK:     }
 // CHECK-NOT: conduit.create
