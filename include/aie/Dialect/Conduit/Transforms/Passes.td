@@ -8,12 +8,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Declares the two Conduit transformation passes:
+// Declares the three Conduit transformation passes:
 //   Pass A: --objectfifo-to-conduit  (ObjectFIFO → Conduit IR)
+//   Pass B: --air-channel-to-conduit (AIR Channel → Conduit IR)
 //   Pass C: --conduit-to-dma         (Conduit IR → aie.dma_bd / aie.lock)
-//
-// Pass B (--air-channel-to-conduit) is deferred until Pass A + C are
-// validated.
 //
 //===----------------------------------------------------------------------===//
 
@@ -58,6 +56,51 @@ def ObjectFifoToConduit : Pass<"objectfifo-to-conduit", "::mlir::ModuleOp"> {
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
     "xilinx::AIE::AIEDialect",
+    "::mlir::memref::MemRefDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Pass B — AIR Channel → Conduit
+//===----------------------------------------------------------------------===//
+
+def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
+  let summary = "Lift air.channel.put/get ops into Conduit IR (Tier 3 memref-DMA ops)";
+  let description = [{
+    Converts the AIR Channel abstraction layer into Conduit IR Tier 3 ops:
+
+      air.channel @name [1, 1]
+        → conduit.create {name, capacity=1, element_type=<inferred>,
+                          depth=1, link_mode=<empty>}
+
+      air.channel.put async [%deps] @chan(%buf[offsets][sizes][strides])
+        → conduit.put_memref_async {name, num_elems, offsets, sizes, strides}
+                : !conduit.async.token
+
+      air.channel.get async [%deps] @chan(%buf[offsets][sizes][strides])
+        → conduit.get_memref_async {name, num_elems, offsets, sizes, strides}
+                : !conduit.async.token
+
+      air.wait_all async [%deps]  →  conduit.wait_all_async %deps
+      air.wait_all       [%deps]  →  conduit.wait_all %deps
+
+    The AIR dialect operates on generic unregistered ops when parsed via
+    --allow-unregistered-dialect.  This pass matches by op name string so it
+    does not require the AIR dialect library to be linked into aie-opt.
+
+    Known limitations:
+    - Only scalar [1,1] channels are handled (Task #32 established that
+      SPMD specialization always produces [1,1] before lowering).
+    - Channel size/shape information is extracted from the first put/get
+      memref operand type; if no put/get is found, capacity defaults to 1.
+    - The air.async.token → !conduit.async.token mapping relies on SSA
+      value threading; all users of the old token must be updated.
+  }];
+
+  let constructor = "xilinx::conduit::createAirChannelToConduitPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
     "::mlir::memref::MemRefDialect",
   ];
 }

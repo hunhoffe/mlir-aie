@@ -141,4 +141,22 @@ func.func @register_ext_bufs() {
   return
 }
 
+// CHECK-LABEL: func.func @csdf_create
+// Tests that conduit.create with an access_pattern (CSDF) attribute
+// roundtrips correctly through the parser and printer.
+func.func @csdf_create() {
+  // CHECK: conduit.create
+  // CHECK-SAME: access_pattern = array<i64: 1, 2, 1>
+  // CHECK-SAME: capacity = 4 : i64
+  // CHECK-SAME: depth = 4 : i64
+  // CHECK-SAME: name = "csdf_ch"
+  conduit.create {name = "csdf_ch", capacity = 4 : i64,
+                  producer_tile = array<i64: 2, 2>,
+                  consumer_tiles = array<i64: 2, 3>,
+                  element_type = memref<i32>,
+                  depth = 4 : i64,
+                  access_pattern = array<i64: 1, 2, 1>}
+  return
+}
+
 } // module

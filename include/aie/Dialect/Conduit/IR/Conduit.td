@@ -255,6 +255,22 @@ def Conduit_Create : Conduit_Op<"create"> {
                       shim_consumer_tiles = array<i64: 0, 0>,
                       element_type = memref<10xi32>,
                       depth = 1 : i64}
+
+    Cyclostatic (CSDF) example — consumer alternates between acquiring 1 then 2:
+      conduit.create {name = "csdf_fifo", capacity = 4 : i64,
+                      producer_tile = array<i64: 2, 2>,
+                      consumer_tiles = array<i64: 2, 3>,
+                      element_type = memref<i32>,
+                      depth = 4 : i64,
+                      access_pattern = array<i64: 1, 2, 1>}
+
+    The access_pattern encodes the cyclostatic consume sequence: the consumer
+    acquires access_pattern[0] elements on the first iteration, access_pattern[1]
+    on the second, and so on, cycling back to index 0.  Pass C uses this to
+    generate lock acquire/release sequences with the correct varying counts
+    rather than the uniform count used in the SDF case.
+    When access_pattern is absent the conduit is treated as uniform SDF with
+    count = capacity / depth per iteration.
   }];
   let arguments = (ins StrAttr:$name,
                        I64Attr:$capacity,
@@ -263,7 +279,8 @@ def Conduit_Create : Conduit_Op<"create"> {
                        OptionalAttr<DenseI64ArrayAttr>:$shim_consumer_tiles,
                        OptionalAttr<TypeAttr>:$element_type,
                        OptionalAttr<I64Attr>:$depth,
-                       OptionalAttr<StrAttr>:$link_mode);
+                       OptionalAttr<StrAttr>:$link_mode,
+                       OptionalAttr<DenseI64ArrayAttr>:$access_pattern);
   let assemblyFormat = "attr-dict";
 }
 

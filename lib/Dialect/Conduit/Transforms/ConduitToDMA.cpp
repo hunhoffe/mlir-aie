@@ -137,6 +137,14 @@ struct ConduitInfo {
   int64_t depth = 1;
   int64_t capacity = 0;
   mlir::Type elemType; // actual element memref type (may be null)
+  // Cyclostatic (CSDF) access pattern from conduit.create access_pattern attr.
+  // Empty means uniform SDF (all acquires use the same count = capacity/depth).
+  // Non-empty means CSDF: access_pattern[i % period] is the acquire count for
+  // iteration i, where period = access_pattern.size().
+  // Pass C uses this in Phase 6 (Acquire lowering) to emit the correct
+  // per-iteration lock acquire count, and in Phase 5.5 (aie.mem BD chain) to
+  // emit a BD block per pattern element rather than a uniform ring.
+  llvm::SmallVector<int64_t> accessPattern;
   // Hardware SSA values populated during lowering:
   llvm::SmallVector<AIE::BufferOp> buffers; // depth-many on consumer_tile[0]
   // Per-consumer-tile lock pairs for multi-consumer (broadcast) correctness.
@@ -236,6 +244,15 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         }
       }
 
+      // Extract cyclostatic access pattern (CSDF).
+      // getAccessPattern() returns std::optional<ArrayRef<int64_t>>.
+      // When present, the consumer acquires access_pattern[i % period] elements
+      // on iteration i instead of a uniform count.
+      if (auto ap = op.getAccessPattern()) {
+        for (int64_t v : *ap)
+          info.accessPattern.push_back(v);
+      }
+
       conduitMap[op.getName()] = std::move(info);
     });
 
@@ -275,6 +292,44 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         return {};
       return it->second;
     };
+
+    // -----------------------------------------------------------------------
+    // Pre-Phase 3: collect link source names before Phase 3 runs.
+    //
+    // Phase 5 (conduit.objectfifo_link lowering) allocates its OWN per-slice
+    // lock pairs on the MemTile for link source conduits.  If Phase 3 also
+    // allocates prodLock/consLock for those conduits (as it would for any
+    // conduit with a consumer tile), the result is 2 orphan locks that waste
+    // lock IDs and shift all subsequent lock indices.
+    //
+    // Fix: collect the set of conduit names that are link sources BEFORE
+    // Phase 3 runs, then skip lock (and buffer) allocation for those conduits
+    // inside Phase 3.  Phase 5 handles their lock allocation.
+    //
+    // Note: buffers on the MemTile consumer tile are still needed by Phase 5
+    // (srcInfo.buffers is used for dma_bd references in the BD chain).  Only
+    // the LOCKS are skipped; the buffers are still allocated by Phase 3.
+    // -----------------------------------------------------------------------
+
+    // Collect link source names for DISTRIBUTE links only.
+    //
+    // For a distribute link (1 src → N dsts), Phase 5 allocates its own
+    // per-slice lock pairs on the MemTile.  Phase 3 would also allocate a
+    // prodLock/consLock pair for the same conduit (as a consumer of the
+    // MemTile), resulting in 2 orphan locks with wasted IDs.
+    //
+    // For a join link (N srcs → 1 dst), Phase 5 uses the EXISTING per-source
+    // lock pairs that Phase 3 allocates.  Skipping Phase 3 locks for join
+    // sources would leave Phase 5 with null lock references.
+    //
+    // Therefore, only skip Phase 3 lock allocation for distribute sources.
+    llvm::StringSet<> linkSrcNamesEarly;
+    module.walk([&](ObjectFifoLink linkOp) {
+      if (linkOp.getMode() != "distribute")
+        return; // join sources still need Phase 3 locks
+      for (auto s : linkOp.getSrcs())
+        linkSrcNamesEarly.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+    });
 
     // -----------------------------------------------------------------------
     // Phase 3: for each conduit.create, allocate aie.buffer + aie.lock pairs
@@ -436,6 +491,23 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           consBuffers.push_back(buf);
           if (consIdx == 0)
             info.buffers.push_back(buf);
+        }
+
+        // Skip lock allocation for link source conduits.
+        //
+        // Link source conduits (those that appear as srcs in a
+        // conduit.objectfifo_link op) have their lock pairs allocated by
+        // Phase 5 — one independent per-slice lock pair per destination.
+        // Allocating locks here in Phase 3 would produce 2 orphan locks on
+        // the MemTile that waste lock IDs and shift all Phase 5 lock indices.
+        //
+        // The buffers above are still needed: Phase 5 references
+        // srcInfo.buffers for the dma_bd descriptors in the BD chain.
+        if (linkSrcNamesEarly.count(name)) {
+          // Link source: register buffers but no locks.
+          // consumerTileLocks is left empty; Phase 5.5 skips this conduit.
+          info.consumerTileBuffers[consTileVal] = consBuffers;
+          continue; // advance to next consIdx (or exit the for loop)
         }
 
         // Allocate prod_lock (init = depth → depth free slots).
@@ -651,10 +723,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //   ...
     // -----------------------------------------------------------------------
 
-    // Collect link source names here, BEFORE the Phase 5 walk erases the link
-    // ops.  Phase 5.5 uses this set to skip conduits that already have DMA
-    // set up via the MemTile link path.  Collecting after Phase 5 is too late
-    // — all ObjectFifoLink ops will have been erased by then (bug M5 fix).
+    // linkSrcNames: for Phase 5.5 (skip aie.mem for link sources), we need ALL
+    // link source names (both distribute and join).  linkSrcNamesEarly only
+    // contains distribute sources (to avoid skipping Phase 3 lock allocation
+    // for join sources, which Phase 5 join mode needs).  Build a full set here.
     llvm::StringSet<> linkSrcNames;
     module.walk([&](ObjectFifoLink linkOp) {
       for (auto s : linkOp.getSrcs())

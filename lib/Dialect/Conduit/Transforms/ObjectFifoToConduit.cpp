@@ -115,6 +115,11 @@ struct FifoInfo {
   int64_t depth = 1;
   int64_t numElems = 1;
   mlir::MemRefType elemType; // the actual element memref type
+  // Cyclostatic (CSDF) access pattern.
+  // Populated in Phase 1.5 by scanning acquire counts for each consumer of this
+  // fifo.  If all acquires use the same count the pattern is absent (uniform SDF).
+  // If acquires vary, this holds the sequence of counts in program order.
+  llvm::SmallVector<int64_t> accessPattern;
 };
 
 // ---------------------------------------------------------------------------
@@ -172,6 +177,45 @@ struct ObjectFifoToConduitPass
       fifoInfoMap[op.getSymNameAttr()] = std::move(info);
     });
 
+    // Phase 1.5: detect cyclostatic (CSDF) access patterns.
+    //
+    // For each objectfifo, collect the sequence of acquire counts from all
+    // Consume-port acquire ops that reference it (in module walk order, which
+    // approximates program order within a flat core body).  If the sequence
+    // has more than one distinct value, it is a cyclostatic pattern and we
+    // record it in fifoInfoMap[name].accessPattern.
+    //
+    // Limitation: acquires inside scf.for loops are visited multiple times by
+    // module.walk, but each unique acquire op appears exactly once.  For the
+    // corpus files (acquire 1 / acquire 2 / acquire 1 as three separate ops)
+    // this gives the correct pattern [1, 2, 1].  Acquire ops inside loops that
+    // all use the same count do not create a cyclostatic pattern.
+
+    // Per-fifo: ordered list of (Consume) acquire counts seen in program order.
+    llvm::DenseMap<mlir::StringAttr, llvm::SmallVector<int64_t>>
+        consumeAcquireCounts;
+
+    module.walk([&](AIE::ObjectFifoAcquireOp op) {
+      // Only Consume-port acquires determine the consumer access pattern.
+      if (op.getPort() != AIE::ObjectFifoPort::Consume)
+        return;
+      auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
+      consumeAcquireCounts[nameAttr].push_back(op.acqNumber());
+    });
+
+    // For each fifo, if the counts are not all equal, record the pattern.
+    for (auto &[nameAttr, counts] : consumeAcquireCounts) {
+      if (counts.empty())
+        continue;
+      // Check uniformity.
+      bool uniform = llvm::all_of(counts, [&](int64_t c) { return c == counts[0]; });
+      if (!uniform) {
+        auto it = fifoInfoMap.find(nameAttr);
+        if (it != fifoInfoMap.end())
+          it->second.accessPattern = counts;
+      }
+    }
+
     // Phase 2: rewrite each aie.objectfifo → conduit.create with typed attrs.
     // NOTE: do NOT erase the objectfifo op here — the AIE verifier requires
     // aie.objectfifo.acquire to reference a live objectfifo symbol.  Collect
@@ -194,6 +238,14 @@ struct ObjectFifoToConduitPass
       if (!info.shimConsumerTilesArr.empty())
         shimConsAttr = mlir::DenseI64ArrayAttr::get(ctx, info.shimConsumerTilesArr);
 
+      // Emit access_pattern attribute for cyclostatic (CSDF) fifos.
+      // When the consumer acquires varying counts per iteration, the pattern
+      // is stored here so Pass C can generate the correct lock protocol.
+      mlir::DenseI64ArrayAttr accessPatternAttr;
+      if (!info.accessPattern.empty())
+        accessPatternAttr =
+            mlir::DenseI64ArrayAttr::get(ctx, info.accessPattern);
+
       builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
@@ -203,7 +255,8 @@ struct ObjectFifoToConduitPass
           shimConsAttr,
           mlir::TypeAttr::get(info.elemType),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
-          /*link_mode=*/mlir::StringAttr{});
+          /*link_mode=*/mlir::StringAttr{},
+          accessPatternAttr);
 
       fifosToErase.push_back(op);
     });

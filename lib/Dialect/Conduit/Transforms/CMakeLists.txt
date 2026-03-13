@@ -6,6 +6,7 @@
 # (c) Copyright 2026 Advanced Micro Devices, Inc.
 
 add_mlir_dialect_library(ConduitTransforms
+  AirChannelToConduit.cpp
   ObjectFifoToConduit.cpp
   ConduitToDMA.cpp
 
