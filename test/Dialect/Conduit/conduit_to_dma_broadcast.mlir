@@ -3,14 +3,16 @@
 // Pass A + Pass C end-to-end test: 1 producer -> 3 consumer tiles (broadcast).
 //
 // Verifies that each consumer tile gets its own independent buffer and lock pair,
-// and that each core uses its own tile's resources (not consumer_tile[0]'s).
+// that each core uses its own tile's resources (not consumer_tile[0]'s), and
+// that N flows are generated (one per consumer) — Fix NF6.
 //
 // Resources:
 //   aie.buffer:  3  (one per consumer tile, depth=1)
 //   aie.lock:    8  (prod_lock + cons_lock per consumer tile × 3 consumers;
 //                    plus prod_lock + cons_lock on shim tile)
-//   aie.flow:    1  (shim → tile_0_2 only; other consumer flows are a known gap)
-//   aie.mem:     1  (S2MM for tile_0_2 consumer; other consumers are a known gap)
+//   aie.flow:    3  (shim DMA:0 → tile_0_2, shim DMA:1 → tile_0_3,
+//                    shim DMA:2 → tile_0_4)
+//   aie.mem:     3  (S2MM for each of the 3 consumer tiles)
 
 // CHECK-LABEL: module @broadcast_3_consumers
 // CHECK:   aie.device(npu1_1col) {
@@ -51,6 +53,26 @@
 // CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_2_cons{{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       func.call @consume_data(%{{.*}}bcast_fifo_cons_2_buff_0
 // CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_2_prod{{.*}}, Release, 1)
+// --- Three flows: one per consumer tile (Fix NF6) ---
+// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
+// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 1, %{{.*}}tile_0_3, DMA : 0)
+// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 2, %{{.*}}tile_0_4, DMA : 0)
+// --- Three aie.mem blocks: one S2MM for each consumer tile ---
+// CHECK:     aie.mem(%{{.*}}tile_0_2) {
+// CHECK:       aie.dma_start(S2MM
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_0_prod{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:       aie.dma_bd(%{{.*}}bcast_fifo_cons_0_buff_0
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_0_cons{{.*}}, Release, 1)
+// CHECK:     aie.mem(%{{.*}}tile_0_3) {
+// CHECK:       aie.dma_start(S2MM
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_1_prod{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:       aie.dma_bd(%{{.*}}bcast_fifo_cons_1_buff_0
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_1_cons{{.*}}, Release, 1)
+// CHECK:     aie.mem(%{{.*}}tile_0_4) {
+// CHECK:       aie.dma_start(S2MM
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_2_prod{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:       aie.dma_bd(%{{.*}}bcast_fifo_cons_2_buff_0
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_2_cons{{.*}}, Release, 1)
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.release

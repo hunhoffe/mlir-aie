@@ -743,17 +743,23 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         continue;
 
       // --- Sub-case 4a: producer is a shim tile (row==0) ---
+      //
+      // Fix NF6: broadcast correctness — emit one aie.flow per consumer tile.
+      //
+      // For a 1-producer → N-consumer broadcast, the shim DMA has N MM2S
+      // channels (one per consumer).  Each consumer tile's DMA runs S2MM on
+      // channel 0 and has its own independent buffer and lock pair (allocated
+      // by Phase 3).  The stateful transform emits N flows; we must too.
+      //
+      // Single-consumer (N==1) case: channel index is 0 (unchanged from
+      // the original implementation).  Multi-consumer (N>1): channel i sends
+      // to consumer tile i via DMA channel i → DMA 0 on the consumer tile.
       if (prodRow == 0) {
         if (info.consumerTileCoords.empty())
           continue;
 
         AIE::TileOp shimTile = lookupTileByCoord(prodCol, prodRow);
         if (!shimTile)
-          continue;
-
-        auto [consCol, consRow] = info.consumerTileCoords[0];
-        AIE::TileOp consTile = lookupTileByCoord(consCol, consRow);
-        if (!consTile)
           continue;
 
         builder.setInsertionPoint(deviceBody.getTerminator());
@@ -778,6 +784,9 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         }
 
         // aie.shim_dma_allocation @<name>_shim_alloc(%shimTile, MM2S, 0)
+        // Note: shim_dma_allocation always uses channel 0 — the allocation
+        // registers the shim tile as a DMA endpoint; the per-consumer channel
+        // routing is expressed via aie.flow ops below.
         std::string allocSym = name.str() + "_shim_alloc";
         builder.create<AIE::ShimDMAAllocationOp>(
             deviceOp.getLoc(), allocSym, shimTile.getResult(),
@@ -786,12 +795,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             /*plio=*/false,
             /*packet=*/nullptr);
 
-        // aie.flow(%shimTile, DMA : 0, %consTile, DMA : 0)
-        builder.create<AIE::FlowOp>(deviceOp.getLoc(), shimTile.getResult(),
-                                    AIE::WireBundle::DMA,
-                                    static_cast<int32_t>(0),
-                                    consTile.getResult(), AIE::WireBundle::DMA,
-                                    static_cast<int32_t>(0));
+        // Emit one aie.flow per consumer tile (broadcast fix NF6).
+        // Channel index i on the shim MM2S side → channel 0 on consumer i.
+        for (unsigned consIdx = 0;
+             consIdx < info.consumerTileCoords.size(); ++consIdx) {
+          auto [consCol, consRow] = info.consumerTileCoords[consIdx];
+          AIE::TileOp consTile = lookupTileByCoord(consCol, consRow);
+          if (!consTile)
+            continue;
+          builder.create<AIE::FlowOp>(
+              deviceOp.getLoc(), shimTile.getResult(), AIE::WireBundle::DMA,
+              static_cast<int32_t>(consIdx), consTile.getResult(),
+              AIE::WireBundle::DMA, static_cast<int32_t>(0));
+        }
       }
 
       // --- Sub-case 4b: consumer is a shim tile (row==0) ---
@@ -1503,79 +1519,133 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         // MM2S BD: wait for data filled (consLock), send, signal slot free (prodLock).
         acqLock = info.consLock;
         relLock = info.prodLock;
+
+        int64_t depth = info.depth > 0 ? info.depth : 1;
+        int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
+
+        // Create aie.mem on the producer tile (single tile for Case B).
+        builder.setInsertionPoint(deviceBody.getTerminator());
+        auto memOp = builder.create<AIE::MemOp>(deviceOp.getLoc(),
+                                                dmaHostTile.getResult());
+        mlir::Region &memRegion = memOp.getBody();
+        auto addMemBlock = [&]() -> mlir::Block * {
+          return builder.createBlock(&memRegion);
+        };
+        mlir::Block *dmaStartBlock = addMemBlock();
+        llvm::SmallVector<mlir::Block *> bdBlocks;
+        for (int64_t i = 0; i < depth; ++i)
+          bdBlocks.push_back(addMemBlock());
+        mlir::Block *endMemBlock = addMemBlock();
+        builder.setInsertionPointToEnd(dmaStartBlock);
+        builder.create<AIE::DMAStartOp>(deviceOp.getLoc(), dmaDir,
+                                        static_cast<int32_t>(0),
+                                        static_cast<int32_t>(0),
+                                        bdBlocks[0], endMemBlock);
+        for (int64_t i = 0; i < depth; ++i) {
+          builder.setInsertionPointToEnd(bdBlocks[i]);
+          builder.create<AIE::UseLockOp>(deviceOp.getLoc(), acqLock.getResult(),
+                                         AIE::LockAction::AcquireGreaterEqual,
+                                         static_cast<int32_t>(1));
+          builder.create<AIE::DMABDOp>(deviceOp.getLoc(),
+                                       info.buffers[i].getResult(), 0,
+                                       static_cast<int>(perBufLen));
+          builder.create<AIE::UseLockOp>(deviceOp.getLoc(), relLock.getResult(),
+                                         AIE::LockAction::Release,
+                                         static_cast<int32_t>(1));
+          builder.create<AIE::NextBDOp>(deviceOp.getLoc(),
+                                        bdBlocks[(i + 1) % depth]);
+        }
+        builder.setInsertionPointToEnd(endMemBlock);
+        builder.create<AIE::EndOp>(deviceOp.getLoc());
+
       } else {
-        // Case A: shim sends S2MM to consumer compute tile (or compute→compute).
+        // Case A: shim sends S2MM to compute consumer tile(s).
+        //
+        // Fix NF6 (Phase 5.5): for broadcast (N consumer tiles), emit one
+        // aie.mem per consumer tile, each using that tile's own buffer vector
+        // and lock pair from consumerTileBuffers / consumerTileLocks.
+        //
+        // Single-consumer case: consumerTileCoords.size() == 1 → exactly one
+        // aie.mem is emitted (same behavior as before this fix).
         if (info.consumerTileCoords.empty())
           continue;
-        auto [consCol, consRow] = info.consumerTileCoords[0];
-        dmaHostTile = lookupTileByCoord(consCol, consRow);
-        if (!dmaHostTile)
-          continue;
-        // Only compute tiles (row >= 2) use aie.mem.
-        if (consRow < 2)
-          continue;
+
+        int64_t depth = info.depth > 0 ? info.depth : 1;
+        int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
         dmaDir = AIE::DMAChannelDir::S2MM;
-        // S2MM BD: wait for free slot (prodLock), receive, signal filled (consLock).
-        acqLock = info.prodLock;
-        relLock = info.consLock;
+
+        for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
+             ++consIdx) {
+          auto [consCol, consRow] = info.consumerTileCoords[consIdx];
+          dmaHostTile = lookupTileByCoord(consCol, consRow);
+          if (!dmaHostTile)
+            continue;
+          // Only compute tiles (row >= 2) use aie.mem.
+          if (consRow < 2)
+            continue;
+
+          // Resolve the per-consumer-tile buffer vector and lock pair.
+          // Falls back to info.buffers / prodLock / consLock for single-
+          // consumer conduits where consumerTileBuffers may be empty.
+          llvm::SmallVector<AIE::BufferOp> *tileBuffers = &info.buffers;
+          AIE::LockOp tileProdLock = info.prodLock;
+          AIE::LockOp tileConsLock = info.consLock;
+          {
+            mlir::Value consTileVal = dmaHostTile.getResult();
+            auto bufIt = info.consumerTileBuffers.find(consTileVal);
+            if (bufIt != info.consumerTileBuffers.end() &&
+                !bufIt->second.empty())
+              tileBuffers = &bufIt->second;
+            auto lockIt = info.consumerTileLocks.find(consTileVal);
+            if (lockIt != info.consumerTileLocks.end()) {
+              tileProdLock = lockIt->second.first;
+              tileConsLock = lockIt->second.second;
+            }
+          }
+
+          if (!tileProdLock || !tileConsLock || tileBuffers->empty())
+            continue;
+
+          // S2MM BD: wait for free slot (prodLock), receive, signal filled (consLock).
+          acqLock = tileProdLock;
+          relLock = tileConsLock;
+
+          // Create aie.mem on this consumer tile.
+          builder.setInsertionPoint(deviceBody.getTerminator());
+          auto memOp = builder.create<AIE::MemOp>(deviceOp.getLoc(),
+                                                  dmaHostTile.getResult());
+          mlir::Region &memRegion = memOp.getBody();
+          auto addMemBlock = [&]() -> mlir::Block * {
+            return builder.createBlock(&memRegion);
+          };
+          mlir::Block *dmaStartBlock = addMemBlock();
+          llvm::SmallVector<mlir::Block *> bdBlocks;
+          for (int64_t i = 0; i < depth; ++i)
+            bdBlocks.push_back(addMemBlock());
+          mlir::Block *endMemBlock = addMemBlock();
+          builder.setInsertionPointToEnd(dmaStartBlock);
+          builder.create<AIE::DMAStartOp>(deviceOp.getLoc(), dmaDir,
+                                          static_cast<int32_t>(0),
+                                          static_cast<int32_t>(0),
+                                          bdBlocks[0], endMemBlock);
+          for (int64_t i = 0; i < depth; ++i) {
+            builder.setInsertionPointToEnd(bdBlocks[i]);
+            builder.create<AIE::UseLockOp>(
+                deviceOp.getLoc(), acqLock.getResult(),
+                AIE::LockAction::AcquireGreaterEqual, static_cast<int32_t>(1));
+            builder.create<AIE::DMABDOp>(
+                deviceOp.getLoc(), (*tileBuffers)[i % tileBuffers->size()].getResult(),
+                0, static_cast<int>(perBufLen));
+            builder.create<AIE::UseLockOp>(
+                deviceOp.getLoc(), relLock.getResult(),
+                AIE::LockAction::Release, static_cast<int32_t>(1));
+            builder.create<AIE::NextBDOp>(deviceOp.getLoc(),
+                                          bdBlocks[(i + 1) % depth]);
+          }
+          builder.setInsertionPointToEnd(endMemBlock);
+          builder.create<AIE::EndOp>(deviceOp.getLoc());
+        }
       }
-
-      int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen =
-          info.capacity > 0 ? info.capacity / depth : 1;
-
-      // Create aie.mem on the chosen tile.
-      builder.setInsertionPoint(deviceBody.getTerminator());
-      auto memOp = builder.create<AIE::MemOp>(deviceOp.getLoc(),
-                                              dmaHostTile.getResult());
-      mlir::Region &memRegion = memOp.getBody();
-
-      auto addMemBlock = [&]() -> mlir::Block * {
-        return builder.createBlock(&memRegion);
-      };
-
-      // ^dma_start_block: dma_start(dir, 0, ^bd_0, ^end)
-      mlir::Block *dmaStartBlock = addMemBlock();
-
-      // Create depth-many BD blocks.
-      llvm::SmallVector<mlir::Block *> bdBlocks;
-      for (int64_t i = 0; i < depth; ++i)
-        bdBlocks.push_back(addMemBlock());
-
-      // ^end: aie.end
-      mlir::Block *endMemBlock = addMemBlock();
-
-      // Fill dma_start_block.
-      builder.setInsertionPointToEnd(dmaStartBlock);
-      builder.create<AIE::DMAStartOp>(deviceOp.getLoc(),
-                                     dmaDir,
-                                     /*channel_index=*/static_cast<int32_t>(0),
-                                     /*repeat_count=*/static_cast<int32_t>(0),
-                                     bdBlocks[0], endMemBlock);
-
-      // Fill BD blocks.
-      for (int64_t i = 0; i < depth; ++i) {
-        builder.setInsertionPointToEnd(bdBlocks[i]);
-        builder.create<AIE::UseLockOp>(deviceOp.getLoc(),
-                                       acqLock.getResult(),
-                                       AIE::LockAction::AcquireGreaterEqual,
-                                       static_cast<int32_t>(1));
-        builder.create<AIE::DMABDOp>(deviceOp.getLoc(),
-                                     info.buffers[i].getResult(),
-                                     /*offset=*/0,
-                                     static_cast<int>(perBufLen));
-        builder.create<AIE::UseLockOp>(deviceOp.getLoc(),
-                                       relLock.getResult(),
-                                       AIE::LockAction::Release,
-                                       static_cast<int32_t>(1));
-        // Ring: chain to next BD block, wrapping back to first.
-        mlir::Block *nextBD = bdBlocks[(i + 1) % depth];
-        builder.create<AIE::NextBDOp>(deviceOp.getLoc(), nextBD);
-      }
-
-      // ^end: aie.end
-      builder.setInsertionPointToEnd(endMemBlock);
-      builder.create<AIE::EndOp>(deviceOp.getLoc());
     }
 
     // -----------------------------------------------------------------------
@@ -1617,11 +1687,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //
     // The counter increment (counter = (counter+1) % depth) is emitted in
     // Step 4 after the Release use_lock, once per acquire-release pair.
+    //
+    // Fix NF3: the window operand of SubviewAccess may come from either:
+    //   a) conduit.acquire  (blocking path)  — look up name via acqOp.getName()
+    //   b) conduit.wait_window (async path)  — look up name via waitOp.getName()
+    // If neither matches, the pass emits a hard error (no silent fallback).
     module.walk([&](SubviewAccess op) {
       llvm::StringRef conduitName;
       if (auto acqOp = mlir::dyn_cast_or_null<Acquire>(
               op.getWindow().getDefiningOp()))
         conduitName = acqOp.getName();
+      else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
+                   op.getWindow().getDefiningOp()))
+        conduitName = waitOp.getName();
 
       bool replaced = false;
       if (!conduitName.empty()) {
@@ -1744,14 +1822,21 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // Step 2: Release — emit use_lock; collect for deferred erase.
     // Must happen BEFORE Acquire is erased because Release holds a reference
     // to Acquire's window result (needed to look up the conduit name).
+    //
+    // Fix NF3: the window operand of Release may come from either:
+    //   a) conduit.acquire  (blocking path)  — look up name via acqOp.getName()
+    //   b) conduit.wait_window (async path)  — look up name via waitOp.getName()
     llvm::SmallVector<Release> releasesToErase;
     module.walk([&](Release op) {
       // conduit.release takes a !conduit.window<T> operand; derive the conduit
-      // name by walking up to the defining conduit.acquire op.
+      // name by walking up to the defining conduit.acquire (or wait_window) op.
       llvm::StringRef conduitName;
       if (auto acqOp = mlir::dyn_cast_or_null<Acquire>(
               op.getWindow().getDefiningOp()))
         conduitName = acqOp.getName();
+      else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
+                   op.getWindow().getDefiningOp()))
+        conduitName = waitOp.getName();
 
       if (conduitName.empty()) {
         releasesToErase.push_back(op);
@@ -1910,11 +1995,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     });
 
     // -----------------------------------------------------------------------
-    // Phase 7: erase remaining Conduit ops (create).
+    // Phase 7: erase remaining Conduit ops (create, wait).
     // SubviewAccess and Acquire/Release were already erased in Phase 6.
     // conduit.annotate was removed from the dialect; no Annotate erase.
+    //
+    // Fix NF5: conduit.wait ops (used as DMA token synchronization fences)
+    // are not lowered to any hardware op — the program ordering they encode
+    // is already captured by the surrounding lock acquire/release sequence.
+    // They must be erased here so they do not survive into the output IR as
+    // dangling Conduit ops.  Erase conduit.wait BEFORE conduit.create so
+    // that any wait ops inside device body are caught first.
     // -----------------------------------------------------------------------
 
+    module.walk([&](Wait op) { op.erase(); });
     module.walk([&](Create op) { op.erase(); });
 
     // -----------------------------------------------------------------------
