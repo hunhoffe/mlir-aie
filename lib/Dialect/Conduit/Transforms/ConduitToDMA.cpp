@@ -628,6 +628,16 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // gap — see the TODO below.
     // -----------------------------------------------------------------------
 
+    // Collect link source names here, BEFORE the Phase 5 walk erases the link
+    // ops.  Phase 5.5 uses this set to skip conduits that already have DMA
+    // set up via the MemTile link path.  Collecting after Phase 5 is too late
+    // — all ObjectFifoLink ops will have been erased by then (bug M5 fix).
+    llvm::StringSet<> linkSrcNames;
+    module.walk([&](ObjectFifoLink linkOp) {
+      for (auto s : linkOp.getSrcs())
+        linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+    });
+
     module.walk([&](ObjectFifoLink linkOp) {
       builder.setInsertionPoint(deviceBody.getTerminator());
       mlir::Location loc = linkOp.getLoc();
@@ -859,15 +869,9 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // the link phase already handles the DMA for those buffers.
     // -----------------------------------------------------------------------
 
-    // Collect conduit names referenced as link sources (to skip them here).
-    llvm::StringSet<> linkSrcNames;
-    module.walk([&](ObjectFifoLink linkOp) {
-      auto srcs = linkOp.getSrcs();
-      for (auto s : srcs) {
-        auto name = mlir::cast<mlir::StringAttr>(s).getValue();
-        linkSrcNames.insert(name);
-      }
-    });
+    // linkSrcNames was populated before Phase 5 (above) so it correctly
+    // contains the source conduit names even though Phase 5 has erased all
+    // ObjectFifoLink ops by the time Phase 5.5 runs.
 
     for (auto &[name, info] : conduitMap) {
       if (info.buffers.empty() || !info.prodLock || !info.consLock)
@@ -1330,6 +1334,33 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // -----------------------------------------------------------------------
 
     module.walk([&](Create op) { op.erase(); });
+
+    // -----------------------------------------------------------------------
+    // Phase 8: guard against unsupported async Conduit ops surviving Pass C.
+    //
+    // conduit.wait_window, conduit.acquire_async, and conduit.release_async
+    // are not yet lowered to hardware ops.  If any survive into the output
+    // they would produce silently incorrect IR (dangling Conduit ops mixed
+    // with aie.* ops).  Emit a hard error so the user gets a clear compile
+    // failure rather than wrong output (bug M6 fix).
+    // -----------------------------------------------------------------------
+
+    module.walk([&](WaitWindow op) {
+      op.emitError("conduit-to-dma: unimplemented — conduit.wait_window "
+                   "lowering not yet supported; use conduit.acquire (blocking) "
+                   "instead of the async token path for now");
+      signalPassFailure();
+    });
+    module.walk([&](AcquireAsync op) {
+      op.emitError("conduit-to-dma: unimplemented — conduit.acquire_async "
+                   "lowering not yet supported");
+      signalPassFailure();
+    });
+    module.walk([&](ReleaseAsync op) {
+      op.emitError("conduit-to-dma: unimplemented — conduit.release_async "
+                   "lowering not yet supported");
+      signalPassFailure();
+    });
   }
 };
 
