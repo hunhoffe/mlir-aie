@@ -1045,10 +1045,27 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           ConduitInfo &cinfo = it->second;
           int64_t depth = cinfo.depth > 0 ? cinfo.depth : 1;
 
-          if (idx < static_cast<int64_t>(cinfo.buffers.size())) {
+          // Broadcast buffer correctness: resolve to the buffer vector for the
+          // specific consumer tile that contains this SubviewAccess.
+          // Falls back to cinfo.buffers (consumer_tile[0]) when not found.
+          llvm::SmallVector<AIE::BufferOp> *tileBuffers = &cinfo.buffers;
+          {
+            mlir::Operation *coreOp = op->getParentOp();
+            while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+              coreOp = coreOp->getParentOp();
+            if (coreOp) {
+              mlir::Value coreTile =
+                  mlir::cast<AIE::CoreOp>(coreOp).getTile();
+              auto bufIt = cinfo.consumerTileBuffers.find(coreTile);
+              if (bufIt != cinfo.consumerTileBuffers.end())
+                tileBuffers = &bufIt->second;
+            }
+          }
+
+          if (idx < static_cast<int64_t>(tileBuffers->size())) {
             if (depth == 1 || !cinfo.rotationBuf) {
               // Depth-1 case (or no rotation buffer): static selection.
-              mlir::Value bufVal = cinfo.buffers[idx].getResult();
+              mlir::Value bufVal = (*tileBuffers)[idx].getResult();
               if (bufVal.getType() == op.getResult().getType()) {
                 op.getResult().replaceAllUsesWith(bufVal);
                 replaced = true;
@@ -1092,23 +1109,23 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   loc, mlir::TypeRange{bufTy}, absIdx, caseVals,
                   /*numRegions=*/static_cast<int>(depth));
 
-              // Fill each case region: yield buffers[i].
+              // Fill each case region: yield tileBuffers[i].
               for (int64_t i = 0; i < depth; ++i) {
                 mlir::Block *caseBlock =
                     &switchOp.getCaseRegions()[i].emplaceBlock();
                 mlir::OpBuilder caseBuilder(ctx);
                 caseBuilder.setInsertionPointToEnd(caseBlock);
                 caseBuilder.create<mlir::scf::YieldOp>(
-                    loc, cinfo.buffers[i].getResult());
+                    loc, (*tileBuffers)[i].getResult());
               }
-              // Default region: yield buffers[0].
+              // Default region: yield tileBuffers[0].
               {
                 mlir::Block *defBlock =
                     &switchOp.getDefaultRegion().emplaceBlock();
                 mlir::OpBuilder defBuilder(ctx);
                 defBuilder.setInsertionPointToEnd(defBlock);
                 defBuilder.create<mlir::scf::YieldOp>(
-                    loc, cinfo.buffers[0].getResult());
+                    loc, (*tileBuffers)[0].getResult());
               }
 
               op.getResult().replaceAllUsesWith(switchOp.getResult(0));
