@@ -452,6 +452,146 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         continue;
       }
 
+      // -----------------------------------------------------------------------
+      // Phase 3c: Shared memory detection.
+      //
+      // If the producer and the single consumer are adjacent tiles (i.e.,
+      // targetModel.isLegalMemAffinity() returns true in either direction),
+      // the producer and consumer cores can access a common memory bank without
+      // any DMA transfer.  In this case we allocate buffers and locks on the
+      // PRODUCER tile (so the producer owns the buffer) and skip all DMA
+      // setup — no aie.flow, no aie.dma_bd, no aie.mem.
+      //
+      // Conditions for shared memory path:
+      //   1. Exactly one compute consumer (no multi-consumer broadcast, no
+      //      shim consumers — those always require DMA).
+      //   2. isLegalMemAffinity(prodCol, prodRow, consCol, consRow) OR
+      //      isLegalMemAffinity(consCol, consRow, prodCol, prodRow).
+      //   3. Not a link source (link ops always require DMA on the MemTile).
+      //
+      // The stateful transform uses the same check (requiresDMAs → isSharedMemory)
+      // and allocates on the producer tile when share_direction != 1.
+      // -----------------------------------------------------------------------
+      if (info.consumerTileCoords.size() == 1 &&
+          info.shimConsumerTileCoords.empty() &&
+          !linkSrcNamesEarly.count(name)) {
+        auto [prodCol, prodRow] = info.producerTileCoord;
+        auto [consCol, consRow] = info.consumerTileCoords[0];
+        // Neither tile may be a shim tile (row==0) or MemTile (row==1);
+        // shared memory only applies between compute tiles.
+        bool prodIsShim = (prodRow == 0);
+        bool consIsShim = (consRow == 0);
+        bool prodIsMemtile = targetModel.isMemTile(prodCol, prodRow);
+        bool consIsMemtile = targetModel.isMemTile(consCol, consRow);
+        if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile) {
+          bool rightShared = targetModel.isLegalMemAffinity(
+              prodCol, prodRow, consCol, consRow);
+          bool leftShared = targetModel.isLegalMemAffinity(
+              consCol, consRow, prodCol, prodRow);
+          if (rightShared || leftShared) {
+            // --- Shared memory path ---
+            info.sharedMemory = true;
+
+            AIE::TileOp prodTile = lookupTileByCoord(prodCol, prodRow);
+            AIE::TileOp consTile = lookupTileByCoord(consCol, consRow);
+            if (!prodTile || !consTile) {
+              module.emitWarning(
+                  "conduit-to-dma: shared memory conduit '" + name.str() +
+                  "' has missing tile op; falling back to DMA path");
+              info.sharedMemory = false;
+              // Fall through to normal consumer loop below.
+            } else {
+              int64_t depth = info.depth > 0 ? info.depth : 1;
+              mlir::Type bufTy = info.elemType;
+              if (!bufTy) {
+                int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
+                bufTy = mlir::MemRefType::get({bufSize},
+                                              mlir::IntegerType::get(ctx, 32));
+              }
+
+              if (insertAfterTile)
+                builder.setInsertionPointAfter(insertAfterTile);
+              else
+                builder.setInsertionPointToStart(&deviceBody);
+
+              mlir::Value prodTileVal = prodTile.getResult();
+              mlir::Value consTileVal = consTile.getResult();
+
+              // Allocate depth-many buffers on the PRODUCER tile.
+              // Both producer and consumer cores can access these via the
+              // shared memory interface (no DMA needed).
+              llvm::SmallVector<AIE::BufferOp> sharedBuffers;
+              for (int64_t i = 0; i < depth; ++i) {
+                std::string symName =
+                    name.str() + "_buff_" + std::to_string(i);
+                auto buf = builder.create<AIE::BufferOp>(
+                    deviceOp.getLoc(), bufTy, prodTileVal,
+                    mlir::StringAttr::get(ctx, symName),
+                    /*address=*/mlir::IntegerAttr{},
+                    /*initial_value=*/mlir::ElementsAttr{},
+                    /*mem_bank=*/mlir::IntegerAttr{});
+                sharedBuffers.push_back(buf);
+                info.buffers.push_back(buf);
+              }
+
+              // prod_lock on the PRODUCER tile (init=depth → free slots).
+              AIE::LockOp sharedProdLock;
+              {
+                int lockIdx = lockIdCounter[prodTileVal]++;
+                std::string symName = name.str() + "_prod_lock_0";
+                AIE::LockOp lk = builder.create<AIE::LockOp>(
+                    deviceOp.getLoc(), prodTileVal, lockIdx,
+                    static_cast<int>(depth));
+                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+                sharedProdLock = lk;
+                info.prodLock = lk;
+              }
+
+              // cons_lock on the PRODUCER tile (init=0 → nothing filled yet).
+              AIE::LockOp sharedConsLock;
+              {
+                int lockIdx = lockIdCounter[prodTileVal]++;
+                std::string symName = name.str() + "_cons_lock_0";
+                AIE::LockOp lk = builder.create<AIE::LockOp>(
+                    deviceOp.getLoc(), prodTileVal, lockIdx,
+                    static_cast<int>(0));
+                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+                sharedConsLock = lk;
+                info.consLock = lk;
+              }
+
+              // Register locks keyed on the CONSUMER tile so Phase 6
+              // (acquire/release lowering inside the consumer aie.core) can
+              // look them up by the tile SSA value of the core it walks into.
+              info.consumerTileLocks[consTileVal] = {sharedProdLock,
+                                                     sharedConsLock};
+              // Register buffers keyed on consumer tile for SubviewAccess.
+              info.consumerTileBuffers[consTileVal] = sharedBuffers;
+
+              // Also register on producer tile for producer-side acquires.
+              info.consumerTileLocks[prodTileVal] = {sharedProdLock,
+                                                     sharedConsLock};
+              info.consumerTileBuffers[prodTileVal] = sharedBuffers;
+
+              // Rotation counter for depth>1 (on consumer tile — the consumer
+              // core uses it, so it lives in the consumer's local memory).
+              if (depth > 1) {
+                auto counterTy = mlir::MemRefType::get(
+                    {1}, mlir::IntegerType::get(ctx, 32));
+                info.rotationBuf = builder.create<AIE::BufferOp>(
+                    deviceOp.getLoc(), counterTy, consTileVal,
+                    /*sym_name=*/mlir::StringAttr{},
+                    /*address=*/mlir::IntegerAttr{},
+                    /*initial_value=*/mlir::ElementsAttr{},
+                    /*mem_bank=*/mlir::IntegerAttr{});
+              }
+
+              continue; // skip the normal DMA consumer loop for this conduit
+            }
+          }
+        }
+      }
+
       // Handle all consumer tiles for multi-consumer broadcast.
       int64_t depth = info.depth > 0 ? info.depth : 1;
 
@@ -1316,6 +1456,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       // Skip if this conduit was a link source — the link phase already set up
       // the DMA for those buffers in a memtile_dma.
       if (linkSrcNames.count(name))
+        continue;
+
+      // Skip shared memory conduits: they require no DMA BD chain.
+      // Buffers and locks on the producer tile are directly accessible from
+      // both producer and consumer cores via shared memory; no aie.mem needed.
+      if (info.sharedMemory)
         continue;
 
       // Determine which tile gets the aie.mem and what DMA direction to use.
