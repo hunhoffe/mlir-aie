@@ -1,0 +1,319 @@
+[
+  {
+    "primitive": "channel.create / conduit.create",
+    "category": "stream",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "Core primitive \u2014 all systems have it; required for roundtrip to both backends",
+    "rule_applied": "Rule 1",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "dfg_mlir",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "put / enqueue (scalar token)",
+    "category": "token",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "Core primitive \u2014 present in 9/13 systems; scalar token is the base case",
+    "rule_applied": "Rule 1",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "dfg_mlir",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "get / dequeue (scalar token)",
+    "category": "token",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "Core primitive \u2014 symmetric with put",
+    "rule_applied": "Rule 1",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "dfg_mlir",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "put_memref / N-D DMA descriptor transfer",
+    "category": "layout",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "1314 air.channel.put uses ND descriptor; 8 systems have some form; required for AIR parity",
+    "rule_applied": "Rule 1+3",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "objectfifo.link / join-distribute routing",
+    "category": "stream",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "98 mlir-aie files; no AIR equivalent; critical for multi-tile pipelines",
+    "rule_applied": "Rule 1+3",
+    "source_ids": [
+      "dato",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "acquire / release (windowed in-place access)",
+    "category": "stream",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "Core objectfifo semantic; Produce/Consume role distinction needed",
+    "rule_applied": "Rule 1",
+    "source_ids": [
+      "amd_adf"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "put_async / async token returns",
+    "category": "token",
+    "recommendation": "op",
+    "urgency": "high",
+    "justification": "Dominant AIR production pattern; IREE timepoint is mature analog; GPU programmers expect it",
+    "rule_applied": "Rule 1+3",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "wait / wait_all / timepoint join",
+    "category": "token",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "Required for any async model; IREE timepoint.join = conduit.wait_all_async",
+    "rule_applied": "Rule 1",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "chain (explicit dep edge)",
+    "category": "token",
+    "recommendation": "op",
+    "urgency": "high",
+    "justification": "Explicit dep chaining; Dato VMG.chain and CUDA StreamWaitEvent confirm the pattern",
+    "rule_applied": "Rule 1",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "dims / layout structured attr",
+    "category": "layout",
+    "recommendation": "attr",
+    "urgency": "high",
+    "justification": "Dato Layout type, stream_aie layout metadata, and Allo buffer_at confirm frequent need; DMA-foldable",
+    "rule_applied": "Rule 2+3",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "DMA-foldable layout pass / dimensionsToStream",
+    "category": "bd_hint",
+    "recommendation": "attr",
+    "urgency": "high",
+    "justification": "Dato DMA-fold pass: eliminate compute cycles for layout reorganization \u2014 strong precedent",
+    "rule_applied": "Rule 2+4",
+    "source_ids": [
+      "dato",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "affinity / placement.assign",
+    "category": "placement",
+    "recommendation": "attr",
+    "urgency": "high",
+    "justification": "IREE #stream.affinity is most mature; 10/13 systems have some placement concept; feeds placer",
+    "rule_applied": "Rule 4",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "dfg_mlir",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "link_cost_hint / bandwidth cost model",
+    "category": "cost_model",
+    "recommendation": "attr",
+    "urgency": "medium",
+    "justification": "KU Leuven COALA and Stream-HLS analytical model confirm DSE usefulness; lightweight attr for placer",
+    "rule_applied": "Rule 4",
+    "source_ids": [
+      "dato",
+      "amd_adf"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "preferred_memory / memory tier hint",
+    "category": "placement",
+    "recommendation": "attr",
+    "urgency": "medium",
+    "justification": "IREE resource types (transient/staging/external) are the most mature model; Dato Layout tier also confirms need",
+    "rule_applied": "Rule 4",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "repeat_count / BD replay",
+    "category": "bd_hint",
+    "recommendation": "attr",
+    "urgency": "medium",
+    "justification": "Dato vmg.bundle = multi-shot replay; CUDA Graphs = static BD loop; objectfifo repeat_count in 19 files",
+    "rule_applied": "Rule 2",
+    "source_ids": [
+      "dato",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "cascade connection type",
+    "category": "stream",
+    "recommendation": "attr",
+    "urgency": "medium",
+    "justification": "AIE hardware specific; 3 corpus files; ADF has explicit cascade type \u2014 suggest conduit.annotate channel_type=cascade",
+    "rule_applied": "Rule 2",
+    "source_ids": [
+      "amd_adf"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "pktstream / packet multiplexing",
+    "category": "packet",
+    "recommendation": "annotate",
+    "urgency": "medium",
+    "justification": "ADF pktsplit/pktmerge + ARIES packet-switch confirm pattern; corpus frequency <10% \u2014 annotate first, promote if grows",
+    "rule_applied": "Rule 3",
+    "source_ids": [
+      "dato",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "task / process container",
+    "category": "task",
+    "recommendation": "helper",
+    "urgency": "medium",
+    "justification": "All systems have a task concept; dfg.process, dato.task, adf.kernel confirm need; optional sugar over core put/get ops",
+    "rule_applied": "Rule 3",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "dfg_mlir",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "virtual PE mapping / bundle+chain scheduling",
+    "category": "task",
+    "recommendation": "annotate",
+    "urgency": "low",
+    "justification": "Dato-specific; useful for multi-kernel tile reuse; model as conduit.annotate bundle_hint= until proven by corpus",
+    "rule_applied": "Rule 3",
+    "source_ids": [
+      "dato"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "register_external_buffers (host DDR)",
+    "category": "lifetime",
+    "recommendation": "op",
+    "urgency": "high",
+    "justification": "249 upstream mlir-aie files use register_external_buffers; IREE resource.import confirms pattern; CUDA cudaHostRegister is the GPU mental model",
+    "rule_applied": "Rule 1+3",
+    "source_ids": [
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "subview.access / indexed buffer extraction",
+    "category": "stream",
+    "recommendation": "op",
+    "urgency": "must-have",
+    "justification": "8392 objectfifo.subview.access uses in corpus \u2014 no Conduit op yet; needed to complete acquire/release flow",
+    "rule_applied": "Rule 1",
+    "source_ids": [
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  },
+  {
+    "primitive": "loop / herd container",
+    "category": "other",
+    "recommendation": "helper",
+    "urgency": "medium",
+    "justification": "Structural gap; Dato task+mapping, air.herd, GPU grids all confirm need; propose FOR/HERD sugar ops",
+    "rule_applied": "Rule 3",
+    "source_ids": [
+      "dato",
+      "iree_stream",
+      "amd_adf",
+      "cuda_gpu_analogy"
+    ],
+    "frequency_check": false
+  }
+]
