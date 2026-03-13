@@ -53,6 +53,23 @@ void ConduitDialect::initialize() {
 }
 
 //===----------------------------------------------------------------------===//
+// Conduit ops — additional verifiers
+//===----------------------------------------------------------------------===//
+
+// SubviewAccess verifier: ensure result type matches the window's element type.
+::mlir::LogicalResult SubviewAccess::verify() {
+  auto winTy = mlir::dyn_cast<WindowType>(getWindow().getType());
+  if (!winTy)
+    return emitOpError("operand must be !conduit.window<T>");
+  if (getResult().getType() != winTy.getElementType())
+    return emitOpError("result type ")
+           << getResult().getType()
+           << " does not match window element type "
+           << winTy.getElementType();
+  return ::mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // Conduit ops — custom verifiers
 //===----------------------------------------------------------------------===//
 

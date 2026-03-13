@@ -18,11 +18,19 @@
 // CHECK-LABEL: module @link_distribute_offsets
 // CHECK:   aie.device(xcve2302) {
 // CHECK:     aie.buffer({{.*}})
-// CHECK:     aie.lock({{.*}})
+// CHECK:     aie.lock({{.*}}) {init = 2
 // CHECK:     aie.memtile_dma({{.*}}) {
-// CHECK:       aie.dma_start(S2MM
-// CHECK:       aie.dma_bd(
+// CHECK:       aie.dma_start(S2MM, 0
+// CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:       aie.dma_bd({{.*}}, 0, 48)
+// CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.next_bd
+// CHECK:       aie.dma_start(MM2S, 0
+// CHECK:       aie.dma_bd({{.*}}, 0, 16)
+// CHECK:       aie.dma_start(MM2S, 1
+// CHECK:       aie.dma_bd({{.*}}, 16, 20)
+// CHECK:       aie.dma_start(MM2S, 2
+// CHECK:       aie.dma_bd({{.*}}, 36, 12)
 // CHECK:       aie.end
 // CHECK:     }
 // CHECK-NOT: conduit.create
