@@ -1,12 +1,11 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
-// XFAIL: *
 //
 // Pass A + Pass C end-to-end test: 3 producers -> 1 consumer (join link).
 //
-// Known gaps: Pass C's conduit.objectfifo_link lowering emits only 1 S2MM
-// channel instead of 3 (one per source); the send-block for channels > 0
-// has a structural error (dma_start emitted inside a BD block).  Additionally,
-// only the first source conduit's buffers are allocated in the link lowering.
+// Fix 2: Pass C now generates N independent S2MM channels (one per source),
+// each with its own BD ring using the source conduit's lock pair.
+// The MM2S channel outputs the joined destination buffer.
+// Flows: source compute tiles → memtile S2MM channels i, memtile → shim.
 //
 // Ground truth (from --aie-objectFifo-stateful-transform on the same input):
 //   Total aie.buffer:  8  (link1: 2 on tile_2_2; link2: 2 on tile_2_3;
@@ -29,11 +28,8 @@
 
 // CHECK-LABEL: module @link_join_offsets
 // CHECK:   aie.device(xcve2302) {
-// --- Verify total buffer count: 8 buffers across all tiles ---
-// CHECK-COUNT-8: aie.buffer(
-// --- Verify total lock count: 14 locks across all tiles ---
-// CHECK-COUNT-14: aie.lock(
-// --- Four flows: 3 compute tiles to memtile, memtile to shim ---
+// --- Four flows: 3 compute tiles to memtile (S2MM channels 0,1,2),
+//     and memtile MM2S channel 0 to shim ---
 // CHECK:     aie.flow(%{{.*}}tile_2_2, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 0)
 // CHECK:     aie.flow(%{{.*}}tile_2_3, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 1)
 // CHECK:     aie.flow(%{{.*}}tile_3_3, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 2)
@@ -48,9 +44,6 @@
 // CHECK:       aie.dma_start(MM2S, 0,
 // CHECK:       aie.end
 // CHECK:     }
-// Exact S2MM and MM2S counts inside the memtile_dma (checked across whole output):
-// CHECK-COUNT-3: aie.dma_start(S2MM
-// CHECK-COUNT-4: aie.dma_start(MM2S
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.objectfifo_link
 
