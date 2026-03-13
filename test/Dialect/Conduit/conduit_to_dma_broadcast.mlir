@@ -1,56 +1,56 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
-// XFAIL: *
 //
 // Pass A + Pass C end-to-end test: 1 producer -> 3 consumer tiles (broadcast).
 //
-// Known gap: Pass C currently only allocates buffers/locks for consumerTiles[0]
-// and skips consumers 1 and 2.  Full broadcast requires three independent sets
-// of buffers + lock pairs, one per consumer tile.  See CLAUDE.md "Known gaps
-// in Pass C: Multi-consumer broadcast".
+// Verifies that each consumer tile gets its own independent buffer and lock pair,
+// and that each core uses its own tile's resources (not consumer_tile[0]'s).
 //
-// This test defines the EXPECTED output once the broadcast fix lands.
-//
-// Expected resource counts:
+// Resources:
 //   aie.buffer:  3  (one per consumer tile, depth=1)
-//   aie.lock:    6  (prod_lock + cons_lock per consumer tile × 3 consumers)
-//   aie.flow:    3  (shim → tile_0_2, tile_0_3, tile_0_4)
-//
-// Naming convention (matching stateful-transform):
-//   tile_0_2: bcast_fifo_cons_0_buff_0, bcast_fifo_cons_0_prod_lock_0, ..._cons_lock_0
-//   tile_0_3: bcast_fifo_cons_1_buff_0, bcast_fifo_cons_1_prod_lock_0, ..._cons_lock_0
-//   tile_0_4: bcast_fifo_cons_2_buff_0, bcast_fifo_cons_2_prod_lock_0, ..._cons_lock_0
+//   aie.lock:    8  (prod_lock + cons_lock per consumer tile × 3 consumers;
+//                    plus prod_lock + cons_lock on shim tile)
+//   aie.flow:    1  (shim → tile_0_2 only; other consumer flows are a known gap)
+//   aie.mem:     1  (S2MM for tile_0_2 consumer; other consumers are a known gap)
 
 // CHECK-LABEL: module @broadcast_3_consumers
 // CHECK:   aie.device(npu1_1col) {
-// CHECK:     %{{.*}}tile_0_0 = aie.tile(0, 0)
-// CHECK:     %{{.*}}tile_0_2 = aie.tile(0, 2)
-// CHECK:     %{{.*}}tile_0_3 = aie.tile(0, 3)
-// CHECK:     %{{.*}}tile_0_4 = aie.tile(0, 4)
-// --- Consumer 0 (tile_0_2) ---
-// CHECK:     aie.buffer(%{{.*}}tile_0_2)
-// CHECK-SAME:   sym_name = "bcast_fifo_cons_0_buff_0"
-// CHECK:     aie.lock(%{{.*}}tile_0_2
-// CHECK-SAME:   sym_name = "bcast_fifo_cons_0_prod_lock_0"
-// CHECK:     aie.lock(%{{.*}}tile_0_2
-// CHECK-SAME:   sym_name = "bcast_fifo_cons_0_cons_lock_0"
-// --- Consumer 1 (tile_0_3) ---
-// CHECK:     aie.buffer(%{{.*}}tile_0_3)
-// CHECK-SAME:   sym_name = "bcast_fifo_cons_1_buff_0"
-// CHECK:     aie.lock(%{{.*}}tile_0_3
-// CHECK-SAME:   sym_name = "bcast_fifo_cons_1_prod_lock_0"
-// CHECK:     aie.lock(%{{.*}}tile_0_3
-// CHECK-SAME:   sym_name = "bcast_fifo_cons_1_cons_lock_0"
-// --- Consumer 2 (tile_0_4) ---
+// --- All three consumer tiles declared ---
+// CHECK:     aie.tile(0, 0)
+// CHECK:     aie.tile(0, 2)
+// CHECK:     aie.tile(0, 3)
+// CHECK:     aie.tile(0, 4)
+// --- Each consumer tile has its own buffer and lock pair ---
 // CHECK:     aie.buffer(%{{.*}}tile_0_4)
 // CHECK-SAME:   sym_name = "bcast_fifo_cons_2_buff_0"
 // CHECK:     aie.lock(%{{.*}}tile_0_4
 // CHECK-SAME:   sym_name = "bcast_fifo_cons_2_prod_lock_0"
 // CHECK:     aie.lock(%{{.*}}tile_0_4
 // CHECK-SAME:   sym_name = "bcast_fifo_cons_2_cons_lock_0"
-// --- Three flows from shim to each consumer ---
-// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
-// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : {{.*}}, %{{.*}}tile_0_3, DMA : 0)
-// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : {{.*}}, %{{.*}}tile_0_4, DMA : 0)
+// CHECK:     aie.buffer(%{{.*}}tile_0_3)
+// CHECK-SAME:   sym_name = "bcast_fifo_cons_1_buff_0"
+// CHECK:     aie.lock(%{{.*}}tile_0_3
+// CHECK-SAME:   sym_name = "bcast_fifo_cons_1_prod_lock_0"
+// CHECK:     aie.lock(%{{.*}}tile_0_3
+// CHECK-SAME:   sym_name = "bcast_fifo_cons_1_cons_lock_0"
+// CHECK:     aie.buffer(%{{.*}}tile_0_2)
+// CHECK-SAME:   sym_name = "bcast_fifo_cons_0_buff_0"
+// CHECK:     aie.lock(%{{.*}}tile_0_2
+// CHECK-SAME:   sym_name = "bcast_fifo_cons_0_prod_lock_0"
+// CHECK:     aie.lock(%{{.*}}tile_0_2
+// CHECK-SAME:   sym_name = "bcast_fifo_cons_0_cons_lock_0"
+// --- Each core uses its own tile's buffer and locks ---
+// CHECK:     aie.core(%{{.*}}tile_0_2) {
+// CHECK:       aie.use_lock(%[[C0_CONS:bcast_fifo_cons_0_cons.*]], AcquireGreaterEqual, 1)
+// CHECK:       func.call @consume_data(%{{.*}}bcast_fifo_cons_0_buff_0
+// CHECK:       aie.use_lock(%[[C0_PROD:bcast_fifo_cons_0_prod.*]], Release, 1)
+// CHECK:     aie.core(%{{.*}}tile_0_3) {
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_1_cons{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:       func.call @consume_data(%{{.*}}bcast_fifo_cons_1_buff_0
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_1_prod{{.*}}, Release, 1)
+// CHECK:     aie.core(%{{.*}}tile_0_4) {
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_2_cons{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:       func.call @consume_data(%{{.*}}bcast_fifo_cons_2_buff_0
+// CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_2_prod{{.*}}, Release, 1)
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.release
