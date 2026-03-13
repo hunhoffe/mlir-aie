@@ -119,6 +119,7 @@
 include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
+include "mlir/IR/BuiltinTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 // ---------------------------------------------------------------------------
@@ -191,6 +192,31 @@ def Conduit_AsyncTokenType : TypeDef<Conduit_Dialect, "AsyncToken"> {
 }
 
 // ---------------------------------------------------------------------------
+// Window type — !conduit.window<T>
+// ---------------------------------------------------------------------------
+
+def Conduit_WindowType : TypeDef<Conduit_Dialect, "Window"> {
+  let mnemonic = "window";
+  let summary = "A typed grant of exclusive access to a DMA-filled buffer window";
+  let description = [{
+    Represents a buffer window that a compute core has been granted exclusive
+    access to after a conduit.acquire completes.  Carries the element memref
+    type T so that conduit.subview_access can return a properly-typed memref.
+
+    T must be a memref type.  In Pass C lowering, a !conduit.window<T> value
+    maps to the allocated aie.buffer SSA value of type T.
+
+    Example:
+      %win = conduit.acquire {name = "x", count = 1 : i64, port = "Consume"}
+                 : !conduit.window<memref<10xi32>>
+      %buf = conduit.subview_access %win {index = 0 : i64}
+                 : !conduit.window<memref<10xi32>> -> memref<10xi32>
+  }];
+  let parameters = (ins "mlir::MemRefType":$elementType);
+  let assemblyFormat = "`<` $elementType `>`";
+}
+
+// ---------------------------------------------------------------------------
 // Infrastructure ops (no tier constraint — used by all tiers)
 // ---------------------------------------------------------------------------
 
@@ -208,42 +234,36 @@ def Conduit_Create : Conduit_Op<"create"> {
     - Tier 3: not directly enforced; channel capacity is implicitly the
               memref allocation size on the consumer tile
 
-    Lowering hint annotations (conduit.annotate) attached to a conduit.create
-    communicate tile placement, element types, and depth to Pass C:
-      conduit.annotate {name="x", key="producer_tile", value="tile(0,0)"}
-      conduit.annotate {name="x", key="consumer_tile_0", value="tile(0,2)"}
-      conduit.annotate {name="x", key="element_type", value="memref<64xi32>"}
-      conduit.annotate {name="x", key="depth", value="1"}
+    Typed lowering attributes (emitted by Pass A, consumed by Pass C).
+    These replace the old conduit.annotate string-keyed approach:
+    - producer_tile        : I64 array [col, row] of the producer tile
+    - consumer_tiles       : flat I64 array [col0, row0, col1, row1, ...] for
+                             each non-shim consumer tile in order (row > 0)
+    - shim_consumer_tiles  : flat I64 array [col0, row0, ...] for each shim
+                             (row == 0) consumer tile in order.  Shim tiles
+                             are DMA endpoints with no local memory; they
+                             receive aie.shim_dma_allocation + aie.flow
+                             rather than aie.buffer + aie.lock.
+    - element_type    : TypeAttr — actual element memref type (e.g. memref<10xi32>)
+                        Pass C uses this for aie.buffer allocation; never defaults to i32.
+    - depth           : I64Attr — double-buffering depth
+    - link_mode       : optional StringAttr "distribute" or "join"
 
     Example:
-      conduit.create {name = "c1", capacity = 64 : i64}
+      conduit.create {name = "c1", capacity = 10 : i64,
+                      producer_tile = array<i64: 0, 2>,
+                      shim_consumer_tiles = array<i64: 0, 0>,
+                      element_type = memref<10xi32>,
+                      depth = 1 : i64}
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$capacity);
-  let assemblyFormat = "attr-dict";
-}
-
-def Conduit_Annotate : Conduit_Op<"annotate"> {
-  let summary = "attach a string key-value lowering hint to a named conduit";
-  let description = [{
-    Attaches an arbitrary string key-value pair to the named conduit.
-    Used by Pass C to recover tile placement, element type, depth, and
-    routing mode from the conduit.create annotation set.
-
-    Name-based linkage is necessary because channels are referenced across
-    IsolatedFromAbove region boundaries — SSA operands cannot cross those
-    boundaries.
-
-    Standard keys emitted by Pass A (--objectfifo-to-conduit):
-      "producer_tile"    : "tile(col,row)"
-      "consumer_tile_N"  : "tile(col,row)" for each consumer (N = 0, 1, ...)
-      "element_type"     : MLIR type string, e.g. "memref<64xi32>"
-      "depth"            : integer string, e.g. "2"
-
-    Example:
-      conduit.annotate {name = "c1", key = "producer_tile",
-                        value = "tile(0,0)"}
-  }];
-  let arguments = (ins StrAttr:$name, StrAttr:$key, StrAttr:$value);
+  let arguments = (ins StrAttr:$name,
+                       I64Attr:$capacity,
+                       OptionalAttr<DenseI64ArrayAttr>:$producer_tile,
+                       OptionalAttr<DenseI64ArrayAttr>:$consumer_tiles,
+                       OptionalAttr<DenseI64ArrayAttr>:$shim_consumer_tiles,
+                       OptionalAttr<TypeAttr>:$element_type,
+                       OptionalAttr<I64Attr>:$depth,
+                       OptionalAttr<StrAttr>:$link_mode);
   let assemblyFormat = "attr-dict";
 }
 
@@ -284,16 +304,32 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
     conduit for in-place read/write access.  Blocks until N slots are
     available from the producer.
 
+    The 'port' attribute is required and indicates which lock to acquire:
+    - "Produce": acquires the producer lock (used by the producer core)
+    - "Consume": acquires the consumer lock (used by the consumer core)
+
+    Pass C branches on this attribute to select prodLock vs consLock,
+    preventing the deadlock that occurs when a producer core acquires the
+    consumer lock or vice versa.
+
+    Returns a !conduit.window<T> SSA value that carries the element memref
+    type T.  The window value must be passed to conduit.subview_access to
+    obtain the addressable memref.  Pass C maps this window value to the
+    allocated aie.buffer SSA value.
+
     Semantics note: the 'count' is a *ceiling* on the total currently held
     window, not an increment.  If the caller already holds K slots (from a
     prior acquire without a matching full release), only max(0, N - K) new
     slots are acquired from the producer.  This enables sliding-window
     patterns:
 
-      conduit.acquire {name = "x", count = 3 : i64}  // holds slots [0,1,2]
-      conduit.release {name = "x", count = 1 : i64}  // releases slot 0
-      conduit.acquire {name = "x", count = 3 : i64}  // fetches 1 new slot;
-                                                      // window is now [1,2,3]
+      %w = conduit.acquire {name = "x", count = 3 : i64, port = "Consume"}
+               : !conduit.window<memref<64xi32>>
+      // holds slots [0,1,2]
+      conduit.release {name = "x", count = 1 : i64, port = "Consume"}
+      %w2 = conduit.acquire {name = "x", count = 3 : i64, port = "Consume"}
+                : !conduit.window<memref<64xi32>>
+      // fetches 1 new slot; window is now [1,2,3]
 
     Equivalent to: conduit.acquire_async + conduit.wait (the async form
     is preferred when overlapping with DMA or other async operations).
@@ -304,8 +340,9 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
     (Tier 3, shim DMA fill) and the consumer endpoint uses conduit.acquire
     (Tier 2, compute core window) is valid and common.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count);
-  let assemblyFormat = "attr-dict";
+  let arguments = (ins StrAttr:$name, I64Attr:$count, StrAttr:$port);
+  let results   = (outs Conduit_WindowType:$window);
+  let assemblyFormat = "attr-dict `:` type($window)";
 }
 
 def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
@@ -370,19 +407,42 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
 def Conduit_Release : Conduit_Op<"release"> {
   let summary = "[Tier 2] blocking window release — return M buffer slots to the producer";
   let description = [{
-    Tier 2 buffer-window op.  Releases M slots back to the producer.
-    M may be less than the originally acquired window (partial release),
-    which keeps the remaining slots in the consumer's view for the next
-    acquire call (sliding window pattern).
+    Tier 2 buffer-window op.  Releases M slots back to the producer, given
+    the !conduit.window<T> SSA value that was acquired.  M may be less than
+    the originally acquired window count (partial release), which keeps the
+    remaining slots in the consumer's view for the next acquire call (sliding
+    window pattern).
 
-    Equivalent to: conduit.release_async + conduit.wait (the async form
-    is available for pipeline stages that need to express the release as
-    a dependency for subsequent operations).
+    Taking the window as an SSA operand establishes the def-use chain:
+    the verifier can confirm you only release a window you actually acquired
+    (the !conduit.window<T> must be defined by a preceding conduit.acquire or
+    conduit.wait_window on the same channel).
+
+    The 'count' attribute specifies how many slots to return (partial release
+    when count < acquired count).
+
+    The 'port' attribute indicates which lock to release:
+    - "Produce": releases the producer lock (producer core use)
+    - "Consume": releases the consumer lock (consumer core use)
+
+    Pass C reads the window operand's defining op to recover the conduit name,
+    then branches on port to select prodLock vs consLock.
+
+    Sliding window example:
+      %win = conduit.acquire {name = "x", count = 3 : i64, port = "Consume"}
+                 : !conduit.window<memref<64xi32>>
+      // ... use slots 0,1,2 ...
+      conduit.release %win {count = 1 : i64, port = "Consume"}
+          : !conduit.window<memref<64xi32>>   // slide by 1, keep 2 slots
+      %win2 = conduit.acquire {name = "x", count = 3 : i64, port = "Consume"}
+                  : !conduit.window<memref<64xi32>>
+      conduit.release %win2 {count = 3 : i64, port = "Consume"}
+          : !conduit.window<memref<64xi32>>
 
     Maps to: aie.objectfifo.release (Pass A source); aie.use_lock (Pass C output).
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count);
-  let assemblyFormat = "attr-dict";
+  let arguments = (ins Conduit_WindowType:$window, I64Attr:$count, StrAttr:$port);
+  let assemblyFormat = "$window attr-dict `:` type($window)";
 }
 
 def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
@@ -412,43 +472,40 @@ def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
 def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {
   let summary = "[Tier 2] access element N of a previously acquired buffer window";
   let description = [{
-    Tier 2 buffer-window op.  Returns a reference to the element at position
-    'index' within the currently held buffer window for conduit 'name'.
+    Tier 2 buffer-window op.  Takes a !conduit.window<T> SSA value from a
+    preceding conduit.acquire and returns a memref<T> reference to element
+    'index' within the acquired window.
 
-    VALIDITY PRECONDITION: this op is only valid after a preceding
-    conduit.acquire {name} completes (blocking form) OR after conduit.wait /
-    conduit.wait_all on a token from conduit.acquire_async {name}.  Calling
-    this op before the window is granted produces undefined behavior.
+    VALIDITY PRECONDITION: %window must be the result of a conduit.acquire
+    that has completed.  The window SSA value establishes the SSA data
+    dependency: no memref.alloc placeholder is needed.
 
-    The result type is the actual element type of the conduit's buffer —
-    typically a memref such as memref<64xi32>.  The caller specifies the
-    result type explicitly in the assembly format.
+    Pass C lowering: the !conduit.window<T> operand maps to the allocated
+    aie.buffer SSA value; the result memref<T> is the same buffer value
+    passed through.
+
+    The result type is memref<T> where T is extracted from the window type.
+    The caller does not specify the result type explicitly — it is inferred
+    from the window operand type.
 
     This op covers the 8,392-use corpus gap of aie.objectfifo.subview.access
-    across 1,165 mlir-aie .mlir files.  Unlike aie.objectfifo.subview.access
-    (which returns the memref directly from the subview SSA value),
-    conduit.subview_access takes the conduit name as an attribute and returns
-    the element type directly.
-
-    Implementation note: in the current Pass A implementation, the result of
-    conduit.subview_access is replaced with a memref.alloc placeholder before
-    the objectfifo ops are erased.  This is a documented correctness gap —
-    the placeholder is not connected to the DMA-filled buffer.  Fixing this
-    requires conduit.subview_access to carry the actual memref SSA value as
-    an operand (tracked as a known gap in ConduitToDMA.cpp).
+    across 1,165 mlir-aie .mlir files.
 
     Maps to: aie.objectfifo.subview.access (Pass A source).
 
     Example:
-      conduit.acquire {name = "input", count = 1 : i64}
-      %buf = conduit.subview_access {name = "input", index = 0 : i64}
-                 : memref<64xi32>
+      %win = conduit.acquire {name = "input", count = 1 : i64,
+                              port = "Consume"}
+                 : !conduit.window<memref<10xi32>>
+      %buf = conduit.subview_access %win {index = 0 : i64}
+                 : !conduit.window<memref<10xi32>> -> memref<10xi32>
       // ... use %buf ...
-      conduit.release {name = "input", count = 1 : i64}
+      conduit.release {name = "input", count = 1 : i64, port = "Consume"}
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$index);
-  let results   = (outs AnyType:$result);
-  let assemblyFormat = "attr-dict `:` type($result)";
+  let arguments = (ins Conduit_WindowType:$window, I64Attr:$index);
+  let results   = (outs AnyMemRef:$result);
+  let assemblyFormat = "$window attr-dict `:` type($window) `->` type($result)";
+  let hasVerifier = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -608,13 +665,55 @@ def Conduit_Wait : Conduit_Op<"wait"> {
     Blocks the current thread until the operation represented by %token is
     complete.  Equivalent to conduit.wait_all with a single token.
 
-    Used to convert async ops back to the synchronous execution model.
+    Used for DMA tokens (from conduit.put_memref_async / conduit.get_memref_async).
+    For acquire_async tokens, use conduit.wait_window instead — it returns
+    the !conduit.window<T> SSA value needed by conduit.subview_access.
 
     Maps to: air.wait_all [%tok] (blocking, no result) on the AIR backend;
     a lock acquire on the AIE backend.
   }];
   let arguments = (ins Conduit_AsyncTokenType:$token);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
+}
+
+def Conduit_WaitWindow : Conduit_Op<"wait_window"> {
+  let summary = "[Tier 2+3 bridge] blocking wait on an acquire_async token, returning the granted window";
+  let description = [{
+    Blocks the current thread until the acquire_async token is complete
+    (i.e., until the hardware lock grants the buffer window), then returns
+    the !conduit.window<T> SSA value representing that window.
+
+    This is the 17th op in the Conduit dialect.  It bridges the async token
+    model (Tier 3) and the buffer-window model (Tier 2), completing the
+    Option B async acquire pattern.
+
+    The 'name' attribute identifies the conduit channel.  The result type
+    must be !conduit.window<memref<N x element_type>> for a window of N
+    elements with the given element type.
+
+    Full async acquire pattern:
+      %tok = conduit.acquire_async {name = "in", count = 1 : i64}
+                 : !conduit.async.token
+      %dma = conduit.put_memref_async {name = "in", ...} : !conduit.async.token
+      conduit.wait_all %tok, %dma   // hardware satisfies both in parallel
+      %win = conduit.wait_window %tok for "in"
+                 : !conduit.async.token -> !conduit.window<memref<10xi32>>
+      %buf = conduit.subview_access %win {index = 0 : i64}
+                 : !conduit.window<memref<10xi32>> -> memref<10xi32>
+      conduit.release %win : !conduit.window<memref<10xi32>>
+
+    For the simple blocking case, prefer conduit.acquire directly:
+      %win = conduit.acquire {name = "in", count = 1 : i64, port = "Consume"}
+                 : !conduit.window<memref<10xi32>>
+
+    Hardware lowering (Pass C):
+      The underlying lock acquire was performed by the acquire_async hardware
+      path.  conduit.wait_window itself emits no new hardware ops — it maps
+      the resolved token to the allocated aie.buffer SSA value.
+  }];
+  let arguments = (ins Conduit_AsyncTokenType:$token, StrAttr:$name);
+  let results   = (outs Conduit_WindowType:$window);
+  let assemblyFormat = "$token `for` $name attr-dict `:` type($token) `->` type($window)";
 }
 
 def Conduit_WaitAll : Conduit_Op<"wait_all"> {

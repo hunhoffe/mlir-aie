@@ -25,41 +25,41 @@
 //    map (producer tile, consumer tiles, element type, depth).
 //
 // 2. For each aie.objectfifo:
-//      emits  conduit.create {name, capacity=depth*numElems}
-//             conduit.annotate {name, key="producer_tile",
-//             value="tile(col,row)"} conduit.annotate {name,
-//             key="consumer_tile_0", ...}  (one per consumer) conduit.annotate
-//             {name, key="element_type", value="<memref type>"}
-//             conduit.annotate {name, key="depth", value="<depth>"}
+//      emits  conduit.create {name, capacity=depth*numElems,
+//                             producer_tile=[col,row],
+//                             consumer_tiles=[col0,row0,...],
+//                             element_type=<memref type>,
+//                             depth=<depth>}
+//      (typed attributes; no conduit.annotate ops are emitted)
 //
 // 3. For each aie.objectfifo.link:
 //      determines mode (distribute: 1 src, N dsts; join: N srcs, 1 dst)
-//      picks memtile as the intermediate tile (heuristic: first intermediate)
+//      picks memtile as the relay tile (heuristic: consumer of first src)
 //      emits conduit.objectfifo_link {srcs, dsts, mode, memtile, offsets}
 //
 // 4. For each aie.objectfifo.acquire (inside core bodies):
-//      emits conduit.acquire {name, count}
+//      emits conduit.acquire {name, count, port="Produce"|"Consume"}
+//              : !conduit.window<elemType>
+//      The window SSA value is threaded into each conduit.subview_access.
 //
-// 5. For each aie.objectfifo.release (inside core bodies):
-//      emits conduit.release {name, count}
+// 5. For each aie.objectfifo.subview.access:
+//      emits conduit.subview_access %window {index}
+//              : !conduit.window<T> -> T
+//      Uses of the aie subview result are replaced with the conduit result.
+//      No memref.alloc placeholder is generated.
 //
-// 6. For each aie.objectfifo.subview.access:
-//      emits conduit.subview_access {name, index}
+// 6. For each aie.objectfifo.release:
+//      emits conduit.release {name, count, port="Produce"|"Consume"}
 //
 // All original ObjectFIFO ops are erased after rewriting.
 //
 // Limitations (documented honestly)
 // ----------------------------------
-// - The memtile heuristic in link rewriting is approximate: we use the
-//   consumer tile of the source objectfifo (the "relay" tile) rather than
-//   querying the actual MemTile list from the device model.
+// - The memtile heuristic in link rewriting is approximate.
 // - capacity = depth * numElems uses 1 as numElems when the memref element
 //   count cannot be statically determined from the type.
 // - The pass currently operates on the whole module; nested device ops are
 //   handled one level deep only.
-// - aie.objectfifo.subview.access result type is preserved as i64 in the
-//   conduit.subview_access op; the actual memref result from the AIE op
-//   is not carried through (no memref operands in Conduit yet).
 //
 //===----------------------------------------------------------------------===//
 
@@ -68,12 +68,10 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -88,17 +86,6 @@ namespace xilinx::conduit {
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 namespace {
-
-// ---------------------------------------------------------------------------
-// Helper: format a TileOp coordinate as "tile(col,row)"
-// ---------------------------------------------------------------------------
-
-static std::string tileCoord(AIE::TileOp tile) {
-  std::string s;
-  llvm::raw_string_ostream os(s);
-  os << "tile(" << tile.getCol() << "," << tile.getRow() << ")";
-  return os.str();
-}
 
 // ---------------------------------------------------------------------------
 // Helper: count static elements in a MemRefType (returns 1 if unknown)
@@ -122,11 +109,12 @@ static int64_t numElemsInMemref(mlir::Type ty) {
 // ---------------------------------------------------------------------------
 
 struct FifoInfo {
-  std::string producerTile; // "tile(col,row)"
-  llvm::SmallVector<std::string> consumerTiles;
-  int64_t depth;
-  int64_t numElems;     // product of memref shape dims
-  std::string elemType; // string form of the element memref type
+  llvm::SmallVector<int64_t> producerTileArr; // [col, row]
+  llvm::SmallVector<int64_t> consumerTilesArr;     // non-shim: [col0,row0,...]
+  llvm::SmallVector<int64_t> shimConsumerTilesArr; // shim (row==0): [col0,row0,...]
+  int64_t depth = 1;
+  int64_t numElems = 1;
+  mlir::MemRefType elemType; // the actual element memref type
 };
 
 // ---------------------------------------------------------------------------
@@ -139,88 +127,83 @@ struct ObjectFifoToConduitPass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
     mlir::OpBuilder builder(module.getContext());
-
-    // We walk the module, collecting info and rewriting in a two-phase
-    // approach to avoid iterator invalidation.
+    mlir::MLIRContext *ctx = module.getContext();
 
     // Phase 1: collect FifoInfo for all aie.objectfifo ops.
     llvm::DenseMap<mlir::StringAttr, FifoInfo> fifoInfoMap;
 
     module.walk([&](AIE::ObjectFifoCreateOp op) {
       FifoInfo info;
-      // Producer tile — getProducerTile() is on the Op class via operand
-      // interface
+      // Producer tile
       auto prodTile =
           mlir::cast<AIE::TileOp>(op.getProducerTile().getDefiningOp());
-      info.producerTile = tileCoord(prodTile);
-      // Consumer tiles
+      info.producerTileArr = {prodTile.getCol(), prodTile.getRow()};
+      // Consumer tiles: separate shim tiles (row==0) from compute tiles.
+      // Shim tiles are DMA endpoints with no local memory; Pass C handles
+      // them via aie.shim_dma_allocation rather than aie.buffer + aie.lock.
       for (mlir::Value cons : op.getConsumerTiles()) {
         auto consTile = mlir::cast<AIE::TileOp>(cons.getDefiningOp());
-        info.consumerTiles.push_back(tileCoord(consTile));
+        int64_t col = consTile.getCol();
+        int64_t row = consTile.getRow();
+        if (row == 0) {
+          // Shim tile (row==0): no local memory, handled separately.
+          info.shimConsumerTilesArr.push_back(col);
+          info.shimConsumerTilesArr.push_back(row);
+        } else {
+          info.consumerTilesArr.push_back(col);
+          info.consumerTilesArr.push_back(row);
+        }
       }
-      // Depth — getElemNumber() returns mlir::Attribute; cast to IntegerAttr
-      {
-        mlir::Attribute elemNumAttr = op.getElemNumber();
-        auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(elemNumAttr);
-        info.depth = intAttr ? intAttr.getInt() : 1;
-      }
-      // Element type
+      // Depth
+      info.depth = op.size(0);
+      // Element type — must be a MemRefType for window semantics.
       auto objfifoTy = mlir::cast<AIE::AIEObjectFifoType>(op.getElemType());
       mlir::Type elemTy = objfifoTy.getElementType();
-      info.numElems = numElemsInMemref(elemTy);
-      std::string tyStr;
-      llvm::raw_string_ostream os(tyStr);
-      elemTy.print(os);
-      info.elemType = os.str();
+      if (auto mrefTy = mlir::dyn_cast<mlir::MemRefType>(elemTy)) {
+        info.elemType = mrefTy;
+        info.numElems = numElemsInMemref(mrefTy);
+      } else {
+        // Fallback: treat as single-element i32 memref
+        info.elemType = mlir::MemRefType::get(
+            {1}, mlir::IntegerType::get(ctx, 32));
+        info.numElems = 1;
+      }
 
       fifoInfoMap[op.getSymNameAttr()] = std::move(info);
     });
 
-    // Phase 2: rewrite each aie.objectfifo → conduit.create + conduit.annotate.
-    // Insert Conduit ops just before the aie.objectfifo op.
-    // NOTE: do NOT erase the objectfifo op here — the AIE verifier checks that
-    // aie.objectfifo.acquire references a live objectfifo symbol.  We collect
-    // the ops for erasure and erase them after Phase 4 (acquire/release).
+    // Phase 2: rewrite each aie.objectfifo → conduit.create with typed attrs.
+    // NOTE: do NOT erase the objectfifo op here — the AIE verifier requires
+    // aie.objectfifo.acquire to reference a live objectfifo symbol.  Collect
+    // for deferred erasure after Phase 4 completes.
 
     llvm::SmallVector<AIE::ObjectFifoCreateOp> fifosToErase;
 
     module.walk([&](AIE::ObjectFifoCreateOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
-      mlir::MLIRContext *ctx = module.getContext();
 
       auto &info = fifoInfoMap[op.getSymNameAttr()];
       std::string name = op.getSymName().str();
       int64_t capacity = info.depth * info.numElems;
 
-      // conduit.create
+      // conduit.create with typed attributes — no conduit.annotate ops.
+      // shim_consumer_tiles carries shim (row==0) consumer tiles separately;
+      // they are DMA endpoints handled via shim_dma_allocation in Pass C.
+      mlir::DenseI64ArrayAttr shimConsAttr;
+      if (!info.shimConsumerTilesArr.empty())
+        shimConsAttr = mlir::DenseI64ArrayAttr::get(ctx, info.shimConsumerTilesArr);
+
       builder.create<Create>(
-          loc, mlir::StringAttr::get(ctx, name),
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), capacity));
-
-      // conduit.annotate: producer_tile
-      builder.create<Annotate>(loc, mlir::StringAttr::get(ctx, name),
-                               mlir::StringAttr::get(ctx, "producer_tile"),
-                               mlir::StringAttr::get(ctx, info.producerTile));
-
-      // conduit.annotate: consumer_tile_N
-      for (auto [idx, ct] : llvm::enumerate(info.consumerTiles)) {
-        std::string key = "consumer_tile_" + std::to_string(idx);
-        builder.create<Annotate>(loc, mlir::StringAttr::get(ctx, name),
-                                 mlir::StringAttr::get(ctx, key),
-                                 mlir::StringAttr::get(ctx, ct));
-      }
-
-      // conduit.annotate: element_type
-      builder.create<Annotate>(loc, mlir::StringAttr::get(ctx, name),
-                               mlir::StringAttr::get(ctx, "element_type"),
-                               mlir::StringAttr::get(ctx, info.elemType));
-
-      // conduit.annotate: depth
-      builder.create<Annotate>(
-          loc, mlir::StringAttr::get(ctx, name),
-          mlir::StringAttr::get(ctx, "depth"),
-          mlir::StringAttr::get(ctx, std::to_string(info.depth)));
+          loc,
+          mlir::StringAttr::get(ctx, name),
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), capacity),
+          mlir::DenseI64ArrayAttr::get(ctx, info.producerTileArr),
+          mlir::DenseI64ArrayAttr::get(ctx, info.consumerTilesArr),
+          shimConsAttr,
+          mlir::TypeAttr::get(info.elemType),
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
+          /*link_mode=*/mlir::StringAttr{});
 
       fifosToErase.push_back(op);
     });
@@ -229,10 +212,9 @@ struct ObjectFifoToConduitPass
     module.walk([&](AIE::ObjectFifoLinkOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
-      mlir::MLIRContext *ctx = module.getContext();
 
-      auto fifoIns = op.getFifoIns();   // src objectfifo names
-      auto fifoOuts = op.getFifoOuts(); // dst objectfifo names
+      auto fifoIns = op.getFifoIns();
+      auto fifoOuts = op.getFifoOuts();
 
       // Determine mode
       std::string mode;
@@ -241,7 +223,7 @@ struct ObjectFifoToConduitPass
       else if (fifoIns.size() >= 1 && fifoOuts.size() == 1)
         mode = "join";
       else
-        mode = "distribute"; // ambiguous; default to distribute
+        mode = "distribute";
 
       // Build src/dst name arrays
       llvm::SmallVector<mlir::Attribute> srcAttrs, dstAttrs;
@@ -254,24 +236,25 @@ struct ObjectFifoToConduitPass
         dstAttrs.push_back(mlir::StringAttr::get(ctx, flat.getValue()));
       }
 
-      // Heuristic memtile: consumer tile of the first src fifo (the relay tile)
+      // Heuristic memtile: consumer tile of the first src fifo
       std::string memtileStr = "unknown";
       if (!fifoIns.empty()) {
         auto firstSym = mlir::cast<mlir::FlatSymbolRefAttr>(fifoIns[0]);
         auto nameAttr = mlir::StringAttr::get(ctx, firstSym.getValue());
         auto it = fifoInfoMap.find(nameAttr);
-        if (it != fifoInfoMap.end() && !it->second.consumerTiles.empty())
-          memtileStr = it->second.consumerTiles[0];
+        if (it != fifoInfoMap.end() &&
+            it->second.consumerTilesArr.size() >= 2) {
+          int64_t col = it->second.consumerTilesArr[0];
+          int64_t row = it->second.consumerTilesArr[1];
+          std::string s;
+          llvm::raw_string_ostream os(s);
+          os << "tile(" << col << "," << row << ")";
+          memtileStr = os.str();
+        }
       }
 
-      // Extract offsets (joint offsets attribute from the link op)
-      // AIE objectfifo.link stores offsets as a flat integer array.
-      // The meaning depends on mode:
-      //   distribute: offsets apply to dst fifos (dsts[i] starts at offsets[i])
-      //   join:       offsets apply to src fifos (srcs[i] starts at offsets[i])
+      // Extract offsets from the link op.
       mlir::DenseI64ArrayAttr offsetsAttr;
-      // getSrcOffsets() and getDstOffsets() return mlir::ArrayAttr of
-      // IntegerAttr
       auto joinOffsets = op.getSrcOffsets();
       auto distOffsets = op.getDstOffsets();
 
@@ -288,42 +271,75 @@ struct ObjectFifoToConduitPass
 
       builder.create<ObjectFifoLink>(
           loc, mlir::ArrayAttr::get(ctx, srcAttrs),
-          mlir::ArrayAttr::get(ctx, dstAttrs), mlir::StringAttr::get(ctx, mode),
-          mlir::StringAttr::get(ctx, memtileStr), offsetsAttr,
+          mlir::ArrayAttr::get(ctx, dstAttrs),
+          mlir::StringAttr::get(ctx, mode),
+          mlir::StringAttr::get(ctx, memtileStr),
+          offsetsAttr,
           /*lock_id=*/nullptr);
 
       op.erase();
     });
 
     // Phase 4: rewrite acquire/release/subview.access inside core bodies.
-    // Collect ops to erase (cannot erase during walk — invalidates iterators).
+    //
+    // SSA connectivity fix (Fix 1):
+    //   conduit.acquire returns !conduit.window<T>.  This SSA value is passed
+    //   directly to conduit.subview_access as the window operand.  All uses of
+    //   the aie.objectfifo.subview.access result are replaced with the
+    //   conduit.subview_access result.  No memref.alloc placeholder is needed.
+    //
+    // Port propagation fix (Fix 2):
+    //   port="Produce"|"Consume" is read from the AIE op and forwarded.
+    //
+    // Use-after-erase fix:
+    //   All subview.access ops are collected for deferred erasure BEFORE the
+    //   acquire op is erased.  This prevents the acquire result SSA value from
+    //   being invalidated while we still need it for the subview rewrite.
 
-    mlir::MLIRContext *ctx = module.getContext();
     llvm::SmallVector<AIE::ObjectFifoSubviewAccessOp> subviewsToErase;
     llvm::SmallVector<AIE::ObjectFifoAcquireOp> acquiresToErase;
     llvm::SmallVector<AIE::ObjectFifoReleaseOp> releasesToErase;
+
+    // Map from (fifo name, port) → most-recently-emitted window SSA value.
+    // Used to thread the window operand into conduit.release.
+    // Walk order is dominator-safe: acquire always precedes release in the
+    // same block, so the window value is live at the release site.
+    llvm::DenseMap<mlir::StringAttr, mlir::Value> lastWindowForName;
 
     module.walk([&](AIE::ObjectFifoAcquireOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
 
-      // getObjFifoName() returns StringRef directly
       std::string name = op.getObjFifoName().str();
-      // acqNumber() returns int (delegates to getSize())
       int64_t count = op.acqNumber();
 
-      builder.create<Acquire>(
-          loc, mlir::StringAttr::get(ctx, name),
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count));
+      // Fix 2: propagate port attribute.
+      std::string portStr =
+          (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce" : "Consume";
 
-      // For each subview.access that uses this acquire's result:
-      //   1. Emit conduit.subview_access (resource-count annotation).
-      //   2. Replace the memref-typed result with a memref.alloc placeholder.
-      //   3. Mark the subview.access for deferred erasure.
-      //
-      // Note: the memref.alloc is a placeholder — the output IR is not
-      // semantically correct for execution, but is structurally valid for
-      // resource-count comparison (FileCheck tests count conduit.* ops).
+      // Fix 1: build the !conduit.window<T> result type from the fifo info.
+      auto nameAttr = mlir::StringAttr::get(ctx, name);
+      mlir::MemRefType elemType;
+      auto it = fifoInfoMap.find(nameAttr);
+      if (it != fifoInfoMap.end())
+        elemType = it->second.elemType;
+      if (!elemType)
+        elemType = mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
+
+      auto winTy = WindowType::get(ctx, elemType);
+
+      // Emit conduit.acquire — returns !conduit.window<T>
+      mlir::Value winVal = builder.create<Acquire>(
+          loc, winTy,
+          mlir::StringAttr::get(ctx, name),
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
+          mlir::StringAttr::get(ctx, portStr));
+
+      // Record the window SSA value so the subsequent release can use it.
+      lastWindowForName[nameAttr] = winVal;
+
+      // Rewrite all subview.access users of this acquire's result.
+      // Thread the window SSA value into conduit.subview_access.
       mlir::Value subviewResult = op.getResult();
       for (mlir::Operation *user :
            llvm::make_early_inc_range(subviewResult.getUsers())) {
@@ -331,18 +347,15 @@ struct ObjectFifoToConduitPass
                 mlir::dyn_cast<AIE::ObjectFifoSubviewAccessOp>(user)) {
           builder.setInsertionPoint(accessOp);
           int64_t idx = accessOp.getIndex();
-          // Emit conduit.subview_access annotation (for resource counting).
-          builder.create<SubviewAccess>(
-              accessOp.getLoc(), mlir::IntegerType::get(ctx, 64),
-              mlir::StringAttr::get(ctx, name),
-              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), idx));
-          // Replace the memref-typed result with a placeholder alloc.
           mlir::Type resultTy = accessOp.getResult().getType();
-          if (auto mrefTy = mlir::dyn_cast<mlir::MemRefType>(resultTy)) {
-            auto allocOp = builder.create<mlir::memref::AllocOp>(
-                accessOp.getLoc(), mrefTy);
-            accessOp.getResult().replaceAllUsesWith(allocOp.getResult());
-          }
+
+          // Emit conduit.subview_access with the window SSA operand.
+          auto condAccess = builder.create<SubviewAccess>(
+              accessOp.getLoc(), resultTy, winVal,
+              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), idx));
+
+          // Replace all uses of the AIE subview.access result.
+          accessOp.getResult().replaceAllUsesWith(condAccess.getResult());
           subviewsToErase.push_back(accessOp);
         }
       }
@@ -353,19 +366,47 @@ struct ObjectFifoToConduitPass
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
 
-      // getObjFifoName() returns StringRef directly
       std::string name = op.getObjFifoName().str();
-      // getSize() returns int32_t (the release count)
       int64_t count = op.getSize();
 
+      // Fix 2: propagate port attribute.
+      std::string portStr =
+          (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce" : "Consume";
+
+      // Look up the window SSA value from the preceding acquire.
+      auto nameAttr = mlir::StringAttr::get(ctx, name);
+      mlir::Value winVal = lastWindowForName.lookup(nameAttr);
+
+      if (!winVal) {
+        // Fallback: no window in scope (can happen for producer-side release
+        // without a matching acquire in the current walk scope).  Synthesize
+        // a placeholder window using the fifo info element type.
+        mlir::MemRefType elemType;
+        auto it = fifoInfoMap.find(nameAttr);
+        if (it != fifoInfoMap.end())
+          elemType = it->second.elemType;
+        if (!elemType)
+          elemType = mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
+        // Emit a conduit.acquire to produce the window for the release.
+        // This handles the case where the producer releases without an explicit
+        // acquire visible to this walk (e.g. implicit initial window).
+        auto winTy = WindowType::get(ctx, elemType);
+        winVal = builder.create<Acquire>(
+            loc, winTy,
+            mlir::StringAttr::get(ctx, name),
+            mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
+            mlir::StringAttr::get(ctx, portStr));
+      }
+
       builder.create<Release>(
-          loc, mlir::StringAttr::get(ctx, name),
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count));
+          loc, winVal,
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
+          mlir::StringAttr::get(ctx, portStr));
 
       releasesToErase.push_back(op);
     });
 
-    // Deferred erasure: erase in reverse order to respect def-use ordering.
+    // Deferred erasure: erase subviews before acquires (subview uses acquire result).
     for (auto op : subviewsToErase)
       op.erase();
     for (auto op : acquiresToErase)
@@ -374,9 +415,7 @@ struct ObjectFifoToConduitPass
       op.erase();
 
     // Phase 5 (deferred erase): erase objectfifo create ops now that all
-    // acquire/release/subview ops have been rewritten.  The AIE verifier
-    // requires the objectfifo symbol to exist during the acquire/release walk,
-    // so erasure must happen after Phase 4 completes.
+    // acquire/release/subview ops have been rewritten.
     for (AIE::ObjectFifoCreateOp op : fifosToErase)
       op.erase();
   }

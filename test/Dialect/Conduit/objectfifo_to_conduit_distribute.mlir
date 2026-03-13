@@ -12,8 +12,6 @@
 // CHECK:   aie.device(xcve2302) {
 // CHECK:     conduit.create
 // CHECK-SAME:   name = "link1"
-// CHECK:     conduit.annotate
-// CHECK-SAME:   key = "producer_tile"
 // CHECK:     conduit.create
 // CHECK-SAME:   name = "link2"
 // CHECK:     conduit.create
@@ -28,6 +26,7 @@
 // CHECK-SAME:   srcs = ["link1"]
 // CHECK-NOT: aie.objectfifo
 // CHECK-NOT: aie.objectfifo.link
+// CHECK-NOT: conduit.annotate
 
 module @link_distribute_offsets {
   aie.device(xcve2302) {
