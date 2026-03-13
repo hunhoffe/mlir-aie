@@ -1062,10 +1062,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             }
           }
 
-          if (idx < static_cast<int64_t>(tileBuffers->size())) {
+          {
+            // Clamp idx to valid buffer range via modulo.
+            // For sliding-window acquires (count > depth), idx may exceed
+            // depth-1: e.g., acquire(count=3) on a depth=1 fifo produces
+            // subview_access at indices 0, 1, 2 but only buffers[0] exists.
+            // Wrapping with % depth ensures all indices resolve to a valid
+            // buffer without an out-of-range crash.
+            int64_t bufIdx = static_cast<int64_t>(tileBuffers->size()) > 1
+                                 ? idx % static_cast<int64_t>(tileBuffers->size())
+                                 : 0;
             if (depth == 1 || !cinfo.rotationBuf) {
               // Depth-1 case (or no rotation buffer): static selection.
-              mlir::Value bufVal = (*tileBuffers)[idx].getResult();
+              mlir::Value bufVal = (*tileBuffers)[bufIdx].getResult();
               if (bufVal.getType() == op.getResult().getType()) {
                 op.getResult().replaceAllUsesWith(bufVal);
                 replaced = true;
