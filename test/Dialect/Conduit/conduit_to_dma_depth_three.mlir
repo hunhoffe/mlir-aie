@@ -21,8 +21,12 @@
 //   aie.dma_bd:   3  (three blocks in the BD ring)
 //   aie.next_bd:  3  (ring: 0->1->2->0)
 //
-// The core side uses a sliding-window acquire-2 pattern to exercise the
-// depth-3 fifo meaningfully (acquires 2 of 3 slots simultaneously).
+// Fix NF1: the core uses acquire count=1 / release count=1 for a schedulable
+// SDF program (rates balance: producer fires 1 token, consumer fires 1 token).
+// The previous acquire count=2 on a depth=3 fifo was non-schedulable — after 3
+// iterations the consumer held 2 of 3 slots leaving only 1 free, but the
+// producer needed 2 free slots → deadlock.  acquire=1 / release=1 is always
+// schedulable for any depth >= 1.
 
 // CHECK-LABEL: module @depth_three_fifo
 // CHECK:   aie.device(npu1_1col) {
@@ -43,8 +47,8 @@
 // --- Core body (appears before shim ops and aie.mem in output) ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       scf.for
-// CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual
-// CHECK:         aie.use_lock(%[[CONS_PROD]], Release
+// CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
+// CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
 // CHECK:     }
 // --- Shim DMA and flow ---
 // CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc
@@ -70,13 +74,15 @@
 
 module @depth_three_fifo {
   aie.device(npu1_1col) {
-    func.func @sliding_window(%a: memref<10xi32>, %b: memref<10xi32>) -> () {
+    func.func @process_elem(%a: memref<10xi32>) -> () {
       return
     }
 
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
-    // depth=3: triple-buffering for sliding window access patterns
+    // depth=3: triple-buffering; acquire=1/release=1 gives a schedulable SDF
+    // program (rates balance for any depth).  The BD ring still has 3 blocks,
+    // exercising the N-general Phase 5.5 loop.
     aie.objectfifo @win_fifo(%tile_0_0, {%tile_0_2}, 3 : i32) : !aie.objectfifo<memref<10xi32>>
 
     %core_0_2 = aie.core(%tile_0_2) {
@@ -85,11 +91,10 @@ module @depth_three_fifo {
       %c8 = arith.constant 8 : index
 
       scf.for %arg0 = %c0 to %c8 step %c1 {
-        // Sliding window: acquire 2 consecutive slots simultaneously
-        %0 = aie.objectfifo.acquire @win_fifo(Consume, 2) : !aie.objectfifosubview<memref<10xi32>>
+        // Schedulable SDF pattern: acquire 1, process, release 1.
+        %0 = aie.objectfifo.acquire @win_fifo(Consume, 1) : !aie.objectfifosubview<memref<10xi32>>
         %elem0 = aie.objectfifo.subview.access %0[0] : !aie.objectfifosubview<memref<10xi32>> -> memref<10xi32>
-        %elem1 = aie.objectfifo.subview.access %0[1] : !aie.objectfifosubview<memref<10xi32>> -> memref<10xi32>
-        func.call @sliding_window(%elem0, %elem1) : (memref<10xi32>, memref<10xi32>) -> ()
+        func.call @process_elem(%elem0) : (memref<10xi32>) -> ()
         aie.objectfifo.release @win_fifo(Consume, 1)
       }
 
