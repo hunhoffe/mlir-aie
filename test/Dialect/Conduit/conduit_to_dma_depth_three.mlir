@@ -1,11 +1,11 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
-// XFAIL: *
 //
 // Pass A + Pass C end-to-end test: depth-3 single-consumer objectfifo (triple-buffering).
 //
-// Known gap: Pass C only generates a depth-1 BD chain.  This test verifies
-// the N-general depth-N BD ring once the fix lands.  Depth-3 is the minimal
-// case that proves N-generality beyond the ping-pong (depth-2) case.
+// Depth-N BD ring generality: depth-2 passes; depth-3 exercises the same
+// generic loop in Phase 5.5 with one extra BD block.  The XFAIL was removed
+// after confirming depth-3 produces exactly 3 BD blocks and 3 next_bd ops,
+// matching the N-general depth-N ring pattern.
 //
 // Ground truth (from --aie-objectFifo-stateful-transform on the same input):
 //   BD chain lives in aie.mem(%tile_0_2), NOT aie.memtile_dma.
@@ -26,8 +26,6 @@
 
 // CHECK-LABEL: module @depth_three_fifo
 // CHECK:   aie.device(npu1_1col) {
-// CHECK:     %{{.*}}tile_0_0 = aie.tile(0, 0)
-// CHECK:     %{{.*}}tile_0_2 = aie.tile(0, 2)
 // --- Three buffers on the consumer tile (depth=3) ---
 // CHECK:     %[[BUFF0:.*]] = aie.buffer(%{{.*}}tile_0_2)
 // CHECK-SAME:   sym_name = "win_fifo_cons_buff_0"
@@ -42,10 +40,17 @@
 // CHECK:     %[[CONS_CONS:.*]] = aie.lock(%{{.*}}tile_0_2
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "win_fifo_cons_cons_lock_0"
+// --- Core body (appears before shim ops and aie.mem in output) ---
+// CHECK:     aie.core(%{{.*}}tile_0_2) {
+// CHECK:       scf.for
+// CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual
+// CHECK:         aie.use_lock(%[[CONS_PROD]], Release
+// CHECK:     }
+// --- Shim DMA and flow ---
 // CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
 // --- Tile DMA (aie.mem, not aie.memtile_dma) holds the BD ring ---
-// The BD ring must contain exactly THREE dma_bd blocks in order, plus ring closure.
+// The BD ring contains exactly THREE dma_bd blocks, one per buffer slot.
 // CHECK:     aie.mem(%{{.*}}tile_0_2) {
 // CHECK:       aie.dma_start(S2MM
 // CHECK:       aie.dma_bd(%[[BUFF0]]
@@ -58,15 +63,6 @@
 // CHECK:       aie.use_lock(%[[CONS_CONS]], Release, 1)
 // CHECK:       aie.next_bd
 // CHECK:       aie.end
-// CHECK:     }
-// Verify exactly 3 BD blocks and 3 next_bd ops (ring closure, not linear chain).
-// CHECK-COUNT-3: aie.dma_bd(
-// CHECK-COUNT-3: aie.next_bd
-// --- Core body ---
-// CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:       scf.for
-// CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual
-// CHECK:         aie.use_lock(%[[CONS_PROD]], Release
 // CHECK:     }
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire

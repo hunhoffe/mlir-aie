@@ -28,7 +28,8 @@
 //   Pass A                   Pass C
 //   (--objectfifo-to-conduit) (--conduit-to-dma)
 //
-// Pass B (--air-channel-to-conduit) is declared but not yet implemented.
+// Pass B (--air-channel-to-conduit) lowers AIR Channel ops into Conduit
+// Tier 3 memref-DMA ops (conduit.put_memref_async / conduit.get_memref_async).
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,6 +50,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL
 #define GEN_PASS_DECL_OBJECTFIFOTOCONDUIT
 #define GEN_PASS_DECL_CONDUITTODMA
+#define GEN_PASS_DECL_AIRCHANNELTOCONDUIT
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -58,6 +60,10 @@ namespace xilinx::conduit {
 /// Pass A: lift aie.objectfifo.* ops into Conduit IR.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createObjectFifoToConduitPass();
+
+/// Pass B: lift air.channel.put/get ops into Conduit Tier 3 memref-DMA ops.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createAirChannelToConduitPass();
 
 /// Pass C: lower Conduit IR to aie.dma_bd / aie.lock / aie.buffer / aie.flow.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createConduitToDMAPass();

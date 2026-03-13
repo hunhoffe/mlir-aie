@@ -28,12 +28,12 @@
 // CHECK:     %{{.*}}tile_0_2 = aie.tile(0, 2)
 
 // --- Two buffers on tile_0_2 (one per conduit, distinct element types) ---
-// CHECK-COUNT-2: aie.buffer(%{{.*}}tile_0_2)
-
-// --- Four locks on tile_0_2 with IDs 0, 1, 2, 3 (no collision) ---
-// The StringMap walk order is non-deterministic so fifo_a or fifo_b may come
-// first; use CHECK-COUNT rather than literal lock ID assertions.
-// CHECK-COUNT-4: aie.lock(%{{.*}}tile_0_2,
+// CHECK:     aie.buffer(%{{.*}}tile_0_2)
+// CHECK:     aie.lock(%{{.*}}tile_0_2, {{[0-9]+}}) {init = 1
+// CHECK:     aie.lock(%{{.*}}tile_0_2, {{[0-9]+}}) {init = 0
+// CHECK:     aie.buffer(%{{.*}}tile_0_2)
+// CHECK:     aie.lock(%{{.*}}tile_0_2, {{[0-9]+}}) {init = 1
+// CHECK:     aie.lock(%{{.*}}tile_0_2, {{[0-9]+}}) {init = 0
 
 // --- Core: acquire+release for fifo_a, then fifo_b ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
@@ -46,17 +46,23 @@
 // CHECK:         aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
 
-// --- Shim locks for DMA host-side coordination ---
-// CHECK-COUNT-4: aie.lock(%{{.*}}tile_0_0,
-
-// --- Shim DMA allocations and flows (one per conduit) ---
-// CHECK-COUNT-2: aie.shim_dma_allocation
-// CHECK-COUNT-2: aie.flow(%{{.*}}tile_0_0, DMA :
+// --- Shim locks for DMA host-side coordination (one prod+cons pair per fifo) ---
+// CHECK:     aie.lock(%{{.*}}tile_0_0,
+// CHECK:     aie.lock(%{{.*}}tile_0_0,
+// CHECK:     aie.shim_dma_allocation
+// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA :
+// CHECK:     aie.lock(%{{.*}}tile_0_0,
+// CHECK:     aie.lock(%{{.*}}tile_0_0,
+// CHECK:     aie.shim_dma_allocation
+// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA :
 
 // --- Two aie.mem blocks, one per conduit, each with its own S2MM chain ---
-// CHECK-COUNT-2: aie.mem(%{{.*}}tile_0_2) {
-// CHECK-COUNT-2:   aie.dma_start(S2MM, 0,
-// CHECK-COUNT-2:   aie.dma_bd(
+// CHECK:     aie.mem(%{{.*}}tile_0_2) {
+// CHECK:       aie.dma_start(S2MM, 0,
+// CHECK:       aie.dma_bd(
+// CHECK:     aie.mem(%{{.*}}tile_0_2) {
+// CHECK:       aie.dma_start(S2MM, 0,
+// CHECK:       aie.dma_bd(
 
 // --- No residual Conduit ops ---
 // CHECK-NOT: conduit.create
