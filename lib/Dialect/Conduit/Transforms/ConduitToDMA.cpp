@@ -1336,26 +1336,200 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     module.walk([&](Create op) { op.erase(); });
 
     // -----------------------------------------------------------------------
-    // Phase 8: guard against unsupported async Conduit ops surviving Pass C.
+    // Phase 8: lower conduit.acquire_async / conduit.wait_window / conduit.wait_all
     //
-    // conduit.wait_window, conduit.acquire_async, and conduit.release_async
-    // are not yet lowered to hardware ops.  If any survive into the output
-    // they would produce silently incorrect IR (dangling Conduit ops mixed
-    // with aie.* ops).  Emit a hard error so the user gets a clear compile
-    // failure rather than wrong output (bug M6 fix).
+    // The async acquire path enables DMA/compute overlap:
+    //
+    //   %tok = conduit.acquire_async {name="x", count=1, port="Consume"}
+    //                                 : !conduit.async.token
+    //   // ... DMA or other async work here ...
+    //   %win = conduit.wait_window %tok for "x"
+    //                               : !conduit.async.token -> !conduit.window<T>
+    //   // use %win via conduit.subview_access ...
+    //
+    // Lowering:
+    //   acquire_async → emit NOTHING (deferred to wait_window)
+    //   wait_window   → emit aie.use_lock(consLock, AcquireGreaterEqual, count)
+    //                    and replace the window result with the buffer SSA value
+    //   wait_all      → for each acquire_async token: emit use_lock
+    //
+    // Moving the use_lock later in the instruction stream gives the DMA more
+    // time to complete before the core reaches the lock acquire — the key
+    // performance claim for the async path.
+    //
+    // Step 8a: Collect acquire_async metadata BEFORE erasing the ops.
+    // We record (token SSA value → {conduit name, port, count}) so that
+    // wait_window and wait_all can look up the lock info after the acquire_async
+    // is gone.
     // -----------------------------------------------------------------------
 
-    module.walk([&](WaitWindow op) {
-      op.emitError("conduit-to-dma: unimplemented — conduit.wait_window "
-                   "lowering not yet supported; use conduit.acquire (blocking) "
-                   "instead of the async token path for now");
-      signalPassFailure();
-    });
+    struct AsyncAcquireInfo {
+      std::string conduitName;
+      std::string port;
+      int64_t count;
+    };
+    llvm::DenseMap<mlir::Value, AsyncAcquireInfo> asyncAcquireMap;
+
+    // Step 8a: Record acquire_async metadata (do NOT erase yet).
+    // The AcquireAsync op must stay alive until after WaitWindow is processed,
+    // because WaitWindow's getToken() SSA operand points to the AcquireAsync
+    // result.  Erasing AcquireAsync before WaitWindow causes use-after-erase.
+    // We only erase AcquireAsync ops in Step 8a-erase, after WaitWindow is done.
+    llvm::SmallVector<AcquireAsync> asyncAcquiresToErase;
     module.walk([&](AcquireAsync op) {
-      op.emitError("conduit-to-dma: unimplemented — conduit.acquire_async "
-                   "lowering not yet supported");
-      signalPassFailure();
+      AsyncAcquireInfo info;
+      info.conduitName = op.getName().str();
+      // acquire_async has no port attribute — it always represents a consumer
+      // acquire (waiting for data to become available for reading).
+      info.port = "Consume";
+      info.count = static_cast<int64_t>(op.getCount());
+      asyncAcquireMap[op.getToken()] = info;
+      asyncAcquiresToErase.push_back(op);
     });
+
+    // Step 8b: Lower conduit.wait_window.
+    // For each wait_window, the token's defining acquire_async recorded the
+    // conduit name.  Emit use_lock at this point (the actual hardware wait),
+    // then replace the window result with the allocated aie.buffer SSA value.
+    llvm::SmallVector<WaitWindow> waitWindowsToErase;
+    module.walk([&](WaitWindow op) {
+      // The conduit name is an attribute on the wait_window op itself.
+      llvm::StringRef conduitName = op.getName();
+      auto it = conduitMap.find(conduitName);
+      if (it == conduitMap.end()) {
+        op.emitError("conduit-to-dma: wait_window references unknown conduit '")
+            << conduitName << "'";
+        signalPassFailure();
+        return;
+      }
+      ConduitInfo &cinfo = it->second;
+
+      // Determine port and count from the async acquire map (keyed by token).
+      llvm::StringRef port = "Consume";
+      int64_t count = 1;
+      {
+        auto ait = asyncAcquireMap.find(op.getToken());
+        if (ait != asyncAcquireMap.end()) {
+          port = ait->second.port;
+          count = ait->second.count;
+        }
+      }
+
+      // Resolve the lock pair for the core that contains this wait_window.
+      AIE::LockOp resolvedProdLock = cinfo.prodLock;
+      AIE::LockOp resolvedConsLock = cinfo.consLock;
+      {
+        mlir::Operation *coreOp = op->getParentOp();
+        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+          coreOp = coreOp->getParentOp();
+        if (coreOp) {
+          mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
+          auto lockIt = cinfo.consumerTileLocks.find(coreTile);
+          if (lockIt != cinfo.consumerTileLocks.end()) {
+            resolvedProdLock = lockIt->second.first;
+            resolvedConsLock = lockIt->second.second;
+          }
+        }
+      }
+
+      // Emit the deferred use_lock at this point in the instruction stream.
+      builder.setInsertionPoint(op);
+      AIE::LockOp lock = (port == "Produce") ? resolvedProdLock : resolvedConsLock;
+      if (lock) {
+        builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
+                                       AIE::LockAction::AcquireGreaterEqual,
+                                       static_cast<int32_t>(count));
+      }
+
+      // Replace the window result with the appropriate aie.buffer SSA value.
+      // Same logic as Phase 6 Step 1 (SubviewAccess): use per-tile buffer map.
+      llvm::SmallVector<AIE::BufferOp> *tileBuffers = &cinfo.buffers;
+      {
+        mlir::Operation *coreOp = op->getParentOp();
+        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+          coreOp = coreOp->getParentOp();
+        if (coreOp) {
+          mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
+          auto bufIt = cinfo.consumerTileBuffers.find(coreTile);
+          if (bufIt != cinfo.consumerTileBuffers.end())
+            tileBuffers = &bufIt->second;
+        }
+      }
+
+      // The window result type wraps the element memref — replace all uses of
+      // the window with the buffer.  Users will be conduit.subview_access ops
+      // which Phase 6 Step 1 will have already replaced with aie.buffer refs;
+      // any remaining users get the first buffer as a fallback.
+      if (!tileBuffers->empty() && op.getResult().use_empty() == false) {
+        // If the window SSA value has surviving users (e.g., conduit.subview_access
+        // that Phase 6 missed), replace with buffer[0].
+        mlir::Value bufVal = (*tileBuffers)[0].getResult();
+        if (bufVal.getType() == op.getResult().getType()) {
+          op.getResult().replaceAllUsesWith(bufVal);
+        }
+      }
+
+      waitWindowsToErase.push_back(op);
+    });
+    for (auto op : waitWindowsToErase)
+      op.erase();
+
+    // Step 8c: Lower conduit.wait_all containing acquire_async tokens.
+    // Must happen BEFORE erasing AcquireAsync (Step 8a-erase) because
+    // WaitAll holds SSA uses of the AcquireAsync token results.
+    llvm::SmallVector<WaitAll> waitAllToErase;
+    module.walk([&](WaitAll op) {
+      builder.setInsertionPoint(op);
+      for (mlir::Value tok : op.getTokens()) {
+        auto ait = asyncAcquireMap.find(tok);
+        if (ait == asyncAcquireMap.end())
+          continue; // not an acquire_async token — skip (DMA token, etc.)
+
+        const AsyncAcquireInfo &ainfo = ait->second;
+        auto it = conduitMap.find(ainfo.conduitName);
+        if (it == conduitMap.end())
+          continue;
+        ConduitInfo &cinfo = it->second;
+
+        // Resolve per-tile locks.
+        AIE::LockOp resolvedProdLock = cinfo.prodLock;
+        AIE::LockOp resolvedConsLock = cinfo.consLock;
+        {
+          mlir::Operation *coreOp = op->getParentOp();
+          while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+            coreOp = coreOp->getParentOp();
+          if (coreOp) {
+            mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
+            auto lockIt = cinfo.consumerTileLocks.find(coreTile);
+            if (lockIt != cinfo.consumerTileLocks.end()) {
+              resolvedProdLock = lockIt->second.first;
+              resolvedConsLock = lockIt->second.second;
+            }
+          }
+        }
+
+        AIE::LockOp lock =
+            (ainfo.port == "Produce") ? resolvedProdLock : resolvedConsLock;
+        if (lock) {
+          builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
+                                         AIE::LockAction::AcquireGreaterEqual,
+                                         static_cast<int32_t>(ainfo.count));
+        }
+      }
+      waitAllToErase.push_back(op);
+    });
+    for (auto op : waitAllToErase)
+      op.erase();
+
+    // Step 8a-erase: NOW safe to erase AcquireAsync ops.
+    // WaitWindow (Step 8b) and WaitAll (Step 8c) are both gone, so no op
+    // holds a use of the AcquireAsync token SSA value anymore.
+    for (auto op : asyncAcquiresToErase)
+      op.erase();
+
+    // Step 8d: Hard error on any remaining async ops not handled above.
+    // conduit.release_async is not yet lowered.
+    // conduit.wait_all_async is not yet lowered.
     module.walk([&](ReleaseAsync op) {
       op.emitError("conduit-to-dma: unimplemented — conduit.release_async "
                    "lowering not yet supported");
