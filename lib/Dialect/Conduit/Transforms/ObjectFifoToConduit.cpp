@@ -300,110 +300,113 @@ struct ObjectFifoToConduitPass
     llvm::SmallVector<AIE::ObjectFifoAcquireOp> acquiresToErase;
     llvm::SmallVector<AIE::ObjectFifoReleaseOp> releasesToErase;
 
-    // Map from (fifo name, port) → most-recently-emitted window SSA value.
-    // Used to thread the window operand into conduit.release.
-    // Walk order is dominator-safe: acquire always precedes release in the
-    // same block, so the window value is live at the release site.
-    llvm::DenseMap<mlir::StringAttr, mlir::Value> lastWindowForName;
+    // Phase 4: rewrite acquire/release/subview.access in one pass per block.
+    //
+    // Domination invariant: conduit.release takes a !conduit.window<T> SSA
+    // operand that must dominate the release site.  A flat module.walk over
+    // all acquires followed by a flat walk over all releases breaks this
+    // because the global `lastWindowForName` map gets clobbered by acquires
+    // from later blocks: e.g., the acquire at line 225 (after a scf.for) would
+    // overwrite the entry used by the release at line 212 (before the loop),
+    // producing a non-dominating reference.
+    //
+    // Fix: process every basic block independently.  Within each block the ops
+    // are visited in program order, so the acquire always precedes its release
+    // and the window SSA value is live at the release site.  The per-block
+    // window map is reset at the start of each block.
 
-    module.walk([&](AIE::ObjectFifoAcquireOp op) {
-      builder.setInsertionPoint(op);
-      mlir::Location loc = op.getLoc();
+    module.walk([&](mlir::Block *block) {
+      // Per-block window map: fifo name → window SSA value emitted by the
+      // most recently processed acquire in this block.
+      llvm::DenseMap<mlir::StringAttr, mlir::Value> blockWindowMap;
 
-      std::string name = op.getObjFifoName().str();
-      int64_t count = op.acqNumber();
+      for (mlir::Operation &rawOp : llvm::make_early_inc_range(*block)) {
+        if (auto op = mlir::dyn_cast<AIE::ObjectFifoAcquireOp>(rawOp)) {
+          builder.setInsertionPoint(op);
+          mlir::Location loc = op.getLoc();
 
-      // Fix 2: propagate port attribute.
-      std::string portStr =
-          (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce" : "Consume";
+          std::string name = op.getObjFifoName().str();
+          int64_t count = op.acqNumber();
+          std::string portStr =
+              (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce"
+                                                             : "Consume";
 
-      // Fix 1: build the !conduit.window<T> result type from the fifo info.
-      auto nameAttr = mlir::StringAttr::get(ctx, name);
-      mlir::MemRefType elemType;
-      auto it = fifoInfoMap.find(nameAttr);
-      if (it != fifoInfoMap.end())
-        elemType = it->second.elemType;
-      if (!elemType)
-        elemType = mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
+          auto nameAttr = mlir::StringAttr::get(ctx, name);
+          mlir::MemRefType elemType;
+          auto it = fifoInfoMap.find(nameAttr);
+          if (it != fifoInfoMap.end())
+            elemType = it->second.elemType;
+          if (!elemType)
+            elemType = mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
 
-      auto winTy = WindowType::get(ctx, elemType);
+          auto winTy = WindowType::get(ctx, elemType);
+          mlir::Value winVal = builder.create<Acquire>(
+              loc, winTy, mlir::StringAttr::get(ctx, name),
+              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
+              mlir::StringAttr::get(ctx, portStr));
 
-      // Emit conduit.acquire — returns !conduit.window<T>
-      mlir::Value winVal = builder.create<Acquire>(
-          loc, winTy,
-          mlir::StringAttr::get(ctx, name),
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-          mlir::StringAttr::get(ctx, portStr));
+          // Record the window for subsequent releases in this block.
+          blockWindowMap[nameAttr] = winVal;
 
-      // Record the window SSA value so the subsequent release can use it.
-      lastWindowForName[nameAttr] = winVal;
+          // Rewrite subview.access users immediately.
+          mlir::Value subviewResult = op.getResult();
+          for (mlir::Operation *user :
+               llvm::make_early_inc_range(subviewResult.getUsers())) {
+            if (auto accessOp =
+                    mlir::dyn_cast<AIE::ObjectFifoSubviewAccessOp>(user)) {
+              builder.setInsertionPoint(accessOp);
+              int64_t idx = accessOp.getIndex();
+              mlir::Type resultTy = accessOp.getResult().getType();
+              auto condAccess = builder.create<SubviewAccess>(
+                  accessOp.getLoc(), resultTy, winVal,
+                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), idx));
+              accessOp.getResult().replaceAllUsesWith(condAccess.getResult());
+              subviewsToErase.push_back(accessOp);
+            }
+          }
+          acquiresToErase.push_back(op);
 
-      // Rewrite all subview.access users of this acquire's result.
-      // Thread the window SSA value into conduit.subview_access.
-      mlir::Value subviewResult = op.getResult();
-      for (mlir::Operation *user :
-           llvm::make_early_inc_range(subviewResult.getUsers())) {
-        if (auto accessOp =
-                mlir::dyn_cast<AIE::ObjectFifoSubviewAccessOp>(user)) {
-          builder.setInsertionPoint(accessOp);
-          int64_t idx = accessOp.getIndex();
-          mlir::Type resultTy = accessOp.getResult().getType();
+        } else if (auto op = mlir::dyn_cast<AIE::ObjectFifoReleaseOp>(rawOp)) {
+          builder.setInsertionPoint(op);
+          mlir::Location loc = op.getLoc();
 
-          // Emit conduit.subview_access with the window SSA operand.
-          auto condAccess = builder.create<SubviewAccess>(
-              accessOp.getLoc(), resultTy, winVal,
-              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), idx));
+          std::string name = op.getObjFifoName().str();
+          int64_t count = op.getSize();
+          std::string portStr =
+              (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce"
+                                                             : "Consume";
 
-          // Replace all uses of the AIE subview.access result.
-          accessOp.getResult().replaceAllUsesWith(condAccess.getResult());
-          subviewsToErase.push_back(accessOp);
+          auto nameAttr = mlir::StringAttr::get(ctx, name);
+          mlir::Value winVal = blockWindowMap.lookup(nameAttr);
+
+          if (!winVal) {
+            // No acquire for this fifo in this block — synthesize a window.
+            // This covers patterns where release appears without a matching
+            // acquire visible in the same block (e.g., producer that calls
+            // an implicit initial window or deferred-acquire pattern).
+            mlir::MemRefType elemType;
+            auto it = fifoInfoMap.find(nameAttr);
+            if (it != fifoInfoMap.end())
+              elemType = it->second.elemType;
+            if (!elemType)
+              elemType =
+                  mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
+            auto winTy = WindowType::get(ctx, elemType);
+            winVal = builder.create<Acquire>(
+                loc, winTy, mlir::StringAttr::get(ctx, name),
+                mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
+                mlir::StringAttr::get(ctx, portStr));
+            blockWindowMap[nameAttr] = winVal;
+          }
+
+          builder.create<Release>(
+              loc, winVal,
+              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
+              mlir::StringAttr::get(ctx, portStr));
+
+          releasesToErase.push_back(op);
         }
       }
-      acquiresToErase.push_back(op);
-    });
-
-    module.walk([&](AIE::ObjectFifoReleaseOp op) {
-      builder.setInsertionPoint(op);
-      mlir::Location loc = op.getLoc();
-
-      std::string name = op.getObjFifoName().str();
-      int64_t count = op.getSize();
-
-      // Fix 2: propagate port attribute.
-      std::string portStr =
-          (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce" : "Consume";
-
-      // Look up the window SSA value from the preceding acquire.
-      auto nameAttr = mlir::StringAttr::get(ctx, name);
-      mlir::Value winVal = lastWindowForName.lookup(nameAttr);
-
-      if (!winVal) {
-        // Fallback: no window in scope (can happen for producer-side release
-        // without a matching acquire in the current walk scope).  Synthesize
-        // a placeholder window using the fifo info element type.
-        mlir::MemRefType elemType;
-        auto it = fifoInfoMap.find(nameAttr);
-        if (it != fifoInfoMap.end())
-          elemType = it->second.elemType;
-        if (!elemType)
-          elemType = mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
-        // Emit a conduit.acquire to produce the window for the release.
-        // This handles the case where the producer releases without an explicit
-        // acquire visible to this walk (e.g. implicit initial window).
-        auto winTy = WindowType::get(ctx, elemType);
-        winVal = builder.create<Acquire>(
-            loc, winTy,
-            mlir::StringAttr::get(ctx, name),
-            mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-            mlir::StringAttr::get(ctx, portStr));
-      }
-
-      builder.create<Release>(
-          loc, winVal,
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-          mlir::StringAttr::get(ctx, portStr));
-
-      releasesToErase.push_back(op);
     });
 
     // Deferred erasure: erase subviews before acquires (subview uses acquire result).

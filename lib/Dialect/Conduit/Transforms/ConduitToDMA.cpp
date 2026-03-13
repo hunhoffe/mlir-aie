@@ -82,13 +82,16 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -135,9 +138,26 @@ struct ConduitInfo {
   int64_t capacity = 0;
   mlir::Type elemType; // actual element memref type (may be null)
   // Hardware SSA values populated during lowering:
-  llvm::SmallVector<AIE::BufferOp> buffers; // depth-many on consumer tile
-  AIE::LockOp prodLock;                     // init=depth (free slots)
-  AIE::LockOp consLock;                     // init=0   (filled slots)
+  llvm::SmallVector<AIE::BufferOp> buffers; // depth-many on consumer_tile[0]
+  // Per-consumer-tile lock pairs for multi-consumer (broadcast) correctness.
+  // Keyed on the tile SSA Value (result of aie.tile op).
+  // Phase 3 populates this for every consumer tile; Phase 6 looks up the pair
+  // for the tile that contains the acquire/release being lowered.
+  llvm::DenseMap<mlir::Value, std::pair<AIE::LockOp, AIE::LockOp>>
+      consumerTileLocks; // tile → (prodLock, consLock)
+  // Per-consumer-tile buffer vectors for SubviewAccess resolution.
+  // Each entry holds depth-many BufferOps for that tile.
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<AIE::BufferOp>>
+      consumerTileBuffers; // tile → [buff_0, ..., buff_{depth-1}]
+  // Convenience accessors for the single-consumer case and for the link phase
+  // (which always uses consumer_tile[0]).  Populated from consumerTileLocks[0].
+  AIE::LockOp prodLock; // consumer_tile[0] prod lock (init=depth)
+  AIE::LockOp consLock; // consumer_tile[0] cons lock (init=0)
+  // For depth>1: a memref<1xi32> rotation counter on the consumer tile.
+  // The core body loads this counter before each acquire to select the correct
+  // ping-pong buffer (buff_{counter % depth}), then increments it after the
+  // release.  Mirrors the stateful transform's buffer_0_N pattern.
+  AIE::BufferOp rotationBuf;
   // Legacy string form for the ObjectFifoLink memtile lookup.
   // Populated from producer_tile for shim detection.
   std::string producerTileStr; // "tile(col,row)"
@@ -420,6 +440,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
         // Allocate prod_lock (init = depth → depth free slots).
         // Named with _cons_ infix to distinguish from shim-tile prod_lock_0.
+        AIE::LockOp thisProdLock;
         {
           int lockIdx = lockIdCounter[consTileVal]++;
           std::string symName =
@@ -428,11 +449,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               deviceOp.getLoc(), consTileVal, lockIdx,
               static_cast<int>(depth));
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+          thisProdLock = lk;
           if (consIdx == 0)
             info.prodLock = lk;
         }
 
         // Allocate cons_lock (init = 0 → nothing filled yet).
+        AIE::LockOp thisConsLock;
         {
           int lockIdx = lockIdCounter[consTileVal]++;
           std::string symName =
@@ -440,8 +463,31 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           AIE::LockOp lk = builder.create<AIE::LockOp>(
               deviceOp.getLoc(), consTileVal, lockIdx, 0);
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+          thisConsLock = lk;
           if (consIdx == 0)
             info.consLock = lk;
+        }
+
+        // Register the lock pair for this consumer tile so Phase 6 can look
+        // up the correct locks for cores on any consumer tile (not just [0]).
+        info.consumerTileLocks[consTileVal] = {thisProdLock, thisConsLock};
+        // Register the buffer vector for this consumer tile so Phase 6
+        // SubviewAccess lowering can use the correct per-tile buffers.
+        info.consumerTileBuffers[consTileVal] = consBuffers;
+
+        // For depth>1, allocate a rotation counter buffer on the consumer tile.
+        // The core body uses this to select the correct ping-pong buffer on
+        // each iteration (load counter → index_switch → select buff_N).
+        // Mirrors the stateful transform's `buffer_col_row : memref<1xi32>`.
+        if (depth > 1 && consIdx == 0) {
+          auto counterTy =
+              mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
+          info.rotationBuf = builder.create<AIE::BufferOp>(
+              deviceOp.getLoc(), counterTy, consTileVal,
+              /*sym_name=*/mlir::StringAttr{},
+              /*address=*/mlir::IntegerAttr{},
+              /*initial_value=*/mlir::ElementsAttr{},
+              /*mem_bank=*/mlir::IntegerAttr{});
         }
       }
     }
@@ -966,6 +1012,25 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //   4. Erase Release ops collected in step 2.
 
     // Step 1: SubviewAccess — replace memref result with aie.buffer, then erase.
+    //
+    // For depth == 1: direct replacement with buffers[idx] (static selection).
+    //
+    // For depth > 1: emit a dynamic ping-pong selection using the rotation
+    // counter buffer allocated in Phase 3.  The pattern mirrors the stateful
+    // transform's counter + scf.index_switch approach:
+    //
+    //   %ctr_val = memref.load %rotation_buf[%c0]
+    //   %ctr_idx = arith.index_cast %ctr_val : i32 to index
+    //   // offset by the subview index (for sliding windows with count>1)
+    //   %abs_idx = arith.addi %ctr_idx, %idx_const  // (% depth handled by switch)
+    //   %selected = scf.index_switch %abs_idx -> memref<T>
+    //     case 0 { scf.yield %buff_0 }
+    //     case 1 { scf.yield %buff_1 }
+    //     ...
+    //     default { scf.yield %buff_0 }
+    //
+    // The counter increment (counter = (counter+1) % depth) is emitted in
+    // Step 4 after the Release use_lock, once per acquire-release pair.
     module.walk([&](SubviewAccess op) {
       llvm::StringRef conduitName;
       if (auto acqOp = mlir::dyn_cast_or_null<Acquire>(
@@ -977,10 +1042,76 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         auto it = conduitMap.find(conduitName);
         if (it != conduitMap.end() && !it->second.buffers.empty()) {
           int64_t idx = op.getIndex();
-          if (idx < static_cast<int64_t>(it->second.buffers.size())) {
-            mlir::Value bufVal = it->second.buffers[idx].getResult();
-            if (bufVal.getType() == op.getResult().getType()) {
-              op.getResult().replaceAllUsesWith(bufVal);
+          ConduitInfo &cinfo = it->second;
+          int64_t depth = cinfo.depth > 0 ? cinfo.depth : 1;
+
+          if (idx < static_cast<int64_t>(cinfo.buffers.size())) {
+            if (depth == 1 || !cinfo.rotationBuf) {
+              // Depth-1 case (or no rotation buffer): static selection.
+              mlir::Value bufVal = cinfo.buffers[idx].getResult();
+              if (bufVal.getType() == op.getResult().getType()) {
+                op.getResult().replaceAllUsesWith(bufVal);
+                replaced = true;
+              }
+            } else {
+              // Depth>1 case: dynamic selection via counter + index_switch.
+              builder.setInsertionPoint(op);
+              mlir::Location loc = op.getLoc();
+
+              // Load the rotation counter.
+              mlir::Value c0Idx = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+              mlir::Value ctrI32 = builder.create<mlir::memref::LoadOp>(
+                  loc, cinfo.rotationBuf.getResult(),
+                  mlir::ValueRange{c0Idx});
+
+              // Cast to index for index_switch.
+              mlir::Value ctrIdx = builder.create<mlir::arith::IndexCastOp>(
+                  loc, builder.getIndexType(), ctrI32);
+
+              // Add the subview index offset (for sliding windows idx>0).
+              mlir::Value absIdx = ctrIdx;
+              if (idx > 0) {
+                mlir::Value idxConst =
+                    builder.create<mlir::arith::ConstantIndexOp>(loc, idx);
+                // Compute (counter + idx) % depth for correct wrap-around.
+                mlir::Value sum = builder.create<mlir::arith::AddIOp>(
+                    loc, ctrIdx, idxConst);
+                mlir::Value depthConst =
+                    builder.create<mlir::arith::ConstantIndexOp>(loc, depth);
+                absIdx = builder.create<mlir::arith::RemUIOp>(loc, sum,
+                                                               depthConst);
+              }
+
+              // Emit scf.index_switch over [0..depth-1].
+              mlir::Type bufTy = op.getResult().getType();
+              llvm::SmallVector<int64_t> caseVals;
+              for (int64_t i = 0; i < depth; ++i)
+                caseVals.push_back(i);
+
+              auto switchOp = builder.create<mlir::scf::IndexSwitchOp>(
+                  loc, mlir::TypeRange{bufTy}, absIdx, caseVals,
+                  /*numRegions=*/static_cast<int>(depth));
+
+              // Fill each case region: yield buffers[i].
+              for (int64_t i = 0; i < depth; ++i) {
+                mlir::Block *caseBlock =
+                    &switchOp.getCaseRegions()[i].emplaceBlock();
+                mlir::OpBuilder caseBuilder(ctx);
+                caseBuilder.setInsertionPointToEnd(caseBlock);
+                caseBuilder.create<mlir::scf::YieldOp>(
+                    loc, cinfo.buffers[i].getResult());
+              }
+              // Default region: yield buffers[0].
+              {
+                mlir::Block *defBlock =
+                    &switchOp.getDefaultRegion().emplaceBlock();
+                mlir::OpBuilder defBuilder(ctx);
+                defBuilder.setInsertionPointToEnd(defBlock);
+                defBuilder.create<mlir::scf::YieldOp>(
+                    loc, cinfo.buffers[0].getResult());
+              }
+
+              op.getResult().replaceAllUsesWith(switchOp.getResult(0));
               replaced = true;
             }
           }
@@ -1023,14 +1154,62 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       builder.setInsertionPoint(op);
       int64_t count = static_cast<int64_t>(op.getCount());
       llvm::StringRef port = op.getPort();
+
+      // Broadcast lock correctness: find the enclosing aie.core tile and look
+      // up that tile's specific lock pair from consumerTileLocks.  Falls back
+      // to cinfo.prodLock/consLock (consumer_tile[0]) if the tile is not found
+      // (e.g., producer-side release outside a core, or no multi-consumer map).
+      AIE::LockOp resolvedProdLock = cinfo.prodLock;
+      AIE::LockOp resolvedConsLock = cinfo.consLock;
+      {
+        mlir::Operation *coreOp = op->getParentOp();
+        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+          coreOp = coreOp->getParentOp();
+        if (coreOp) {
+          mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
+          auto lockIt = cinfo.consumerTileLocks.find(coreTile);
+          if (lockIt != cinfo.consumerTileLocks.end()) {
+            resolvedProdLock = lockIt->second.first;
+            resolvedConsLock = lockIt->second.second;
+          }
+        }
+      }
+
       // Consumer releases prod-lock (freeing up producer slots);
       // Producer releases cons-lock (signalling data ready for consumer).
       AIE::LockOp lock =
-          (port == "Consume") ? cinfo.prodLock : cinfo.consLock;
+          (port == "Consume") ? resolvedProdLock : resolvedConsLock;
       if (lock) {
         builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                        AIE::LockAction::Release,
                                        static_cast<int32_t>(count));
+      }
+      // For depth>1 with Consume port, emit counter increment after the
+      // release use_lock.  Counter advances by 'count' (the number of
+      // elements released) mod depth, matching the stateful transform pattern.
+      if (cinfo.rotationBuf && port == "Consume" && cinfo.depth > 1) {
+        mlir::Location loc = op.getLoc();
+        mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+        mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+        // Load current counter.
+        mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
+            loc, cinfo.rotationBuf.getResult(), mlir::ValueRange{c0});
+        // Increment by count.
+        mlir::Value incI32 = mlir::arith::ConstantIntOp::create(
+            builder, loc, i32Ty, count);
+        mlir::Value newVal =
+            builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
+        // Wrap modulo depth: if newVal >= depth, subtract depth.
+        mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
+            builder, loc, i32Ty, cinfo.depth);
+        mlir::Value cmp = builder.create<mlir::arith::CmpIOp>(
+            loc, mlir::arith::CmpIPredicate::sge, newVal, depthI32);
+        mlir::Value wrapped =
+            builder.create<mlir::arith::SubIOp>(loc, newVal, depthI32);
+        mlir::Value result =
+            builder.create<mlir::arith::SelectOp>(loc, cmp, wrapped, newVal);
+        builder.create<mlir::memref::StoreOp>(
+            loc, result, cinfo.rotationBuf.getResult(), mlir::ValueRange{c0});
       }
       releasesToErase.push_back(op);
     });
@@ -1041,8 +1220,15 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     for (auto op : releasesToErase)
       op.erase();
 
-    // Step 4: Acquire — emit use_lock; erase.
+    // Step 4: Acquire — emit use_lock (and counter init on first use); erase.
     // SubviewAccess (step 1) and Release (step 3) users are gone; safe to erase.
+    //
+    // Counter initialization: the rotation counter must be set to 0 before the
+    // first acquire for each depth>1 conduit in each core.  Track which
+    // (conduit, parent-op) pairs have been initialized to emit the store once.
+    llvm::DenseSet<std::pair<llvm::StringRef, mlir::Operation *>>
+        counterInitialized;
+
     module.walk([&](Acquire op) {
       auto it = conduitMap.find(op.getName());
       if (it == conduitMap.end()) {
@@ -1053,9 +1239,56 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       builder.setInsertionPoint(op);
       int64_t count = static_cast<int64_t>(op.getCount());
       llvm::StringRef port = op.getPort();
+
+      // Broadcast lock correctness: resolve the lock pair for the specific
+      // consumer tile that contains this acquire, using consumerTileLocks.
+      AIE::LockOp resolvedProdLock = cinfo.prodLock;
+      AIE::LockOp resolvedConsLock = cinfo.consLock;
+      {
+        mlir::Operation *coreOp = op->getParentOp();
+        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+          coreOp = coreOp->getParentOp();
+        if (coreOp) {
+          mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
+          auto lockIt = cinfo.consumerTileLocks.find(coreTile);
+          if (lockIt != cinfo.consumerTileLocks.end()) {
+            resolvedProdLock = lockIt->second.first;
+            resolvedConsLock = lockIt->second.second;
+          }
+        }
+      }
+
       // Consumer acquires consume-lock; producer acquires produce-lock.
       AIE::LockOp lock =
-          (port == "Produce") ? cinfo.prodLock : cinfo.consLock;
+          (port == "Produce") ? resolvedProdLock : resolvedConsLock;
+
+      // For depth>1 Consume acquires: initialize the rotation counter to 0
+      // at the start of the enclosing aie.core body (once per core+conduit).
+      if (cinfo.rotationBuf && port == "Consume" && cinfo.depth > 1) {
+        // Walk up to find the enclosing aie.core op; the acquire may be
+        // nested inside an scf.for or other region within the core.
+        mlir::Operation *coreOp = op->getParentOp();
+        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+          coreOp = coreOp->getParentOp();
+        auto key = std::make_pair(op.getName(), coreOp);
+        if (!counterInitialized.count(key)) {
+          counterInitialized.insert(key);
+          // Insert at the very start of the core body's entry block, before
+          // any acquire-related ops.
+          mlir::Block *entryBlock = &coreOp->getRegion(0).front();
+          mlir::OpBuilder initBuilder(entryBlock, entryBlock->begin());
+          mlir::Location loc = op.getLoc();
+          mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+          mlir::Value zero = mlir::arith::ConstantIntOp::create(
+              initBuilder, loc, i32Ty, 0);
+          mlir::Value c0 =
+              initBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+          initBuilder.create<mlir::memref::StoreOp>(
+              loc, zero, cinfo.rotationBuf.getResult(),
+              mlir::ValueRange{c0});
+        }
+      }
+
       if (lock) {
         builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                        AIE::LockAction::AcquireGreaterEqual,
