@@ -53,6 +53,8 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_AIRCHANNELTOCONDUIT
 #define GEN_PASS_DECL_CONDUITDEPTHPROMOTE
 #define GEN_PASS_DECL_CONDUITPAIRINGCHECK
+#define GEN_PASS_DECL_CONDUITLIVENESSCHECK
+#define GEN_PASS_DECL_CONDUITFUSECHANNELS
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -77,6 +79,15 @@ createConduitDepthPromotePass();
 /// M9 Phase 2 pairing check: warn when acquire has no matching release in block.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitPairingCheckPass();
+
+/// M11 liveness check: error when a window lock grant is never released.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitLivenessCheckPass();
+
+/// Channel fusion: annotate non-overlapping conduits on the same tile for
+/// DMA channel sharing (addresses DMA channel exhaustion gap).
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitFuseChannelsPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

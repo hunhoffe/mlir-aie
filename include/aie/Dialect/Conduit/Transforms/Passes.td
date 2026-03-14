@@ -215,4 +215,103 @@ def ConduitPairingCheck : Pass<"conduit-check-pairing", "::mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Liveness Check — conduit-check-liveness (M11 analysis)
+//===----------------------------------------------------------------------===//
+
+def ConduitLivenessCheck : Pass<"conduit-check-liveness", "::mlir::ModuleOp"> {
+  let summary = "M11: error when a conduit window lock grant is never released";
+  let description = [{
+    Analysis pass that verifies every !conduit.window<T> SSA value produced by
+    conduit.acquire or conduit.wait_window is eventually released.
+
+    A window value with no release path represents a permanently held hardware
+    lock.  The peer (producer waiting to reclaim the buffer slot) will block
+    forever, causing hardware deadlock.
+
+    Two release paths are accepted:
+      1. Direct SSA release: conduit.release with the window as operand.
+      2. Async name release: conduit.release_async on the same channel name
+         anywhere in the enclosing function (async releases reference the
+         channel by name rather than by SSA value).
+
+    Unlike M9 (conduit-check-pairing), which warns when no release is in the
+    SAME BASIC BLOCK, M11 checks the entire function body.  M11 does not fire
+    when a cross-block release exists; M9 may fire in that case.
+
+    M11 signals pass failure (not just a warning) because a leaked lock grant
+    always causes hardware deadlock — there is no valid program that acquires
+    and never releases.
+
+    Limitations:
+      - Loop-carried conditional skips (M12 / PostDominatorTree — deferred).
+      - Indirect release via name aliasing may suppress a false negative.
+
+    Run with:  aie-opt --conduit-check-liveness <input.mlir>
+
+    This pass is OPT-IN and NOT part of the default pipeline.
+  }];
+
+  let constructor = "xilinx::conduit::createConduitLivenessCheckPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "::mlir::func::FuncDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Channel Fusion — conduit-fuse-channels
+//===----------------------------------------------------------------------===//
+
+def ConduitFuseChannels : Pass<"conduit-fuse-channels", "::mlir::ModuleOp"> {
+  let summary = "Annotate non-overlapping conduits on the same tile for DMA channel sharing";
+  let description = [{
+    Experimental: not validated on hardware. Use as opt-in flag only.
+
+    Addresses the DMA channel exhaustion gap: AIE compute tiles have at most 2
+    MM2S and 2 S2MM DMA channels.  When more than two conduits share a tile,
+    Pass C cannot assign unique hardware channels.
+
+    Two conduits on the same producer tile can time-share one DMA channel when
+    their buffer-window accesses do not overlap in program order.  Formally, if
+    every Conduit op for channel A appears before (or after) every Conduit op
+    for channel B within a common basic block, they are sequentially
+    non-overlapping and can share one hardware channel slot.
+
+    Algorithm (linear-scan interval coloring):
+      1. Group conduit.create ops by producer_tile coordinate.
+      2. For each tile with >= 2 conduits, compute per-block live intervals
+         [first_op_index, last_op_index] for each conduit name.
+      3. Run a greedy interval-coloring pass (analogous to linear-scan register
+         allocation) to assign non-overlapping conduits to the same group.
+      4. Annotate each eligible conduit.create with:
+             fused_dma_channel_group = "groupN"
+         where N identifies the shared hardware channel group.
+
+    Pass C (--conduit-to-dma) is responsible for interpreting this attribute
+    and assigning conduits in the same group to the same hardware channel slot.
+    This pass is annotation-only; it does not restructure the IR.
+
+    Correctness guarantee: two conduits annotated with the same group are
+    guaranteed to have non-overlapping live intervals in at least one basic
+    block.  Pass C must ensure the DMA channel is reprogrammed between uses.
+
+    Limitations:
+      - Only single-block live intervals are considered.  Cross-block CFG
+        liveness analysis is deferred.
+      - Only MM2S (producer-side) grouping is implemented; S2MM consumer-side
+        fusion is a symmetric future extension.
+      - Shim tiles (row == 0) are excluded; they use a separate shim DMA model.
+
+    Run with:  aie-opt --conduit-fuse-channels <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitFuseChannelsPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES
