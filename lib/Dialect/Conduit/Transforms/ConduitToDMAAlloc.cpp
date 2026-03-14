@@ -73,51 +73,11 @@ void allocPhase(ConduitToDMAState &state) {
 
       mlir::Value prodTileVal = prodTile.getResult();
 
-      for (int64_t i = 0; i < prodDepth; ++i) {
-        std::string symName = name + "_buff_" + std::to_string(i);
-        auto buf = builder.create<AIE::BufferOp>(
-            state.deviceOp.getLoc(), bufTy, prodTileVal,
-            mlir::StringAttr::get(ctx, symName),
-            /*address=*/mlir::IntegerAttr{},
-            /*initial_value=*/mlir::ElementsAttr{},
-            /*mem_bank=*/mlir::IntegerAttr{});
-        info.buffers.push_back(buf);
-      }
-
-      if (isAIE2) {
-        {
-          int lockIdx = state.lockIdCounter[prodTileVal]++;
-          std::string symName = name + "_prod_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), prodTileVal, lockIdx,
-              static_cast<int>(prodDepth));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.prodLock = lk;
-        }
-        {
-          int lockIdx = state.lockIdCounter[prodTileVal]++;
-          std::string symName = name + "_cons_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), prodTileVal, lockIdx,
-              static_cast<int>(0));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.consLock = lk;
-        }
-      } else {
-        for (int64_t i = 0; i < prodDepth; ++i) {
-          int lockIdx = state.lockIdCounter[prodTileVal]++;
-          std::string symName = name + "_lock_" + std::to_string(i);
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), prodTileVal, lockIdx,
-              static_cast<int>(0));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.aie1Locks.push_back(lk);
-        }
-        if (!info.aie1Locks.empty()) {
-          info.prodLock = info.aie1Locks[0];
-          info.consLock = info.aie1Locks[0];
-        }
-      }
+      info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
+      auto locks = state.allocateLockPair(prodTileVal, name, prodDepth);
+      info.prodLock = locks.prodLock;
+      info.consLock = locks.consLock;
+      info.aie1Locks = std::move(locks.aie1Locks);
       continue;
     }
 
@@ -179,60 +139,17 @@ void allocPhase(ConduitToDMAState &state) {
             mlir::Value consTileVal = consTile.getResult();
 
             // Allocate depth-many buffers on the allocation tile.
-            llvm::SmallVector<AIE::BufferOp> sharedBuffers;
-            for (int64_t i = 0; i < depth; ++i) {
-              std::string symName = name + "_buff_" + std::to_string(i);
-              auto buf = builder.create<AIE::BufferOp>(
-                  state.deviceOp.getLoc(), bufTy, allocTileVal,
-                  mlir::StringAttr::get(ctx, symName),
-                  /*address=*/mlir::IntegerAttr{},
-                  /*initial_value=*/mlir::ElementsAttr{},
-                  /*mem_bank=*/mlir::IntegerAttr{});
-              sharedBuffers.push_back(buf);
-              info.buffers.push_back(buf);
-            }
+            llvm::SmallVector<AIE::BufferOp> sharedBuffers =
+                state.allocateBuffers(allocTileVal, name, bufTy, depth);
+            info.buffers = sharedBuffers;
 
             // Allocate lock(s) on the allocation tile.
-            AIE::LockOp sharedProdLock;
-            AIE::LockOp sharedConsLock;
-            if (isAIE2) {
-              {
-                int lockIdx = state.lockIdCounter[allocTileVal]++;
-                std::string symName = name + "_prod_lock_0";
-                AIE::LockOp lk = builder.create<AIE::LockOp>(
-                    state.deviceOp.getLoc(), allocTileVal, lockIdx,
-                    static_cast<int>(depth));
-                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                sharedProdLock = lk;
-                info.prodLock = lk;
-              }
-              {
-                int lockIdx = state.lockIdCounter[allocTileVal]++;
-                std::string symName = name + "_cons_lock_0";
-                AIE::LockOp lk = builder.create<AIE::LockOp>(
-                    state.deviceOp.getLoc(), allocTileVal, lockIdx,
-                    static_cast<int>(0));
-                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                sharedConsLock = lk;
-                info.consLock = lk;
-              }
-            } else {
-              for (int64_t i = 0; i < depth; ++i) {
-                int lockIdx = state.lockIdCounter[allocTileVal]++;
-                std::string symName = name + "_lock_" + std::to_string(i);
-                AIE::LockOp lk = builder.create<AIE::LockOp>(
-                    state.deviceOp.getLoc(), allocTileVal, lockIdx,
-                    static_cast<int>(0));
-                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                info.aie1Locks.push_back(lk);
-              }
-              if (!info.aie1Locks.empty()) {
-                sharedProdLock = info.aie1Locks[0];
-                sharedConsLock = info.aie1Locks[0];
-                info.prodLock = info.aie1Locks[0];
-                info.consLock = info.aie1Locks[0];
-              }
-            }
+            auto locks = state.allocateLockPair(allocTileVal, name, depth);
+            AIE::LockOp sharedProdLock = locks.prodLock;
+            AIE::LockOp sharedConsLock = locks.consLock;
+            info.prodLock = locks.prodLock;
+            info.consLock = locks.consLock;
+            info.aie1Locks = std::move(locks.aie1Locks);
 
             // Register locks keyed on consumer and producer tiles for Phase 6.
             info.consumerTileLocks[consTileVal] = {sharedProdLock,
@@ -293,42 +210,11 @@ void allocPhase(ConduitToDMAState &state) {
 
       mlir::Value prodTileVal = prodTile.getResult();
 
-      for (int64_t i = 0; i < prodDepth; ++i) {
-        std::string symName = name + "_buff_" + std::to_string(i);
-        auto buf = builder.create<AIE::BufferOp>(
-            state.deviceOp.getLoc(), bufTy, prodTileVal,
-            mlir::StringAttr::get(ctx, symName),
-            mlir::IntegerAttr{}, mlir::ElementsAttr{}, mlir::IntegerAttr{});
-        info.buffers.push_back(buf);
-      }
-
-      if (isAIE2) {
-        { int lockIdx = state.lockIdCounter[prodTileVal]++;
-          std::string symName = name + "_prod_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), prodTileVal, lockIdx, static_cast<int>(prodDepth));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.prodLock = lk; }
-        { int lockIdx = state.lockIdCounter[prodTileVal]++;
-          std::string symName = name + "_cons_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), prodTileVal, lockIdx, 0);
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.consLock = lk; }
-      } else {
-        for (int64_t i = 0; i < prodDepth; ++i) {
-          int lockIdx = state.lockIdCounter[prodTileVal]++;
-          std::string symName = name + "_lock_" + std::to_string(i);
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), prodTileVal, lockIdx, 0);
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.aie1Locks.push_back(lk);
-        }
-        if (!info.aie1Locks.empty()) {
-          info.prodLock = info.aie1Locks[0];
-          info.consLock = info.aie1Locks[0];
-        }
-      }
+      info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
+      auto locks = state.allocateLockPair(prodTileVal, name, prodDepth);
+      info.prodLock = locks.prodLock;
+      info.consLock = locks.consLock;
+      info.aie1Locks = std::move(locks.aie1Locks);
       continue;
     }
 
@@ -366,20 +252,11 @@ void allocPhase(ConduitToDMAState &state) {
               ? "_cons_" + std::to_string(consIdx)
               : "_cons";
 
-      llvm::SmallVector<AIE::BufferOp> consBuffers;
-      for (int64_t i = 0; i < depth; ++i) {
-        std::string symName =
-            name + bufSuffix + "_buff_" + std::to_string(i);
-        auto buf = builder.create<AIE::BufferOp>(
-            state.deviceOp.getLoc(), bufTy, consTileVal,
-            mlir::StringAttr::get(ctx, symName),
-            /*address=*/mlir::IntegerAttr{},
-            /*initial_value=*/mlir::ElementsAttr{},
-            /*mem_bank=*/mlir::IntegerAttr{});
-        consBuffers.push_back(buf);
-        if (consIdx == 0)
-          info.buffers.push_back(buf);
-      }
+      std::string consPrefix = name + bufSuffix;
+      llvm::SmallVector<AIE::BufferOp> consBuffers =
+          state.allocateBuffers(consTileVal, consPrefix, bufTy, depth);
+      if (consIdx == 0)
+        info.buffers = consBuffers;
 
       // Link source conduits: register MemTile-side buffers but skip
       // MemTile-side lock allocation (Phase 5 handles those for distribute).
@@ -399,60 +276,18 @@ void allocPhase(ConduitToDMAState &state) {
                 int64_t prodDepth = info.effectiveDepth > 0
                                         ? info.effectiveDepth
                                         : depth;
-                llvm::SmallVector<AIE::BufferOp> pBufs;
-                for (int64_t i = 0; i < prodDepth; ++i) {
-                  std::string symName =
-                      name + "_buff_" + std::to_string(i);
-                  auto buf = builder.create<AIE::BufferOp>(
-                      state.deviceOp.getLoc(), bufTy, pTileVal,
-                      mlir::StringAttr::get(ctx, symName),
-                      /*address=*/mlir::IntegerAttr{},
-                      /*initial_value=*/mlir::ElementsAttr{},
-                      /*mem_bank=*/mlir::IntegerAttr{});
-                  pBufs.push_back(buf);
-                }
+                auto pBufs = state.allocateBuffers(
+                    pTileVal, name, bufTy, prodDepth);
+                auto pLocks = state.allocateLockPair(
+                    pTileVal, name, prodDepth);
 
-                AIE::LockOp pProdLock, pConsLock;
-                if (isAIE2) {
-                  {
-                    int lockIdx = state.lockIdCounter[pTileVal]++;
-                    std::string symName = name + "_prod_lock_0";
-                    AIE::LockOp lk = builder.create<AIE::LockOp>(
-                        state.deviceOp.getLoc(), pTileVal, lockIdx,
-                        static_cast<int>(prodDepth));
-                    lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                    pProdLock = lk;
-                  }
-                  {
-                    int lockIdx = state.lockIdCounter[pTileVal]++;
-                    std::string symName = name + "_cons_lock_0";
-                    AIE::LockOp lk = builder.create<AIE::LockOp>(
-                        state.deviceOp.getLoc(), pTileVal, lockIdx,
-                        static_cast<int>(0));
-                    lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                    pConsLock = lk;
-                  }
-                } else {
-                  llvm::SmallVector<AIE::LockOp> pA1Locks;
-                  for (int64_t i = 0; i < prodDepth; ++i) {
-                    int lockIdx = state.lockIdCounter[pTileVal]++;
-                    std::string symName =
-                        name + "_lock_" + std::to_string(i);
-                    AIE::LockOp lk = builder.create<AIE::LockOp>(
-                        state.deviceOp.getLoc(), pTileVal, lockIdx,
-                        static_cast<int>(0));
-                    lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                    pA1Locks.push_back(lk);
-                  }
-                  if (!pA1Locks.empty()) {
-                    pProdLock = pA1Locks[0];
-                    pConsLock = pA1Locks[0];
-                  }
-                  info.consumerTileAIE1Locks[pTileVal] = pA1Locks;
-                }
+                if (!isAIE2)
+                  info.consumerTileAIE1Locks[pTileVal] =
+                      std::move(pLocks.aie1Locks);
 
                 info.consumerTileBuffers[pTileVal] = pBufs;
-                info.consumerTileLocks[pTileVal] = {pProdLock, pConsLock};
+                info.consumerTileLocks[pTileVal] = {pLocks.prodLock,
+                                                    pLocks.consLock};
 
                 if (prodDepth > 1) {
                   auto counterTy = mlir::MemRefType::get(
@@ -474,52 +309,17 @@ void allocPhase(ConduitToDMAState &state) {
       }
 
       // Allocate lock(s) on the consumer tile.
-      AIE::LockOp thisProdLock;
-      AIE::LockOp thisConsLock;
-      if (isAIE2) {
-        {
-          int lockIdx = state.lockIdCounter[consTileVal]++;
-          std::string symName = name + bufSuffix + "_prod_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), consTileVal, lockIdx,
-              static_cast<int>(depth));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          thisProdLock = lk;
-          if (consIdx == 0)
-            info.prodLock = lk;
-        }
-        {
-          int lockIdx = state.lockIdCounter[consTileVal]++;
-          std::string symName = name + bufSuffix + "_cons_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), consTileVal, lockIdx, 0);
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          thisConsLock = lk;
-          if (consIdx == 0)
-            info.consLock = lk;
-        }
-      } else {
-        llvm::SmallVector<AIE::LockOp> theseAIE1Locks;
-        for (int64_t i = 0; i < depth; ++i) {
-          int lockIdx = state.lockIdCounter[consTileVal]++;
-          std::string symName =
-              name + bufSuffix + "_lock_" + std::to_string(i);
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), consTileVal, lockIdx, 0);
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          theseAIE1Locks.push_back(lk);
-        }
-        if (!theseAIE1Locks.empty()) {
-          thisProdLock = theseAIE1Locks[0];
-          thisConsLock = theseAIE1Locks[0];
-          if (consIdx == 0) {
-            info.prodLock = theseAIE1Locks[0];
-            info.consLock = theseAIE1Locks[0];
-            info.aie1Locks = theseAIE1Locks;
-          }
-        }
-        info.consumerTileAIE1Locks[consTileVal] = theseAIE1Locks;
+      auto consLocks = state.allocateLockPair(consTileVal, consPrefix, depth);
+      AIE::LockOp thisProdLock = consLocks.prodLock;
+      AIE::LockOp thisConsLock = consLocks.consLock;
+      if (consIdx == 0) {
+        info.prodLock = consLocks.prodLock;
+        info.consLock = consLocks.consLock;
+        if (!isAIE2)
+          info.aie1Locks = consLocks.aie1Locks;
       }
+      if (!isAIE2)
+        info.consumerTileAIE1Locks[consTileVal] = consLocks.aie1Locks;
 
       info.consumerTileLocks[consTileVal] = {thisProdLock, thisConsLock};
       info.consumerTileBuffers[consTileVal] = consBuffers;
@@ -595,59 +395,15 @@ void allocPhase(ConduitToDMAState &state) {
     else
       builder.setInsertionPointToStart(state.deviceBody);
 
-    llvm::SmallVector<AIE::BufferOp> prodBuffers;
-    for (int64_t i = 0; i < prodDepth; ++i) {
-      std::string symName = name + "_buff_" + std::to_string(i);
-      auto buf = builder.create<AIE::BufferOp>(
-          state.deviceOp.getLoc(), bufTy, prodTileVal,
-          mlir::StringAttr::get(ctx, symName),
-          /*address=*/mlir::IntegerAttr{},
-          /*initial_value=*/mlir::ElementsAttr{},
-          /*mem_bank=*/mlir::IntegerAttr{});
-      prodBuffers.push_back(buf);
-    }
+    auto prodBuffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
+    auto prodLocks = state.allocateLockPair(prodTileVal, name, prodDepth);
 
-    AIE::LockOp pProdLock, pConsLock;
-    llvm::SmallVector<AIE::LockOp> pAIE1Locks;
-    if (isAIE2) {
-      {
-        int lockIdx = state.lockIdCounter[prodTileVal]++;
-        std::string symName = name + "_prod_lock_0";
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), prodTileVal, lockIdx,
-            static_cast<int>(prodDepth));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        pProdLock = lk;
-      }
-      {
-        int lockIdx = state.lockIdCounter[prodTileVal]++;
-        std::string symName = name + "_cons_lock_0";
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), prodTileVal, lockIdx,
-            static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        pConsLock = lk;
-      }
-    } else {
-      for (int64_t i = 0; i < prodDepth; ++i) {
-        int lockIdx = state.lockIdCounter[prodTileVal]++;
-        std::string symName = name + "_lock_" + std::to_string(i);
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), prodTileVal, lockIdx,
-            static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        pAIE1Locks.push_back(lk);
-      }
-      if (!pAIE1Locks.empty()) {
-        pProdLock = pAIE1Locks[0];
-        pConsLock = pAIE1Locks[0];
-      }
-    }
-
-    info.consumerTileLocks[prodTileVal] = {pProdLock, pConsLock};
+    info.consumerTileLocks[prodTileVal] = {prodLocks.prodLock,
+                                           prodLocks.consLock};
     info.consumerTileBuffers[prodTileVal] = prodBuffers;
     if (!isAIE2)
-      info.consumerTileAIE1Locks[prodTileVal] = pAIE1Locks;
+      info.consumerTileAIE1Locks[prodTileVal] =
+          std::move(prodLocks.aie1Locks);
 
     if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name)) {
       auto counterTy =
