@@ -151,4 +151,35 @@ def ConduitToDMA : Pass<"conduit-to-dma", "::mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Depth Promotion — conduit-depth-promote
+//===----------------------------------------------------------------------===//
+
+def ConduitDepthPromote : Pass<"conduit-depth-promote", "::mlir::ModuleOp"> {
+  let summary = "Promote eligible depth-1 conduits to depth-2 for compute-DMA overlap";
+  let description = [{
+    Scans all `conduit.create` ops with depth == 1 and promotes eligible ones
+    to depth == 2 (double-buffering), enabling compute-DMA overlap.
+
+    Exclusion criteria (any one disqualifies):
+      1. CSDF / cyclostatic access pattern
+      2. Linked conduit (objectfifo_link source or destination)
+      3. No surrounding loop (no overlap benefit without iteration)
+      4. Passthrough-only (acquire immediately followed by release, no compute)
+      5. Non-uniform acquire/release counts across uses
+      6. Memory budget exceeded on target tile
+      7. AIE1 lock budget exceeded (AIE1 has 16 locks per tile)
+      8. BD budget exceeded (each tile has limited BD slots)
+
+    This pass runs AFTER Pass A or Pass B and BEFORE Pass C.
+  }];
+
+  let constructor = "xilinx::conduit::createConduitDepthPromotePass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES
