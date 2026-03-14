@@ -463,38 +463,6 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   if (failed(checkWindowReleaseLinear(getOperation(), getWindow())))
     return ::mlir::failure();
 
-  // M9-lite Phase 1: same-block acquire-release pairing check.
-  // Warn if no conduit.release uses the window value AND no
-  // conduit.release_async with the same channel name exists in the same block.
-  // Limitation: cross-block patterns produce false-positive warnings;
-  // full analysis requires PostDominatorTree (M9 Phase 2, future work).
-  {
-    mlir::Value window = getWindow();
-    unsigned releaseCount = 0;
-    for (mlir::OpOperand &use : window.getUses()) {
-      if (mlir::isa<Release>(use.getOwner()))
-        ++releaseCount;
-    }
-    if (releaseCount == 0) {
-      llvm::StringRef name = getName();
-      bool foundReleaseAsync = false;
-      if (mlir::Block *block = getOperation()->getBlock()) {
-        for (mlir::Operation &op : *block) {
-          if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(&op)) {
-            if (relAsync.getName() == name) {
-              foundReleaseAsync = true;
-              break;
-            }
-          }
-        }
-      }
-      if (!foundReleaseAsync)
-        emitWarning(
-            "M9: acquire has no matching release or release_async in "
-            "the same block; potential deadlock");
-    }
-  }
-
   return ::mlir::success();
 }
 ::mlir::LogicalResult AcquireAsync::verify() {

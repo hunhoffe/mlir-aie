@@ -263,14 +263,12 @@ func.func @m8a_double_release() {
 // -----
 
 // M8c: !conduit.window<T> is not a token type — rejected by wait_all.
-// (Also triggers M9 warning: acquire has no release in this block.)
 func.func @m8c_wait_all_window_value() {
   conduit.create {name = "unx", capacity = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,
                   depth = 1 : i64}
-  // expected-warning@+1 {{M9: acquire has no matching release or release_async in the same block; potential deadlock}}
   %win = conduit.acquire {name = "unx", count = 1 : i64, port = "Consume"}
              : !conduit.window<memref<1xi32>>
   // expected-error@+1 {{'conduit.wait_all' op operand #0 must be variadic of conduit token type, but got '!conduit.window<memref<1xi32>>'}}
