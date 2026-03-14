@@ -36,9 +36,11 @@
 //   - aie.flow: tile(0,0) DMA:0 → tile(0,2) DMA:0
 //   - aie.mem on tile(0,2) with aie.dma_start(S2MM, 0, ...) and aie.dma_bd
 //
-// Known gap (not yet in Pass C): conduit.put_memref_async / conduit.get_memref_async
-// are not yet lowered to aie.dma_bd on the producer side.  They remain in the
-// func body.  This is a known gap documented in ConduitToDMA.cpp.
+// Note on put_memref_async / get_memref_async: Phase 7 of Pass C erases these
+// ops after their token consumers are gone.  DMA descriptor lowering for these
+// ops (aie.dma_bd on the producer side) is a separate future gap; for now they
+// are erased with no hardware op emitted.  The func body is empty of Conduit
+// ops after Pass C.
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
@@ -55,19 +57,8 @@
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "mychan_cons_cons_lock_0"
 
-// --- conduit.put_memref_async remains in func body (Pass C has not yet lowered it) ---
-// conduit.put_memref_async now has correct attrs from Pass B (num_elems=64, static descriptor).
+// --- func body: put_memref_async and get_memref_async are erased by Phase 7 ---
 // CHECK:     func.func @test(
-// CHECK:       conduit.put_memref_async
-// CHECK-SAME:   name = "mychan"
-// CHECK-SAME:   num_elems = 64
-// CHECK-SAME:   offsets = array<i64: 0>
-// CHECK-SAME:   sizes = array<i64: 64>
-// CHECK-SAME:   strides = array<i64: 1>
-// CHECK-SAME:   : !conduit.dma.token
-// CHECK:       conduit.get_memref_async
-// CHECK-SAME:   name = "mychan"
-// CHECK-SAME:   num_elems = 64
 
 // --- Shim-side locks ---
 // CHECK:     aie.lock(%{{.*}}tile_0_0
@@ -89,9 +80,13 @@
 // CHECK:       aie.end
 // CHECK:     }
 
-// --- No residual air.channel or conduit.create ops ---
+// --- No residual air.channel or conduit.* ops ---
 // CHECK-NOT: air.channel
 // CHECK-NOT: conduit.create
+// CHECK-NOT: conduit.put_memref_async
+// CHECK-NOT: conduit.get_memref_async
+// CHECK-NOT: conduit.put_memref
+// CHECK-NOT: conduit.get_memref
 
 module {
   aie.device(npu1_1col) {
