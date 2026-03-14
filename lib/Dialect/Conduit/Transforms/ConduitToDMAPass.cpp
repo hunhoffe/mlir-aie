@@ -17,7 +17,7 @@
 //   ConduitToDMACollect.cpp  — Phase 1-2.5: conduitMap, tile cache, depth
 //   ConduitToDMAAlloc.cpp    — Phase 3: buffer + lock allocation
 //   ConduitToDMARoute.cpp    — Phase 4-4.5a: shim DMA, flow emission
-//   ConduitToDMALink.cpp     — Phase 5-5.5: objectfifo_link + BD chains
+//   ConduitToDMALink.cpp     — Phase 5-5.5: link + BD chains
 //   ConduitToDMALower.cpp    — Phase 6-8: acquire/release/async + erasure
 //
 //===----------------------------------------------------------------------===//
@@ -63,7 +63,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     routePhase(state);
     if (state.passFailed) { signalPassFailure(); return; }
 
-    // Phase 5-5.5: ObjectFifoLink lowering, aie.mem BD chains, fused chains.
+    // Phase 5-5.5: Link lowering, aie.mem BD chains, fused chains.
     linkPhase(state);
     if (state.passFailed) { signalPassFailure(); return; }
 

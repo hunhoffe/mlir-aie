@@ -30,7 +30,7 @@ void allocPhase(ConduitToDMAState &state) {
 
   mlir::OpBuilder &builder = *state.builder;
   mlir::MLIRContext *ctx = state.ctx;
-  const bool isAIE2 = state.isAIE2;
+  const bool isAIE2 = state.isAIE2Plus();
   const AIE::AIETargetModel &targetModel = *state.targetModel;
 
   for (auto &[name, info] : state.conduitMap) {

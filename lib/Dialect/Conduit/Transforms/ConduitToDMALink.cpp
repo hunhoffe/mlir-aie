@@ -8,7 +8,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Phase 5: Lower conduit.objectfifo_link → MemTile DMA BD chain.
+// Phase 5: Lower conduit.link → MemTile DMA BD chain.
 //   Distribute (1 src → N dsts): S2MM ingests full buffer, N MM2S channels.
 //   Join (N srcs → 1 dst): N S2MM channels, one MM2S output.
 //
@@ -30,24 +30,24 @@ void linkPhase(ConduitToDMAState &state) {
 
   mlir::OpBuilder &builder = *state.builder;
   mlir::MLIRContext *ctx = state.ctx;
-  const bool isAIE2 = state.isAIE2;
+  const bool isAIE2 = state.isAIE2Plus();
   const AIE::AIETargetModel &targetModel = *state.targetModel;
   const AIE::LockAction acqAction = state.acqAction;
 
   // Collect ALL link source names for Phase 5.5 skip logic.
-  state.module.walk([&](ObjectFifoLink linkOp) {
+  state.module.walk([&](Link linkOp) {
     for (auto s : linkOp.getSrcs())
       state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
   });
 
   // -----------------------------------------------------------------------
-  // Phase 5: Lower conduit.objectfifo_link.
+  // Phase 5: Lower conduit.link.
   // -----------------------------------------------------------------------
 
   // Collect link ops to erase after processing (avoid erase-inside-walk).
-  llvm::SmallVector<ObjectFifoLink> linkOpsToErase;
+  llvm::SmallVector<Link> linkOpsToErase;
 
-  state.module.walk([&](ObjectFifoLink linkOp) {
+  state.module.walk([&](Link linkOp) {
     builder.setInsertionPoint(state.deviceBody->getTerminator());
     mlir::Location loc = linkOp.getLoc();
 
@@ -70,7 +70,7 @@ void linkPhase(ConduitToDMAState &state) {
         targetModel.isMemTile(memtile.getCol(), memtile.getRow());
     if (!relayIsMemTile) {
       linkOp.emitError("conduit-to-dma: relay tile '" + memtileStr.str() +
-                       "' is not a MemTile — conduit.objectfifo_link requires "
+                       "' is not a MemTile — conduit.link requires "
                        "a MemTile relay for DMA forwarding");
       state.passFailed = true;
       return;

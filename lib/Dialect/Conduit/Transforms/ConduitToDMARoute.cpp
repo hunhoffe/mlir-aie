@@ -29,7 +29,7 @@ void routePhase(ConduitToDMAState &state) {
 
   mlir::OpBuilder &builder = *state.builder;
   mlir::MLIRContext *ctx = state.ctx;
-  const bool isAIE2 = state.isAIE2;
+  const bool isAIE2 = state.isAIE2Plus();
 
   // -----------------------------------------------------------------------
   // Phase 4: Shim endpoints.

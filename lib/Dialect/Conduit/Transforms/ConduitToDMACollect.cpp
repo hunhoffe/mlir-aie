@@ -9,7 +9,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Phase 1: Walk conduit.create ops and populate conduitMap with ConduitInfo.
-// Phase 2: Find the aie.device op, build tile cache, determine isAIE2.
+// Phase 2: Find the aie.device op, build tile cache, determine aieArch.
 // Phase 2.5: Compute effectiveDepth for producer-side buffer optimization.
 // Also: collect link source names, consumer acquire names.
 //
@@ -138,9 +138,8 @@ void collectPhase(ConduitToDMAState &state) {
   }
 
   state.targetModel = &AIE::getTargetModel(state.deviceOp);
-  state.isAIE2 =
-      (state.targetModel->getTargetArch() != AIE::AIEArch::AIE1);
-  state.acqAction = state.isAIE2
+  state.aieArch = state.targetModel->getTargetArch();
+  state.acqAction = state.isAIE2Plus()
                         ? AIE::LockAction::AcquireGreaterEqual
                         : AIE::LockAction::Acquire;
 
@@ -176,7 +175,7 @@ void collectPhase(ConduitToDMAState &state) {
   // Join sources: Phase 5 uses the existing per-source lock pairs from
   // Phase 3. Tracked separately for Phase 3 producer-tile reallocation.
   // -----------------------------------------------------------------------
-  module.walk([&](ObjectFifoLink linkOp) {
+  module.walk([&](Link linkOp) {
     if (linkOp.getMode() == "distribute") {
       for (auto s : linkOp.getSrcs())
         state.linkSrcNamesEarly.insert(

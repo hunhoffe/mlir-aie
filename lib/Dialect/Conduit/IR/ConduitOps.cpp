@@ -13,7 +13,7 @@
 //
 // Custom verifiers:
 //   SubviewAccess::verify() — M2: index bounds against conduit depth
-//   ObjectFifoLink::verify() — M3: mode structural invariants + offset counts
+//   Link::verify() — M3: mode structural invariants + offset counts
 //   Create::verify() — M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
 //   Acquire::verify() / WaitWindow::verify() — M8a: window value release linearity
 //                                              M9: same-block acquire-release pairing (llvm::errs)
@@ -141,7 +141,7 @@ void ConduitDialect::initialize() {
 // Conduit ops — custom verifiers
 //===----------------------------------------------------------------------===//
 
-::mlir::LogicalResult ObjectFifoLink::verify() {
+::mlir::LogicalResult Link::verify() {
   auto modeStr = getMode();
   auto srcs = getSrcs();
   auto dsts = getDsts();
@@ -149,7 +149,7 @@ void ConduitDialect::initialize() {
 
   // M3: mode validation — enforce structural invariants per mode.
   if (modeStr == "cascade")
-    return emitError("conduit.objectfifo_link: cascade mode not yet supported");
+    return emitError("conduit.link: cascade mode not yet supported");
   if (modeStr == "distribute") {
     if (srcs.size() != 1)
       return emitOpError("distribute mode requires exactly 1 src, got ")

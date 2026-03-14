@@ -33,10 +33,10 @@ func.func @window_ops() {
 
 // CHECK-LABEL: func.func @link_op
 func.func @link_op() {
-  // CHECK: conduit.objectfifo_link
+  // CHECK: conduit.link
   // CHECK-SAME: memtile = "tile(0,1)"
   // CHECK-SAME: mode = "distribute"
-  conduit.objectfifo_link {srcs = ["in"], dsts = ["out0", "out1"],
+  conduit.link {srcs = ["in"], dsts = ["out0", "out1"],
                            mode = "distribute", memtile = "tile(0,1)",
                            offsets = array<i64: 0, 1024>}
   return

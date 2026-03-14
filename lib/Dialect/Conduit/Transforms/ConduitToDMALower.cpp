@@ -37,7 +37,7 @@ void lowerPhase(ConduitToDMAState &state) {
   mlir::OpBuilder &builder = *state.builder;
   mlir::MLIRContext *ctx = state.ctx;
   mlir::ModuleOp module = state.module;
-  const bool isAIE2 = state.isAIE2;
+  const bool isAIE2 = state.isAIE2Plus();
   const AIE::LockAction acqAction = state.acqAction;
 
   // -----------------------------------------------------------------------

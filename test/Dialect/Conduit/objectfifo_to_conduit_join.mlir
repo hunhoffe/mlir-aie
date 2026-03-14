@@ -14,7 +14,7 @@
 // CHECK-SAME:   name = "link3"
 // CHECK:     conduit.create
 // CHECK-SAME:   name = "link4"
-// CHECK:     conduit.objectfifo_link
+// CHECK:     conduit.link
 // CHECK-SAME:   dsts = ["link4"]
 // CHECK-SAME:   memtile = "tile(2,1)"
 // CHECK-SAME:   mode = "join"

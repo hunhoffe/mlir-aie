@@ -2,8 +2,8 @@
 
 // distribute mode: offsets count must equal dsts count
 func.func @bad_distribute_offsets() {
-  // expected-error@+1 {{'conduit.objectfifo_link' op distribute mode: offsets count (1) must equal dsts count (2)}}
-  conduit.objectfifo_link {srcs = ["in"], dsts = ["out0", "out1"],
+  // expected-error@+1 {{'conduit.link' op distribute mode: offsets count (1) must equal dsts count (2)}}
+  conduit.link {srcs = ["in"], dsts = ["out0", "out1"],
                            mode = "distribute", memtile = "tile(0,1)",
                            offsets = array<i64: 0>}
   return
@@ -13,8 +13,8 @@ func.func @bad_distribute_offsets() {
 
 // join mode: offsets count must equal srcs count
 func.func @bad_join_offsets() {
-  // expected-error@+1 {{'conduit.objectfifo_link' op join mode: offsets count (1) must equal srcs count (2)}}
-  conduit.objectfifo_link {srcs = ["in0", "in1"], dsts = ["out"],
+  // expected-error@+1 {{'conduit.link' op join mode: offsets count (1) must equal srcs count (2)}}
+  conduit.link {srcs = ["in0", "in1"], dsts = ["out"],
                            mode = "join", memtile = "tile(0,1)",
                            offsets = array<i64: 0>}
   return
@@ -63,8 +63,8 @@ func.func @bad_subview_cross_block() {
 
 // M3: distribute mode requires exactly 1 src
 func.func @bad_distribute_multiple_srcs() {
-  // expected-error@+1 {{'conduit.objectfifo_link' op distribute mode requires exactly 1 src, got 2}}
-  conduit.objectfifo_link {srcs = ["in0", "in1"], dsts = ["out0", "out1"],
+  // expected-error@+1 {{'conduit.link' op distribute mode requires exactly 1 src, got 2}}
+  conduit.link {srcs = ["in0", "in1"], dsts = ["out0", "out1"],
                            mode = "distribute", memtile = "tile(0,1)"}
   return
 }
@@ -73,8 +73,8 @@ func.func @bad_distribute_multiple_srcs() {
 
 // M3: join mode requires exactly 1 dst
 func.func @bad_join_multiple_dsts() {
-  // expected-error@+1 {{'conduit.objectfifo_link' op join mode requires exactly 1 dst, got 2}}
-  conduit.objectfifo_link {srcs = ["in0", "in1"], dsts = ["out0", "out1"],
+  // expected-error@+1 {{'conduit.link' op join mode requires exactly 1 dst, got 2}}
+  conduit.link {srcs = ["in0", "in1"], dsts = ["out0", "out1"],
                            mode = "join", memtile = "tile(0,1)"}
   return
 }
@@ -83,8 +83,8 @@ func.func @bad_join_multiple_dsts() {
 
 // M3: unknown mode
 func.func @bad_unknown_mode() {
-  // expected-error@+1 {{'conduit.objectfifo_link' op unknown mode 'relay'; expected distribute, join, or forward}}
-  conduit.objectfifo_link {srcs = ["in"], dsts = ["out"],
+  // expected-error@+1 {{'conduit.link' op unknown mode 'relay'; expected distribute, join, or forward}}
+  conduit.link {srcs = ["in"], dsts = ["out"],
                            mode = "relay", memtile = "tile(0,1)"}
   return
 }
@@ -199,8 +199,8 @@ func.func @bad_wait_with_dma_token() {
 
 // forward mode: requires exactly 1 src and 1 dst; 2 srcs must fail.
 func.func @bad_forward_two_srcs() {
-  // expected-error@+1 {{'conduit.objectfifo_link' op forward mode requires exactly 1 src and 1 dst}}
-  conduit.objectfifo_link {srcs = ["in0", "in1"], dsts = ["out"],
+  // expected-error@+1 {{'conduit.link' op forward mode requires exactly 1 src and 1 dst}}
+  conduit.link {srcs = ["in0", "in1"], dsts = ["out"],
                            mode = "forward", memtile = "tile(0,1)"}
   return
 }
@@ -209,8 +209,8 @@ func.func @bad_forward_two_srcs() {
 
 // forward mode: requires exactly 1 src and 1 dst; 2 dsts must fail.
 func.func @bad_forward_two_dsts() {
-  // expected-error@+1 {{'conduit.objectfifo_link' op forward mode requires exactly 1 src and 1 dst}}
-  conduit.objectfifo_link {srcs = ["in"], dsts = ["out0", "out1"],
+  // expected-error@+1 {{'conduit.link' op forward mode requires exactly 1 src and 1 dst}}
+  conduit.link {srcs = ["in"], dsts = ["out0", "out1"],
                            mode = "forward", memtile = "tile(0,1)"}
   return
 }
