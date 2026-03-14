@@ -30,9 +30,9 @@ func.func @ok_sync_release() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  %win = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -53,7 +53,7 @@ func.func @ok_async_acquire() {
              : !conduit.window.token
   %win = conduit.wait_window %tok for "c"
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -70,11 +70,11 @@ func.func @ok_release_async() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  %win = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // release_async references the channel by name, not by SSA window value.
   // M11 accepts this as a valid release path.
-  conduit.release_async {name = "c", count = 1 : i64, port = "Consume"}
+  conduit.release_async {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window.token
   return
 }
@@ -93,9 +93,9 @@ func.func @ok_partial_release() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<24xi32>,
                   depth = 3 : i64}
-  %win = conduit.acquire {name = "c", count = 3 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "c", count = 3 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<24xi32>>
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<24xi32>>
   return
 }
@@ -113,7 +113,7 @@ func.func @fail_no_release() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // expected-error@+1 {{M11: window lock grant is never released}}
-  %win = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   return
 }
@@ -151,13 +151,13 @@ func.func @fail_second_acquire_leaked() {
                   element_type = memref<8xi32>,
                   depth = 2 : i64}
   // First acquire: correctly released.
-  %w1 = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %w1 = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
             : !conduit.window<memref<8xi32>>
-  conduit.release %w1 {count = 1 : i64, port = "Consume"}
+  conduit.release %w1 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   // Second acquire: NOT released — leaked lock grant.
   // expected-error@+1 {{M11: window lock grant is never released}}
-  %w2 = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %w2 = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
             : !conduit.window<memref<8xi32>>
   return
 }
@@ -176,10 +176,10 @@ func.func @fail_wrong_channel_release_async() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // expected-error@+1 {{M11: window lock grant is never released}}
-  %win = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // release_async names channel "other", not "c" — M11 on "c" still fires.
-  conduit.release_async {name = "other", count = 1 : i64, port = "Consume"}
+  conduit.release_async {name = "other", count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window.token
   return
 }

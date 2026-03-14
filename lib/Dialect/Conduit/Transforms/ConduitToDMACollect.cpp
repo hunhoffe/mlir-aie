@@ -191,7 +191,7 @@ void collectPhase(ConduitToDMAState &state) {
   // Conduit names with at least one Consume-port acquire op (for rotation
   // counter allocation in Phase 3).
   module.walk([&](Acquire acqOp) {
-    if (acqOp.getPort() == "Consume")
+    if (acqOp.getPort() == Port::Consume)
       state.conduitNamesWithConsumerAcquire.insert(acqOp.getName());
   });
   module.walk([&](AcquireAsync acqOp) {
@@ -209,7 +209,7 @@ void collectPhase(ConduitToDMAState &state) {
   {
     llvm::DenseMap<llvm::StringRef, int64_t> maxProdAcquire;
     module.walk([&](Acquire acqOp) {
-      if (acqOp.getPort() == "Produce") {
+      if (acqOp.getPort() == Port::Produce) {
         int64_t count = static_cast<int64_t>(acqOp.getCount());
         auto &cur = maxProdAcquire[acqOp.getName()];
         if (count > cur)

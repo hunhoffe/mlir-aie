@@ -15,6 +15,8 @@ add_mlir_dialect_library(Conduit
   MLIRConduitDialectIncGen
   MLIRConduitIncGen
   MLIRConduitTypesIncGen
+  MLIRConduitEnumsIncGen
+  MLIRConduitAttrDefsIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR

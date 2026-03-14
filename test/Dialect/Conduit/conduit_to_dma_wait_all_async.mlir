@@ -97,11 +97,11 @@ module @wait_all_async_erasure {
         //
         // acquire emits use_lock(consLock, AcquireGreaterEqual, 1).
         %win1 = conduit.acquire {name = "fifo_waa", count = 1 : i64,
-                                 port = "Consume"}
+                                 port = #conduit.port<Consume>}
                     : !conduit.window<memref<8xi32>>
 
         // release_async (Step 8d) emits use_lock(prodLock, Release, 1).
-        %rel_tok1 = conduit.release_async {name = "fifo_waa", count = 1 : i64, port = "Consume"}
+        %rel_tok1 = conduit.release_async {name = "fifo_waa", count = 1 : i64, port = #conduit.port<Consume>}
                         : !conduit.window.token
 
         // wait_all_async: fan-in of a single window token.
@@ -121,11 +121,11 @@ module @wait_all_async_erasure {
         //
         // acquire emits use_lock(consLock, AcquireGreaterEqual, 1).
         %win2 = conduit.acquire {name = "fifo_waa", count = 1 : i64,
-                                 port = "Consume"}
+                                 port = #conduit.port<Consume>}
                     : !conduit.window<memref<8xi32>>
 
         // release_async (Step 8d) emits use_lock(prodLock, Release, 1).
-        %rel_tok2 = conduit.release_async {name = "fifo_waa", count = 1 : i64, port = "Consume"}
+        %rel_tok2 = conduit.release_async {name = "fifo_waa", count = 1 : i64, port = #conduit.port<Consume>}
                         : !conduit.window.token
 
         // First wait_all_async: erased in Phase 7 walk.

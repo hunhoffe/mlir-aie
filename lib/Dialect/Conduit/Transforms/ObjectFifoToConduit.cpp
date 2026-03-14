@@ -657,7 +657,7 @@ struct ObjectFifoToConduitPass
           builder.create<Release>(
               loc, winVal,
               mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-              mlir::StringAttr::get(ctx, portStr));
+              PortAttr::get(ctx, port));
 
           releasesToErase.push_back(op);
         }

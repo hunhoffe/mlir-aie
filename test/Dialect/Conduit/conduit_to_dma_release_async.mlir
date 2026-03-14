@@ -79,12 +79,12 @@ module @release_async_lowering {
       scf.for %arg0 = %c0 to %c4 step %c1 {
         // Blocking acquire: emits use_lock(consLock, AcquireGreaterEqual, 1).
         %win = conduit.acquire {name = "fifo_rel", count = 1 : i64,
-                                port = "Consume"}
+                                port = #conduit.port<Consume>}
                    : !conduit.window<memref<8xi32>>
 
         // release_async: non-blocking release.  Pass C must emit
         // use_lock(prodLock, Release, 1) at this point (Step 8d fix).
-        %rel_tok = conduit.release_async {name = "fifo_rel", count = 1 : i64, port = "Consume"}
+        %rel_tok = conduit.release_async {name = "fifo_rel", count = 1 : i64, port = #conduit.port<Consume>}
                        : !conduit.window.token
 
         // wait_all_async: fan-in of the release token.  No hardware op —

@@ -120,6 +120,7 @@ include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/BuiltinTypes.td"
+include "mlir/IR/EnumAttr.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 // ---------------------------------------------------------------------------
@@ -158,7 +159,8 @@ def Conduit_Dialect : Dialect {
   }];
   // Enable generated type printer/parser for !conduit.async.token.
   let useDefaultTypePrinterParser = 1;
-  let useDefaultAttributePrinterParser = 0;
+  // Enable generated attribute printer/parser for #conduit.port<...>.
+  let useDefaultAttributePrinterParser = 1;
 }
 
 // Base class for all Conduit ops.
@@ -247,6 +249,27 @@ def Conduit_AnyTokenType : AnyTypeOf<[Conduit_DMATokenType,
                                        Conduit_WindowTokenType,
                                        Conduit_AsyncTokenType],
                                       "conduit token type">;
+
+// ---------------------------------------------------------------------------
+// Port enum — #conduit.port<Produce> / #conduit.port<Consume>
+//
+// Type-safe replacement for the old StrAttr port = "Produce"/"Consume".
+// Eliminates an entire class of port-typo bugs; gives compile-time
+// exhaustiveness on switch.
+// ---------------------------------------------------------------------------
+
+def Conduit_PortProduce : I32EnumAttrCase<"Produce", 0, "Produce">;
+def Conduit_PortConsume : I32EnumAttrCase<"Consume", 1, "Consume">;
+def Conduit_Port : I32EnumAttr<"Port", "conduit port direction",
+    [Conduit_PortProduce, Conduit_PortConsume]> {
+  let cppNamespace = "::xilinx::conduit";
+  // Suppress I32EnumAttr-generated PortAttr (IntegerAttr subclass) —
+  // the EnumAttr<> below generates the real PortAttr as a proper dialect attr.
+  let genSpecializedAttr = 0;
+}
+def Conduit_PortAttr : EnumAttr<Conduit_Dialect, Conduit_Port, "port"> {
+  let assemblyFormat = "`<` $value `>`";
+}
 
 // ---------------------------------------------------------------------------
 // Window type — !conduit.window<T>
@@ -492,7 +515,7 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
     (Tier 3, shim DMA fill) and the consumer endpoint uses conduit.acquire
     (Tier 2, compute core window) is valid and common.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count, StrAttr:$port);
+  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "attr-dict `:` type($window)";
   let hasVerifier = 1;
@@ -589,7 +612,7 @@ def Conduit_Release : Conduit_Op<"release"> {
 
     Maps to: aie.objectfifo.release (Pass A source); aie.use_lock (Pass C output).
   }];
-  let arguments = (ins Conduit_WindowType:$window, I64Attr:$count, StrAttr:$port);
+  let arguments = (ins Conduit_WindowType:$window, I64Attr:$count, Conduit_PortAttr:$port);
   let assemblyFormat = "$window attr-dict `:` type($window)";
 }
 
@@ -609,7 +632,7 @@ def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
       port="Produce": aie.use_lock(consLock, Release, count) -- signal data ready
       The token signals when the release is complete.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count, StrAttr:$port);
+  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
   let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
   let hasVerifier = 1;
