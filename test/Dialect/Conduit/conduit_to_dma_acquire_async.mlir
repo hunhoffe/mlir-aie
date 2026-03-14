@@ -90,12 +90,12 @@ module @async_window_path {
         // Async path: acquire_async issues the lock request (no hardware op
         // emitted here — deferred to wait_window).
         %tok = conduit.acquire_async {name = "fifo_async", count = 1 : i64}
-                   : !conduit.async.token
+                   : !conduit.window.token
 
         // wait_window blocks until the lock is granted and produces the window.
         // Pass C emits use_lock(consLock, AcquireGreaterEqual, 1) here.
         %win = conduit.wait_window %tok for "fifo_async"
-                   : !conduit.async.token -> !conduit.window<memref<8xi32>>
+                   : !conduit.window.token -> !conduit.window<memref<8xi32>>
 
         // subview_access resolves to the allocated aie.buffer.
         // Fix NF3: this used to crash because the defining op was WaitWindow,

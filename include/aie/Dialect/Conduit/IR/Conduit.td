@@ -166,26 +166,74 @@ class Conduit_Op<string mnemonic, list<Trait> traits = []>
     : Op<Conduit_Dialect, mnemonic, traits>;
 
 // ---------------------------------------------------------------------------
-// Async token type — !conduit.async.token
+// Async token types — !conduit.dma.token and !conduit.window.token
+//
+// Two separate types (simpler and more idiomatic than a parameterized type):
+//   !conduit.dma.token    — produced by put_memref_async / get_memref_async /
+//                           wait_all_async.  Represents a pending DMA transfer.
+//   !conduit.window.token — produced by acquire_async / release_async.
+//                           Represents pending permission to access a buffer
+//                           window (a lock grant in flight).
+//
+// Op assignment:
+//   conduit.put_memref_async / get_memref_async → !conduit.dma.token
+//   conduit.acquire_async / release_async        → !conduit.window.token
+//   conduit.wait                                 → accepts !conduit.dma.token
+//   conduit.wait_window                          → accepts !conduit.window.token
+//   conduit.wait_all / wait_all_async            → variadic AnyType (mixed)
+//   conduit.wait_all_async result                → !conduit.dma.token
+//
+// The cross-tier pattern (hardware satisfies DMA fill and lock grant in
+// parallel) uses conduit.wait_all with a mixed list:
+//   %d = conduit.put_memref_async ... : !conduit.dma.token
+//   %w = conduit.acquire_async    ... : !conduit.window.token
+//   conduit.wait_all %d, %w           // AnyType variadic — accepts both
 // ---------------------------------------------------------------------------
 
-def Conduit_AsyncTokenType : TypeDef<Conduit_Dialect, "AsyncToken"> {
-  let mnemonic = "async.token";
-  let summary = "Conduit async operation completion token";
+def Conduit_DMATokenType : TypeDef<Conduit_Dialect, "DMAToken"> {
+  let mnemonic = "dma.token";
+  let summary = "Completion token for an asynchronous DMA transfer";
   let description = [{
     An opaque handle representing the in-flight completion of an asynchronous
-    Conduit operation.  Produced by: conduit.acquire_async, conduit.release_async,
-    conduit.put_memref_async, conduit.get_memref_async, or conduit.wait_all_async.
-    Consumed by: conduit.wait, conduit.wait_all, conduit.wait_all_async.
-
-    The key semantic: a !conduit.async.token from conduit.acquire_async IS
-    pending permission to access a buffer window; a !conduit.async.token from
-    conduit.put_memref_async IS a pending DMA transfer.  conduit.wait_all over
-    both tokens lets the hardware satisfy them in parallel.
+    DMA transfer.  Produced by conduit.put_memref_async, conduit.get_memref_async,
+    and conduit.wait_all_async.  Consumed by conduit.wait (blocking) or passed
+    to conduit.wait_all / conduit.wait_all_async (fan-in).
 
     Maps to:
-    - mlir-air  : !air.async.token
-    - mlir-aie  : lock acquire/release pair (no explicit token type in AIE)
+    - mlir-air: !air.async.token (DMA variant)
+    - mlir-aie: DMA BD completion; no explicit token type in AIE
+  }];
+  let parameters = (ins);
+  let assemblyFormat = "";
+}
+
+def Conduit_WindowTokenType : TypeDef<Conduit_Dialect, "WindowToken"> {
+  let mnemonic = "window.token";
+  let summary = "Completion token for an asynchronous buffer-window acquisition";
+  let description = [{
+    An opaque handle representing the in-flight completion of a buffer-window
+    lock request.  Produced by conduit.acquire_async and conduit.release_async.
+    Consumed by conduit.wait_window (which resolves the token into a
+    !conduit.window<T> value).  May also be passed to conduit.wait_all or
+    conduit.wait_all_async (mixed variadic fan-in with DMA tokens).
+
+    Maps to:
+    - mlir-aie: lock acquire/release pair; no explicit token type in AIE
+    - No direct AIR equivalent; AIR uses channel.put/get async for the DMA path
+  }];
+  let parameters = (ins);
+  let assemblyFormat = "";
+}
+
+// Backward-compatibility alias kept for use in doc-only comments and
+// existing tooling.  All ops now use the split types above.
+def Conduit_AsyncTokenType : TypeDef<Conduit_Dialect, "AsyncToken"> {
+  let mnemonic = "async.token";
+  let summary = "Deprecated: use !conduit.dma.token or !conduit.window.token";
+  let description = [{
+    Retained for backward compatibility in tools that parse older IR dumps.
+    New code should use !conduit.dma.token (for DMA ops) or
+    !conduit.window.token (for acquire/release async ops).
   }];
   let parameters = (ins);
   let assemblyFormat = "";
@@ -247,7 +295,36 @@ def Conduit_Create : Conduit_Op<"create"> {
     - element_type    : TypeAttr — actual element memref type (e.g. memref<10xi32>)
                         Pass C uses this for aie.buffer allocation; never defaults to i32.
     - depth           : I64Attr — double-buffering depth
-    - link_mode       : optional StringAttr "distribute" or "join"
+    - link_mode       : optional StringAttr "distribute", "join", or "forward"
+    - routing_mode    : optional StringAttr "circuit" (default) or "packet".
+                        When "packet", Pass C emits aie.packet_flow instead of
+                        aie.flow for the circuit-switched routing of this conduit.
+                        Packet-switched flows carry a packet ID and allow
+                        hardware-level switching based on packet headers.
+    - producer_rates  : optional DenseI64Array — CSDF producer token-count per
+                        phase.  P = (p0, p1, ..., p_{q-1}), phase period q=len(P).
+                        When present, consumer_rates must also be present and the
+                        Lee-Messerschmitt CSDF balance equation must hold:
+                          sum(P) * len(C) == sum(C) * len(P)
+                        This is a NECESSARY condition for a periodic schedule
+                        (it guarantees equal average production and consumption
+                        rates).  The SUFFICIENT condition (deadlock freedom: buffer
+                        never underflows or overflows during one hyper-period) is
+                        also statically computable from these rates + the capacity
+                        and depth attributes via hyper-period simulation — see TODO
+                        M7 in the work queue.
+    - consumer_rates  : optional DenseI64Array — CSDF consumer token-count per
+                        phase.  C = (c0, c1, ..., c_{r-1}), phase period r=len(C).
+                        When present, producer_rates must also be present.  The
+                        verifier enforces the CSDF balance equation:
+                          sum(producer_rates) * len(consumer_rates)
+                            == sum(consumer_rates) * len(producer_rates)
+                        Note: the weaker condition sum(P)==sum(C) only handles
+                        equal-period actors (q==r) and is NOT sufficient in general.
+                        Legacy note: access_pattern is a backward-compatible alias
+                        for per-phase consumer window sizes and does not carry an
+                        explicit producer rate.  New code should use producer_rates
+                        + consumer_rates for full CSDF semantics.
 
     Example:
       conduit.create {name = "c1", capacity = 10 : i64,
@@ -271,6 +348,30 @@ def Conduit_Create : Conduit_Op<"create"> {
     rather than the uniform count used in the SDF case.
     When access_pattern is absent the conduit is treated as uniform SDF with
     count = capacity / depth per iteration.
+
+    Full CSDF example with explicit producer and consumer rates:
+      conduit.create {name = "csdf_full", capacity = 6 : i64,
+                      producer_tile = array<i64: 0, 2>,
+                      consumer_tiles = array<i64: 0, 3>,
+                      element_type = memref<i32>,
+                      depth = 6 : i64,
+                      producer_rates = array<i64: 1, 2>,
+                      consumer_rates = array<i64: 1, 2>}
+      // Balance check: sum(P)*len(C) = 3*2 = 6 == sum(C)*len(P) = 3*2 = 6 ✓
+      // (same-period case q=r=2, average rate = 1.5 tokens/firing for both)
+
+    Different-period balanced example (producer bursts 3 then 1; consumer uniform 2):
+      conduit.create {name = "csdf_diff_period", capacity = 4 : i64, ...,
+                      producer_rates = array<i64: 3, 1>,
+                      consumer_rates = array<i64: 2>}
+      // P=[3,1] sum=4 q=2; C=[2] sum=2 r=1
+      // Balance: sum(P)*len(C) = 4*1 = 4 == sum(C)*len(P) = 2*2 = 4 ✓
+      // Average rate: 4/2 = 2 tokens/phase for both actors.
+
+    Sum-equal but CSDF-imbalanced (rejected):
+      // P=[3] sum=3 q=1; C=[1,2] sum=3 r=2
+      // Balance: sum(P)*len(C) = 3*2 = 6 != sum(C)*len(P) = 3*1 = 3 ✗
+      // Producer avg rate = 3/1 = 3; consumer avg rate = 3/2 = 1.5 — mismatch.
   }];
   let arguments = (ins StrAttr:$name,
                        I64Attr:$capacity,
@@ -280,8 +381,12 @@ def Conduit_Create : Conduit_Op<"create"> {
                        OptionalAttr<TypeAttr>:$element_type,
                        OptionalAttr<I64Attr>:$depth,
                        OptionalAttr<StrAttr>:$link_mode,
-                       OptionalAttr<DenseI64ArrayAttr>:$access_pattern);
+                       OptionalAttr<DenseI64ArrayAttr>:$access_pattern,
+                       OptionalAttr<StrAttr>:$routing_mode,
+                       OptionalAttr<DenseI64ArrayAttr>:$producer_rates,
+                       OptionalAttr<DenseI64ArrayAttr>:$consumer_rates);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def Conduit_RegisterExternalBuffers : Conduit_Op<"register_external_buffers"> {
@@ -363,30 +468,26 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
 }
 
 def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
-  let summary = "[Tier 2+3 bridge] non-blocking acquire — returns a token granting access to a buffer window";
+  let summary = "[Tier 2+3 bridge] non-blocking acquire — returns a !conduit.window.token granting access to a buffer window";
   let description = [{
     The bridge op between the buffer-window model (Tier 2) and the async token
     model (Tier 3).
 
     Submits a request to acquire N buffer slots without blocking.  Returns a
-    !conduit.async.token that is complete when the N slots are available and
-    the buffer window is ready to access.  After conduit.wait or conduit.wait_all
-    on this token, conduit.subview_access is valid for this conduit.
+    !conduit.window.token that is complete when the N slots are available and
+    the buffer window is ready to access.  After conduit.wait_window on this
+    token, conduit.subview_access is valid for this conduit.
+
+    NOTE on 'count': the count is the maximum window size (total slots held
+    simultaneously), NOT a per-phase CSDF firing rate.  For CSDF rate
+    information see the producer_rates / consumer_rates attrs on conduit.create.
 
     This op is the key to unifying ObjectFIFO and AIR Channel semantics:
-    - A token from conduit.acquire_async IS pending permission to access a
-      buffer window.
-    - A token from conduit.put_memref_async IS a pending DMA transfer.
-    - conduit.wait_all over both tokens lets the hardware satisfy them in
-      parallel.
-
-    This allows the core to overlap buffer acquisition (lock wait) with DMA
-    submission without software polling.
-
-    Relationship to conduit.acquire (blocking):
-      conduit.acquire {name, count}
-      ≡  %tok = conduit.acquire_async {name, count}
-         conduit.wait %tok
+    - A !conduit.window.token from acquire_async IS pending permission to
+      access a buffer window.
+    - A !conduit.dma.token from put_memref_async IS a pending DMA transfer.
+    - conduit.wait_all over both tokens (AnyType variadic) lets the hardware
+      satisfy them in parallel.
 
     Example — overlap DMA fill with buffer window acquisition:
 
@@ -394,30 +495,25 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
       %dma_tok = conduit.put_memref_async {name = "input",
                      num_elems = 9 : i64,
                      offsets = array<i64: 0, 0>, sizes = array<i64: 3, 3>,
-                     strides = array<i64: 16, 1>} : !conduit.async.token
+                     strides = array<i64: 16, 1>} : !conduit.dma.token
 
       // Non-blocking: request output window (Tier 2 bridge op)
       %acq_tok = conduit.acquire_async {name = "output", count = 1 : i64}
-                     : !conduit.async.token
+                     : !conduit.window.token
 
       // Hardware satisfies both in parallel; software waits for both
       conduit.wait_all %dma_tok, %acq_tok
 
-      // Both conditions met: input buffer filled, output window granted
-      %in  = conduit.subview_access {name = "input",  index = 0 : i64} : memref<3x3xi16>
-      %out = conduit.subview_access {name = "output", index = 0 : i64} : memref<9xi32>
-      // ... compute stencil ...
-      conduit.release {name = "input",  count = 1 : i64}
-      conduit.release {name = "output", count = 1 : i64}
+      // Materialize window handle after the lock grant is satisfied
+      %win = conduit.wait_window %acq_tok for "output"
+                 : !conduit.window.token -> !conduit.window<memref<9xi32>>
 
     Hardware lowering (Pass C):
       aie.use_lock(consLock, AcquireGreaterEqual, count)  // non-blocking poll
-      The token is complete when the lock is granted.  On AIE, both DMA BDs
-      and lock operations run in hardware concurrently; software waits on
-      whichever completes last.
+      The token is complete when the lock is granted.
   }];
   let arguments = (ins StrAttr:$name, I64Attr:$count);
-  let results   = (outs Conduit_AsyncTokenType:$token);
+  let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
 }
 
@@ -463,26 +559,22 @@ def Conduit_Release : Conduit_Op<"release"> {
 }
 
 def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
-  let summary = "[Tier 2+3] non-blocking release — submit return of M buffer slots, return a completion token";
+  let summary = "[Tier 2+3] non-blocking release — submit return of M buffer slots, return a !conduit.window.token";
   let description = [{
     Non-blocking variant of conduit.release.  Submits the release of M buffer
-    slots and returns a token representing the pending release.  Downstream
-    ops that depend on the producer being unblocked can chain on this token.
+    slots and returns a !conduit.window.token representing the pending release.
+    Downstream ops that depend on the producer being unblocked can chain on
+    this token.
 
-    Use case: a pipeline stage that releases its output window and immediately
-    allows the next pipeline stage to begin, without waiting for the release
-    to propagate through the lock hardware.
-
-    Equivalent to: conduit.release (blocking); use the async form when the
-    release must be expressed as an SSA dependency for a subsequent async
-    operation.
+    Returns !conduit.window.token (not !conduit.dma.token) because the release
+    is a lock operation (Tier 2 window model), not a DMA transfer.
 
     Hardware lowering (Pass C):
       aie.use_lock(prodLock, Release, count)
       The token signals when the release is complete.
   }];
   let arguments = (ins StrAttr:$name, I64Attr:$count);
-  let results   = (outs Conduit_AsyncTokenType:$token);
+  let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
 }
 
@@ -535,13 +627,17 @@ def Conduit_ObjectFifoLink : Conduit_Op<"objectfifo_link"> {
     Represents aie.objectfifo.link semantics: hardware-mediated data relay
     through a MemTile with optional byte-offset splits.
 
-    Two modes:
+    Three modes:
     - "distribute": 1 source → N destinations, each starting at a byte offset
     - "join":       N sources (each at a byte offset) → 1 destination
+    - "forward":    exactly 1 source → exactly 1 destination; direct pass-through
+                    relay with no splitting or joining (invariant: srcs.size()==1,
+                    dsts.size()==1)
 
     Invariants (enforced by verifier):
     - distribute mode: when offsets is non-empty, offsets.size() == dsts.size()
     - join mode: when offsets is non-empty, offsets.size() == srcs.size()
+    - forward mode: srcs.size() == 1 and dsts.size() == 1
 
     The 'memtile' attribute is a coordinate hint ("tile(col,row)") indicating
     which MemTile tile performs the relay.  Pass C uses this to locate the
@@ -629,19 +725,19 @@ def Conduit_GetMemref : Conduit_Op<"get_memref"> {
 // ---------------------------------------------------------------------------
 
 def Conduit_PutMemrefAsync : Conduit_Op<"put_memref_async"> {
-  let summary = "[Tier 3] non-blocking N-D DMA send — submit a strided memref DMA transfer, return a completion token";
+  let summary = "[Tier 3] non-blocking N-D DMA send — submit a strided memref DMA transfer, return a !conduit.dma.token";
   let description = [{
     Non-blocking variant of conduit.put_memref.  Submits the DMA BD descriptor
-    and returns immediately with a completion token.
+    and returns immediately with a !conduit.dma.token.
 
-    The returned token may be passed to conduit.wait (to block until complete),
-    to conduit.wait_all (to block alongside other tokens), or to
-    conduit.wait_all_async (to merge into a new token for further pipelining).
+    The returned DMA token may be passed to conduit.wait (blocking), to
+    conduit.wait_all (fan-in alongside window tokens from acquire_async), or
+    to conduit.wait_all_async (merge into a new DMA token for further
+    pipelining).
 
-    Cross-tier note: this token may be combined in conduit.wait_all with a
-    token from conduit.acquire_async (Tier 2).  This is the canonical
-    cross-tier pattern that allows hardware to satisfy a DMA fill and a lock
-    grant in parallel.
+    Cross-tier pattern: mix this DMA token with a !conduit.window.token from
+    conduit.acquire_async in conduit.wait_all (AnyType variadic), so the
+    hardware satisfies the DMA fill and the lock grant in parallel.
 
     Maps to: air.channel.put async [deps] (Pass B source).
   }];
@@ -650,14 +746,14 @@ def Conduit_PutMemrefAsync : Conduit_Op<"put_memref_async"> {
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
                        DenseI64ArrayAttr:$strides);
-  let results   = (outs Conduit_AsyncTokenType:$token);
+  let results   = (outs Conduit_DMATokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
 }
 
 def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
-  let summary = "[Tier 3] non-blocking N-D DMA receive — submit a DMA receive descriptor, return a completion token";
+  let summary = "[Tier 3] non-blocking N-D DMA receive — submit a DMA receive descriptor, return a !conduit.dma.token";
   let description = [{
-    Non-blocking variant of conduit.get_memref.  Returns a completion token
+    Non-blocking variant of conduit.get_memref.  Returns a !conduit.dma.token
     that the caller must wait on before accessing the received data.
 
     Maps to: air.channel.get async [deps] (Pass B source).
@@ -667,7 +763,7 @@ def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
                        DenseI64ArrayAttr:$strides);
-  let results   = (outs Conduit_AsyncTokenType:$token);
+  let results   = (outs Conduit_DMATokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
 }
 
@@ -677,58 +773,50 @@ def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
 // ---------------------------------------------------------------------------
 
 def Conduit_Wait : Conduit_Op<"wait"> {
-  let summary = "blocking wait on a single async token";
+  let summary = "blocking wait on a single !conduit.dma.token";
   let description = [{
-    Blocks the current thread until the operation represented by %token is
-    complete.  Equivalent to conduit.wait_all with a single token.
+    Blocks the current thread until the DMA transfer represented by %token
+    is complete.  Accepts only !conduit.dma.token (DMA transfers from
+    put_memref_async / get_memref_async / wait_all_async).
 
-    Used for DMA tokens (from conduit.put_memref_async / conduit.get_memref_async).
-    For acquire_async tokens, use conduit.wait_window instead — it returns
-    the !conduit.window<T> SSA value needed by conduit.subview_access.
+    For !conduit.window.token from acquire_async, use conduit.wait_window
+    instead — it resolves the lock grant into a !conduit.window<T> SSA value
+    needed by conduit.subview_access.
 
-    Maps to: air.wait_all [%tok] (blocking, no result) on the AIR backend;
-    a lock acquire on the AIE backend.
+    Maps to: air.wait_all [%tok] (blocking, no result) on the AIR backend.
   }];
-  let arguments = (ins Conduit_AsyncTokenType:$token);
+  let arguments = (ins Conduit_DMATokenType:$token);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
 def Conduit_WaitWindow : Conduit_Op<"wait_window"> {
-  let summary = "[Tier 2+3 bridge] blocking wait on an acquire_async token, returning the granted window";
+  let summary = "[Tier 2+3 bridge] blocking wait on a !conduit.window.token, returning the granted !conduit.window<T>";
   let description = [{
-    Blocks the current thread until the acquire_async token is complete
-    (i.e., until the hardware lock grants the buffer window), then returns
-    the !conduit.window<T> SSA value representing that window.
+    Blocks the current thread until the !conduit.window.token (from
+    acquire_async) is complete — i.e., until the hardware lock grants the
+    buffer window — then returns the !conduit.window<T> SSA value.
 
-    This is the 17th op in the Conduit dialect.  It bridges the async token
-    model (Tier 3) and the buffer-window model (Tier 2), completing the
-    Option B async acquire pattern.
-
-    The 'name' attribute identifies the conduit channel.  The result type
-    must be !conduit.window<memref<N x element_type>> for a window of N
-    elements with the given element type.
+    Accepts only !conduit.window.token (NOT !conduit.dma.token).  For DMA
+    tokens use conduit.wait instead.
 
     Full async acquire pattern:
       %tok = conduit.acquire_async {name = "in", count = 1 : i64}
-                 : !conduit.async.token
-      %dma = conduit.put_memref_async {name = "in", ...} : !conduit.async.token
-      conduit.wait_all %tok, %dma   // hardware satisfies both in parallel
+                 : !conduit.window.token
+      %dma = conduit.put_memref_async {name = "in", ...} : !conduit.dma.token
+      conduit.wait_all %tok, %dma   // AnyType variadic — accepts both
       %win = conduit.wait_window %tok for "in"
-                 : !conduit.async.token -> !conduit.window<memref<10xi32>>
+                 : !conduit.window.token -> !conduit.window<memref<10xi32>>
       %buf = conduit.subview_access %win {index = 0 : i64}
                  : !conduit.window<memref<10xi32>> -> memref<10xi32>
-      conduit.release %win : !conduit.window<memref<10xi32>>
-
-    For the simple blocking case, prefer conduit.acquire directly:
-      %win = conduit.acquire {name = "in", count = 1 : i64, port = "Consume"}
+      conduit.release %win {count = 1 : i64, port = "Consume"}
                  : !conduit.window<memref<10xi32>>
 
     Hardware lowering (Pass C):
       The underlying lock acquire was performed by the acquire_async hardware
-      path.  conduit.wait_window itself emits no new hardware ops — it maps
-      the resolved token to the allocated aie.buffer SSA value.
+      path.  conduit.wait_window emits aie.use_lock(consLock, AcquireGreaterEqual)
+      and maps the resolved token to the allocated aie.buffer SSA value.
   }];
-  let arguments = (ins Conduit_AsyncTokenType:$token, StrAttr:$name);
+  let arguments = (ins Conduit_WindowTokenType:$token, StrAttr:$name);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "$token `for` $name attr-dict `:` type($token) `->` type($window)";
 }
@@ -736,45 +824,49 @@ def Conduit_WaitWindow : Conduit_Op<"wait_window"> {
 def Conduit_WaitAll : Conduit_Op<"wait_all"> {
   let summary = "blocking fan-in wait — block until all tokens in the list are complete";
   let description = [{
-    Blocks the current thread until all tokens in %tokens are complete.  All
+    Blocks the current thread until all tokens in the list are complete.  All
     specified async operations (DMA transfers, lock grants, releases) must
     have finished before execution continues.
 
-    Accepts zero or more tokens (variadic).
+    Accepts zero or more tokens (variadic AnyType) so that a mix of
+    !conduit.dma.token (from put/get_memref_async) and !conduit.window.token
+    (from acquire_async / release_async) can be waited on together in a
+    single fan-in.  This is the canonical cross-tier pattern:
 
-    The canonical cross-tier use: conduit.wait_all %dma_tok, %acq_tok blocks
-    until both the DMA fill (Tier 3 token) and the buffer window grant (Tier 2
-    token) are complete, allowing the hardware to satisfy both in parallel.
+      %d = conduit.put_memref_async ... : !conduit.dma.token
+      %w = conduit.acquire_async    ... : !conduit.window.token
+      conduit.wait_all %d, %w   // hardware satisfies both in parallel
 
     Maps to: air.wait_all [%tok0, %tok1, ...] (blocking, no result).
   }];
-  let arguments = (ins Variadic<Conduit_AsyncTokenType>:$tokens);
-  let assemblyFormat = "$tokens attr-dict";
+  let arguments = (ins Variadic<AnyType>:$tokens);
+  let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
 }
 
 def Conduit_WaitAllAsync : Conduit_Op<"wait_all_async"> {
-  let summary = "non-blocking fan-in — merge multiple tokens into a new token, complete when all inputs complete";
+  let summary = "non-blocking fan-in — merge mixed tokens into a new !conduit.dma.token when all inputs complete";
   let description = [{
-    Returns a new !conduit.async.token that is complete when all input tokens
+    Returns a new !conduit.dma.token that is complete when all input tokens
     are complete.  Non-blocking: the returned token represents the pending
     completion of the fan-in.
 
-    Use case: construct a merged dependency token from several parallel
-    operations, then pass the merged token to a subsequent async op.
+    Accepts variadic AnyType inputs (mix of !conduit.dma.token and
+    !conduit.window.token) and returns a !conduit.dma.token representing the
+    merged completion.
 
     Example:
       %t0 = conduit.put_memref_async {name = "a", num_elems = 64 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 64>,
-                 strides = array<i64: 1>} : !conduit.async.token
+                 strides = array<i64: 1>} : !conduit.dma.token
       %t1 = conduit.acquire_async {name = "b", count = 1 : i64}
-                 : !conduit.async.token
+                 : !conduit.window.token
       %merged = conduit.wait_all_async %t0, %t1 :
-          (!conduit.async.token, !conduit.async.token) -> !conduit.async.token
+          (!conduit.dma.token, !conduit.window.token) -> !conduit.dma.token
 
     Maps to: air.wait_all async [...] (Pass B source).
   }];
-  let arguments = (ins Variadic<Conduit_AsyncTokenType>:$tokens);
-  let results   = (outs Conduit_AsyncTokenType:$result);
+  let arguments = (ins Variadic<AnyType>:$tokens);
+  let results   = (outs Conduit_DMATokenType:$result);
   let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 

@@ -25,7 +25,7 @@
 //
 // The pass walks the module in source order and:
 //
-// 1. Collects all conduit.create + conduit.annotate ops to build a map from
+// 1. Collects all conduit.create ops to build a map from
 //    conduit name → FifoInfo (producer tile coords, consumer tile coords,
 //    element type string, depth, capacity).
 //
@@ -54,26 +54,24 @@
 //
 // Implementation status
 // ---------------------
-// This is a structural skeleton implementing the full pass interface and the
-// depth-1 fifo case.  The memtile DMA BD chain generation for link ops is
-// templated on the distribute pattern from depth_one + link_test_distribute.
+// Handles depth-1, depth-2, and depth-3 single-consumer fifos; AIE1 and AIE2
+// device variants; shared-memory (same-tile) optimization; broadcast to N
+// consumer tiles; async acquire/release path; CSDF rate annotation; and
+// packet routing (aie.packet_flow).  The memtile DMA BD chain covers the
+// distribute and join link patterns.
 //
-// Known gaps (to be filled in as validation progresses):
+// Known gaps (open items):
 //   - aie.buffer / aie.lock insertion requires the aie.device TileOp SSA
 //     values; these are looked up by (col,row) from a tile cache populated
 //     during the walk.  If a tile is not declared before the conduit.create,
 //     the pass emits a warning and skips that conduit.
-//   - The BD chain for depth > 1 replicates the buffer allocation N times
-//     but only generates a single-buffer BD loop (depth=1 pattern) for now.
-//     Full depth-N double-buffering BD chains will be added after the depth-1
-//     validation milestone passes FileCheck.
 //   - aie.shim_dma_allocation uses the conduit name + "_shim_alloc" as sym.
-//   - The pass currently generates textual annotations (conduit.annotate)
-//     into the output for any conduit ops it cannot fully lower, so the
-//     output is always a valid (if incomplete) module.
-//   - Multi-consumer (N > 1) link lowering emits only the first destination
-//     for MM2S channels beyond channel 0; remaining destinations are skipped
-//     with a TODO annotation.
+//   - conduit.objectfifo_link with join mode does not yet allocate buffers on
+//     each source tile; only the memtile relay BD chain is emitted.
+//   - conduit.wait_all_async is not yet lowered (the blocking conduit.wait is
+//     lowered correctly).
+//   - conduit.acquire_async on the produce port is not supported; only the
+//     consume port async acquire is lowered.
 //
 //===----------------------------------------------------------------------===//
 
@@ -92,8 +90,8 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -179,11 +177,23 @@ struct ConduitInfo {
   // (which always uses consumer_tile[0]).  Populated from consumerTileLocks[0].
   AIE::LockOp prodLock; // prod lock (init=depth)
   AIE::LockOp consLock; // cons lock (init=0)
+  // AIE1 per-slot locks: one lock per buffer slot (depth-many).
+  // Only populated when !isAIE2.  BD block i uses aie1Locks[i % depth] for
+  // both acquire and release (different value for each direction).
+  // For AIE2, this is empty — use prodLock/consLock instead.
+  llvm::SmallVector<AIE::LockOp> aie1Locks;
+  // Per-consumer-tile AIE1 lock vectors (for multi-consumer broadcast).
+  // Same structure as consumerTileBuffers but for AIE1 per-slot locks.
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<AIE::LockOp>>
+      consumerTileAIE1Locks; // tile → [lock_0, ..., lock_{depth-1}]
   // For depth>1: a memref<1xi32> rotation counter on the consumer tile.
   // The core body loads this counter before each acquire to select the correct
   // ping-pong buffer (buff_{counter % depth}), then increments it after the
   // release.  Mirrors the stateful transform's buffer_0_N pattern.
   AIE::BufferOp rotationBuf;
+  // Routing mode: "circuit" (default) or "packet".
+  // When "packet", Phase 4 emits aie.packet_flow instead of aie.flow.
+  std::string routingMode = "circuit";
   // Legacy string form for the ObjectFifoLink memtile lookup.
   // Populated from producer_tile for shim detection.
   std::string producerTileStr; // "tile(col,row)"
@@ -195,6 +205,10 @@ struct ConduitInfo {
 // ---------------------------------------------------------------------------
 
 struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
+
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::scf::SCFDialect>();
+  }
 
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
@@ -211,7 +225,11 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //   depth           : I64Attr
     // -----------------------------------------------------------------------
 
-    llvm::StringMap<ConduitInfo> conduitMap;
+    // MapVector preserves insertion order (= module walk order = source order),
+    // giving deterministic range-for iteration in Phases 3, 4, and 5.5.
+    // StringMap iteration is hash-order and non-deterministic.
+    // lookup-only find() calls work identically on both containers.
+    llvm::MapVector<llvm::StringRef, ConduitInfo> conduitMap;
 
     module.walk([&](Create op) {
       ConduitInfo info;
@@ -271,6 +289,11 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           info.accessPattern.push_back(v);
       }
 
+      // Extract routing_mode ("circuit" or "packet").
+      // getRoutingMode() returns std::optional<StringRef>.
+      if (auto rm = op.getRoutingMode())
+        info.routingMode = rm->str();
+
       conduitMap[op.getName()] = std::move(info);
     });
 
@@ -296,6 +319,35 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
     // Obtain the target model for adjacency queries (isLegalMemAffinity).
     const AIE::AIETargetModel &targetModel = AIE::getTargetModel(deviceOp);
+
+    // AIE1 (xcvc1902) uses value-based Acquire semantics; AIE2 uses semaphore-
+    // based AcquireGreaterEqual.  Mirror the check in AIEObjectFifoStatefulTransform.
+    const bool isAIE2 =
+        (targetModel.getTargetArch() != AIE::AIEArch::AIE1);
+    const AIE::LockAction acqAction = isAIE2
+                                          ? AIE::LockAction::AcquireGreaterEqual
+                                          : AIE::LockAction::Acquire;
+
+    // AIE1 BD block lock value constants.
+    //
+    // AIE1 uses a SINGLE lock per buffer slot with value-based semantics:
+    //   0 = buffer slot empty (producer can fill / DMA can receive into it)
+    //   1 = buffer slot full  (consumer can drain / DMA can send from it)
+    //
+    // For AIE2, acquire and release always use count=1 (semaphore delta).
+    //
+    // S2MM (receiving into buffer):
+    //   acquire(0)  → wait until slot is empty
+    //   release(1)  → signal slot is now full
+    // MM2S (sending from buffer):
+    //   acquire(1)  → wait until slot is full
+    //   release(0)  → signal slot is now empty
+    //
+    // These are only consulted when !isAIE2.
+    const int32_t aie1S2MMAcqVal = 0; // acquire empty slot before receive
+    const int32_t aie1S2MMRelVal = 1; // release as full after receive
+    const int32_t aie1MM2SAcqVal = 1; // acquire full slot before send
+    const int32_t aie1MM2SRelVal = 0; // release as empty after send
 
     // Build tile cache.
     llvm::DenseMap<std::pair<int64_t, int64_t>, AIE::TileOp> tileCache;
@@ -345,11 +397,20 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //
     // Therefore, only skip Phase 3 lock allocation for distribute sources.
     llvm::StringSet<> linkSrcNamesEarly;
+    // Join source names: conduits that appear as srcs in a join link.
+    // Tracked separately so Phase 3 can allocate their buffers/locks on the
+    // producer compute tile (not the memtile consumer) for correct aie.mem
+    // MM2S generation in Phase 5.5.
+    llvm::StringSet<> linkJoinSrcNames;
     module.walk([&](ObjectFifoLink linkOp) {
-      if (linkOp.getMode() != "distribute")
-        return; // join sources still need Phase 3 locks
-      for (auto s : linkOp.getSrcs())
-        linkSrcNamesEarly.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+      if (linkOp.getMode() == "distribute") {
+        for (auto s : linkOp.getSrcs())
+          linkSrcNamesEarly.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+      } else {
+        // join: record source names for Phase 3 producer-tile reallocation.
+        for (auto s : linkOp.getSrcs())
+          linkJoinSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+      }
     });
 
     // -----------------------------------------------------------------------
@@ -372,6 +433,30 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
     // Per-tile lock ID counter to avoid collisions.
     llvm::DenseMap<mlir::Value, int> lockIdCounter;
+
+    // C2 — LockAnalysis-style pre-population:
+    //
+    // Walk all existing aie.lock ops already present in the device body and
+    // advance lockIdCounter[tile] to max(current, lockID + 1).  This ensures
+    // that locks we emit during Phase 3 start AFTER any locks that were
+    // declared before this pass ran (e.g., by another pass, a user-written
+    // aie.lock, or a prior invocation of --conduit-to-dma on a partial module).
+    //
+    // Only locks that carry an explicit lockID attribute can collide; locks
+    // without an assigned ID are handled later by AIEAssignLockIDs and are
+    // safe to ignore here.
+    //
+    // When no pre-existing locks are present this walk is a no-op and
+    // lockIdCounter remains empty — identical to the old behaviour.
+    deviceOp.walk([&](AIE::LockOp existingLock) {
+      if (!existingLock.getLockID().has_value())
+        return; // no explicit ID — AIEAssignLockIDs will handle it
+      mlir::Value tileVal = existingLock.getTile();
+      int existingId = static_cast<int>(existingLock.getLockID().value());
+      int &counter = lockIdCounter[tileVal];
+      if (existingId + 1 > counter)
+        counter = existingId + 1;
+    });
 
     // Helper: look up a TileOp from (col, row) coordinates.
     auto lookupTileByCoord = [&](int64_t col, int64_t row) -> AIE::TileOp {
@@ -428,26 +513,44 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           info.buffers.push_back(buf);
         }
 
-        // prod_lock (init=depth → free slots for the producer to fill).
-        {
-          int lockIdx = lockIdCounter[prodTileVal]++;
-          std::string symName = name.str() + "_prod_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              deviceOp.getLoc(), prodTileVal, lockIdx,
-              static_cast<int>(depth));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.prodLock = lk;
-        }
-
-        // cons_lock (init=0 → nothing filled yet).
-        {
-          int lockIdx = lockIdCounter[prodTileVal]++;
-          std::string symName = name.str() + "_cons_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              deviceOp.getLoc(), prodTileVal, lockIdx,
-              static_cast<int>(0));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          info.consLock = lk;
+        if (isAIE2) {
+          // AIE2: two semaphore locks — prod_lock (init=depth) and cons_lock (init=0).
+          {
+            int lockIdx = lockIdCounter[prodTileVal]++;
+            std::string symName = name.str() + "_prod_lock_0";
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), prodTileVal, lockIdx,
+                static_cast<int>(depth));
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            info.prodLock = lk;
+          }
+          {
+            int lockIdx = lockIdCounter[prodTileVal]++;
+            std::string symName = name.str() + "_cons_lock_0";
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), prodTileVal, lockIdx,
+                static_cast<int>(0));
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            info.consLock = lk;
+          }
+        } else {
+          // AIE1: one lock per buffer slot (init=0 = empty), depth-many total.
+          // Each BD block uses ONE lock (its own slot's lock), so no
+          // multiple-lock-per-BD-block violation.
+          for (int64_t i = 0; i < depth; ++i) {
+            int lockIdx = lockIdCounter[prodTileVal]++;
+            std::string symName = name.str() + "_lock_" + std::to_string(i);
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), prodTileVal, lockIdx,
+                static_cast<int>(0));
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            info.aie1Locks.push_back(lk);
+          }
+          // Set convenience accessors to locks[0] for Phase 6 fallback.
+          if (!info.aie1Locks.empty()) {
+            info.prodLock = info.aie1Locks[0];
+            info.consLock = info.aie1Locks[0];
+          }
         }
         continue;
       }
@@ -474,7 +577,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       // -----------------------------------------------------------------------
       if (info.consumerTileCoords.size() == 1 &&
           info.shimConsumerTileCoords.empty() &&
-          !linkSrcNamesEarly.count(name)) {
+          !linkSrcNamesEarly.count(name) &&
+          !linkJoinSrcNames.count(name)) {
+        // Note: linkJoinSrcNames check above prevents shared-memory detection
+        // for join source conduits — join sources always require DMA.
         auto [prodCol, prodRow] = info.producerTileCoord;
         auto [consCol, consRow] = info.consumerTileCoords[0];
         // Neither tile may be a shim tile (row==0) or MemTile (row==1);
@@ -534,30 +640,50 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                 info.buffers.push_back(buf);
               }
 
-              // prod_lock on the PRODUCER tile (init=depth → free slots).
+              // Allocate lock(s) on the PRODUCER tile.
               AIE::LockOp sharedProdLock;
-              {
-                int lockIdx = lockIdCounter[prodTileVal]++;
-                std::string symName = name.str() + "_prod_lock_0";
-                AIE::LockOp lk = builder.create<AIE::LockOp>(
-                    deviceOp.getLoc(), prodTileVal, lockIdx,
-                    static_cast<int>(depth));
-                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                sharedProdLock = lk;
-                info.prodLock = lk;
-              }
-
-              // cons_lock on the PRODUCER tile (init=0 → nothing filled yet).
               AIE::LockOp sharedConsLock;
-              {
-                int lockIdx = lockIdCounter[prodTileVal]++;
-                std::string symName = name.str() + "_cons_lock_0";
-                AIE::LockOp lk = builder.create<AIE::LockOp>(
-                    deviceOp.getLoc(), prodTileVal, lockIdx,
-                    static_cast<int>(0));
-                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                sharedConsLock = lk;
-                info.consLock = lk;
+              if (isAIE2) {
+                // AIE2: two semaphore locks.
+                {
+                  int lockIdx = lockIdCounter[prodTileVal]++;
+                  std::string symName = name.str() + "_prod_lock_0";
+                  AIE::LockOp lk = builder.create<AIE::LockOp>(
+                      deviceOp.getLoc(), prodTileVal, lockIdx,
+                      static_cast<int>(depth));
+                  lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+                  sharedProdLock = lk;
+                  info.prodLock = lk;
+                }
+                {
+                  int lockIdx = lockIdCounter[prodTileVal]++;
+                  std::string symName = name.str() + "_cons_lock_0";
+                  AIE::LockOp lk = builder.create<AIE::LockOp>(
+                      deviceOp.getLoc(), prodTileVal, lockIdx,
+                      static_cast<int>(0));
+                  lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+                  sharedConsLock = lk;
+                  info.consLock = lk;
+                }
+              } else {
+                // AIE1: one lock per buffer slot (init=0 = empty), depth-many.
+                // Each BD block uses ONE lock (its own slot's lock).
+                for (int64_t i = 0; i < depth; ++i) {
+                  int lockIdx = lockIdCounter[prodTileVal]++;
+                  std::string symName = name.str() + "_lock_" + std::to_string(i);
+                  AIE::LockOp lk = builder.create<AIE::LockOp>(
+                      deviceOp.getLoc(), prodTileVal, lockIdx,
+                      static_cast<int>(0));
+                  lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+                  info.aie1Locks.push_back(lk);
+                }
+                // Use locks[0] as convenience accessor fallbacks.
+                if (!info.aie1Locks.empty()) {
+                  sharedProdLock = info.aie1Locks[0];
+                  sharedConsLock = info.aie1Locks[0];
+                  info.prodLock = info.aie1Locks[0];
+                  info.consLock = info.aie1Locks[0];
+                }
               }
 
               // Register locks keyed on the CONSUMER tile so Phase 6
@@ -572,6 +698,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               info.consumerTileLocks[prodTileVal] = {sharedProdLock,
                                                      sharedConsLock};
               info.consumerTileBuffers[prodTileVal] = sharedBuffers;
+
+              // For AIE1: register per-tile per-slot locks.
+              if (!isAIE2) {
+                info.consumerTileAIE1Locks[consTileVal] = info.aie1Locks;
+                info.consumerTileAIE1Locks[prodTileVal] = info.aie1Locks;
+              }
 
               // Rotation counter for depth>1 (on consumer tile — the consumer
               // core uses it, so it lives in the consumer's local memory).
@@ -654,6 +786,16 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             info.buffers.push_back(buf);
         }
 
+        // Join-source conduits (link source where the consumer is a memtile,
+        // row==1): allocate buffers and locks on the PRODUCER compute tile,
+        // not on the memtile.  The compute tile writes to its local buffer;
+        // its aie.mem MM2S pushes data to the memtile via the DMA flow.
+        // The memtile S2MM (generated by Phase 5) receives into the join-dst
+        // (link4) buffer and uses its own per-source lock pairs.
+        //
+        // Distribute-source conduits (consumer is a compute tile, row>=2)
+        // still skip lock allocation here — their lock pairs are created by
+        // Phase 5 on the MemTile.
         // Skip lock allocation for link source conduits.
         //
         // Link source conduits (those that appear as srcs in a
@@ -664,41 +806,66 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         //
         // The buffers above are still needed: Phase 5 references
         // srcInfo.buffers for the dma_bd descriptors in the BD chain.
-        if (linkSrcNamesEarly.count(name)) {
+        if (linkSrcNamesEarly.count(name) || linkJoinSrcNames.count(name)) {
           // Link source: register buffers but no locks.
           // consumerTileLocks is left empty; Phase 5.5 skips this conduit.
           info.consumerTileBuffers[consTileVal] = consBuffers;
           continue; // advance to next consIdx (or exit the for loop)
         }
 
-        // Allocate prod_lock (init = depth → depth free slots).
-        // Named with _cons_ infix to distinguish from shim-tile prod_lock_0.
+        // Allocate lock(s) on the consumer tile.
         AIE::LockOp thisProdLock;
-        {
-          int lockIdx = lockIdCounter[consTileVal]++;
-          std::string symName =
-              name.str() + bufSuffix + "_prod_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              deviceOp.getLoc(), consTileVal, lockIdx,
-              static_cast<int>(depth));
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          thisProdLock = lk;
-          if (consIdx == 0)
-            info.prodLock = lk;
-        }
-
-        // Allocate cons_lock (init = 0 → nothing filled yet).
         AIE::LockOp thisConsLock;
-        {
-          int lockIdx = lockIdCounter[consTileVal]++;
-          std::string symName =
-              name.str() + bufSuffix + "_cons_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              deviceOp.getLoc(), consTileVal, lockIdx, 0);
-          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-          thisConsLock = lk;
-          if (consIdx == 0)
-            info.consLock = lk;
+        if (isAIE2) {
+          // AIE2: prod_lock (init=depth → free slots) + cons_lock (init=0).
+          {
+            int lockIdx = lockIdCounter[consTileVal]++;
+            std::string symName =
+                name.str() + bufSuffix + "_prod_lock_0";
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), consTileVal, lockIdx,
+                static_cast<int>(depth));
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            thisProdLock = lk;
+            if (consIdx == 0)
+              info.prodLock = lk;
+          }
+          {
+            int lockIdx = lockIdCounter[consTileVal]++;
+            std::string symName =
+                name.str() + bufSuffix + "_cons_lock_0";
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), consTileVal, lockIdx, 0);
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            thisConsLock = lk;
+            if (consIdx == 0)
+              info.consLock = lk;
+          }
+        } else {
+          // AIE1: one lock per buffer slot (init=0 = empty), depth-many.
+          // Each BD block i uses aie1Locks[i] for both acquire and release.
+          llvm::SmallVector<AIE::LockOp> theseAIE1Locks;
+          for (int64_t i = 0; i < depth; ++i) {
+            int lockIdx = lockIdCounter[consTileVal]++;
+            std::string symName =
+                name.str() + bufSuffix + "_lock_" + std::to_string(i);
+            AIE::LockOp lk = builder.create<AIE::LockOp>(
+                deviceOp.getLoc(), consTileVal, lockIdx, 0);
+            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+            theseAIE1Locks.push_back(lk);
+          }
+          // Use locks[0] as convenience fallback.
+          if (!theseAIE1Locks.empty()) {
+            thisProdLock = theseAIE1Locks[0];
+            thisConsLock = theseAIE1Locks[0];
+            if (consIdx == 0) {
+              info.prodLock = theseAIE1Locks[0];
+              info.consLock = theseAIE1Locks[0];
+              info.aie1Locks = theseAIE1Locks;
+            }
+          }
+          // Register per-consumer-tile AIE1 lock vector for Phase 5.5.
+          info.consumerTileAIE1Locks[consTileVal] = theseAIE1Locks;
         }
 
         // Register the lock pair for this consumer tile so Phase 6 can look
@@ -735,7 +902,47 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //   4b. Consumer is shim (row==0): compute producer sends (MM2S) to shim
     //       receiver (S2MM). Emits: shim_dma_allocation(S2MM),
     //              flow(producer→shim).
+    //
+    // When a conduit's routing_mode is "packet", aie.packet_flow is emitted
+    // instead of aie.flow.  Packet IDs are assigned sequentially starting at 0.
     // -----------------------------------------------------------------------
+
+    // Packet flow ID counter — incremented for each packet-switched flow.
+    int packetFlowID = 0;
+
+    // Helper: emit a circuit or packet flow between two tiles.
+    // When routingMode == "packet", emits aie.packet_flow with
+    // aie.packet_source and aie.packet_dest inside its region.
+    // Otherwise emits a plain aie.flow.
+    auto emitFlow = [&](llvm::StringRef routingMode, mlir::Value srcTile,
+                        AIE::WireBundle srcBundle, int32_t srcChan,
+                        mlir::Value dstTile, AIE::WireBundle dstBundle,
+                        int32_t dstChan) {
+      if (routingMode == "packet") {
+        // aie.packet_flow(ID) { aie.packet_source<src, bundle:chan>
+        //                       aie.packet_dest<dst, bundle:chan> }
+        auto pktFlow = builder.create<AIE::PacketFlowOp>(
+            deviceOp.getLoc(),
+            static_cast<int8_t>(packetFlowID++ & 0x7F),
+            /*keep_pkt_header=*/mlir::BoolAttr{},
+            /*priority_route=*/mlir::BoolAttr{});
+        mlir::Region &region = pktFlow.getPorts();
+        mlir::Block *block = builder.createBlock(&region);
+        builder.setInsertionPointToStart(block);
+        builder.create<AIE::PacketSourceOp>(deviceOp.getLoc(), srcTile,
+                                            srcBundle,
+                                            static_cast<int32_t>(srcChan));
+        builder.create<AIE::PacketDestOp>(deviceOp.getLoc(), dstTile,
+                                          dstBundle,
+                                          static_cast<int32_t>(dstChan));
+        builder.create<AIE::EndOp>(deviceOp.getLoc());
+        // Restore insertion point to before the packet_flow's region.
+        builder.setInsertionPointAfter(pktFlow);
+      } else {
+        builder.create<AIE::FlowOp>(deviceOp.getLoc(), srcTile, srcBundle,
+                                    srcChan, dstTile, dstBundle, dstChan);
+      }
+    };
 
     for (auto &[name, info] : conduitMap) {
       auto [prodCol, prodRow] = info.producerTileCoord;
@@ -766,7 +973,9 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
         // Emit shim-side prod/cons locks (matching stateful transform output).
         // These have init=0 on the shim tile.  The host runtime uses them.
-        {
+        // Only emit for AIE2: AIE1 uses per-slot value locks which are not
+        // needed on the shim side (the shim has no local buffer to synchronize).
+        if (isAIE2) {
           int lockIdx = lockIdCounter[shimTile.getResult()]++;
           std::string symName = name.str() + "_prod_lock_0";
           AIE::LockOp lk = builder.create<AIE::LockOp>(
@@ -774,7 +983,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               static_cast<int>(0));
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         }
-        {
+        if (isAIE2) {
           int lockIdx = lockIdCounter[shimTile.getResult()]++;
           std::string symName = name.str() + "_cons_lock_0";
           AIE::LockOp lk = builder.create<AIE::LockOp>(
@@ -795,7 +1004,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             /*plio=*/false,
             /*packet=*/nullptr);
 
-        // Emit one aie.flow per consumer tile (broadcast fix NF6).
+        // Emit one aie.flow (or aie.packet_flow) per consumer tile (broadcast fix NF6).
         // Channel index i on the shim MM2S side → channel 0 on consumer i.
         for (unsigned consIdx = 0;
              consIdx < info.consumerTileCoords.size(); ++consIdx) {
@@ -803,10 +1012,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           AIE::TileOp consTile = lookupTileByCoord(consCol, consRow);
           if (!consTile)
             continue;
-          builder.create<AIE::FlowOp>(
-              deviceOp.getLoc(), shimTile.getResult(), AIE::WireBundle::DMA,
-              static_cast<int32_t>(consIdx), consTile.getResult(),
-              AIE::WireBundle::DMA, static_cast<int32_t>(0));
+          emitFlow(info.routingMode, shimTile.getResult(),
+                   AIE::WireBundle::DMA, static_cast<int32_t>(consIdx),
+                   consTile.getResult(), AIE::WireBundle::DMA,
+                   static_cast<int32_t>(0));
         }
       }
 
@@ -836,12 +1045,11 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             /*plio=*/false,
             /*packet=*/nullptr);
 
-        // aie.flow(%prodTile, DMA : 0, %shimTile, DMA : 0)
-        builder.create<AIE::FlowOp>(deviceOp.getLoc(), prodTile.getResult(),
-                                    AIE::WireBundle::DMA,
-                                    static_cast<int32_t>(0),
-                                    shimTile.getResult(), AIE::WireBundle::DMA,
-                                    static_cast<int32_t>(0));
+        // aie.flow or aie.packet_flow(%prodTile, DMA:0 → %shimTile, DMA:0)
+        emitFlow(info.routingMode, prodTile.getResult(),
+                 AIE::WireBundle::DMA, static_cast<int32_t>(0),
+                 shimTile.getResult(), AIE::WireBundle::DMA,
+                 static_cast<int32_t>(0));
       }
     }
 
@@ -980,28 +1188,37 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         // Insert lock allocs before the memtile_dma so they dominate the DMA body.
         builder.setInsertionPoint(deviceBody.getTerminator());
         for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx) {
-          // prod_lock_i: producer (S2MM) acquires before filling slice i.
-          // init = depth → depth free slots available at startup.
-          {
+          if (isAIE2) {
+            // AIE2: independent prod_lock_i + cons_lock_i per slice.
+            {
+              int lockIdx = lockIdCounter[memtileVal]++;
+              std::string symName = srcName + "_link_prod_lock_" +
+                                    std::to_string(sliceIdx);
+              AIE::LockOp lk = builder.create<AIE::LockOp>(
+                  deviceOp.getLoc(), memtileVal, lockIdx,
+                  static_cast<int>(linkDepth));
+              lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+              sliceProdLocks.push_back(lk);
+            }
+            {
+              int lockIdx = lockIdCounter[memtileVal]++;
+              std::string symName = srcName + "_link_cons_lock_" +
+                                    std::to_string(sliceIdx);
+              AIE::LockOp lk = builder.create<AIE::LockOp>(
+                  deviceOp.getLoc(), memtileVal, lockIdx, 0);
+              lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+              sliceConsLocks.push_back(lk);
+            }
+          } else {
+            // AIE1: single value-based lock per slice (init=0 = empty).
             int lockIdx = lockIdCounter[memtileVal]++;
-            std::string symName = srcName + "_link_prod_lock_" +
-                                  std::to_string(sliceIdx);
-            AIE::LockOp lk = builder.create<AIE::LockOp>(
-                deviceOp.getLoc(), memtileVal, lockIdx,
-                static_cast<int>(linkDepth));
-            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-            sliceProdLocks.push_back(lk);
-          }
-          // cons_lock_i: consumer (MM2S) acquires when slice i is filled.
-          // init = 0 → nothing filled yet.
-          {
-            int lockIdx = lockIdCounter[memtileVal]++;
-            std::string symName = srcName + "_link_cons_lock_" +
+            std::string symName = srcName + "_link_lock_" +
                                   std::to_string(sliceIdx);
             AIE::LockOp lk = builder.create<AIE::LockOp>(
                 deviceOp.getLoc(), memtileVal, lockIdx, 0);
             lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-            sliceConsLocks.push_back(lk);
+            sliceProdLocks.push_back(lk);
+            sliceConsLocks.push_back(lk); // same lock for AIE1
           }
         }
       }
@@ -1163,10 +1380,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           }
 
           builder.setInsertionPointToEnd(ingestBlocks[blkIdx]);
+          // S2MM: receive into buffer slot.
+          // AIE2: acquire prod_lock (free slot), release cons_lock (data ready).
+          // AIE1: acquire lock at 0 (empty), release at 1 (full) — same lock.
           builder.create<AIE::UseLockOp>(
               loc, sliceProdLocks[sliceIdx].getResult(),
-              AIE::LockAction::AcquireGreaterEqual,
-              static_cast<int32_t>(1));
+              acqAction,
+              static_cast<int32_t>(isAIE2 ? 1 : aie1S2MMAcqVal));
           builder.create<AIE::DMABDOp>(
               loc, srcInfo.buffers[bufIdx].getResult(),
               static_cast<int>(dstOffset),
@@ -1174,7 +1394,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           builder.create<AIE::UseLockOp>(
               loc, sliceConsLocks[sliceIdx].getResult(),
               AIE::LockAction::Release,
-              static_cast<int32_t>(1));
+              static_cast<int32_t>(isAIE2 ? 1 : aie1S2MMRelVal));
           mlir::Block *nextIngest = ingestBlocks[(blkIdx + 1) % totalIngest];
           builder.create<AIE::NextBDOp>(loc, nextIngest);
         }
@@ -1265,12 +1485,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               break;
             builder.setInsertionPointToEnd(srcIngestBlocks[srcIdx][i]);
             // Acquire: wait for a free slot from the source producer.
-            // sInfo->prodLock is the lock allocated by Phase 3 for this source.
-            if (sInfo->prodLock) {
+            // S2MM direction: AIE2 acquires prod_lock(1); AIE1 acquires per-slot lock(0).
+            // For AIE1: sInfo->aie1Locks[i] is the lock for slot i.
+            mlir::Value srcAcqLock = (!isAIE2 && !sInfo->aie1Locks.empty())
+                ? sInfo->aie1Locks[i % sInfo->aie1Locks.size()].getResult()
+                : (sInfo->prodLock ? sInfo->prodLock.getResult() : mlir::Value{});
+            mlir::Value srcRelLock = (!isAIE2 && !sInfo->aie1Locks.empty())
+                ? sInfo->aie1Locks[i % sInfo->aie1Locks.size()].getResult()
+                : (sInfo->consLock ? sInfo->consLock.getResult() : mlir::Value{});
+            if (srcAcqLock) {
               builder.create<AIE::UseLockOp>(
-                  loc, sInfo->prodLock.getResult(),
-                  AIE::LockAction::AcquireGreaterEqual,
-                  static_cast<int32_t>(1));
+                  loc, srcAcqLock,
+                  acqAction,
+                  static_cast<int32_t>(isAIE2 ? 1 : aie1S2MMAcqVal));
             }
             // DMA descriptor: source buffer slice at srcOffset/srcLen.
             if (!sInfo->buffers.empty()) {
@@ -1280,12 +1507,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   static_cast<int>(srcOffset),
                   static_cast<int>(srcLen));
             }
-            // Release: signal this slot is filled (consLock).
-            if (sInfo->consLock) {
+            // Release: signal this slot is filled.
+            // AIE2: release cons_lock(1); AIE1: release per-slot lock(1) — same lock.
+            if (srcRelLock) {
               builder.create<AIE::UseLockOp>(
-                  loc, sInfo->consLock.getResult(),
+                  loc, srcRelLock,
                   AIE::LockAction::Release,
-                  static_cast<int32_t>(1));
+                  static_cast<int32_t>(isAIE2 ? 1 : aie1S2MMRelVal));
             }
             // Ring: chain back to first ingest block for this source.
             mlir::Block *nextIngest =
@@ -1393,12 +1621,14 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             nextChainBlock);
 
         // Fill each send BD block for this destination.
+        // MM2S direction: AIE2 acquires cons_lock(1), releases prod_lock(1).
+        //                  AIE1 acquires lock(1) [full], releases lock(0) [empty].
         for (int64_t i = 0; i < thisDstDepth; ++i) {
           builder.setInsertionPointToEnd(sendBDBlocks[i]);
           if (mm2sAcqLock) {
             builder.create<AIE::UseLockOp>(loc, mm2sAcqLock.getResult(),
-                                           AIE::LockAction::AcquireGreaterEqual,
-                                           static_cast<int32_t>(1));
+                                           acqAction,
+                                           static_cast<int32_t>(isAIE2 ? 1 : aie1MM2SAcqVal));
           }
           if (mm2sBufs && !mm2sBufs->empty()) {
             builder.create<AIE::DMABDOp>(
@@ -1409,7 +1639,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           if (mm2sRelLock) {
             builder.create<AIE::UseLockOp>(loc, mm2sRelLock.getResult(),
                                            AIE::LockAction::Release,
-                                           static_cast<int32_t>(1));
+                                           static_cast<int32_t>(isAIE2 ? 1 : aie1MM2SRelVal));
           }
           mlir::Block *nextBD = sendBDBlocks[(i + 1) % thisDstDepth];
           builder.create<AIE::NextBDOp>(loc, nextBD);
@@ -1469,10 +1699,107 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (info.buffers.empty() || !info.prodLock || !info.consLock)
         continue;
 
-      // Skip if this conduit was a link source — the link phase already set up
-      // the DMA for those buffers in a memtile_dma.
-      if (linkSrcNames.count(name))
-        continue;
+      // Handle link source conduits that have a compute-tile producer and a
+      // memtile consumer (join pattern).  The memtile_dma S2MM channels have
+      // already been generated by Phase 5; what is still missing is the
+      // aie.mem MM2S block on each source compute tile that pushes data into
+      // the memtile's S2MM flow.
+      //
+      // For join sources:
+      //   producerTileCoord  = compute tile (row >= 2)
+      //   consumerTileCoords = [memtile]   (row == 1)
+      //
+      // We emit: aie.mem(%prodTile) { dma_start(MM2S, 0, ^bd_0, ^end) ... }
+      // using the existing consumerTile-side lock pair (info.prodLock /
+      // info.consLock), which physically reside on the memtile.  The compute
+      // tile's aie.mem body may reference memtile locks when the tiles are
+      // memory-adjacent, which is true for xcve2302/npu row-1 memtiles.
+      //
+      // Distribute sources (memtile → compute tiles) do NOT need this — the
+      // distribute memtile_dma already handles MM2S to compute tiles.  Only
+      // skip those (isDistribute link sources).
+      if (linkSrcNames.count(name)) {
+        // Only handle join sources (linkJoinSrcNames): compute producer (row >= 2)
+        // sending to a memtile (row == 1).  These need an aie.mem MM2S block on the
+        // producer compute tile to push data into the memtile S2MM flow.
+        // Distribute sources (linkSrcNamesEarly) are already handled by the
+        // distribute memtile_dma MM2S channels — no additional aie.mem needed.
+        //
+        // NOTE: The join source's buffers/locks are on the memtile consumer side
+        // (allocated by Phase 3).  The compute tile's aie.mem MM2S body can only
+        // reference those memtile locks if the tiles are memory-adjacent (xcve2302:
+        // same column, compute row directly above the memtile row).  For
+        // cross-column joins (e.g., tile_3_3 → memtile_2_1), the affinity check
+        // will fail at verification time.  Full fix requires per-source lock pairs
+        // allocated on the memtile by Phase 5, similar to the distribute pattern.
+        // See: CLAUDE.md "Known gaps in Pass C" — join source aie.mem.
+        if (!linkJoinSrcNames.count(name))
+          continue; // distribute source — skip
+
+        auto [prodCol, prodRow] = info.producerTileCoord;
+        if (prodRow < 2)
+          continue; // degenerate: join producer is shim or memtile
+
+        // Emit aie.mem MM2S on the producer compute tile.
+        AIE::TileOp prodTile = lookupTileByCoord(prodCol, prodRow);
+        if (!prodTile)
+          continue;
+
+        int64_t depth = info.depth > 0 ? info.depth : 1;
+        int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
+
+        builder.setInsertionPoint(deviceBody.getTerminator());
+        auto memOp =
+            builder.create<AIE::MemOp>(deviceOp.getLoc(), prodTile.getResult());
+        mlir::Region &memRegion = memOp.getBody();
+        auto addMemBlock = [&]() -> mlir::Block * {
+          return builder.createBlock(&memRegion);
+        };
+        mlir::Block *dmaStartBlock = addMemBlock();
+        llvm::SmallVector<mlir::Block *> bdBlocks;
+        for (int64_t i = 0; i < depth; ++i)
+          bdBlocks.push_back(addMemBlock());
+        mlir::Block *endMemBlock = addMemBlock();
+
+        // dma_start(MM2S, 0, ^bd_0, ^end)
+        builder.setInsertionPointToEnd(dmaStartBlock);
+        builder.create<AIE::DMAStartOp>(deviceOp.getLoc(),
+                                        AIE::DMAChannelDir::MM2S,
+                                        static_cast<int32_t>(0),
+                                        static_cast<int32_t>(0),
+                                        bdBlocks[0], endMemBlock);
+
+        // BD ring: MM2S direction (sending from compute tile to memtile S2MM).
+        // AIE2: acquire cons_lock (data ready), release prod_lock (free slot).
+        // AIE1: each BD block i uses aie1Locks[i] — one lock per slot.
+        //        acquire(1) [full], release(0) [empty], same lock per block.
+        for (int64_t i = 0; i < depth; ++i) {
+          builder.setInsertionPointToEnd(bdBlocks[i]);
+          mlir::Value blockLock = isAIE2 ? info.consLock.getResult()
+              : (info.aie1Locks.empty()
+                     ? info.consLock.getResult()
+                     : info.aie1Locks[i % info.aie1Locks.size()].getResult());
+          mlir::Value blockRelLock = isAIE2 ? info.prodLock.getResult()
+              : blockLock; // same lock for AIE1
+          builder.create<AIE::UseLockOp>(
+              deviceOp.getLoc(), blockLock,
+              acqAction,
+              static_cast<int32_t>(isAIE2 ? 1 : aie1MM2SAcqVal));
+          builder.create<AIE::DMABDOp>(
+              deviceOp.getLoc(),
+              info.buffers[i % info.buffers.size()].getResult(),
+              0, static_cast<int>(perBufLen));
+          builder.create<AIE::UseLockOp>(
+              deviceOp.getLoc(), blockRelLock,
+              AIE::LockAction::Release,
+              static_cast<int32_t>(isAIE2 ? 1 : aie1MM2SRelVal));
+          builder.create<AIE::NextBDOp>(deviceOp.getLoc(),
+                                        bdBlocks[(i + 1) % depth]);
+        }
+        builder.setInsertionPointToEnd(endMemBlock);
+        builder.create<AIE::EndOp>(deviceOp.getLoc());
+        continue; // join source handled — skip the rest of the loop body
+      }
 
       // Skip shared memory conduits: they require no DMA BD chain.
       // Buffers and locks on the producer tile are directly accessible from
@@ -1541,17 +1868,30 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                                         static_cast<int32_t>(0),
                                         static_cast<int32_t>(0),
                                         bdBlocks[0], endMemBlock);
+        // MM2S BD: wait for data filled, send, signal slot freed.
+        // AIE2: acquire cons_lock(1), release prod_lock(1).
+        // AIE1: each BD block i uses aie1Locks[i] — one lock per slot.
+        //        acquire(1) [full], release(0) [empty], same lock per block.
         for (int64_t i = 0; i < depth; ++i) {
           builder.setInsertionPointToEnd(bdBlocks[i]);
-          builder.create<AIE::UseLockOp>(deviceOp.getLoc(), acqLock.getResult(),
-                                         AIE::LockAction::AcquireGreaterEqual,
-                                         static_cast<int32_t>(1));
+          // For AIE1, use per-slot lock; for AIE2, use the shared acqLock.
+          mlir::Value blockAcqVal = isAIE2 ? acqLock.getResult()
+              : (info.aie1Locks.empty()
+                     ? acqLock.getResult()
+                     : info.aie1Locks[i % info.aie1Locks.size()].getResult());
+          mlir::Value blockRelVal = isAIE2 ? relLock.getResult()
+              : (info.aie1Locks.empty()
+                     ? relLock.getResult()
+                     : info.aie1Locks[i % info.aie1Locks.size()].getResult());
+          builder.create<AIE::UseLockOp>(deviceOp.getLoc(), blockAcqVal,
+                                         acqAction,
+                                         static_cast<int32_t>(isAIE2 ? 1 : aie1MM2SAcqVal));
           builder.create<AIE::DMABDOp>(deviceOp.getLoc(),
                                        info.buffers[i].getResult(), 0,
                                        static_cast<int>(perBufLen));
-          builder.create<AIE::UseLockOp>(deviceOp.getLoc(), relLock.getResult(),
+          builder.create<AIE::UseLockOp>(deviceOp.getLoc(), blockRelVal,
                                          AIE::LockAction::Release,
-                                         static_cast<int32_t>(1));
+                                         static_cast<int32_t>(isAIE2 ? 1 : aie1MM2SRelVal));
           builder.create<AIE::NextBDOp>(deviceOp.getLoc(),
                                         bdBlocks[(i + 1) % depth]);
         }
@@ -1584,12 +1924,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           if (consRow < 2)
             continue;
 
-          // Resolve the per-consumer-tile buffer vector and lock pair.
+          // Resolve the per-consumer-tile buffer vector, lock pair, and AIE1 locks.
           // Falls back to info.buffers / prodLock / consLock for single-
           // consumer conduits where consumerTileBuffers may be empty.
           llvm::SmallVector<AIE::BufferOp> *tileBuffers = &info.buffers;
           AIE::LockOp tileProdLock = info.prodLock;
           AIE::LockOp tileConsLock = info.consLock;
+          llvm::SmallVector<AIE::LockOp> *tileAIE1Locks = &info.aie1Locks;
           {
             mlir::Value consTileVal = dmaHostTile.getResult();
             auto bufIt = info.consumerTileBuffers.find(consTileVal);
@@ -1601,6 +1942,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               tileProdLock = lockIt->second.first;
               tileConsLock = lockIt->second.second;
             }
+            auto aie1It = info.consumerTileAIE1Locks.find(consTileVal);
+            if (aie1It != info.consumerTileAIE1Locks.end() &&
+                !aie1It->second.empty())
+              tileAIE1Locks = &aie1It->second;
           }
 
           if (!tileProdLock || !tileConsLock || tileBuffers->empty())
@@ -1628,17 +1973,30 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                                           static_cast<int32_t>(0),
                                           static_cast<int32_t>(0),
                                           bdBlocks[0], endMemBlock);
+          // S2MM BD: wait for free slot, receive, signal filled.
+          // AIE2: acquire prod_lock(1) [free slot], release cons_lock(1) [data ready].
+          // AIE1: each BD block i uses tileAIE1Locks[i] — one lock per slot.
+          //        acquire(0) [empty], release(1) [full], same lock per block.
           for (int64_t i = 0; i < depth; ++i) {
             builder.setInsertionPointToEnd(bdBlocks[i]);
+            // For AIE1: use per-slot lock; for AIE2: use the shared acqLock/relLock.
+            mlir::Value blockLockAcq = isAIE2 ? acqLock.getResult()
+                : (tileAIE1Locks->empty()
+                       ? acqLock.getResult()
+                       : (*tileAIE1Locks)[i % tileAIE1Locks->size()].getResult());
+            mlir::Value blockLockRel = isAIE2 ? relLock.getResult()
+                : (tileAIE1Locks->empty()
+                       ? relLock.getResult()
+                       : (*tileAIE1Locks)[i % tileAIE1Locks->size()].getResult());
             builder.create<AIE::UseLockOp>(
-                deviceOp.getLoc(), acqLock.getResult(),
-                AIE::LockAction::AcquireGreaterEqual, static_cast<int32_t>(1));
+                deviceOp.getLoc(), blockLockAcq,
+                acqAction, static_cast<int32_t>(isAIE2 ? 1 : aie1S2MMAcqVal));
             builder.create<AIE::DMABDOp>(
                 deviceOp.getLoc(), (*tileBuffers)[i % tileBuffers->size()].getResult(),
                 0, static_cast<int>(perBufLen));
             builder.create<AIE::UseLockOp>(
-                deviceOp.getLoc(), relLock.getResult(),
-                AIE::LockAction::Release, static_cast<int32_t>(1));
+                deviceOp.getLoc(), blockLockRel,
+                AIE::LockAction::Release, static_cast<int32_t>(isAIE2 ? 1 : aie1S2MMRelVal));
             builder.create<AIE::NextBDOp>(deviceOp.getLoc(),
                                           bdBlocks[(i + 1) % depth]);
           }
@@ -1694,10 +2052,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // If neither matches, the pass emits a hard error (no silent fallback).
     module.walk([&](SubviewAccess op) {
       llvm::StringRef conduitName;
+      llvm::StringRef acquirePort; // port attribute of the defining Acquire op
       if (auto acqOp = mlir::dyn_cast_or_null<Acquire>(
-              op.getWindow().getDefiningOp()))
+              op.getWindow().getDefiningOp())) {
         conduitName = acqOp.getName();
-      else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
+        acquirePort = acqOp.getPort();
+      } else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
                    op.getWindow().getDefiningOp()))
         conduitName = waitOp.getName();
 
@@ -1736,15 +2096,23 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             int64_t bufIdx = static_cast<int64_t>(tileBuffers->size()) > 1
                                  ? idx % static_cast<int64_t>(tileBuffers->size())
                                  : 0;
-            if (depth == 1 || !cinfo.rotationBuf) {
-              // Depth-1 case (or no rotation buffer): static selection.
+            // Port-gated rotation counter: only Consume-port acquires use the
+            // dynamic rotation counter path.  Producer-port SubviewAccess ops
+            // reference buffers allocated on the consumer tile; the rotation
+            // buffer (rotationBuf) is also on the consumer tile and is
+            // inaccessible from the producer core.  Use static selection for
+            // Produce-port acquires regardless of depth.
+            bool useStaticSelection =
+                (depth == 1 || !cinfo.rotationBuf || acquirePort == "Produce");
+            if (useStaticSelection) {
+              // Depth-1 case, no rotation buffer, or produce-port: static selection.
               mlir::Value bufVal = (*tileBuffers)[bufIdx].getResult();
               if (bufVal.getType() == op.getResult().getType()) {
                 op.getResult().replaceAllUsesWith(bufVal);
                 replaced = true;
               }
             } else {
-              // Depth>1 case: dynamic selection via counter + index_switch.
+              // Depth>1 case, Consume port: dynamic selection via counter + index_switch.
               builder.setInsertionPoint(op);
               mlir::Location loc = op.getLoc();
 
@@ -1877,9 +2245,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       AIE::LockOp lock =
           (port == "Consume") ? resolvedProdLock : resolvedConsLock;
       if (lock) {
+        // AIE1: value-based release — Consumer releases to 0 (empty),
+        //       Producer releases to 1 (full).  AIE2: release by 'count'.
+        int32_t relVal = isAIE2 ? static_cast<int32_t>(count)
+                                : (port == "Consume" ? 0 : 1);
         builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                        AIE::LockAction::Release,
-                                       static_cast<int32_t>(count));
+                                       relVal);
       }
       // For depth>1 with Consume port, emit counter increment after the
       // release use_lock.  Counter advances by 'count' (the number of
@@ -1987,9 +2359,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       }
 
       if (lock) {
+        // AIE1: value-based acquire — Consumer acquires at 1 (full),
+        //       Producer acquires at 0 (empty).  AIE2: acquire by 'count'.
+        int32_t acqVal = isAIE2 ? static_cast<int32_t>(count)
+                                : (port == "Produce" ? 0 : 1);
         builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
-                                       AIE::LockAction::AcquireGreaterEqual,
-                                       static_cast<int32_t>(count));
+                                       acqAction,
+                                       acqVal);
       }
       op.erase();
     });
@@ -2009,6 +2385,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
     module.walk([&](Wait op) { op.erase(); });
     module.walk([&](Create op) { op.erase(); });
+    // conduit.wait_all_async merges tokens but has no hardware lowering — the
+    // ordering it encodes is already captured by the surrounding lock sequences.
+    // Its token result is consumed only by conduit.wait (already erased above)
+    // or other wait_all_async ops (erased here in source order by walk).
+    // Erase after Wait so that any wait ops consuming a wait_all_async result
+    // are already gone.
+    module.walk([&](WaitAllAsync op) { op.erase(); });
 
     // -----------------------------------------------------------------------
     // Phase 8: lower conduit.acquire_async / conduit.wait_window / conduit.wait_all
@@ -2080,6 +2463,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       ConduitInfo &cinfo = it->second;
 
       // Determine port and count from the async acquire map (keyed by token).
+      // After reading, erase the entry so Step 8c (wait_all) does NOT also
+      // emit use_lock for tokens that wait_window has already handled.
+      // This fixes the double-emit bug: without the erase, both wait_window
+      // and wait_all emit AcquireGreaterEqual for the same lock.
       llvm::StringRef port = "Consume";
       int64_t count = 1;
       {
@@ -2087,6 +2474,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         if (ait != asyncAcquireMap.end()) {
           port = ait->second.port;
           count = ait->second.count;
+          asyncAcquireMap.erase(ait); // consumed — skip in Step 8c
         }
       }
 
@@ -2108,12 +2496,15 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       }
 
       // Emit the deferred use_lock at this point in the instruction stream.
+      // AIE1: Consumer acquires at 1 (full), Producer acquires at 0 (empty).
       builder.setInsertionPoint(op);
       AIE::LockOp lock = (port == "Produce") ? resolvedProdLock : resolvedConsLock;
       if (lock) {
+        int32_t acqVal = isAIE2 ? static_cast<int32_t>(count)
+                                : (port == "Produce" ? 0 : 1);
         builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
-                                       AIE::LockAction::AcquireGreaterEqual,
-                                       static_cast<int32_t>(count));
+                                       acqAction,
+                                       acqVal);
       }
 
       // Replace the window result with the appropriate aie.buffer SSA value.
@@ -2186,9 +2577,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         AIE::LockOp lock =
             (ainfo.port == "Produce") ? resolvedProdLock : resolvedConsLock;
         if (lock) {
+          // AIE1: Consumer acquires at 1 (full), Producer acquires at 0 (empty).
+          int32_t acqVal = isAIE2 ? static_cast<int32_t>(ainfo.count)
+                                  : (ainfo.port == "Produce" ? 0 : 1);
           builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
-                                         AIE::LockAction::AcquireGreaterEqual,
-                                         static_cast<int32_t>(ainfo.count));
+                                         acqAction,
+                                         acqVal);
         }
       }
       waitAllToErase.push_back(op);
@@ -2202,14 +2596,59 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     for (auto op : asyncAcquiresToErase)
       op.erase();
 
-    // Step 8d: Hard error on any remaining async ops not handled above.
-    // conduit.release_async is not yet lowered.
-    // conduit.wait_all_async is not yet lowered.
+    // Step 8d: Lower conduit.release_async.
+    //
+    // release_async {name="x", count=N} : !conduit.window.token
+    //
+    // Lowering:
+    //   aie.use_lock(prodLock, Release, N)
+    //
+    // The spec says "Hardware lowering: aie.use_lock(prodLock, Release, count)".
+    // Like the blocking conduit.release with port="Consume", the async variant
+    // signals the producer that N buffer slots are free (releases prodLock).
+    // The !conduit.window.token result has no hardware equivalent; its only
+    // consumers are conduit.wait_all_async ops, which were erased in Phase 7.
+    llvm::SmallVector<ReleaseAsync> releaseAsyncsToErase;
     module.walk([&](ReleaseAsync op) {
-      op.emitError("conduit-to-dma: unimplemented — conduit.release_async "
-                   "lowering not yet supported");
-      signalPassFailure();
+      llvm::StringRef conduitName = op.getName();
+      auto it = conduitMap.find(conduitName);
+      if (it == conduitMap.end()) {
+        // Unknown conduit — skip silently (no hardware allocation was made).
+        releaseAsyncsToErase.push_back(op);
+        return;
+      }
+      ConduitInfo &cinfo = it->second;
+
+      // Resolve per-tile lock pair: find the enclosing aie.core tile and look
+      // up that tile's locks.  Falls back to cinfo.prodLock if not inside a
+      // core or no per-tile entry exists (same pattern as blocking Release).
+      AIE::LockOp resolvedProdLock = cinfo.prodLock;
+      {
+        mlir::Operation *coreOp = op->getParentOp();
+        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+          coreOp = coreOp->getParentOp();
+        if (coreOp) {
+          mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
+          auto lockIt = cinfo.consumerTileLocks.find(coreTile);
+          if (lockIt != cinfo.consumerTileLocks.end())
+            resolvedProdLock = lockIt->second.first;
+        }
+      }
+
+      builder.setInsertionPoint(op);
+      int64_t count = static_cast<int64_t>(op.getCount());
+      if (resolvedProdLock) {
+        // release_async is always consumer-side: releases prodLock to signal
+        // slot freed.  AIE1: release to 0 (empty).  AIE2: release by count.
+        int32_t relVal = isAIE2 ? static_cast<int32_t>(count) : 0;
+        builder.create<AIE::UseLockOp>(op.getLoc(), resolvedProdLock.getResult(),
+                                       AIE::LockAction::Release,
+                                       relVal);
+      }
+      releaseAsyncsToErase.push_back(op);
     });
+    for (auto op : releaseAsyncsToErase)
+      op.erase();
   }
 };
 

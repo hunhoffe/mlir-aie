@@ -47,28 +47,28 @@
 //                  offsets=<static offsets or []>,
 //                  sizes=<static sizes or []>,
 //                  strides=<static strides or []>}
-//                 : !conduit.async.token
-//      The %tok SSA value is replaced with the new !conduit.async.token.
+//                 : !conduit.dma.token
+//      The %tok SSA value is replaced with the new !conduit.dma.token.
 //
 // 3. air.channel.get (blocking or async):
-//    → conduit.get_memref_async {same attrs} : !conduit.async.token
+//    → conduit.get_memref_async {same attrs} : !conduit.dma.token
 //
 // 4. air.wait_all:
 //      %t = air.wait_all async [%dep0, %dep1]
 //    → %t = conduit.wait_all_async %dep0, %dep1
-//              : (!conduit.async.token, ...) -> !conduit.async.token
+//              : (!conduit.dma.token, ...) -> !conduit.dma.token
 //      Blocking (no result):
 //      air.wait_all [%dep0, %dep1]
 //    → conduit.wait_all %dep0, %dep1
 //
-// 5. air.async.token type → !conduit.async.token
+// 5. air.async.token type → !conduit.dma.token
 //    (via SSA replacement; no explicit type conversion needed because
-//    conduit ops produce !conduit.async.token results directly)
+//    conduit ops produce !conduit.dma.token results directly)
 //
 // Known limitations (documented honestly)
 // ----------------------------------------
 // - Only [1,1] scalar channels supported; multi-dimensional indices ignored.
-// - num_elems is computed from static sizes only; dynamic sizes emit 0.
+// - num_elems is computed from static sizes only; dynamic sizes fall back to 1.
 // - Offset/size/stride Index SSA values from the AIR op are dropped when
 //   non-static; the emitted conduit op carries empty arrays in that case.
 //   Full dynamic operand threading is a future TODO.
@@ -236,8 +236,9 @@ struct AirChannelToConduitPass
     mlir::OpBuilder builder(module.getContext());
     mlir::MLIRContext *ctx = module.getContext();
 
-    // Async token type for conduit.
-    auto conduitTokenTy = AsyncTokenType::get(ctx);
+    // DMA token type for conduit (put/get_memref_async and wait_all_async
+    // all return !conduit.dma.token, not the deprecated !conduit.async.token).
+    auto conduitTokenTy = DMATokenType::get(ctx);
 
     // Phase 1: collect air.channel declarations → build name→create map.
     // We'll emit conduit.create for each; element_type filled in Phase 2.
@@ -285,7 +286,10 @@ struct AirChannelToConduitPass
           /*element_type=*/mlir::TypeAttr{},
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
           /*link_mode=*/mlir::StringAttr{},
-          /*access_pattern=*/mlir::DenseI64ArrayAttr{});
+          /*access_pattern=*/mlir::DenseI64ArrayAttr{},
+          /*routing_mode=*/mlir::StringAttr{},
+          /*producer_rates=*/mlir::DenseI64ArrayAttr{},
+          /*consumer_rates=*/mlir::DenseI64ArrayAttr{});
 
       channelCreateOps[name] = createOp;
     }
@@ -342,7 +346,7 @@ struct AirChannelToConduitPass
     //
     // SSA threading:
     //   The original air.channel.put result is !air.async.token (opaque in
-    //   aie-opt).  We replace all uses with the new !conduit.async.token.
+    //   aie-opt).  We replace all uses with the new !conduit.dma.token.
 
     llvm::SmallVector<mlir::Operation *> putGetToErase;
 
@@ -378,7 +382,7 @@ struct AirChannelToConduitPass
       base += nidx;
       // memref
       mlir::ValueRange offsetsRange, sizesRange, stridesRange;
-      if (static_cast<int32_t>(allOps.size()) > base + 1 + noffsets + nsizes + nstrides) {
+      if (static_cast<int32_t>(allOps.size()) >= base + 1 + noffsets + nsizes + nstrides) {
         base += 1; // skip memref operand itself
         offsetsRange = allOps.slice(base, noffsets); base += noffsets;
         sizesRange   = allOps.slice(base, nsizes);   base += nsizes;

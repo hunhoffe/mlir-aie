@@ -256,7 +256,10 @@ struct ObjectFifoToConduitPass
           mlir::TypeAttr::get(info.elemType),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
           /*link_mode=*/mlir::StringAttr{},
-          accessPatternAttr);
+          accessPatternAttr,
+          /*routing_mode=*/mlir::StringAttr{},
+          /*producer_rates=*/mlir::DenseI64ArrayAttr{},
+          /*consumer_rates=*/mlir::DenseI64ArrayAttr{});
 
       fifosToErase.push_back(op);
     });
@@ -359,19 +362,63 @@ struct ObjectFifoToConduitPass
     // operand that must dominate the release site.  A flat module.walk over
     // all acquires followed by a flat walk over all releases breaks this
     // because the global `lastWindowForName` map gets clobbered by acquires
-    // from later blocks: e.g., the acquire at line 225 (after a scf.for) would
-    // overwrite the entry used by the release at line 212 (before the loop),
-    // producing a non-dominating reference.
+    // from later blocks.
     //
     // Fix: process every basic block independently.  Within each block the ops
     // are visited in program order, so the acquire always precedes its release
-    // and the window SSA value is live at the release site.  The per-block
-    // window map is reset at the start of each block.
+    // and the window SSA value is live at the release site.
+    //
+    // Cross-block dominance fix (C1):
+    //   When a release is in block B but its acquire is in a dominating parent
+    //   block A (e.g., release inside scf.if true region, acquire in the
+    //   enclosing core entry block), the local blockWindowMap for B will be
+    //   empty.  Before synthesizing a phantom acquire and emitting the C1
+    //   warning, we walk up the region/block parent chain to see if any
+    //   enclosing block already has a window value for this conduit name.
+    //   If found, we reuse that dominating window SSA value directly — no
+    //   phantom, no warning.  If not found (truly unreachable acquire), we
+    //   fall back to the phantom + C1 warning as before.
+    //
+    // Per-block window maps: block → (fifo name → window SSA value).
+    // Populated as each block is visited; used for cross-block lookups.
+    llvm::DenseMap<mlir::Block *, llvm::DenseMap<mlir::StringAttr, mlir::Value>>
+        allBlockWindowMaps;
 
-    module.walk([&](mlir::Block *block) {
+    // Helper: walk the region/block parent chain from `startBlock` upward,
+    // returning the first window value found for `nameAttr`, or null if none.
+    // This handles the common case where the release is inside a nested region
+    // (scf.if, scf.for body) and the acquire is in an enclosing block.
+    auto findWindowInDominatingBlock =
+        [&](mlir::Block *startBlock,
+            mlir::StringAttr nameAttr) -> mlir::Value {
+      mlir::Block *cursor = startBlock;
+      while (cursor) {
+        // Check if this block's window map has an entry for the conduit.
+        auto mapIt = allBlockWindowMaps.find(cursor);
+        if (mapIt != allBlockWindowMaps.end()) {
+          mlir::Value v = mapIt->second.lookup(nameAttr);
+          if (v)
+            return v;
+        }
+        // Walk up: the enclosing block is the block that contains
+        // cursor's parent region's parent op.
+        mlir::Operation *parentOp = cursor->getParentOp();
+        if (!parentOp)
+          break;
+        cursor = parentOp->getBlock();
+      }
+      return {};
+    };
+
+    // Use PreOrder so parent blocks are visited before their nested child blocks.
+    // This ensures that when the scf.if body block is visited, the enclosing
+    // core entry block's window map is already populated — enabling the
+    // parent-block walk in findWindowInDominatingBlock to succeed.
+    module.walk<mlir::WalkOrder::PreOrder>([&](mlir::Block *block) {
       // Per-block window map: fifo name → window SSA value emitted by the
       // most recently processed acquire in this block.
-      llvm::DenseMap<mlir::StringAttr, mlir::Value> blockWindowMap;
+      llvm::DenseMap<mlir::StringAttr, mlir::Value> &blockWindowMap =
+          allBlockWindowMaps[block];
 
       for (mlir::Operation &rawOp : llvm::make_early_inc_range(*block)) {
         if (auto op = mlir::dyn_cast<AIE::ObjectFifoAcquireOp>(rawOp)) {
@@ -398,7 +445,8 @@ struct ObjectFifoToConduitPass
               mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
               mlir::StringAttr::get(ctx, portStr));
 
-          // Record the window for subsequent releases in this block.
+          // Record the window for subsequent releases in this block and for
+          // cross-block lookups in dominated nested blocks.
           blockWindowMap[nameAttr] = winVal;
 
           // Rewrite subview.access users immediately.
@@ -430,13 +478,32 @@ struct ObjectFifoToConduitPass
                                                              : "Consume";
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
+
+          // First try the local block's window map (same-block acquire).
           mlir::Value winVal = blockWindowMap.lookup(nameAttr);
 
           if (!winVal) {
-            // No acquire for this fifo in this block — synthesize a window.
-            // This covers patterns where release appears without a matching
-            // acquire visible in the same block (e.g., producer that calls
-            // an implicit initial window or deferred-acquire pattern).
+            // Cross-block case: look for a window value in a dominating
+            // enclosing block (e.g., acquire in core entry block, release
+            // inside scf.if true region).
+            winVal = findWindowInDominatingBlock(
+                block->getParentOp() ? block->getParentOp()->getBlock()
+                                     : nullptr,
+                nameAttr);
+          }
+
+          if (!winVal) {
+            // C1 diagnostic: no dominating acquire found anywhere in the
+            // parent block chain.  Must synthesize a phantom window.
+            // On Phoenix hardware this injects an extra AcquireGreaterEqual
+            // use_lock that stalls the producer.  Manual review required.
+            op->emitWarning(
+                "ObjectFifoToConduit: cross-block acquire/release pattern "
+                "detected for conduit '")
+                << name
+                << "'; phantom AcquireGreaterEqual synthesized. Hardware stall "
+                   "risk on Phoenix. Manual review required.";
+
             mlir::MemRefType elemType;
             auto it = fifoInfoMap.find(nameAttr);
             if (it != fifoInfoMap.end())
