@@ -41,12 +41,15 @@
 // CHECK:       memref.store {{.*}} : memref<1xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
+// CHECK:         memref.load {{.*}} : memref<1xi32>
+// CHECK:         arith.index_cast
 // CHECK:         scf.index_switch
 // CHECK:           scf.yield %[[BUFF0]]
 // CHECK:           scf.yield %[[BUFF1]]
 // CHECK:           scf.yield %[[BUFF0]]
 // CHECK:         func.call @process_10_i32
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
+// CHECK:         memref.load {{.*}} : memref<1xi32>
 // CHECK:         memref.store {{.*}} : memref<1xi32>
 // CHECK:     }
 // --- Shim DMA and flow ---

@@ -158,6 +158,8 @@ def ConduitToDMA : Pass<"conduit-to-dma", "::mlir::ModuleOp"> {
 def ConduitDepthPromote : Pass<"conduit-depth-promote", "::mlir::ModuleOp"> {
   let summary = "Promote eligible depth-1 conduits to depth-2 for compute-DMA overlap";
   let description = [{
+    Experimental: not validated on hardware. Use as opt-in flag only.
+
     Scans all `conduit.create` ops with depth == 1 and promotes eligible ones
     to depth == 2 (double-buffering), enabling compute-DMA overlap.
 
@@ -179,6 +181,37 @@ def ConduitDepthPromote : Pass<"conduit-depth-promote", "::mlir::ModuleOp"> {
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
     "xilinx::AIE::AIEDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Pairing Check — conduit-check-pairing (M9 Phase 2 analysis)
+//===----------------------------------------------------------------------===//
+
+def ConduitPairingCheck : Pass<"conduit-check-pairing", "::mlir::ModuleOp"> {
+  let summary = "M9 Phase 2: warn when conduit.acquire has no matching release in same block";
+  let description = [{
+    Optional analysis pass that checks same-block acquire-release pairing for
+    Conduit IR window tokens (M9 Phase 2).
+
+    For each conduit.acquire and conduit.wait_window op, the pass checks whether
+    a matching conduit.release or conduit.release_async appears in the same basic
+    block.  If not, a warning is emitted via op.emitWarning() (capturable by
+    FileCheck and suppressed by --verify-diagnostics).
+
+    This pass is OPT-IN and NOT part of the default pipeline.  It fires warnings
+    only and never signals pass failure.
+
+    Background: This logic was previously implemented as llvm::errs() output
+    inside Acquire::verify() / WaitWindow::verify() to work around MLIR
+    diagnostic infinite recursion.  Moving it to a separate pass eliminates
+    the recursion risk and makes diagnostics capturable.
+  }];
+
+  let constructor = "xilinx::conduit::createConduitPairingCheckPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
   ];
 }
 

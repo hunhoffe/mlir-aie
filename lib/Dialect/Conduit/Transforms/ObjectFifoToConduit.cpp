@@ -192,6 +192,11 @@ struct ObjectFifoToConduitPass
     // all use the same count do not create a cyclostatic pattern.
 
     // Per-fifo: ordered list of (Consume) acquire counts seen in program order.
+    //
+    // Fix 4p: Note: consumeAcquireCounts accumulates counts across ALL cores
+    // for each fifo name via module.walk. For multi-consumer fifos, this
+    // merges patterns from different cores in DFS walk order, which does not
+    // correspond to any single core's CSDF pattern.
     llvm::DenseMap<mlir::StringAttr, llvm::SmallVector<int64_t>>
         consumeAcquireCounts;
 
@@ -279,8 +284,15 @@ struct ObjectFifoToConduitPass
         mode = "distribute";
       else if (fifoIns.size() >= 1 && fifoOuts.size() == 1)
         mode = "join";
-      else
-        mode = "distribute";
+      else {
+        // Fix 4h: N→M link (N>1 sources AND N>1 destinations) is not
+        // supported. Emit an error rather than silently using "distribute".
+        op.emitError(
+            "objectfifo-to-conduit: N→M link (N>1 sources AND N>1 "
+            "destinations) is not supported; use cascade mode when implemented");
+        signalPassFailure();
+        return;
+      }
 
       // Build src/dst name arrays
       llvm::SmallVector<mlir::Attribute> srcAttrs, dstAttrs;
@@ -422,6 +434,12 @@ struct ObjectFifoToConduitPass
     // returning the first window value found for `nameAttr`, or null if none.
     // This handles the common case where the release is inside a nested region
     // (scf.if, scf.for body) and the acquire is in an enclosing block.
+    //
+    // Fix 4j: Note: if acquire and release are in the same block but release
+    // appears BEFORE acquire in program order, the local blockWindowMap lookup
+    // returns null and the dominating-block walk finds nothing, emitting a
+    // spurious C1 warning. Forward-declared-then-released patterns trigger
+    // false positives.
     auto findWindowInDominatingBlock =
         [&](mlir::Block *startBlock,
             mlir::StringAttr nameAttr) -> mlir::Value {
@@ -497,6 +515,14 @@ struct ObjectFifoToConduitPass
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), idx));
               accessOp.getResult().replaceAllUsesWith(condAccess.getResult());
               subviewsToErase.push_back(accessOp);
+            } else {
+              // Fix B2: unexpected user of objectfifo.acquire result.
+              // Only subview_access users are lowered; other user types will
+              // have dangling references after the acquire op is erased.
+              op.emitWarning(
+                  "objectfifo-to-conduit: unexpected user of "
+                  "objectfifo.acquire result — only subview_access users are "
+                  "lowered; other users will have dangling references");
             }
           }
           acquiresToErase.push_back(op);
@@ -639,22 +665,45 @@ struct ObjectFifoToConduitPass
     // erase the create op first, any surviving allocate op fires the
     // verifier.  Fix: process and erase all allocate ops before erasing
     // the create ops they reference.
+    //
+    // Fix 3.5: Erasure order is intentional: allocate ops before create ops.
+    // Intermediate state is invalid but MLIR does not re-verify within a pass.
+
+    // Fix 1c: register_external_buffers is not yet supported — emit an error
+    // so the pass fails loudly rather than silently dropping the op and
+    // producing incorrect output downstream.
+    module.walk([&](AIE::ObjectFifoRegisterExternalBuffersOp extBufOp) {
+      extBufOp.emitError(
+          "objectfifo-to-conduit: register_external_buffers not yet supported");
+      signalPassFailure();
+    });
+
+    // Fix 4i: Build a name→conduit.create map to avoid O(n²) inner walk.
+    // Previously this used a nested module.walk to find the matching
+    // conduit.create for each allocate op; now we do a single pre-scan.
+    llvm::DenseMap<mlir::StringAttr, Create> conduitCreateMap;
+    module.walk([&](Create conduitOp) {
+      auto nameAttr = mlir::StringAttr::get(ctx, conduitOp.getName().str());
+      conduitCreateMap[nameAttr] = conduitOp;
+    });
+
     llvm::SmallVector<AIE::ObjectFifoAllocateOp> allocatesToErase;
     module.walk([&](AIE::ObjectFifoAllocateOp op) {
-      // Find the matching conduit.create by name.
+      // Find the matching conduit.create by direct map lookup (O(1)).
       llvm::StringRef fifoName = op.getObjFifoName();
-      module.walk([&](Create conduitOp) {
-        if (conduitOp.getName() == fifoName) {
-          // Extract delegate tile coordinates.
-          auto delegateTile =
-              mlir::cast<AIE::TileOp>(op.getDelegateTile().getDefiningOp());
-          int64_t col = delegateTile.getCol();
-          int64_t row = delegateTile.getRow();
-          llvm::SmallVector<int64_t> tileCoord = {col, row};
-          conduitOp.setAllocTileAttr(
-              mlir::DenseI64ArrayAttr::get(op.getContext(), tileCoord));
-        }
-      });
+      auto nameAttr = mlir::StringAttr::get(ctx, fifoName);
+      auto it = conduitCreateMap.find(nameAttr);
+      if (it != conduitCreateMap.end()) {
+        Create conduitOp = it->second;
+        // Extract delegate tile coordinates.
+        auto delegateTile =
+            mlir::cast<AIE::TileOp>(op.getDelegateTile().getDefiningOp());
+        int64_t col = delegateTile.getCol();
+        int64_t row = delegateTile.getRow();
+        llvm::SmallVector<int64_t> tileCoord = {col, row};
+        conduitOp.setAllocTileAttr(
+            mlir::DenseI64ArrayAttr::get(op.getContext(), tileCoord));
+      }
       allocatesToErase.push_back(op);
     });
     for (AIE::ObjectFifoAllocateOp op : allocatesToErase)

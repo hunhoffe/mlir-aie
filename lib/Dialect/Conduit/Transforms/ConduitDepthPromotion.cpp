@@ -8,6 +8,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// NOTE: This pass is experimental and not validated on hardware. Use
+// --conduit-depth-promote only as an opt-in flag.
+//
 // Promotes eligible depth-1 conduits to depth-2 (double-buffering) to enable
 // compute-DMA overlap.  Runs after Pass A/B and before Pass C.
 //
@@ -30,6 +33,7 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -68,9 +72,7 @@ static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
 static llvm::DenseSet<llvm::StringRef>
 collectLinkedConduitNames(mlir::ModuleOp module) {
   llvm::DenseSet<llvm::StringRef> linked;
-  module.walk([&](mlir::Operation *op) {
-    if (op->getName().getStringRef() != "conduit.objectfifo_link")
-      return;
+  module.walk([&](ObjectFifoLink op) {
     if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs")) {
       for (auto s : srcsAttr)
         if (auto str = mlir::dyn_cast<mlir::StringAttr>(s))
@@ -85,56 +87,39 @@ collectLinkedConduitNames(mlir::ModuleOp module) {
   return linked;
 }
 
-/// Check if an operation is inside a loop-like construct (scf.for, scf.while,
-/// affine.for, or any op with the LoopLikeOpInterface).
+/// Check if an operation is inside a loop-like construct.
 static bool isInsideLoop(mlir::Operation *op) {
   mlir::Operation *parent = op->getParentOp();
   while (parent) {
-    llvm::StringRef name = parent->getName().getStringRef();
-    if (name == "scf.for" || name == "scf.while" || name == "affine.for" ||
-        name == "scf.forall")
+    if (mlir::isa<mlir::LoopLikeOpInterface>(parent))
       return true;
     parent = parent->getParentOp();
   }
   return false;
 }
 
-/// Check if an acquire is a "passthrough" -- its only non-subview_access user
-/// is a release in the same block with no intervening compute ops.
+/// Check if an acquire is "passthrough" -- the window result has no
+/// subview_access users (i.e., no compute consumes the buffer).
 static bool isPassthroughAcquire(mlir::Operation *acqOp) {
   if (acqOp->getNumResults() == 0)
     return true; // no result -> trivially passthrough
   mlir::Value window = acqOp->getResult(0);
-  bool hasCompute = false;
-  for (mlir::Operation *user : window.getUsers()) {
-    llvm::StringRef userName = user->getName().getStringRef();
-    if (userName == "conduit.subview_access") {
-      // subview_access users may feed compute -- check if subview result
-      // has users beyond release
-      for (mlir::Operation *svUser : user->getResult(0).getUsers()) {
-        llvm::StringRef svUserName = svUser->getName().getStringRef();
-        if (svUserName != "conduit.release" &&
-            svUserName != "conduit.release_async")
-          hasCompute = true;
-      }
-    } else if (userName != "conduit.release" &&
-               userName != "conduit.release_async") {
-      hasCompute = true;
-    }
-  }
-  return !hasCompute;
+  for (mlir::Operation *user : window.getUsers())
+    if (mlir::isa<SubviewAccess>(user))
+      return false; // has a subview user — not passthrough
+  return true; // no subview users — is passthrough
 }
 
-/// Estimate buffer size in bytes from element type and capacity.
-static int64_t estimateBufferBytes(uint64_t capacity, mlir::Type elemType) {
+/// Estimate single-slot buffer size in bytes from element type.
+static int64_t estimateSingleSlotBytes(mlir::Type elemType) {
   auto mref = mlir::dyn_cast<mlir::MemRefType>(elemType);
   if (!mref)
-    return capacity * 4; // default 4 bytes per element
+    return 4; // default 4 bytes per element
   int64_t elemBits = mref.getElementTypeBitWidth();
   int64_t elemCount = 1;
   for (int64_t d : mref.getShape()) {
     if (mlir::ShapedType::isDynamic(d))
-      return capacity * 4; // can't determine statically
+      return 4; // can't determine statically
     elemCount *= d;
   }
   return (elemBits / 8) * elemCount;
@@ -155,13 +140,11 @@ struct ConduitDepthPromotePass
 
     // Step 2: Collect all conduit.create ops with depth == 1.
     llvm::SmallVector<mlir::Operation *> candidates;
-    module.walk([&](mlir::Operation *op) {
-      if (op->getName().getStringRef() != "conduit.create")
-        return;
+    module.walk([&](Create op) {
       auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
       if (!depthAttr || depthAttr.getInt() != 1)
         return;
-      candidates.push_back(op);
+      candidates.push_back(op.getOperation());
     });
 
     if (candidates.empty())
@@ -176,8 +159,7 @@ struct ConduitDepthPromotePass
     llvm::DenseMap<llvm::StringRef, bool> nameAllPassthrough;
 
     module.walk([&](mlir::Operation *op) {
-      llvm::StringRef opName = op->getName().getStringRef();
-      if (opName == "conduit.acquire" || opName == "conduit.acquire_async") {
+      if (mlir::isa<Acquire, AcquireAsync>(op)) {
         auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
         auto countAttr = op->getAttrOfType<mlir::IntegerAttr>("count");
         if (!nameAttr || !countAttr)
@@ -193,7 +175,7 @@ struct ConduitDepthPromotePass
         if (!isPassthroughAcquire(op))
           nameAllPassthrough[name] = false;
       }
-      if (opName == "conduit.release" || opName == "conduit.release_async") {
+      if (mlir::isa<Release, ReleaseAsync>(op)) {
         auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
         auto countAttr = op->getAttrOfType<mlir::IntegerAttr>("count");
         if (!nameAttr || !countAttr)
@@ -212,9 +194,7 @@ struct ConduitDepthPromotePass
     llvm::DenseMap<int64_t, int64_t> tileMemUsed;
 
     // Pre-populate from existing conduit.create ops.
-    module.walk([&](mlir::Operation *op) {
-      if (op->getName().getStringRef() != "conduit.create")
-        return;
+    module.walk([&](Create op) {
       auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
       int64_t depth = depthAttr ? depthAttr.getInt() : 1;
       auto consTiles = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
@@ -231,9 +211,11 @@ struct ConduitDepthPromotePass
           int64_t key = tileKey(tiles[i], tiles[i + 1]);
           tileLockCount[key] += 2; // prod + cons lock pair
           tileBDCount[key] += depth;
-          if (capAttr && elemTypeAttr)
-            tileMemUsed[key] += estimateBufferBytes(
-                capAttr.getInt(), elemTypeAttr.getValue());
+          if (capAttr && elemTypeAttr) {
+            int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
+            int64_t newDepth = 2;
+            tileMemUsed[key] += perSlotBytes * newDepth;
+          }
         }
       }
       // Producer tile also uses resources for non-shim.
@@ -288,12 +270,12 @@ struct ConduitDepthPromotePass
       }
 
       // Criterion 3: no surrounding loop.
+      // conduit.create is always at device-body level — never inside a loop.
+      // We check whether any acquire for this conduit name is inside a loop.
       if (!nameHasLoopAcquire.count(name) || !nameHasLoopAcquire[name]) {
-        if (!isInsideLoop(createOp)) {
-          llvm::errs() << "conduit-depth-promote: skipping '" << name
-                       << "' -- no loop context\n";
-          continue;
-        }
+        llvm::errs() << "conduit-depth-promote: skipping '" << name
+                     << "' -- no loop context\n";
+        continue;
       }
 
       // Criterion 4: passthrough-only.
@@ -343,12 +325,12 @@ struct ConduitDepthPromotePass
           "element_type");
       bool memOverBudget = false;
       if (consTiles && capAttr && elemTypeAttr) {
-        int64_t bufBytes = estimateBufferBytes(
-            capAttr.getInt(), elemTypeAttr.getValue());
+        int64_t bufBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
+        int64_t newDepth = 2;
         auto tiles = consTiles.asArrayRef();
         for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
           int64_t key = tileKey(tiles[i], tiles[i + 1]);
-          if (tileMemUsed[key] + bufBytes > kDefaultTileMemoryBytes) {
+          if (tileMemUsed[key] + bufBytes * newDepth > kDefaultTileMemoryBytes) {
             memOverBudget = true;
             break;
           }
@@ -413,9 +395,11 @@ struct ConduitDepthPromotePass
           int64_t key = tileKey(tiles[i], tiles[i + 1]);
           tileLockCount[key] += 1;
           tileBDCount[key] += 1;
-          if (capAttr && elemTypeAttr)
-            tileMemUsed[key] += estimateBufferBytes(
-                capAttr.getInt() / 2, elemTypeAttr.getValue());
+          if (capAttr && elemTypeAttr) {
+            // Fix 3a: use perSlotBytes * newDepth (2), not capAttr / 2.
+            int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
+            tileMemUsed[key] += perSlotBytes * 2; // newDepth == 2
+          }
         }
       }
 

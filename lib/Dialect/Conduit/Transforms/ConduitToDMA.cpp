@@ -571,8 +571,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (info.consumerTileCoords.empty() &&
           !info.shimConsumerTileCoords.empty()) {
         auto [prodCol, prodRow] = info.producerTileCoord;
-        if (prodCol < 0 || prodRow == 0)
+        if (prodCol < 0 || prodRow == 0) {
+          // Note: emitWarning via deviceOp since we don't have a conduit op handle here
+          deviceOp.emitWarning(
+              llvm::Twine("conduit-to-dma: shim-to-shim conduit '") + name +
+              "' dropped (shim producer + shim consumer not supported)");
           continue; // skip if producer is also shim (degenerate)
+        }
 
         AIE::TileOp prodTile = lookupTileByCoord(prodCol, prodRow);
         if (!prodTile)
@@ -707,6 +712,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   "' has missing tile op; falling back to DMA path");
               info.sharedMemory = false;
               // Fall through to normal consumer loop below.
+              // Note: double-warning risk — the consumer loop may also emit a
+              // warning for this conduit (e.g., missing tile).  The first warning
+              // above is definitive; subsequent warnings from the DMA fallback
+              // path are expected and indicate the same root cause.
             } else {
               int64_t depth = info.depth > 0 ? info.depth : 1;
               mlir::Type bufTy = info.elemType;
@@ -974,7 +983,8 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
           // Distribute sources with a compute producer: allocate producer-
           // side buffers+locks on the compute tile for the aie.mem MM2S.
-          if (linkSrcNamesEarly.count(name)) {
+          // Always executes when outer check passes — inner guard was duplicate.
+          {
             auto [pCol, pRow] = info.producerTileCoord;
             if (pCol >= 0 && pRow >= 2) {
               AIE::TileOp pTile = lookupTileByCoord(pCol, pRow);
@@ -1359,15 +1369,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         builder.setInsertionPoint(deviceBody.getTerminator());
 
         // Emit shim-side prod/cons locks (matching stateful transform output).
-        // These have init=0 on the shim tile.  The host runtime uses them.
+        // prod_lock init=depth: all slots initially free (host can write).
+        // cons_lock init=0: no data initially available.
         // Only emit for AIE2: AIE1 uses per-slot value locks which are not
         // needed on the shim side (the shim has no local buffer to synchronize).
         if (isAIE2) {
           int lockIdx = lockIdCounter[shimTile.getResult()]++;
           std::string symName = name.str() + "_prod_lock_0";
+          // Fix 1a: prod_lock must be initialized to depth (all slots free),
+          // not 0. init=0 causes hardware deadlock for depth>1 shim DMA.
+          int64_t shimDepth = info.depth > 0 ? info.depth : 1;
           AIE::LockOp lk = builder.create<AIE::LockOp>(
               deviceOp.getLoc(), shimTile.getResult(), lockIdx,
-              static_cast<int>(0));
+              static_cast<int>(shimDepth));
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         }
         if (isAIE2) {
@@ -1752,7 +1766,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (!isDistribute && !dsts.empty()) {
         std::string jDstName = mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
         auto jDstIt = conduitMap.find(jDstName);
-        if (jDstIt != conduitMap.end()) {
+        if (jDstIt == conduitMap.end()) {
+          linkOp.emitWarning("conduit-to-dma: join destination conduit '")
+              << jDstName << "' not found — BD lengths defaulting to 1 (wrong for non-trivial join)";
+        } else {
           ConduitInfo &jDstInfo = jDstIt->second;
           int64_t jDstDepth = jDstInfo.depth > 0 ? jDstInfo.depth : 1;
           joinDstPerBufForLen = jDstInfo.capacity > 0 ? jDstInfo.capacity / jDstDepth : 1;
@@ -2049,7 +2066,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           builder.setInsertionPointToEnd(s2mmEntries[srcIdx]);
           builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::S2MM,
               static_cast<int32_t>(srcIdx), 0,
-              srcIngestBlocks[srcIdx].empty() ? nextBlock : srcIngestBlocks[srcIdx][0],
+              srcIngestBlocks[srcIdx][0], // jDepth >= 1 guaranteed by clamp above
               nextBlock);
 
           for (int64_t i = 0; i < jDepth; ++i) {
@@ -2226,6 +2243,31 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // linkSrcNames was populated before Phase 5 (above) so it correctly
     // contains the source conduit names even though Phase 5 has erased all
     // ObjectFifoLink ops by the time Phase 5.5 runs.
+
+    // Fix 2c: Pre-compute used DMA channels per tile to avoid quadratic scans.
+    // The fallback channel-assignment paths in Phase 5.5 previously called
+    // deviceOp.walk(DMAStartOp) inside the conduitMap iteration, making the
+    // complexity O(conduits × DMAStartOps). Pre-scan once here and update
+    // incrementally as new DMA channels are assigned below.
+    llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedMM2SChannels;
+    llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedS2MMChannels;
+    deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
+      mlir::Value parentTile;
+      if (auto memOp =
+              mlir::dyn_cast<AIE::MemOp>(dmaStart->getParentOp()))
+        parentTile = memOp.getTile();
+      else if (auto mtOp =
+                   mlir::dyn_cast<AIE::MemTileDMAOp>(dmaStart->getParentOp()))
+        parentTile = mtOp.getTile();
+      if (!parentTile)
+        return;
+      if (dmaStart.getChannelDir() == AIE::DMAChannelDir::MM2S)
+        preUsedMM2SChannels[parentTile].insert(
+            static_cast<int32_t>(dmaStart.getChannelIndex()));
+      else
+        preUsedS2MMChannels[parentTile].insert(
+            static_cast<int32_t>(dmaStart.getChannelIndex()));
+    });
 
     for (auto &[name, info] : conduitMap) {
       if (info.buffers.empty() || !info.prodLock || !info.consLock)
@@ -2472,24 +2514,14 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   if (chIt != conduitMM2SChannel.end()) {
                     mm2sChannel = chIt->second;
                   } else {
-                    // Fallback: scan for next free MM2S channel.
-                    llvm::DenseSet<int32_t> usedCh;
-                    deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
-                      mlir::Value parentTile;
-                      if (auto memOp = mlir::dyn_cast<AIE::MemOp>(
-                              dmaStart->getParentOp()))
-                        parentTile = memOp.getTile();
-                      else if (auto mtOp = mlir::dyn_cast<AIE::MemTileDMAOp>(
-                                   dmaStart->getParentOp()))
-                        parentTile = mtOp.getTile();
-                      if (parentTile == prodTileVal &&
-                          dmaStart.getChannelDir() ==
-                              AIE::DMAChannelDir::MM2S)
-                        usedCh.insert(static_cast<int32_t>(
-                            dmaStart.getChannelIndex()));
-                    });
+                    // Fallback: find next free MM2S channel using pre-computed
+                    // map (fix 2c — avoids O(conduits × DMAStartOps) scan).
+                    auto &usedCh = preUsedMM2SChannels[prodTileVal];
                     while (usedCh.count(mm2sChannel))
                       ++mm2sChannel;
+                    // Track the assignment so subsequent conduits on the same
+                    // tile see the updated used-channel set.
+                    usedCh.insert(mm2sChannel);
                   }
                 }
 
@@ -2511,16 +2543,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   // Add DMA channel to existing DMA op.
                   mlir::Region &memRegion = *existingDMARegion;
                   mlir::Block *endBlock = nullptr;
-                  for (mlir::Block &block : memRegion) {
-                    for (mlir::Operation &opInBlock : block) {
-                      if (mlir::isa<AIE::EndOp>(opInBlock)) {
-                        endBlock = &block;
-                        break;
-                      }
-                    }
-                    if (endBlock)
-                      break;
-                  }
+                  for (mlir::Block &block : memRegion)
+                    for (mlir::Operation &opInBlock : block)
+                      if (mlir::isa<AIE::EndOp>(opInBlock))
+                        endBlock = &block; // keep updating — want the last one
 
                   if (endBlock) {
                     mlir::Operation *oldEnd = endBlock->getTerminator();
@@ -2794,24 +2820,14 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             if (chIt != conduitConsS2MMChannel.end()) {
               s2mmChannel = chIt->second;
             } else {
-              // Fallback: scan for next free S2MM channel.
-              mlir::Value consTileVal = dmaHostTile.getResult();
-              llvm::DenseSet<int32_t> usedCh;
-              deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
-                mlir::Value parentTile;
-                if (auto memOp = mlir::dyn_cast<AIE::MemOp>(
-                        dmaStart->getParentOp()))
-                  parentTile = memOp.getTile();
-                else if (auto mtOp = mlir::dyn_cast<AIE::MemTileDMAOp>(
-                             dmaStart->getParentOp()))
-                  parentTile = mtOp.getTile();
-                if (parentTile == consTileVal &&
-                    dmaStart.getChannelDir() == AIE::DMAChannelDir::S2MM)
-                  usedCh.insert(
-                      static_cast<int32_t>(dmaStart.getChannelIndex()));
-              });
+              // Fallback: find next free S2MM channel using pre-computed map
+              // (fix 2c — avoids O(conduits × DMAStartOps) scan).
+              mlir::Value consTileVal2 = dmaHostTile.getResult();
+              auto &usedCh = preUsedS2MMChannels[consTileVal2];
               while (usedCh.count(s2mmChannel))
                 ++s2mmChannel;
+              // Track the assignment for subsequent conduits on the same tile.
+              usedCh.insert(s2mmChannel);
             }
           }
 
@@ -2852,16 +2868,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           // and chain the new S2MM DMA start after it.
           mlir::Block *existingEndBlock = nullptr;
           if (!memRegion.empty()) {
-            for (mlir::Block &block : memRegion) {
-              for (mlir::Operation &opInBlock : block) {
-                if (mlir::isa<AIE::EndOp>(opInBlock)) {
-                  existingEndBlock = &block;
-                  break;
-                }
-              }
-              if (existingEndBlock)
-                break;
-            }
+            for (mlir::Block &block : memRegion)
+              for (mlir::Operation &opInBlock : block)
+                if (mlir::isa<AIE::EndOp>(opInBlock))
+                  existingEndBlock = &block; // keep updating — want the last one
           }
 
           llvm::SmallVector<mlir::Block *> bdBlocks;
@@ -2974,8 +2984,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         conduitName = acqOp.getName();
         acquirePort = acqOp.getPort();
       } else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
-                   op.getWindow().getDefiningOp()))
+                   op.getWindow().getDefiningOp())) {
         conduitName = waitOp.getName();
+        acquirePort = "Consume";  // acquire_async is always consumer-side
+      }
 
       bool replaced = false;
       if (!conduitName.empty()) {
@@ -3197,15 +3209,11 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             builder, loc, i32Ty, count);
         mlir::Value newVal =
             builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-        // Wrap modulo depth: if newVal >= depth, subtract depth.
+        // Wrap modulo depth: true modulo via arith.remui (handles count>1 correctly).
         mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
             builder, loc, i32Ty, cinfo.depth);
-        mlir::Value cmp = builder.create<mlir::arith::CmpIOp>(
-            loc, mlir::arith::CmpIPredicate::sge, newVal, depthI32);
-        mlir::Value wrapped =
-            builder.create<mlir::arith::SubIOp>(loc, newVal, depthI32);
         mlir::Value result =
-            builder.create<mlir::arith::SelectOp>(loc, cmp, wrapped, newVal);
+            builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
         builder.create<mlir::memref::StoreOp>(
             loc, result, resolvedRotationBuf.getResult(), mlir::ValueRange{c0});
       }
@@ -3224,7 +3232,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // Counter initialization: the rotation counter must be set to 0 before the
     // first acquire for each depth>1 conduit in each core.  Track which
     // (conduit, parent-op) pairs have been initialized to emit the store once.
-    llvm::DenseSet<std::pair<llvm::StringRef, mlir::Operation *>>
+    // Fix 1e: use std::set with std::string keys (owning) instead of
+    // DenseSet<pair<StringRef,Op*>> (non-owning, dangling-ref risk if ops
+    // are erased during walk). DenseSet does not support std::string keys.
+    std::set<std::pair<std::string, mlir::Operation *>>
         counterInitialized;
 
     module.walk([&](Acquire op) {
@@ -3269,7 +3280,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       // at the start of the enclosing aie.core body (once per core+conduit).
       // Uses the per-tile rotation buffer for broadcast correctness.
       if (resolvedRotationBuf && port == "Consume" && cinfo.depth > 1) {
-        auto key = std::make_pair(op.getName(), acquireCoreOp);
+        auto key = std::make_pair(op.getName().str(), acquireCoreOp);
         if (acquireCoreOp && !counterInitialized.count(key)) {
           counterInitialized.insert(key);
           // Insert at the very start of the core body's entry block, before
@@ -3327,12 +3338,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // Its token result is consumed only by conduit.wait (already erased above)
     // or other wait_all_async ops.
     //
-    // Collect before erasing in reverse order: MLIR walk() visits ops in
-    // pre-order within a block, so a def (waa_A) is collected before its use
-    // (waa_B that chains waa_A's result).  Erasing in forward pre-order would
-    // destroy waa_A while waa_B still holds a use of its result.  Reversing
-    // the erase order ensures uses (waa_B) are destroyed before their defs
-    // (waa_A), satisfying MLIR's "no erase with live uses" invariant.
+    // Collect before erasing in reverse order: pre-order walk visits defs before
+    // uses; reversing ensures uses (waa_B) are erased before their defs (waa_A).
+    // Assumes token chains are trees (no shared tokens between multiple
+    // wait_all_async ops).
     {
       llvm::SmallVector<WaitAllAsync> waitAllAsyncsToErase;
       module.walk([&](WaitAllAsync op) {
@@ -3456,32 +3465,15 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                                        acqVal);
       }
 
-      // Replace the window result with the appropriate aie.buffer SSA value.
-      // Same logic as Phase 6 Step 1 (SubviewAccess): use per-tile buffer map.
-      llvm::SmallVector<AIE::BufferOp> *tileBuffers = &cinfo.buffers;
-      {
-        mlir::Operation *coreOp = op->getParentOp();
-        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
-          coreOp = coreOp->getParentOp();
-        if (coreOp) {
-          mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
-          auto bufIt = cinfo.consumerTileBuffers.find(coreTile);
-          if (bufIt != cinfo.consumerTileBuffers.end())
-            tileBuffers = &bufIt->second;
-        }
-      }
-
-      // The window result type wraps the element memref — replace all uses of
-      // the window with the buffer.  Users will be conduit.subview_access ops
-      // which Phase 6 Step 1 will have already replaced with aie.buffer refs;
-      // any remaining users get the first buffer as a fallback.
-      if (!tileBuffers->empty() && op.getResult().use_empty() == false) {
-        // If the window SSA value has surviving users (e.g., conduit.subview_access
-        // that Phase 6 missed), replace with buffer[0].
-        mlir::Value bufVal = (*tileBuffers)[0].getResult();
-        if (bufVal.getType() == op.getResult().getType()) {
-          op.getResult().replaceAllUsesWith(bufVal);
-        }
+      // All users of the window result should have been replaced by Phase 6
+      // Step 1 (SubviewAccess → aie.buffer).  If any users survive here, it
+      // indicates a type mismatch or missed op — emit a hard error rather than
+      // silently producing incorrect IR.
+      if (!op.getResult().use_empty()) {
+        op.emitError("conduit-to-dma: wait_window result has surviving users after "
+                     "Phase 6 SubviewAccess replacement — type mismatch or missed op");
+        signalPassFailure();
+        return;
       }
 
       waitWindowsToErase.push_back(op);
@@ -3544,6 +3536,9 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // holds a use of the AcquireAsync token SSA value anymore.
     for (auto op : asyncAcquiresToErase)
       op.erase();
+    // Note: asyncAcquireMap entries for tokens consumed by wait_all_async (not
+    // wait_window or wait_all) may remain in the map — they are benign (map is
+    // local) but indicate an incomplete async chain.
 
     // Step 8d: Lower conduit.release_async.
     //
@@ -3621,14 +3616,11 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             builder, loc, i32Ty, count);
         mlir::Value newVal =
             builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
+        // Wrap modulo depth: true modulo via arith.remui (handles count>1 correctly).
         mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
             builder, loc, i32Ty, cinfo.depth);
-        mlir::Value cmp = builder.create<mlir::arith::CmpIOp>(
-            loc, mlir::arith::CmpIPredicate::sge, newVal, depthI32);
-        mlir::Value wrapped =
-            builder.create<mlir::arith::SubIOp>(loc, newVal, depthI32);
         mlir::Value result =
-            builder.create<mlir::arith::SelectOp>(loc, cmp, wrapped, newVal);
+            builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
         builder.create<mlir::memref::StoreOp>(
             loc, result, resolvedRotationBuf.getResult(), mlir::ValueRange{c0});
       }

@@ -347,3 +347,18 @@ func.func @m10_token_escape_call() {
   func.call @callee(%tok) : (!conduit.window.token) -> ()
   return
 }
+
+// -----
+
+// M10: wait_all_async result (dma.token) escapes via return.
+// wait_all_async merges completion tokens into a single dma.token result;
+// that result must not escape function scope.
+func.func @m10_wait_all_async_token_escape() -> !conduit.dma.token {
+  conduit.create {name = "wa_esc", capacity = 64 : i64}
+  %tok = conduit.put_memref_async {name = "wa_esc", num_elems = 64 : i64,
+             offsets = array<i64: 0>, sizes = array<i64: 64>,
+             strides = array<i64: 1>} : !conduit.dma.token
+  // expected-error@+1 {{'conduit.wait_all_async' op M10: token escapes function scope via return}}
+  %merged = conduit.wait_all_async %tok : (!conduit.dma.token) -> !conduit.dma.token
+  return %merged : !conduit.dma.token
+}
