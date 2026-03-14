@@ -55,6 +55,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITPAIRINGCHECK
 #define GEN_PASS_DECL_CONDUITLIVENESSCHECK
 #define GEN_PASS_DECL_CONDUITFUSECHANNELS
+#define GEN_PASS_DECL_CONDUITCHECKCHANNELS
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -88,6 +89,10 @@ createConduitLivenessCheckPass();
 /// DMA channel sharing (addresses DMA channel exhaustion gap).
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitFuseChannelsPass();
+
+/// Channel check: validate that no tile exceeds its hardware DMA channel limit.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitCheckChannelsPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

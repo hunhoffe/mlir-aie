@@ -314,4 +314,44 @@ def ConduitFuseChannels : Pass<"conduit-fuse-channels", "::mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Channel Check — conduit-check-channels (P1-B validation)
+//===----------------------------------------------------------------------===//
+
+def ConduitCheckChannels : Pass<"conduit-check-channels", "::mlir::ModuleOp"> {
+  let summary = "Validate that no tile exceeds its hardware DMA channel limit";
+  let description = [{
+    Validation pass that checks hardware DMA channel capacity constraints.
+
+    Each AIE tile has a fixed number of DMA channels:
+      - AIE2 compute tiles: 2 MM2S + 2 S2MM
+      - AIE2 MemTiles:      6 MM2S + 6 S2MM
+      - AIE1 compute tiles: 2 MM2S + 2 S2MM
+
+    Each conduit requires one MM2S channel on its producer tile and one S2MM
+    channel on each of its consumer tiles.  This pass walks all conduit.create
+    ops, groups them by tile, queries the target model for hardware limits, and
+    emits an error if any tile exceeds its capacity.
+
+    When --conduit-fuse-channels has been run first, fusion annotations
+    (fused_dma_channel_group attribute) are respected: conduits in the same
+    group count as one channel, not N.
+
+    Shim tiles (row == 0) are excluded — they use a separate shim DMA model.
+
+    Run AFTER Pass A or Pass B and optionally AFTER --conduit-fuse-channels.
+    Run BEFORE Pass C to catch over-commitment early.
+
+    This pass emits hard errors and signals pass failure on violation.
+    It is OPT-IN and NOT part of the default pipeline.
+  }];
+
+  let constructor = "xilinx::conduit::createConduitCheckChannelsPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES
