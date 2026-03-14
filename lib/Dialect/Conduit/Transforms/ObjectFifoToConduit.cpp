@@ -259,7 +259,8 @@ struct ObjectFifoToConduitPass
           accessPatternAttr,
           /*routing_mode=*/mlir::StringAttr{},
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
-          /*consumer_rates=*/mlir::DenseI64ArrayAttr{});
+          /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
+          /*alloc_tile=*/mlir::DenseI64ArrayAttr{});
 
       fifosToErase.push_back(op);
     });
@@ -626,22 +627,34 @@ struct ObjectFifoToConduitPass
       }
     }
 
-    // Phase 5 (deferred erase): erase objectfifo allocate ops first, then
-    // objectfifo create ops.  Erasure order matters: ObjectFifoAllocateOp's
-    // verifier does a symbol-table lookup for the referenced ObjectFifoCreateOp.
-    // If we erase the create op first, any surviving allocate op fires the
-    // verifier and emits "cannot retrieve associated object FIFO".
-    // Fix: erase all allocate ops before erasing the create ops they reference.
+    // Phase 4.5b: transfer objectfifo.allocate delegate tile info into the
+    // alloc_tile attribute on the matching conduit.create, then erase.
     //
-    // Note: the delegate tile information from objectfifo.allocate controls
-    // buffer placement in the stateful transform.  Conduit IR does not yet
-    // carry an alloc_tile attribute on conduit.create, so Pass C will use its
-    // default tile selection heuristic.  This is a potential L2 gap for
-    // programs where the delegate tile differs from the heuristic's choice;
-    // a future conduit.create {alloc_tile = ...} attribute can encode the
-    // override.
+    // The delegate tile from objectfifo.allocate controls buffer placement
+    // in the stateful transform.  We now propagate this into conduit.create's
+    // alloc_tile attribute so Pass C can use it for tile selection.
+    //
+    // Erasure order matters: ObjectFifoAllocateOp's verifier does a
+    // symbol-table lookup for the referenced ObjectFifoCreateOp.  If we
+    // erase the create op first, any surviving allocate op fires the
+    // verifier.  Fix: process and erase all allocate ops before erasing
+    // the create ops they reference.
     llvm::SmallVector<AIE::ObjectFifoAllocateOp> allocatesToErase;
     module.walk([&](AIE::ObjectFifoAllocateOp op) {
+      // Find the matching conduit.create by name.
+      llvm::StringRef fifoName = op.getObjFifoName();
+      module.walk([&](Create conduitOp) {
+        if (conduitOp.getName() == fifoName) {
+          // Extract delegate tile coordinates.
+          auto delegateTile =
+              mlir::cast<AIE::TileOp>(op.getDelegateTile().getDefiningOp());
+          int64_t col = delegateTile.getCol();
+          int64_t row = delegateTile.getRow();
+          llvm::SmallVector<int64_t> tileCoord = {col, row};
+          conduitOp.setAllocTileAttr(
+              mlir::DenseI64ArrayAttr::get(op.getContext(), tileCoord));
+        }
+      });
       allocatesToErase.push_back(op);
     });
     for (AIE::ObjectFifoAllocateOp op : allocatesToErase)
