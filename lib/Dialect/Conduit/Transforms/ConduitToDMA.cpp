@@ -3319,9 +3319,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
       // Resolve per-tile lock pair and rotation buffer: find the enclosing
       // aie.core tile and look up that tile's locks and rotation counter.
-      // Falls back to cinfo.prodLock / cinfo.rotationBuf if not inside a
-      // core or no per-tile entry exists (same pattern as blocking Release).
+      // Falls back to cinfo.prodLock/consLock / cinfo.rotationBuf if not
+      // inside a core or no per-tile entry exists (same pattern as blocking
+      // Release).
+      llvm::StringRef port = op.getPort();
       AIE::LockOp resolvedProdLock = cinfo.prodLock;
+      AIE::LockOp resolvedConsLock = cinfo.consLock;
       AIE::BufferOp resolvedRotationBuf = cinfo.rotationBuf;
       {
         mlir::Operation *coreOp = op->getParentOp();
@@ -3330,8 +3333,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         if (coreOp) {
           mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
           auto lockIt = cinfo.consumerTileLocks.find(coreTile);
-          if (lockIt != cinfo.consumerTileLocks.end())
+          if (lockIt != cinfo.consumerTileLocks.end()) {
             resolvedProdLock = lockIt->second.first;
+            resolvedConsLock = lockIt->second.second;
+          }
           auto rotIt = cinfo.consumerTileRotationBufs.find(coreTile);
           if (rotIt != cinfo.consumerTileRotationBufs.end())
             resolvedRotationBuf = rotIt->second;
@@ -3340,18 +3345,22 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
       builder.setInsertionPoint(op);
       int64_t count = static_cast<int64_t>(op.getCount());
-      if (resolvedProdLock) {
-        // release_async is always consumer-side: releases prodLock to signal
-        // slot freed.  AIE1: release to 0 (empty).  AIE2: release by count.
-        int32_t relVal = isAIE2 ? static_cast<int32_t>(count) : 0;
-        builder.create<AIE::UseLockOp>(op.getLoc(), resolvedProdLock.getResult(),
+      // Consumer releases prod-lock (freeing up producer slots);
+      // Producer releases cons-lock (signalling data ready for consumer).
+      AIE::LockOp lock =
+          (port == "Consume") ? resolvedProdLock : resolvedConsLock;
+      if (lock) {
+        // AIE1: value-based release — Consumer releases to 0 (empty),
+        //       Producer releases to 1 (full).  AIE2: release by 'count'.
+        int32_t relVal = isAIE2 ? static_cast<int32_t>(count)
+                                : (port == "Consume" ? 0 : 1);
+        builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                        AIE::LockAction::Release,
                                        relVal);
       }
-      // For depth>1: increment the rotation counter after the release,
-      // matching the blocking Release path (Step 3).  release_async is
-      // always consumer-side, so this mirrors port=="Consume" behavior.
-      if (resolvedRotationBuf && cinfo.depth > 1) {
+      // For depth>1 with Consume port: increment the rotation counter
+      // after the release, matching the blocking Release path (Step 3).
+      if (resolvedRotationBuf && port == "Consume" && cinfo.depth > 1) {
         mlir::Location loc = op.getLoc();
         mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
         mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
