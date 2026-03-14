@@ -35,7 +35,7 @@
 // 3. For each aie.objectfifo.link:
 //      determines mode (distribute: 1 src, N dsts; join: N srcs, 1 dst)
 //      picks memtile as the relay tile (heuristic: consumer of first src)
-//      emits conduit.objectfifo_link {srcs, dsts, mode, memtile, offsets}
+//      emits conduit.link {srcs, dsts, mode, memtile, offsets}
 //
 // 4. For each aie.objectfifo.acquire (inside core bodies):
 //      emits conduit.acquire {name, count, port="Produce"|"Consume"}
@@ -120,6 +120,10 @@ struct FifoInfo {
   // fifo.  If all acquires use the same count the pattern is absent (uniform SDF).
   // If acquires vary, this holds the sequence of counts in program order.
   llvm::SmallVector<int64_t> accessPattern;
+  // Per-consumer depths, when the source ObjectFIFO uses an ArrayAttr
+  // elemNumber (e.g., {2 : i32, 4 : i32} meaning producer depth=2,
+  // consumer 0 depth=4).  Empty when all consumers share the uniform depth.
+  llvm::SmallVector<int64_t> consumerDepths;
 };
 
 // ---------------------------------------------------------------------------
@@ -189,8 +193,19 @@ struct ObjectFifoToConduitPass
           info.consumerTilesArr.push_back(row);
         }
       }
-      // Depth
+      // Depth — producer depth is always index 0.
       info.depth = op.size(0);
+
+      // P2-9: Per-consumer depths.  When elemNumber is an ArrayAttr,
+      // indices 1..N are per-consumer depths (one per consumer tile).
+      if (auto arrAttr = mlir::dyn_cast<mlir::ArrayAttr>(op.getElemNumber())) {
+        // Index 0 = producer depth; indices 1..N = consumer depths.
+        for (unsigned i = 1; i < arrAttr.size(); ++i) {
+          auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(arrAttr[i]);
+          if (intAttr)
+            info.consumerDepths.push_back(intAttr.getInt());
+        }
+      }
       // Element type — must be a MemRefType for window semantics.
       auto objfifoTy = mlir::cast<AIE::AIEObjectFifoType>(op.getElemType());
       mlir::Type elemTy = objfifoTy.getElementType();
@@ -282,7 +297,7 @@ struct ObjectFifoToConduitPass
   // Phase 2–4: transformFifos
   // -----------------------------------------------------------------------
   //
-  // Emit conduit.create / conduit.objectfifo_link / conduit.acquire /
+  // Emit conduit.create / conduit.link / conduit.acquire /
   // conduit.subview_access / conduit.release, replacing all ObjectFIFO ops.
   // Original ops are collected in erasure vectors for later cleanup.
 
@@ -331,6 +346,12 @@ struct ObjectFifoToConduitPass
             static_cast<int64_t>(op.getRepeatCount().value()));
       }
 
+      // P2-9: Build consumer_depths attribute if per-consumer depths differ.
+      mlir::DenseI64ArrayAttr consumerDepthsAttr;
+      if (!info.consumerDepths.empty())
+        consumerDepthsAttr =
+            mlir::DenseI64ArrayAttr::get(ctx, info.consumerDepths);
+
       builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
@@ -346,12 +367,13 @@ struct ObjectFifoToConduitPass
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
-          repeatCountAttr);
+          repeatCountAttr,
+          consumerDepthsAttr);
 
       fifosToErase.push_back(op);
     });
 
-    // Phase 3: rewrite aie.objectfifo.link → conduit.objectfifo_link.
+    // Phase 3: rewrite aie.objectfifo.link → conduit.link.
     module.walk([&](AIE::ObjectFifoLinkOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
@@ -463,7 +485,7 @@ struct ObjectFifoToConduitPass
       if (!offVec.empty())
         offsetsAttr = mlir::DenseI64ArrayAttr::get(ctx, offVec);
 
-      builder.create<ObjectFifoLink>(
+      builder.create<Link>(
           loc, mlir::ArrayAttr::get(ctx, srcAttrs),
           mlir::ArrayAttr::get(ctx, dstAttrs),
           mlir::StringAttr::get(ctx, mode),

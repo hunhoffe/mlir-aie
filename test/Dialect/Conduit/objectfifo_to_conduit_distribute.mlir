@@ -6,7 +6,7 @@
 //
 // After --objectfifo-to-conduit:
 //   - Four conduit.create ops (link1, link2, link3, link4)
-//   - conduit.objectfifo_link in distribute mode with offsets
+//   - conduit.link in distribute mode with offsets
 
 // CHECK-LABEL: module @link_distribute_offsets
 // CHECK:   aie.device(xcve2302) {
@@ -18,7 +18,7 @@
 // CHECK-SAME:   name = "link3"
 // CHECK:     conduit.create
 // CHECK-SAME:   name = "link4"
-// CHECK:     conduit.objectfifo_link
+// CHECK:     conduit.link
 // CHECK-SAME:   dsts = ["link2", "link3", "link4"]
 // CHECK-SAME:   memtile = "tile(2,1)"
 // CHECK-SAME:   mode = "distribute"

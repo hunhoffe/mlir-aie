@@ -208,8 +208,11 @@ struct ConduitToDMAState {
 
   // Target model queries.
   const AIE::AIETargetModel *targetModel = nullptr;
-  bool isAIE2 = false;
+  AIE::AIEArch aieArch = AIE::AIEArch::AIE1;
   AIE::LockAction acqAction;
+
+  // Convenience: true for AIE2 and AIE2p (all non-AIE1 architectures).
+  bool isAIE2Plus() const { return aieArch != AIE::AIEArch::AIE1; }
 
   // AIE1 BD block lock value constants.
   // S2MM: acquire(0) [empty], release(1) [full].
@@ -338,7 +341,7 @@ struct ConduitToDMAState {
   AllocatedLocks allocateLockPair(mlir::Value tileVal,
                                   llvm::StringRef prefix, int64_t depth) {
     AllocatedLocks locks;
-    if (isAIE2) {
+    if (isAIE2Plus()) {
       {
         int lockIdx = lockIdCounter[tileVal]++;
         std::string symName = (prefix + "_prod_lock_0").str();
@@ -399,7 +402,7 @@ struct ConduitToDMAState {
 // ---------------------------------------------------------------------------
 
 /// Phase 1: Collect ConduitInfo from conduit.create ops into conduitMap.
-/// Phase 2: Find aie.device, build tile cache, determine isAIE2.
+/// Phase 2: Find aie.device, build tile cache, determine aieArch.
 /// Phase 2.5: Compute effectiveDepth for producer-side buffer optimization.
 /// Also collects link source names and consumer acquire name sets.
 void collectPhase(ConduitToDMAState &state);

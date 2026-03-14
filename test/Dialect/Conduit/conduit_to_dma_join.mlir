@@ -45,7 +45,7 @@
 // CHECK:       aie.end
 // CHECK:     }
 // CHECK-NOT: conduit.create
-// CHECK-NOT: conduit.objectfifo_link
+// CHECK-NOT: conduit.link
 
 module @link_join_offsets {
   aie.device(xcve2302) {

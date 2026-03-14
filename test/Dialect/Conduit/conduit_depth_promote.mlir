@@ -6,7 +6,7 @@
 // The pass promotes eligible depth-1 conduits to depth-2 (double-buffering).
 // Exclusion criteria (any one prevents promotion):
 //   1. CSDF/cyclostatic access pattern present
-//   2. Conduit appears in objectfifo_link srcs or dsts (linked conduit)
+//   2. Conduit appears in conduit.link srcs or dsts (linked conduit)
 //   3. No surrounding loop context for its acquire ops
 //   4. Passthrough-only (no compute between acquire and release)
 //   5. Non-uniform acquire/release counts
@@ -15,7 +15,7 @@
 // This test verifies:
 //   (a) "loop_fifo" — depth-1 with acquire inside scf.for + real compute:
 //       PROMOTED from depth=1,capacity=8 to depth=2,capacity=16
-//   (b) "linked_fifo" — depth-1 but referenced in objectfifo_link:
+//   (b) "linked_fifo" — depth-1 but referenced in conduit.link:
 //       NOT promoted (stays at depth=1,capacity=8)
 //   (c) "passthrough_fifo" — depth-1 but acquire→release with no compute:
 //       NOT promoted (passthrough-only)
@@ -32,8 +32,8 @@
 // (c) passthrough_fifo: NOT promoted — capacity stays 4, depth stays 1
 // CHECK-DAG: conduit.create {capacity = 4 : i64, {{.*}} depth = 1 : i64, {{.*}} name = "passthrough_fifo"
 
-// objectfifo_link must survive unchanged (also CHECK-DAG to allow any order)
-// CHECK-DAG: conduit.objectfifo_link
+// conduit.link must survive unchanged (also CHECK-DAG to allow any order)
+// CHECK-DAG: conduit.link
 
 // expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s) to depth-2}}
 module {
@@ -63,7 +63,7 @@ func.func @eligible_loop_fifo(%result: memref<8xi32>) {
   return
 }
 
-// (b) Linked: depth-1 but conduit.objectfifo_link references it.
+// (b) Linked: depth-1 but conduit.link references it.
 // Pass must skip it (exclusion criterion #2).
 func.func @linked_conduit_not_promoted() {
   // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_fifo' -- linked conduit}}
@@ -79,7 +79,7 @@ func.func @linked_conduit_not_promoted() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // This link causes both "linked_fifo" and "linked_out" to be excluded.
-  conduit.objectfifo_link {srcs = ["linked_fifo"], dsts = ["linked_out"],
+  conduit.link {srcs = ["linked_fifo"], dsts = ["linked_out"],
                            mode = "forward", memtile = "tile(0,1)"}
   return
 }

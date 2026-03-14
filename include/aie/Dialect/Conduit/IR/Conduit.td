@@ -412,7 +412,15 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // Pass A propagates this from aie.objectfifo.create's
                        // repeat_count attribute.  P1-F rejects repeat_count > 1
                        // until full Pass C implementation is done.
-                       OptionalAttr<I64Attr>:$repeat_count);
+                       OptionalAttr<I64Attr>:$repeat_count,
+                       // consumer_depths: optional per-consumer depth array.
+                       // When present, consumer i uses consumer_depths[i] instead
+                       // of the uniform 'depth' attribute.  This handles
+                       // ObjectFIFOs with per-consumer depth arrays (ArrayAttr
+                       // elemNumber in aie.objectfifo).  Pass C should allocate
+                       // consumer-side buffers using these depths.
+                       // When absent, all consumers use 'depth'.
+                       OptionalAttr<DenseI64ArrayAttr>:$consumer_depths);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
@@ -664,7 +672,7 @@ def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {
 // Hardware structure ops
 // ---------------------------------------------------------------------------
 
-def Conduit_ObjectFifoLink : Conduit_Op<"objectfifo_link"> {
+def Conduit_Link : Conduit_Op<"link"> {
   let summary = "link conduits via a MemTile relay for hardware-mediated distribute or join";
   let description = [{
     Represents aie.objectfifo.link semantics: hardware-mediated data relay
@@ -690,7 +698,7 @@ def Conduit_ObjectFifoLink : Conduit_Op<"objectfifo_link"> {
     preserve synchronization semantics.
 
     Example:
-      conduit.objectfifo_link {srcs = ["of_in"],
+      conduit.link {srcs = ["of_in"],
                                dsts = ["of_out0", "of_out1"],
                                mode = "distribute",
                                memtile = "tile(0,1)",

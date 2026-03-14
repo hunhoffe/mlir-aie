@@ -16,7 +16,7 @@
 //
 // Exclusion criteria (any one disqualifies):
 //   1. CSDF / cyclostatic access pattern present
-//   2. Linked conduit (appears in objectfifo_link srcs or dsts)
+//   2. Linked conduit (appears in conduit.link srcs or dsts)
 //   3. No surrounding loop (no overlap benefit without iteration)
 //   4. Passthrough-only (acquire immediately followed by release, no compute)
 //   5. Non-uniform acquire/release counts across uses
@@ -68,11 +68,11 @@ static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Collect conduit names that appear in any objectfifo_link (src or dst).
+/// Collect conduit names that appear in any conduit.link (src or dst).
 static llvm::StringSet<>
 collectLinkedConduitNames(mlir::ModuleOp module) {
   llvm::StringSet<> linked;
-  module.walk([&](ObjectFifoLink op) {
+  module.walk([&](Link op) {
     if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs")) {
       for (auto s : srcsAttr)
         if (auto str = mlir::dyn_cast<mlir::StringAttr>(s))
