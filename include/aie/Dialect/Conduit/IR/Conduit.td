@@ -16,8 +16,8 @@
 //
 // The central design insight:
 //
-//   A `!conduit.async.token` from `conduit.acquire_async` IS pending
-//   permission to access a buffer window.  A `!conduit.async.token` from
+//   A `!conduit.window.token` from `conduit.acquire_async` IS pending
+//   permission to access a buffer window.  A `!conduit.dma.token` from
 //   `conduit.put_memref_async` IS a pending DMA transfer.
 //   `conduit.wait_all` over both lets hardware satisfy them in parallel.
 //
@@ -36,11 +36,11 @@
 //   // Shim DMA producer (Tier 3): non-blocking N-D DMA fill from DDR
 //   %dma_tok = conduit.put_memref_async {name = "input", num_elems = 9 : i64,
 //                  offsets = array<i64: 0, 0>, sizes = array<i64: 3, 3>,
-//                  strides = array<i64: 16, 1>} : !conduit.async.token
+//                  strides = array<i64: 16, 1>} : !conduit.dma.token
 //
 //   // Compute core consumer (Tier 2, bridge): non-blocking window request
 //   %acq_tok = conduit.acquire_async {name = "output", count = 1 : i64}
-//                  : !conduit.async.token
+//                  : !conduit.window.token
 //
 //   // Hardware satisfies DMA fill and lock grant in parallel; wait for both
 //   conduit.wait_all %dma_tok, %acq_tok
@@ -72,7 +72,7 @@
 //
 //   Lowering target: aie.use_lock + aie.buffer + aie.dma_bd chains (Pass C).
 //
-//   Bridge to Tier 3: conduit.acquire_async returns a !conduit.async.token
+//   Bridge to Tier 3: conduit.acquire_async returns a !conduit.window.token
 //   that can be combined in conduit.wait_all with tokens from
 //   conduit.put_memref_async (Tier 3 DMA operations), allowing the hardware
 //   to satisfy buffer-window grants and DMA transfers in parallel.
@@ -144,7 +144,7 @@ def Conduit_Dialect : Dialect {
       variants — AIR Channel path, produced by Pass B
       (--air-channel-to-conduit, not yet implemented)
 
-    The unifying mechanism is the !conduit.async.token type: a token from
+    The unifying mechanism is split token types: a !conduit.window.token from
     conduit.acquire_async (pending window grant) can be combined in
     conduit.wait_all with a token from conduit.put_memref_async (pending DMA
     transfer), allowing the hardware to satisfy both in parallel.
@@ -157,7 +157,7 @@ def Conduit_Dialect : Dialect {
       Tier 2: aie.use_lock + aie.buffer + aie.dma_bd chains (Pass C)
       Tier 3: aie.dma_bd with BDDimLayout wrap/stride descriptors (Pass C)
   }];
-  // Enable generated type printer/parser for !conduit.async.token.
+  // Enable generated type printer/parser for !conduit.dma.token / !conduit.window.token.
   let useDefaultTypePrinterParser = 1;
   // Enable generated attribute printer/parser for #conduit.port<...>.
   let useDefaultAttributePrinterParser = 1;
@@ -227,27 +227,10 @@ def Conduit_WindowTokenType : TypeDef<Conduit_Dialect, "WindowToken"> {
   let assemblyFormat = "";
 }
 
-// DEPRECATED: !conduit.async.token retained for backward compatibility.
-// New code should use !conduit.dma.token or !conduit.window.token.
-// Backward-compatibility alias kept for use in doc-only comments and
-// existing tooling.  All ops now use the split types above.
-def Conduit_AsyncTokenType : TypeDef<Conduit_Dialect, "AsyncToken"> {
-  let mnemonic = "async.token";
-  let summary = "Deprecated: use !conduit.dma.token or !conduit.window.token";
-  let description = [{
-    Retained for backward compatibility in tools that parse older IR dumps.
-    New code should use !conduit.dma.token (for DMA ops) or
-    !conduit.window.token (for acquire/release async ops).
-  }];
-  let parameters = (ins);
-  let assemblyFormat = "";
-}
-
 // Type constraint accepting any conduit token type for mixed-token variadics.
 // Used by wait_all / wait_all_async which accept a mix of DMA and window tokens.
 def Conduit_AnyTokenType : AnyTypeOf<[Conduit_DMATokenType,
-                                       Conduit_WindowTokenType,
-                                       Conduit_AsyncTokenType],
+                                       Conduit_WindowTokenType],
                                       "conduit token type">;
 
 // ---------------------------------------------------------------------------

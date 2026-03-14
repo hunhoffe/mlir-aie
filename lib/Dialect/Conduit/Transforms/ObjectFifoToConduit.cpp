@@ -265,6 +265,17 @@ struct ObjectFifoToConduitPass
           it->second.accessPattern = counts;
       }
     }
+
+    // P2-D: detect aie.objectfifo.register_process ops.
+    // This op is not yet supported by the Conduit lowering pipeline.
+    // Emit a hard error to prevent silent incorrect output (the op would
+    // otherwise survive into the output IR without being lowered).
+    module.walk([&](AIE::ObjectFifoRegisterProcessOp op) {
+      op.emitError("register_process is not yet supported by "
+                   "objectfifo-to-conduit lowering");
+      signalPassFailure();
+      passFailed = true;
+    });
   }
 
   // -----------------------------------------------------------------------
