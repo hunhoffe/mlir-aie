@@ -137,6 +137,14 @@ struct ObjectFifoToConduitPass
   // Shared state across phases
   // -----------------------------------------------------------------------
 
+  /// Set to true when an unrecoverable error is detected.  Checked at
+  /// phase boundaries in runOnOperation() to prevent subsequent phases
+  /// from executing on corrupted state.  (CL-2: same anti-pattern as
+  /// the P0-A bug in ConduitToDMA.cpp — signalPassFailure() inside a
+  /// walk lambda does NOT stop the pass; it only marks the result as
+  /// failed after all phases complete.)
+  bool passFailed = false;
+
   /// Name → fifo metadata, populated by collectFifoInfo().
   llvm::DenseMap<mlir::StringAttr, FifoInfo> fifoInfoMap;
 
@@ -208,6 +216,7 @@ struct ObjectFifoToConduitPass
             << op.getRepeatCount().value()
             << " times, producing wrong hardware output";
         signalPassFailure();
+        passFailed = true;
       }
 
       fifoInfoMap[op.getSymNameAttr()] = std::move(info);
@@ -342,6 +351,7 @@ struct ObjectFifoToConduitPass
             << op.getRepeatCount().value()
             << " on objectfifo.link is not yet supported";
         signalPassFailure();
+        passFailed = true;
         return;
       }
 
@@ -361,6 +371,7 @@ struct ObjectFifoToConduitPass
             "objectfifo-to-conduit: N→M link (N>1 sources AND N>1 "
             "destinations) is not supported; use cascade mode when implemented");
         signalPassFailure();
+        passFailed = true;
         return;
       }
 
@@ -543,9 +554,9 @@ struct ObjectFifoToConduitPass
 
           std::string name = op.getObjFifoName().str();
           int64_t count = op.acqNumber();
-          std::string portStr =
-              (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce"
-                                                             : "Consume";
+          Port port = (op.getPort() == AIE::ObjectFifoPort::Produce)
+                          ? Port::Produce
+                          : Port::Consume;
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
           mlir::MemRefType elemType;
@@ -559,7 +570,7 @@ struct ObjectFifoToConduitPass
           mlir::Value winVal = builder.create<Acquire>(
               loc, winTy, mlir::StringAttr::get(ctx, name),
               mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-              mlir::StringAttr::get(ctx, portStr));
+              PortAttr::get(ctx, port));
 
           // Record the window for subsequent releases in this block and for
           // cross-block lookups in dominated nested blocks.
@@ -597,9 +608,9 @@ struct ObjectFifoToConduitPass
 
           std::string name = op.getObjFifoName().str();
           int64_t count = op.getSize();
-          std::string portStr =
-              (op.getPort() == AIE::ObjectFifoPort::Produce) ? "Produce"
-                                                             : "Consume";
+          Port port = (op.getPort() == AIE::ObjectFifoPort::Produce)
+                          ? Port::Produce
+                          : Port::Consume;
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
 
@@ -639,7 +650,7 @@ struct ObjectFifoToConduitPass
             winVal = builder.create<Acquire>(
                 loc, winTy, mlir::StringAttr::get(ctx, name),
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-                mlir::StringAttr::get(ctx, portStr));
+                PortAttr::get(ctx, port));
             blockWindowMap[nameAttr] = winVal;
           }
 
@@ -823,8 +834,14 @@ struct ObjectFifoToConduitPass
     mlir::OpBuilder builder(module.getContext());
     mlir::MLIRContext *ctx = module.getContext();
 
+    passFailed = false;
+
     collectFifoInfo(module, ctx);
+    if (passFailed)
+      return;
     transformFifos(module, builder, ctx);
+    if (passFailed)
+      return;
     eraseOriginalOps(module, builder, ctx);
   }
 };
