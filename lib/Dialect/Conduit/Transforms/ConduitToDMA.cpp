@@ -510,6 +510,21 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // Per-tile lock ID counter to avoid collisions.
     llvm::DenseMap<mlir::Value, int> lockIdCounter;
 
+    // Per-tile DMA channel counters for Phase 4.5a flow emission and
+    // Phase 5.5 DMA BD chain creation.  Tracks the next free MM2S/S2MM
+    // channel index for each tile, ensuring conduits sharing a tile use
+    // distinct channels.
+    llvm::DenseMap<mlir::Value, int32_t> tileNextMM2SChannel;
+    llvm::DenseMap<mlir::Value, int32_t> tileNextS2MMChannel;
+
+    // Per-conduit assigned channel indices, populated by Phase 4.5a and
+    // consumed by Phase 5.5 for DMA start creation.
+    llvm::DenseMap<llvm::StringRef, int32_t> conduitMM2SChannel;
+    // Per-conduit per-consumer S2MM channel on the consumer tile.
+    // Key: {conduit_name, consumer_index}.
+    llvm::DenseMap<std::pair<llvm::StringRef, unsigned>, int32_t>
+        conduitConsS2MMChannel;
+
     // C2 — LockAnalysis-style pre-population:
     //
     // Walk all existing aie.lock ops already present in the device body and
@@ -1143,7 +1158,9 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (linkSrcNamesEarly.count(name) || linkJoinSrcNames.count(name))
         continue;
       auto [prodCol, prodRow] = info.producerTileCoord;
-      if (prodCol < 0 || prodRow < 2)
+      // Skip shim producers (row 0) — they are handled by Phase 3b.
+      // Allow compute tiles (row >= 2) AND MemTile producers (row 1).
+      if (prodCol < 0 || prodRow == 0)
         continue;
       if (info.consumerTileCoords.empty())
         continue;
@@ -1161,7 +1178,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         needsProdSide = true;
       } else {
         auto [consCol, consRow] = info.consumerTileCoords[0];
-        if (consRow >= 2) {
+        // Check adjacency for compute tiles (row >= 2) AND MemTile consumers
+        // (row == 1).  A compute producer in a different column cannot access
+        // the MemTile's memory directly — it needs its own producer-side
+        // buffers and a DMA flow.  Shim tiles (row == 0) are handled by
+        // Phase 3b/4b and are never in consumerTileCoords.
+        if (consRow >= 1) {
           bool rightAdj = targetModel.isLegalMemAffinity(
               prodCol, prodRow, consCol, consRow);
           bool leftAdj = targetModel.isLegalMemAffinity(
@@ -1425,7 +1447,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 4.5a: emit aie.flow for non-adjacent compute→compute conduits.
+    // Phase 4.5a: emit aie.flow for non-adjacent conduits.
+    //
+    // Covers compute→compute, compute→MemTile, and MemTile→compute flows.
+    // Shim endpoints are handled separately by Phase 4a/4b.
     // -----------------------------------------------------------------------
 
     for (auto &[name, info] : conduitMap) {
@@ -1434,7 +1459,8 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (linkSrcNamesEarly.count(name) || linkJoinSrcNames.count(name))
         continue;
       auto [prodCol, prodRow] = info.producerTileCoord;
-      if (prodCol < 0 || prodRow < 2)
+      // Skip shim producers (row 0) — handled by Phase 4a.
+      if (prodCol < 0 || prodRow == 0)
         continue;
       if (info.consumerTileCoords.empty())
         continue;
@@ -1449,25 +1475,16 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
       builder.setInsertionPoint(deviceBody.getTerminator());
 
-      int32_t mm2sChannel = 0;
-      {
-        llvm::DenseSet<int32_t> usedCh;
-        deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
-          if (auto memOp =
-                  mlir::dyn_cast<AIE::MemOp>(dmaStart->getParentOp())) {
-            if (memOp.getTile() == prodTileVal &&
-                dmaStart.getChannelDir() == AIE::DMAChannelDir::MM2S)
-              usedCh.insert(static_cast<int32_t>(dmaStart.getChannelIndex()));
-          }
-        });
-        while (usedCh.count(mm2sChannel))
-          ++mm2sChannel;
-      }
+      // Assign this conduit's MM2S channel on the producer tile.
+      int32_t mm2sChannel = tileNextMM2SChannel[prodTileVal]++;
+      conduitMM2SChannel[name] = mm2sChannel;
 
       for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
            ++consIdx) {
         auto [consCol, consRow] = info.consumerTileCoords[consIdx];
-        if (consRow < 2)
+        // Skip shim consumers (row 0) — they are handled by Phase 4b.
+        // Allow both compute tiles (row >= 2) and MemTile consumers (row 1).
+        if (consRow == 0)
           continue;
 
         bool rightAdj = targetModel.isLegalMemAffinity(
@@ -1481,10 +1498,14 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         if (!consTile)
           continue;
 
+        // Assign S2MM channel on the consumer tile.
+        mlir::Value consTileVal = consTile.getResult();
+        int32_t s2mmChannel = tileNextS2MMChannel[consTileVal]++;
+        conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
+
         emitFlow(info.routingMode, prodTileVal,
                  AIE::WireBundle::DMA, mm2sChannel,
-                 consTile.getResult(), AIE::WireBundle::DMA,
-                 static_cast<int32_t>(0));
+                 consTileVal, AIE::WireBundle::DMA, s2mmChannel);
       }
     }
 
@@ -2406,11 +2427,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (info.sharedMemory)
         continue;
 
-      // Case C: non-adjacent compute→compute MM2S on producer tile.
+      // Case C: non-adjacent producer MM2S on producer tile.
+      // Covers compute→compute, compute→MemTile, and MemTile→compute.
       // Does NOT continue — falls through to Case A for consumer S2MM.
       {
         auto [prodCol, prodRow] = info.producerTileCoord;
-        if (prodCol >= 0 && prodRow >= 2 &&
+        // Allow compute tiles (row >= 2) and MemTile producers (row == 1).
+        if (prodCol >= 0 && prodRow >= 1 &&
             !linkSrcNames.count(name) &&
             !info.consumerTileCoords.empty()) {
           AIE::TileOp prodTile = lookupTileByCoord(prodCol, prodRow);
@@ -2439,31 +2462,54 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               }
 
               if (mm2sAcqLock && mm2sRelLock) {
+                bool prodIsMemTile =
+                    targetModel.isMemTile(prodCol, prodRow);
+
+                // Use the MM2S channel assigned by Phase 4.5a.
                 int32_t mm2sChannel = 0;
                 {
-                  llvm::DenseSet<int32_t> usedCh;
-                  deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
-                    if (auto memOp = mlir::dyn_cast<AIE::MemOp>(
-                            dmaStart->getParentOp())) {
-                      if (memOp.getTile() == prodTileVal &&
+                  auto chIt = conduitMM2SChannel.find(name);
+                  if (chIt != conduitMM2SChannel.end()) {
+                    mm2sChannel = chIt->second;
+                  } else {
+                    // Fallback: scan for next free MM2S channel.
+                    llvm::DenseSet<int32_t> usedCh;
+                    deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
+                      mlir::Value parentTile;
+                      if (auto memOp = mlir::dyn_cast<AIE::MemOp>(
+                              dmaStart->getParentOp()))
+                        parentTile = memOp.getTile();
+                      else if (auto mtOp = mlir::dyn_cast<AIE::MemTileDMAOp>(
+                                   dmaStart->getParentOp()))
+                        parentTile = mtOp.getTile();
+                      if (parentTile == prodTileVal &&
                           dmaStart.getChannelDir() ==
                               AIE::DMAChannelDir::MM2S)
                         usedCh.insert(static_cast<int32_t>(
                             dmaStart.getChannelIndex()));
-                    }
-                  });
-                  while (usedCh.count(mm2sChannel))
-                    ++mm2sChannel;
+                    });
+                    while (usedCh.count(mm2sChannel))
+                      ++mm2sChannel;
+                  }
                 }
 
-                AIE::MemOp existingMemOp;
-                deviceOp.walk([&](AIE::MemOp memOp) {
-                  if (memOp.getTile() == prodTileVal)
-                    existingMemOp = memOp;
-                });
+                // Find existing DMA op for this tile (MemOp or MemTileDMAOp).
+                mlir::Region *existingDMARegion = nullptr;
+                if (prodIsMemTile) {
+                  deviceOp.walk([&](AIE::MemTileDMAOp mtOp) {
+                    if (mtOp.getTile() == prodTileVal)
+                      existingDMARegion = &mtOp.getBody();
+                  });
+                } else {
+                  deviceOp.walk([&](AIE::MemOp memOp) {
+                    if (memOp.getTile() == prodTileVal)
+                      existingDMARegion = &memOp.getBody();
+                  });
+                }
 
-                if (existingMemOp) {
-                  mlir::Region &memRegion = existingMemOp.getBody();
+                if (existingDMARegion) {
+                  // Add DMA channel to existing DMA op.
+                  mlir::Region &memRegion = *existingDMARegion;
                   mlir::Block *endBlock = nullptr;
                   for (mlir::Block &block : memRegion) {
                     for (mlir::Operation &opInBlock : block) {
@@ -2522,10 +2568,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                     builder.create<AIE::EndOp>(deviceOp.getLoc());
                   }
                 } else {
+                  // Create new DMA op for this tile.
                   builder.setInsertionPoint(deviceBody.getTerminator());
-                  auto memOp = builder.create<AIE::MemOp>(
-                      deviceOp.getLoc(), prodTileVal);
-                  mlir::Region &memRegion = memOp.getBody();
+                  mlir::Region *dmaRegionPtr;
+                  if (prodIsMemTile) {
+                    auto mtOp = builder.create<AIE::MemTileDMAOp>(
+                        deviceOp.getLoc(), prodTileVal);
+                    dmaRegionPtr = &mtOp.getBody();
+                  } else {
+                    auto memOp = builder.create<AIE::MemOp>(
+                        deviceOp.getLoc(), prodTileVal);
+                    dmaRegionPtr = &memOp.getBody();
+                  }
+                  mlir::Region &memRegion = *dmaRegionPtr;
                   auto addBlock = [&]() -> mlir::Block * {
                     return builder.createBlock(&memRegion);
                   };
@@ -2668,14 +2723,20 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         builder.create<AIE::EndOp>(deviceOp.getLoc());
 
       } else {
-        // Case A: shim sends S2MM to compute consumer tile(s).
+        // Case A: S2MM on consumer tile(s).
+        //
+        // Handles all non-link consumer tiles that need S2MM DMA:
+        //   - shim → compute  (original case)
+        //   - MemTile → compute  (MemTile producer MM2S, compute consumer S2MM)
+        //   - compute → MemTile  (compute producer MM2S, MemTile consumer S2MM)
         //
         // Fix NF6 (Phase 5.5): for broadcast (N consumer tiles), emit one
-        // aie.mem per consumer tile, each using that tile's own buffer vector
+        // DMA op per consumer tile, each using that tile's own buffer vector
         // and lock pair from consumerTileBuffers / consumerTileLocks.
         //
-        // Single-consumer case: consumerTileCoords.size() == 1 → exactly one
-        // aie.mem is emitted (same behavior as before this fix).
+        // MemTile consumers (row == 1) use aie.memtile_dma instead of aie.mem.
+        // If a memtile_dma already exists (from Case C MM2S), append the S2MM
+        // channel to it.
         if (info.consumerTileCoords.empty())
           continue;
 
@@ -2689,9 +2750,11 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           dmaHostTile = lookupTileByCoord(consCol, consRow);
           if (!dmaHostTile)
             continue;
-          // Only compute tiles (row >= 2) use aie.mem.
-          if (consRow < 2)
+          // Skip shim consumers (row 0) — handled by Phase 4b.
+          if (consRow == 0)
             continue;
+
+          bool consIsMemTile = targetModel.isMemTile(consCol, consRow);
 
           // Resolve the per-consumer-tile buffer vector, lock pair, and AIE1 locks.
           // Falls back to info.buffers / prodLock / consLock for single-
@@ -2724,24 +2787,108 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           acqLock = tileProdLock;
           relLock = tileConsLock;
 
-          // Create aie.mem on this consumer tile.
-          builder.setInsertionPoint(deviceBody.getTerminator());
-          auto memOp = builder.create<AIE::MemOp>(deviceOp.getLoc(),
-                                                  dmaHostTile.getResult());
-          mlir::Region &memRegion = memOp.getBody();
+          // Use the S2MM channel assigned by Phase 4.5a.
+          int32_t s2mmChannel = 0;
+          {
+            auto chIt = conduitConsS2MMChannel.find({name, consIdx});
+            if (chIt != conduitConsS2MMChannel.end()) {
+              s2mmChannel = chIt->second;
+            } else {
+              // Fallback: scan for next free S2MM channel.
+              mlir::Value consTileVal = dmaHostTile.getResult();
+              llvm::DenseSet<int32_t> usedCh;
+              deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
+                mlir::Value parentTile;
+                if (auto memOp = mlir::dyn_cast<AIE::MemOp>(
+                        dmaStart->getParentOp()))
+                  parentTile = memOp.getTile();
+                else if (auto mtOp = mlir::dyn_cast<AIE::MemTileDMAOp>(
+                             dmaStart->getParentOp()))
+                  parentTile = mtOp.getTile();
+                if (parentTile == consTileVal &&
+                    dmaStart.getChannelDir() == AIE::DMAChannelDir::S2MM)
+                  usedCh.insert(
+                      static_cast<int32_t>(dmaStart.getChannelIndex()));
+              });
+              while (usedCh.count(s2mmChannel))
+                ++s2mmChannel;
+            }
+          }
+
+          // Find or create DMA op for this consumer tile.
+          mlir::Region *dmaRegionPtr = nullptr;
+          if (consIsMemTile) {
+            // MemTile: find existing memtile_dma or create new one.
+            deviceOp.walk([&](AIE::MemTileDMAOp mtOp) {
+              if (mtOp.getTile() == dmaHostTile.getResult())
+                dmaRegionPtr = &mtOp.getBody();
+            });
+            if (!dmaRegionPtr) {
+              builder.setInsertionPoint(deviceBody.getTerminator());
+              auto mtOp = builder.create<AIE::MemTileDMAOp>(
+                  deviceOp.getLoc(), dmaHostTile.getResult());
+              dmaRegionPtr = &mtOp.getBody();
+            }
+          } else {
+            // Compute tile: find existing aie.mem or create new one.
+            deviceOp.walk([&](AIE::MemOp memOp) {
+              if (memOp.getTile() == dmaHostTile.getResult())
+                dmaRegionPtr = &memOp.getBody();
+            });
+            if (!dmaRegionPtr) {
+              builder.setInsertionPoint(deviceBody.getTerminator());
+              auto memOp = builder.create<AIE::MemOp>(
+                  deviceOp.getLoc(), dmaHostTile.getResult());
+              dmaRegionPtr = &memOp.getBody();
+            }
+          }
+          mlir::Region &memRegion = *dmaRegionPtr;
           auto addMemBlock = [&]() -> mlir::Block * {
             return builder.createBlock(&memRegion);
           };
-          mlir::Block *dmaStartBlock = addMemBlock();
+
+          // Check if the DMA region already has blocks (from Case C or
+          // a previous consumer iteration).  If so, find the EndOp block
+          // and chain the new S2MM DMA start after it.
+          mlir::Block *existingEndBlock = nullptr;
+          if (!memRegion.empty()) {
+            for (mlir::Block &block : memRegion) {
+              for (mlir::Operation &opInBlock : block) {
+                if (mlir::isa<AIE::EndOp>(opInBlock)) {
+                  existingEndBlock = &block;
+                  break;
+                }
+              }
+              if (existingEndBlock)
+                break;
+            }
+          }
+
           llvm::SmallVector<mlir::Block *> bdBlocks;
           for (int64_t i = 0; i < depth; ++i)
             bdBlocks.push_back(addMemBlock());
           mlir::Block *endMemBlock = addMemBlock();
-          builder.setInsertionPointToEnd(dmaStartBlock);
-          builder.create<AIE::DMAStartOp>(deviceOp.getLoc(), dmaDir,
-                                          static_cast<int32_t>(0),
-                                          static_cast<int32_t>(0),
-                                          bdBlocks[0], endMemBlock);
+
+          if (existingEndBlock) {
+            // Append to existing DMA op: replace EndOp with DMAStartOp.
+            mlir::Operation *oldEnd = existingEndBlock->getTerminator();
+            builder.setInsertionPointToEnd(existingEndBlock);
+            oldEnd->erase();
+            builder.create<AIE::DMAStartOp>(deviceOp.getLoc(), dmaDir,
+                                            s2mmChannel,
+                                            static_cast<int32_t>(0),
+                                            bdBlocks[0], endMemBlock);
+          } else {
+            // New DMA op: create entry block with DMAStartOp.
+            mlir::Block *dmaStartBlock = addMemBlock();
+            // Move the entry block to the front of the region.
+            dmaStartBlock->moveBefore(&memRegion.front());
+            builder.setInsertionPointToEnd(dmaStartBlock);
+            builder.create<AIE::DMAStartOp>(deviceOp.getLoc(), dmaDir,
+                                            s2mmChannel,
+                                            static_cast<int32_t>(0),
+                                            bdBlocks[0], endMemBlock);
+          }
           // S2MM BD: wait for free slot, receive, signal filled.
           // AIE2: acquire prod_lock(1) [free slot], release cons_lock(1) [data ready].
           // AIE1: each BD block i uses tileAIE1Locks[i] — one lock per slot.

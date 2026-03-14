@@ -17,7 +17,7 @@
 //   aie.lock on shim tile:  4  (prod+cons lock per fifo for DMA host-side sync)
 //   aie.flow: 2  (one per fifo, shim → tile_0_2)
 //   aie.shim_dma_allocation: 2
-//   aie.mem: 2  (one per fifo with S2MM BD ring)
+//   aie.mem: 1  (single per tile with S2MM BD ring per fifo)
 //
 // The critical invariant: lock IDs on tile_0_2 are 0,1,2,3 (no two locks share
 // the same ID on the same tile).
@@ -60,12 +60,11 @@
 // CHECK:     aie.lock(%{{.*}}tile_0_0,
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA :
 
-// --- Two aie.mem blocks, one per conduit, each with its own S2MM chain ---
+// --- Single aie.mem per tile with two S2MM channels (one per conduit) ---
 // CHECK:     aie.mem(%{{.*}}tile_0_2) {
 // CHECK:       aie.dma_start(S2MM, 0,
 // CHECK:       aie.dma_bd(
-// CHECK:     aie.mem(%{{.*}}tile_0_2) {
-// CHECK:       aie.dma_start(S2MM, 0,
+// CHECK:       aie.dma_start(S2MM, 1,
 // CHECK:       aie.dma_bd(
 
 // --- No residual Conduit ops ---

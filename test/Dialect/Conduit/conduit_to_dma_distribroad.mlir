@@ -74,19 +74,14 @@
 // CHECK:     aie.shim_dma_allocation @shared_weights_shim_alloc
 // CHECK:     aie.flow(%[[TILE_2_0]], DMA : 0, %[[TILE_2_2]], DMA : 0)
 //
-// --- Tile DMA regions (Phase 5.5): S2MM BD rings for each conduit ---
-// input_slice BD ring:
+// --- Tile DMA region (Phase 5.5): single aie.mem with S2MM per conduit ---
 // CHECK:     aie.mem(%[[TILE_2_2]]) {
 // CHECK:       aie.dma_start(S2MM, 0,
 // CHECK:       aie.use_lock(%[[IS_PROD_LOCK]], AcquireGreaterEqual, 1)
 // CHECK:       aie.dma_bd({{.*}}input_slice{{.*}}buff_0
 // CHECK:       aie.use_lock(%[[IS_CONS_LOCK]], Release, 1)
 // CHECK:       aie.next_bd
-// CHECK:       aie.end
-//
-// shared_weights BD ring:
-// CHECK:     aie.mem(%[[TILE_2_2]]) {
-// CHECK:       aie.dma_start(S2MM, 0,
+// CHECK:       aie.dma_start(S2MM, 1,
 // CHECK:       aie.use_lock(%[[SW_PROD_LOCK]], AcquireGreaterEqual, 1)
 // CHECK:       aie.dma_bd({{.*}}shared_weights{{.*}}buff_0
 // CHECK:       aie.use_lock(%[[SW_CONS_LOCK]], Release, 1)
