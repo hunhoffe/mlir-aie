@@ -180,7 +180,7 @@ class Conduit_Op<string mnemonic, list<Trait> traits = []>
 //   conduit.acquire_async / release_async        → !conduit.window.token
 //   conduit.wait                                 → accepts !conduit.dma.token
 //   conduit.wait_window                          → accepts !conduit.window.token
-//   conduit.wait_all / wait_all_async            → variadic AnyType (mixed)
+//   conduit.wait_all / wait_all_async            → variadic Conduit_AnyTokenType (mixed)
 //   conduit.wait_all_async result                → !conduit.dma.token
 //
 // The cross-tier pattern (hardware satisfies DMA fill and lock grant in
@@ -225,6 +225,8 @@ def Conduit_WindowTokenType : TypeDef<Conduit_Dialect, "WindowToken"> {
   let assemblyFormat = "";
 }
 
+// DEPRECATED: !conduit.async.token retained for backward compatibility.
+// New code should use !conduit.dma.token or !conduit.window.token.
 // Backward-compatibility alias kept for use in doc-only comments and
 // existing tooling.  All ops now use the split types above.
 def Conduit_AsyncTokenType : TypeDef<Conduit_Dialect, "AsyncToken"> {
@@ -392,6 +394,10 @@ def Conduit_Create : Conduit_Op<"create"> {
                        OptionalAttr<StrAttr>:$routing_mode,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_rates,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_rates,
+                       // alloc_tile: optional MemTile coordinate [col, row] for
+                       // hardware relay allocation.  No verifier checks tile validity.
+                       // Pass A guarantees a valid MemTile coordinate; Pass C will
+                       // fail at lookupTileByCoord if wrong.
                        OptionalAttr<DenseI64ArrayAttr>:$alloc_tile);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
@@ -490,6 +496,9 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
     NOTE on 'count': the count is the maximum window size (total slots held
     simultaneously), NOT a per-phase CSDF firing rate.  For CSDF rate
     information see the producer_rates / consumer_rates attrs on conduit.create.
+
+    NOTE on port: acquire_async is always consumer-side (Consume port implicit).
+    For producer-side async acquisition, use conduit.acquire with port='Produce'.
 
     This op is the key to unifying ObjectFIFO and AIR Channel semantics:
     - A !conduit.window.token from acquire_async IS pending permission to

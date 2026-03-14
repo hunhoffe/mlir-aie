@@ -25,6 +25,7 @@
 
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -80,6 +81,9 @@ void ConduitDialect::initialize() {
 
   // M2: index bounds check against depth from the defining conduit.create.
   // The index is an I64Attr (compile-time constant), so read it directly.
+  // Note: M2 only checks SubviewAccess ops in the same block as the corresponding
+  // conduit.create. Cross-block conduits skip the bounds check silently because
+  // the block walk finds no matching create op.
   uint64_t idx = getIndex();
   // Walk up the def-use chain: subview_access takes a !conduit.window<T> which
   // is produced by conduit.acquire.  The acquire carries a name attribute that
@@ -126,6 +130,8 @@ void ConduitDialect::initialize() {
   auto offsets = getOffsets();
 
   // M3: mode validation — enforce structural invariants per mode.
+  if (modeStr == "cascade")
+    return emitError("conduit.objectfifo_link: cascade mode not yet supported");
   if (modeStr == "distribute") {
     if (srcs.size() != 1)
       return emitOpError("distribute mode requires exactly 1 src, got ")
@@ -340,13 +346,14 @@ static ::mlir::LogicalResult
 checkTokenDoesNotEscape(mlir::Operation *producerOp, mlir::Value tokenVal) {
   for (mlir::OpOperand &use : tokenVal.getUses()) {
     mlir::Operation *user = use.getOwner();
-    llvm::StringRef opName = user->getName().getStringRef();
-    if (opName == "func.return")
+    if (mlir::isa<mlir::func::ReturnOp>(user))
       return producerOp->emitOpError(
           "M10: token escapes function scope via return");
-    if (opName == "func.call" || opName == "func.call_indirect")
+    if (mlir::isa<mlir::func::CallOp>(user) ||
+        mlir::isa<mlir::func::CallIndirectOp>(user))
       return producerOp->emitOpError(
           "M10: token escapes function scope via call argument");
+    // Indirect escape via memref.store is not detected — deferred to M11.
   }
   return ::mlir::success();
 }
@@ -389,7 +396,12 @@ checkTokenDoesNotEscape(mlir::Operation *producerOp, mlir::Value tokenVal) {
 //===----------------------------------------------------------------------===//
 
 static ::mlir::LogicalResult
-checkWindowReleaseLinear(mlir::Operation *producerOp, mlir::Value windowVal) {
+checkWindowReleaseCumulativeCount(mlir::Operation *producerOp, mlir::Value windowVal) {
+  // M8a limitation: loop-carried over-release is not detected. Two conduit.acquire
+  // ops in a loop body produce independent SSA values; releasing each twice in the
+  // same iteration would not be caught. Detecting loop-carried over-release requires
+  // M9 liveness analysis — deferred.
+  //
   // M8a: True double-release detection — cumulative released count must not
   // exceed the acquired count.  Multiple conduit.release ops on the same
   // window value are valid for sliding-window partial-release patterns
@@ -462,41 +474,13 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 }
 
 ::mlir::LogicalResult Acquire::verify() {
-  if (failed(checkWindowReleaseLinear(getOperation(), getWindow())))
+  if (failed(checkWindowReleaseCumulativeCount(getOperation(), getWindow())))
     return ::mlir::failure();
 
-  // M9 Phase 2: same-block acquire-release pairing check (debug diagnostic).
-  // CRITICAL: uses llvm::errs() — NOT emitWarning() — to avoid MLIR
-  // diagnostic infinite recursion inside verify().
-  {
-    mlir::Value win = getWindow();
-    mlir::Block *block = getOperation()->getBlock();
-    if (block) {
-      bool hasRelease = false;
-      for (mlir::OpOperand &use : win.getUses()) {
-        if (mlir::isa<Release>(use.getOwner()) &&
-            use.getOwner()->getBlock() == block) {
-          hasRelease = true;
-          break;
-        }
-      }
-      if (!hasRelease) {
-        llvm::StringRef name = getName();
-        for (mlir::Operation &op : *block) {
-          if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(op)) {
-            if (relAsync.getName() == name) {
-              hasRelease = true;
-              break;
-            }
-          }
-        }
-      }
-      if (!hasRelease) {
-        llvm::errs() << "M9: conduit.acquire @" << getName()
-                     << " has no matching release in same block\n";
-      }
-    }
-  }
+  // M9 Phase 2 (same-block acquire-release pairing) is implemented in the
+  // separate --conduit-check-pairing analysis pass (ConduitPairingCheck.cpp).
+  // Moved out of verify() to avoid MLIR diagnostic infinite recursion and to
+  // make the warnings capturable by FileCheck / --verify-diagnostics.
 
   return ::mlir::success();
 }
@@ -506,44 +490,8 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   if (failed(checkWindowTokenLinear(getOperation(), getToken())))
     return ::mlir::failure();
 
-  // M9 Phase 2: if this token reaches a wait_window, check that the
-  // wait_window's window result has a release in the same block.
-  // CRITICAL: uses llvm::errs() — NOT emitWarning() — to avoid MLIR
-  // diagnostic infinite recursion inside verify().
-  {
-    for (mlir::OpOperand &use : getToken().getUses()) {
-      if (auto waitWin = mlir::dyn_cast<WaitWindow>(use.getOwner())) {
-        mlir::Value win = waitWin.getWindow();
-        mlir::Block *block = waitWin->getBlock();
-        if (!block)
-          continue;
-        bool hasRelease = false;
-        for (mlir::OpOperand &wUse : win.getUses()) {
-          if (mlir::isa<Release>(wUse.getOwner()) &&
-              wUse.getOwner()->getBlock() == block) {
-            hasRelease = true;
-            break;
-          }
-        }
-        if (!hasRelease) {
-          llvm::StringRef name = getName();
-          for (mlir::Operation &op : *block) {
-            if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(op)) {
-              if (relAsync.getName() == name) {
-                hasRelease = true;
-                break;
-              }
-            }
-          }
-        }
-        if (!hasRelease) {
-          llvm::errs() << "M9: conduit.acquire_async @" << getName()
-                       << " -> wait_window has no matching release in "
-                          "same block\n";
-        }
-      }
-    }
-  }
+  // M9 Phase 2 (same-block pairing via wait_window) is implemented in the
+  // separate --conduit-check-pairing analysis pass (ConduitPairingCheck.cpp).
 
   return ::mlir::success();
 }
@@ -553,50 +501,26 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   return checkWindowTokenLinear(getOperation(), getToken());
 }
 ::mlir::LogicalResult WaitWindow::verify() {
-  if (failed(checkWindowReleaseLinear(getOperation(), getWindow())))
+  if (failed(checkWindowReleaseCumulativeCount(getOperation(), getWindow())))
     return ::mlir::failure();
 
-  // M9 Phase 2: same-block wait_window-release pairing check.
-  // CRITICAL: uses llvm::errs() — NOT emitWarning() — to avoid MLIR
-  // diagnostic infinite recursion inside verify().
-  {
-    mlir::Value win = getWindow();
-    mlir::Block *block = getOperation()->getBlock();
-    if (block) {
-      bool hasRelease = false;
-      for (mlir::OpOperand &use : win.getUses()) {
-        if (mlir::isa<Release>(use.getOwner()) &&
-            use.getOwner()->getBlock() == block) {
-          hasRelease = true;
-          break;
-        }
-      }
-      if (!hasRelease) {
-        llvm::StringRef name = getName();
-        for (mlir::Operation &op : *block) {
-          if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(op)) {
-            if (relAsync.getName() == name) {
-              hasRelease = true;
-              break;
-            }
-          }
-        }
-      }
-      if (!hasRelease) {
-        llvm::errs() << "M9: conduit.wait_window @" << getName()
-                     << " has no matching release in same block\n";
-      }
-    }
-  }
+  // M9 Phase 2 (same-block pairing) is implemented in the separate
+  // --conduit-check-pairing analysis pass (ConduitPairingCheck.cpp).
 
   return ::mlir::success();
 }
 ::mlir::LogicalResult WaitAll::verify() {
+  // Note: This check is redundant with the TableGen Conduit_AnyTokenType constraint,
+  // which MLIR enforces before user verify() runs. Left in place for defense-in-depth
+  // but may be dead code — the TableGen constraint fires first.
   return checkTokenOperandTypes(getOperation(), getTokens());
 }
 ::mlir::LogicalResult WaitAllAsync::verify() {
   if (failed(checkTokenDoesNotEscape(getOperation(), getResult())))
     return ::mlir::failure();
+  // Note: This check is redundant with the TableGen Conduit_AnyTokenType constraint,
+  // which MLIR enforces before user verify() runs. Left in place for defense-in-depth
+  // but may be dead code — the TableGen constraint fires first.
   return checkTokenOperandTypes(getOperation(), getTokens());
 }
 

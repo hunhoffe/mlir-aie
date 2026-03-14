@@ -52,6 +52,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITTODMA
 #define GEN_PASS_DECL_AIRCHANNELTOCONDUIT
 #define GEN_PASS_DECL_CONDUITDEPTHPROMOTE
+#define GEN_PASS_DECL_CONDUITPAIRINGCHECK
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -72,6 +73,10 @@ std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createConduitToDMAPass();
 /// Depth promotion: promote eligible depth-1 conduits to depth-2.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitDepthPromotePass();
+
+/// M9 Phase 2 pairing check: warn when acquire has no matching release in block.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitPairingCheckPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

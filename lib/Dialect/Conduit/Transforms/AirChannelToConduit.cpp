@@ -185,14 +185,11 @@ static std::optional<int64_t> tryExtractConstInt(mlir::Value v) {
     return cOp.value();
   // Generic arith::ConstantOp fallback: handles integer constants whose result
   // type (e.g., i32, i64) doesn't satisfy ConstantIndexOp or ConstantIntOp's
-  // classof().  Use getZExtValue() (unsigned) to avoid sign-extending large
-  // values into negative int64_t (which would be misinterpreted by the caller's
-  // dynamic-value guard).  Skip values that don't fit in a non-negative int64_t.
+  // classof().  Use getSExtValue() to correctly handle negative stride/offset
+  // constants (e.g., negative strides for reverse iteration).
   if (auto cOp = mlir::dyn_cast<mlir::arith::ConstantOp>(defOp)) {
     if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(cOp.getValue())) {
-      uint64_t raw = intAttr.getValue().getZExtValue();
-      if (raw <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-        return static_cast<int64_t>(raw);
+      return intAttr.getValue().getSExtValue();
     }
   }
   return std::nullopt;
@@ -293,8 +290,14 @@ struct AirChannelToConduitPass
     // emit duplicates when a conduit.create with tile info already exists.
     module.walk([&](Create existingCreate) {
       auto nameAttr = existingCreate.getName();
-      if (!nameAttr.empty())
+      if (!nameAttr.empty()) {
+        if (channelCreateOps.count(nameAttr.str())) {
+          channelCreateOps[nameAttr.str()]->emitWarning(
+              "air-channel-to-conduit: duplicate conduit.create for '")
+              << nameAttr.str() << "' — earlier entry replaced";
+        }
         channelCreateOps[nameAttr.str()] = existingCreate.getOperation();
+      }
     });
 
     // Phase 2: emit conduit.create for each air.channel declaration.
@@ -302,6 +305,8 @@ struct AirChannelToConduitPass
       std::string name = getSymName(op);
       if (name.empty()) {
         // No sym_name — skip.
+        op->emitWarning(
+            "air-channel-to-conduit: could not resolve channel name — op dropped");
         continue;
       }
 
@@ -394,6 +399,8 @@ struct AirChannelToConduitPass
       std::string chanName = getChanName(op);
       if (chanName.empty()) {
         // Cannot identify channel — skip.
+        op->emitWarning(
+            "air-channel-to-conduit: could not resolve channel name — op dropped");
         continue;
       }
 
@@ -417,13 +424,14 @@ struct AirChannelToConduitPass
       mlir::OperandRange allOps = op->getOperands();
       int32_t base = 0;
       // Collect async dependency tokens that have already been converted to
-      // conduit token types.  Unconverted air.async.token deps are dropped
-      // (no Conduit hardware equivalent).
+      // conduit DMA token types.  Only DMATokenType (and the AIR async token,
+      // if present) are valid DMA dependency operands — WindowTokenType is
+      // a window-slot token and must not appear in DMA dep chains.
+      // Unconverted or incompatible tokens are dropped.
       llvm::SmallVector<mlir::Value> depTokens;
       for (int32_t i = 0; i < ndeps; ++i) {
         mlir::Value dep = allOps[base + i];
-        if (mlir::isa<DMATokenType, WindowTokenType, AsyncTokenType>(
-                dep.getType()))
+        if (mlir::isa<DMATokenType>(dep.getType()))
           depTokens.push_back(dep);
       }
       base += ndeps;
@@ -519,14 +527,20 @@ struct AirChannelToConduitPass
       builder.setInsertionPoint(op);
       mlir::Location loc = op->getLoc();
 
-      mlir::ValueRange deps = op->getOperands();
+      // Filter operands: only pass conduit token types to conduit.wait_all.
+      // Non-conduit types (e.g., residual !air.async.token or i1) are dropped.
+      llvm::SmallVector<mlir::Value> conduitDeps;
+      for (mlir::Value dep : op->getOperands())
+        if (mlir::isa<DMATokenType, WindowTokenType>(dep.getType()))
+          conduitDeps.push_back(dep);
+
       bool hasResult = (op->getNumResults() >= 1);
 
       if (hasResult) {
-        auto newOp = builder.create<WaitAllAsync>(loc, conduitTokenTy, deps);
+        auto newOp = builder.create<WaitAllAsync>(loc, conduitTokenTy, conduitDeps);
         op->getResult(0).replaceAllUsesWith(newOp.getResult());
       } else {
-        builder.create<WaitAll>(loc, deps);
+        builder.create<WaitAll>(loc, conduitDeps);
       }
 
       waitAllToErase.push_back(op);
@@ -536,8 +550,17 @@ struct AirChannelToConduitPass
       op->erase();
 
     // Phase 5: erase air.channel declaration ops (after all put/get refs are gone).
-    for (mlir::Operation *op : channelDeclsToErase)
+    for (mlir::Operation *op : channelDeclsToErase) {
+      if (auto symOp = mlir::dyn_cast<mlir::SymbolOpInterface>(op)) {
+        if (!mlir::SymbolTable::symbolKnownUseEmpty(symOp.getNameAttr(),
+                                                    module)) {
+          op->emitWarning(
+              "air-channel-to-conduit: channel decl has remaining uses after "
+              "rewrite — symbol references may be dangling");
+        }
+      }
       op->erase();
+    }
   }
 };
 

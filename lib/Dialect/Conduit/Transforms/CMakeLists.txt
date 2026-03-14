@@ -8,6 +8,7 @@
 add_mlir_dialect_library(ConduitTransforms
   AirChannelToConduit.cpp
   ConduitDepthPromotion.cpp
+  ConduitPairingCheck.cpp
   ObjectFifoToConduit.cpp
   ConduitToDMA.cpp
 
