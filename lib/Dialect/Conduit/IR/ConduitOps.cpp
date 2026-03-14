@@ -91,38 +91,45 @@ void ConduitDialect::initialize() {
            << winTy.getElementType();
 
   // M2: index bounds check against depth from the defining conduit.create.
-  // The index is an I64Attr (compile-time constant), so read it directly.
-  // Note: M2 only checks SubviewAccess ops in the same block as the corresponding
-  // conduit.create. Cross-block conduits skip the bounds check silently because
-  // the block walk finds no matching create op.
+  // Walk the def-use chain: subview_access takes a !conduit.window<T> produced
+  // by conduit.acquire or conduit.wait_window.  Extract the conduit name, then
+  // search the enclosing module for the matching conduit.create.
+  //
+  // The module-level walk handles the common case where conduit.create is at
+  // the module/device level while subview_access is nested inside aie.core.
+  // Uses walk([&](Create)) which visits only Create ops — O(k) where k is the
+  // number of conduit.create ops, not O(n) in total ops.
   uint64_t idx = getIndex();
-  // Walk up the def-use chain: subview_access takes a !conduit.window<T> which
-  // is produced by conduit.acquire.  The acquire carries a name attribute that
-  // we can match against a conduit.create in the same block/region.
-  // For simplicity, look for a conduit.create in the enclosing region that
-  // has a depth attribute and whose name matches the acquire's name, if the
-  // window operand is defined by a conduit.acquire op.
   mlir::Value win = getWindow();
   if (auto *defOp = win.getDefiningOp()) {
-    if (auto acqOp = mlir::dyn_cast<Acquire>(defOp)) {
-      llvm::StringRef conduitName = acqOp.getName();
-      // Search sibling ops in the same block for a matching conduit.create.
-      mlir::Block *block = getOperation()->getBlock();
-      if (block) {
-        for (mlir::Operation &op : *block) {
-          if (auto createOp = mlir::dyn_cast<Create>(op)) {
-            if (createOp.getName() == conduitName) {
-              if (auto depthOpt = createOp.getDepth()) {
-                uint64_t depth = *depthOpt;
-                if (idx >= depth)
-                  return emitOpError("index ")
-                         << idx << " out of bounds for conduit of depth "
-                         << depth;
-              }
-              break;
+    llvm::StringRef conduitName;
+    if (auto acqOp = mlir::dyn_cast<Acquire>(defOp))
+      conduitName = acqOp.getName();
+    else if (auto waitOp = mlir::dyn_cast<WaitWindow>(defOp))
+      conduitName = waitOp.getName();
+
+    if (!conduitName.empty()) {
+      // Walk up to the enclosing ModuleOp and search for conduit.create.
+      mlir::Operation *ancestor = getOperation()->getParentOp();
+      while (ancestor && !mlir::isa<mlir::ModuleOp>(ancestor))
+        ancestor = ancestor->getParentOp();
+      if (ancestor) {
+        bool outOfBounds = false;
+        uint64_t foundDepth = 0;
+        ancestor->walk([&](Create createOp) -> mlir::WalkResult {
+          if (createOp.getName() == conduitName) {
+            if (auto depthOpt = createOp.getDepth()) {
+              foundDepth = *depthOpt;
+              if (idx >= foundDepth)
+                outOfBounds = true;
             }
+            return mlir::WalkResult::interrupt();
           }
-        }
+          return mlir::WalkResult::advance();
+        });
+        if (outOfBounds)
+          return emitOpError("index ")
+                 << idx << " out of bounds for conduit of depth " << foundDepth;
       }
     }
   }
@@ -395,7 +402,7 @@ checkTokenDoesNotEscape(mlir::Operation *producerOp, mlir::Value tokenVal) {
 //
 //   M8c — wait_all / wait_all_async operand type check:
 //     All operands must be conduit token types: !conduit.dma.token,
-//     !conduit.window.token, or the deprecated !conduit.async.token alias.
+//     !conduit.window.token.
 //     Non-token operands (e.g., !conduit.window<T>, memref, i32) indicate a
 //     programming error — the AnyType variadic in TableGen does not constrain
 //     these and M8c fills that gap.
@@ -474,12 +481,12 @@ static ::mlir::LogicalResult
 checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   for (auto [idx, operand] : llvm::enumerate(operands)) {
     mlir::Type ty = operand.getType();
-    bool isToken = mlir::isa<DMATokenType, WindowTokenType, AsyncTokenType>(ty);
+    bool isToken = mlir::isa<DMATokenType, WindowTokenType>(ty);
     if (!isToken)
       return op->emitOpError("M8: wait_all operand #")
              << idx << " has type " << ty
-             << ", which is not a conduit token type (!conduit.dma.token, "
-                "!conduit.window.token, or !conduit.async.token)";
+             << ", which is not a conduit token type (!conduit.dma.token "
+                "or !conduit.window.token)";
   }
   return ::mlir::success();
 }

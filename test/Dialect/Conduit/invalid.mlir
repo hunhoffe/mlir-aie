@@ -41,6 +41,26 @@ func.func @bad_subview_index() {
 
 // -----
 
+// M2: subview_access cross-block — conduit.create at module level, acquire in
+// nested func body (the common case for real programs).
+conduit.create {name = "xblock", capacity = 16 : i64,
+                producer_tile = array<i64: 1, 2>,
+                consumer_tiles = array<i64: 1, 3>,
+                element_type = memref<16xi32>,
+                depth = 2 : i64}
+func.func @bad_subview_cross_block() {
+  %win = conduit.acquire {name = "xblock", count = 1 : i64, port = #conduit.port<Consume>}
+             : !conduit.window<memref<16xi32>>
+  // expected-error@+1 {{'conduit.subview_access' op index 3 out of bounds for conduit of depth 2}}
+  %elem = conduit.subview_access %win {index = 3 : i64}
+             : !conduit.window<memref<16xi32>> -> memref<16xi32>
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
+      : !conduit.window<memref<16xi32>>
+  return
+}
+
+// -----
+
 // M3: distribute mode requires exactly 1 src
 func.func @bad_distribute_multiple_srcs() {
   // expected-error@+1 {{'conduit.objectfifo_link' op distribute mode requires exactly 1 src, got 2}}
