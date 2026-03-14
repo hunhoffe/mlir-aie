@@ -555,6 +555,16 @@ void linkPhase(ConduitToDMAState &state) {
           static_cast<int32_t>(dmaStart.getChannelIndex()));
   });
 
+  // Pre-compute tile → DMA region map to avoid O(n²) walks inside the
+  // conduitMap loop.  Updated when new DMA ops are created below.
+  llvm::DenseMap<mlir::Value, mlir::Region *> tileToDMARegion;
+  state.deviceOp.walk([&](AIE::MemOp memOp) {
+    tileToDMARegion[memOp.getTile()] = &memOp.getBody();
+  });
+  state.deviceOp.walk([&](AIE::MemTileDMAOp mtOp) {
+    tileToDMARegion[mtOp.getTile()] = &mtOp.getBody();
+  });
+
   for (auto &[name, info] : state.conduitMap) {
     if (info.buffers.empty() || !info.prodLock || !info.consLock)
       continue;
@@ -755,18 +765,12 @@ void linkPhase(ConduitToDMAState &state) {
                 }
               }
 
-              // Find existing DMA op for this tile.
+              // Find existing DMA op for this tile (pre-computed map).
               mlir::Region *existingDMARegion = nullptr;
-              if (prodIsMemTile) {
-                state.deviceOp.walk([&](AIE::MemTileDMAOp mtOp) {
-                  if (mtOp.getTile() == prodTileVal)
-                    existingDMARegion = &mtOp.getBody();
-                });
-              } else {
-                state.deviceOp.walk([&](AIE::MemOp memOp) {
-                  if (memOp.getTile() == prodTileVal)
-                    existingDMARegion = &memOp.getBody();
-                });
+              {
+                auto dmaIt = tileToDMARegion.find(prodTileVal);
+                if (dmaIt != tileToDMARegion.end())
+                  existingDMARegion = dmaIt->second;
               }
 
               bool isFusedNonFirst = false;
@@ -846,6 +850,7 @@ void linkPhase(ConduitToDMAState &state) {
                       state.deviceOp.getLoc(), prodTileVal);
                   dmaRegionPtr = &memOp.getBody();
                 }
+                tileToDMARegion[prodTileVal] = dmaRegionPtr;
                 mlir::Region &memRegion = *dmaRegionPtr;
                 auto addBlock = [&]() -> mlir::Block * {
                   return builder.createBlock(&memRegion);
@@ -1010,38 +1015,33 @@ void linkPhase(ConduitToDMAState &state) {
           if (chIt != state.conduitConsS2MMChannel.end()) {
             s2mmChannel = chIt->second;
           } else {
-            mlir::Value consTileVal2 = dmaHostTile.getResult();
-            auto &usedCh = state.preUsedS2MMChannels[consTileVal2];
+            auto &usedCh = state.preUsedS2MMChannels[dmaHostTile.getResult()];
             while (usedCh.count(s2mmChannel))
               ++s2mmChannel;
             usedCh.insert(s2mmChannel);
           }
         }
 
-        // Find or create DMA op for this consumer tile.
+        // Find or create DMA op for this consumer tile (pre-computed map).
+        mlir::Value consTileVal2 = dmaHostTile.getResult();
         mlir::Region *dmaRegionPtr = nullptr;
-        if (consIsMemTile) {
-          state.deviceOp.walk([&](AIE::MemTileDMAOp mtOp) {
-            if (mtOp.getTile() == dmaHostTile.getResult())
-              dmaRegionPtr = &mtOp.getBody();
-          });
-          if (!dmaRegionPtr) {
-            builder.setInsertionPoint(state.deviceBody->getTerminator());
+        {
+          auto dmaIt = tileToDMARegion.find(consTileVal2);
+          if (dmaIt != tileToDMARegion.end())
+            dmaRegionPtr = dmaIt->second;
+        }
+        if (!dmaRegionPtr) {
+          builder.setInsertionPoint(state.deviceBody->getTerminator());
+          if (consIsMemTile) {
             auto mtOp = builder.create<AIE::MemTileDMAOp>(
-                state.deviceOp.getLoc(), dmaHostTile.getResult());
+                state.deviceOp.getLoc(), consTileVal2);
             dmaRegionPtr = &mtOp.getBody();
-          }
-        } else {
-          state.deviceOp.walk([&](AIE::MemOp memOp) {
-            if (memOp.getTile() == dmaHostTile.getResult())
-              dmaRegionPtr = &memOp.getBody();
-          });
-          if (!dmaRegionPtr) {
-            builder.setInsertionPoint(state.deviceBody->getTerminator());
+          } else {
             auto memOp = builder.create<AIE::MemOp>(
-                state.deviceOp.getLoc(), dmaHostTile.getResult());
+                state.deviceOp.getLoc(), consTileVal2);
             dmaRegionPtr = &memOp.getBody();
           }
+          tileToDMARegion[consTileVal2] = dmaRegionPtr;
         }
         mlir::Region &memRegion = *dmaRegionPtr;
         auto addMemBlock = [&]() -> mlir::Block * {

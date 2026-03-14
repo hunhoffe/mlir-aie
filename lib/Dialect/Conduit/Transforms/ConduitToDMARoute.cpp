@@ -142,7 +142,7 @@ void routePhase(ConduitToDMAState &state) {
         if (auto symAttr =
                 op->getAttrOfType<mlir::FlatSymbolRefAttr>("symbol")) {
           llvm::StringRef ref = symAttr.getValue();
-          if (state.shimConduitNames.count(ref.str())) {
+          if (state.shimConduitNames.count(ref)) {
             op->setAttr("symbol",
                         mlir::FlatSymbolRefAttr::get(
                             ctx, (ref + "_shim_alloc").str()));
@@ -155,7 +155,7 @@ void routePhase(ConduitToDMAState &state) {
         if (auto symAttr =
                 op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")) {
           llvm::StringRef ref = symAttr.getValue();
-          if (state.shimConduitNames.count(ref.str())) {
+          if (state.shimConduitNames.count(ref)) {
             op->setAttr("metadata",
                         mlir::FlatSymbolRefAttr::get(
                             ctx, (ref + "_shim_alloc").str()));
@@ -163,7 +163,7 @@ void routePhase(ConduitToDMAState &state) {
         } else if (auto symAttr =
                        op->getAttrOfType<mlir::SymbolRefAttr>("metadata")) {
           llvm::StringRef ref = symAttr.getRootReference().getValue();
-          if (!state.shimConduitNames.count(ref.str()))
+          if (!state.shimConduitNames.count(ref))
             return;
           op->setAttr("metadata",
                       mlir::SymbolRefAttr::get(
