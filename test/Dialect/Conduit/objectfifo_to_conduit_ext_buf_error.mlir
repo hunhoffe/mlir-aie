@@ -1,14 +1,8 @@
-// RUN: aie-opt --objectfifo-to-conduit --verify-diagnostics %s
+// RUN: aie-opt --objectfifo-to-conduit %s | FileCheck %s
 //
-// Negative test: Pass A emits an error when it encounters
-// aie.objectfifo.register_external_buffers (ext-buf gap).
-//
-// Fix 1c: ObjectFifoToConduit.cpp walks for
-// ObjectFifoRegisterExternalBuffersOp and emits emitError() with the message
-// "register_external_buffers not yet supported".
-//
-// Using --verify-diagnostics so the expected-error annotation is checked
-// and the test passes (exit 0) even though the pass signals failure.
+// Test: Pass A lowers aie.objectfifo.register_external_buffers into
+// conduit.register_external_buffers with the correct tile coordinates
+// and external buffer SSA operands.
 
 module {
   aie.device(xcvc1902) {
@@ -18,7 +12,7 @@ module {
     aie.objectfifo @ext_fifo(%tile70, {%tile71}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
 
     %ext_buf = aie.external_buffer {sym_name = "ext_buffer_in"} : memref<64xi32>
-    // expected-error @+1 {{register_external_buffers not yet supported}}
+    // CHECK: conduit.register_external_buffers({{%.*}}) {name = "ext_fifo", tile_coord = array<i64: 7, 0>} : (memref<64xi32>)
     aie.objectfifo.register_external_buffers @ext_fifo(%tile70, {%ext_buf}) : (memref<64xi32>)
 
     %core71 = aie.core(%tile71) {

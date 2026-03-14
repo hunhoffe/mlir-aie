@@ -152,14 +152,14 @@ func.func @release_async_op() {
 }
 
 // CHECK-LABEL: func.func @register_ext_bufs
-func.func @register_ext_bufs() {
-  // CHECK: conduit.register_external_buffers
-  // CHECK-SAME: base_addr = 0 : i64
+func.func @register_ext_bufs(%buf0: memref<512xi16>, %buf1: memref<512xi16>) {
+  // CHECK: conduit.register_external_buffers(%arg0, %arg1)
   // CHECK-SAME: name = "shim_chan"
-  // CHECK-SAME: num_buffers = 2 : i64
-  conduit.register_external_buffers {name = "shim_chan",
-                                     num_buffers = 2 : i64,
-                                     base_addr = 0 : i64}
+  // CHECK-SAME: tile_coord = array<i64: 0, 0>
+  // CHECK-SAME: : (memref<512xi16>, memref<512xi16>)
+  conduit.register_external_buffers(%buf0, %buf1)
+      {name = "shim_chan", tile_coord = array<i64: 0, 0>}
+      : (memref<512xi16>, memref<512xi16>)
   return
 }
 
