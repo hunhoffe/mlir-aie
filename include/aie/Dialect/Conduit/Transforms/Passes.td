@@ -75,11 +75,11 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
 
       air.channel.put async [%deps] @chan(%buf[offsets][sizes][strides])
         → conduit.put_memref_async {name, num_elems, offsets, sizes, strides}
-                : !conduit.async.token
+                : !conduit.dma.token
 
       air.channel.get async [%deps] @chan(%buf[offsets][sizes][strides])
         → conduit.get_memref_async {name, num_elems, offsets, sizes, strides}
-                : !conduit.async.token
+                : !conduit.dma.token
 
       air.wait_all async [%deps]  →  conduit.wait_all_async %deps
       air.wait_all       [%deps]  →  conduit.wait_all %deps
@@ -93,7 +93,7 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
       SPMD specialization always produces [1,1] before lowering).
     - Channel size/shape information is extracted from the first put/get
       memref operand type; if no put/get is found, capacity defaults to 1.
-    - The air.async.token → !conduit.async.token mapping relies on SSA
+    - The air.async.token → !conduit.dma.token mapping relies on SSA
       value threading; all users of the old token must be updated.
   }];
 

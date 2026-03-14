@@ -265,7 +265,7 @@ struct AirChannelToConduitPass
     mlir::MLIRContext *ctx = module.getContext();
 
     // DMA token type for conduit (put/get_memref_async and wait_all_async
-    // all return !conduit.dma.token, not the deprecated !conduit.async.token).
+    // all return !conduit.dma.token).
     auto conduitTokenTy = DMATokenType::get(ctx);
 
     // Phase 1: collect air.channel declarations → build name→create map.
@@ -530,7 +530,7 @@ struct AirChannelToConduitPass
     //   result (optional): !air.async.token (async_token, present when async)
     //
     // Mapping:
-    //   result present → conduit.wait_all_async %deps : (...) -> !conduit.async.token
+    //   result present → conduit.wait_all_async %deps : (...) -> !conduit.dma.token
     //   no result      → conduit.wait_all %deps
 
     llvm::SmallVector<mlir::Operation *> waitAllToErase;
