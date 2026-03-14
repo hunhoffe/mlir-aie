@@ -10,7 +10,7 @@
 //   Two conduits on the same producer tile can share one hardware DMA channel
 //   when their buffer-window ops are sequentially non-overlapping in a common
 //   basic block.  The pass annotates eligible conduit.create ops with:
-//       fused_dma_channel_group = "groupN"
+//       fuse_mode = "static"  fused_dma_channel_group = "groupN"
 //   where N is the hardware channel group.
 //
 //   Interval non-overlap condition (single block):
@@ -31,14 +31,22 @@
 //   (i) No ops in block: conduit.create with no acquire/release → not annotated
 //   (j) DMA exhaustion use case: 4 conduits, 2 non-overlapping pairs → 2 groups
 //   (k) Single conduit on tile → not annotated (no fusion benefit)
+//   (l) Two interleaved pairs: a+c group0, b+d group1
+//   (m) Three-way partial clique: a+c fused, b singleton → not annotated
+//   (n) Three-way full clique: all pairwise overlapping → none annotated
+//   (o) fuse_mode = "runtime" via scf.if (Gap A2)
+//   (p) get_memref as activity marker (Gap A3)
+//   (q) release_async as activity marker (Gap A5)
+//   (r) MemTile producer (row=1) not excluded (Gap A6)
+//   (s) Cross-block same-name: first-block-wins (Gap A8)
 //
 //===----------------------------------------------------------------------===//
 // (a) Two conduits on same tile — A's ops precede B's — same group annotated.
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_sequential
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "chan_a"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "chan_b"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "chan_a"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "chan_b"
 
 func.func @fuse_sequential() {
   // Both conduits on tile [0, 2].
@@ -75,6 +83,7 @@ func.func @fuse_sequential() {
 
 // CHECK-LABEL: func.func @no_fuse_interleaved
 // CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   fuse_mode
 
 func.func @no_fuse_interleaved() {
   conduit.create {name = "chan_a", capacity = 8 : i64,
@@ -120,9 +129,9 @@ func.func @no_fuse_interleaved() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_three_sequential
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group{{.*}}name = "c1"
-// CHECK-NEXT:  conduit.create {{{.*}}fused_dma_channel_group{{.*}}name = "c2"
-// CHECK-NEXT:  conduit.create {{{.*}}fused_dma_channel_group{{.*}}name = "c3"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "c1"
+// CHECK-NEXT:  conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "c2"
+// CHECK-NEXT:  conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "c3"
 
 func.func @fuse_three_sequential() {
   conduit.create {name = "c1", capacity = 8 : i64,
@@ -164,6 +173,7 @@ func.func @fuse_three_sequential() {
 
 // CHECK-LABEL: func.func @no_fuse_different_tiles
 // CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   fuse_mode
 
 func.func @no_fuse_different_tiles() {
   // tile [0,2] and tile [1,2] are different — no grouping.
@@ -196,6 +206,7 @@ func.func @no_fuse_different_tiles() {
 
 // CHECK-LABEL: func.func @no_fuse_shim
 // CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   fuse_mode
 
 func.func @no_fuse_shim() {
   // Both conduits on shim tile [0,0] (row=0 → excluded).
@@ -222,8 +233,8 @@ func.func @no_fuse_shim() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @idempotent
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"{{.*}}name = "id_a"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"{{.*}}name = "id_b"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"{{.*}}name = "id_a"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"{{.*}}name = "id_b"
 
 func.func @idempotent() {
   conduit.create {name = "id_a", capacity = 8 : i64,
@@ -258,8 +269,8 @@ func.func @idempotent() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_async_path
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group{{.*}}name = "async_a"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group{{.*}}name = "async_b"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "async_a"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "async_b"
 
 func.func @fuse_async_path() {
   conduit.create {name = "async_a", capacity = 8 : i64,
@@ -300,8 +311,8 @@ func.func @fuse_async_path() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_tier3_put_memref
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group{{.*}}name = "dma_a"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group{{.*}}name = "dma_b"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "dma_a"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "dma_b"
 
 func.func @fuse_tier3_put_memref() {
   conduit.create {name = "dma_a", capacity = 8 : i64,
@@ -335,6 +346,7 @@ func.func @fuse_tier3_put_memref() {
 
 // CHECK-LABEL: func.func @no_annotate_no_ops
 // CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   fuse_mode
 
 func.func @no_annotate_no_ops() {
   // Two conduits on the same tile, but neither has any acquire/release ops.
@@ -370,10 +382,10 @@ func.func @no_annotate_no_ops() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_four_sequential
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "p"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "q"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "r"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "s"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "p"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "q"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "r"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "s"
 
 func.func @fuse_four_sequential() {
   conduit.create {name = "p", capacity = 8 : i64,
@@ -425,6 +437,7 @@ func.func @fuse_four_sequential() {
 
 // CHECK-LABEL: func.func @no_annotate_singleton
 // CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   fuse_mode
 
 func.func @no_annotate_singleton() {
   // Only one conduit on tile [7, 2] — no peer to fuse with.
@@ -469,10 +482,10 @@ func.func @no_annotate_singleton() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @two_interleaved_pairs
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "a"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group1"{{.*}}name = "b"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "c"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group1"{{.*}}name = "d"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "a"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"{{.*}}name = "b"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "c"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"{{.*}}name = "d"
 
 func.func @two_interleaved_pairs() {
   conduit.create {name = "a", capacity = 8 : i64,
@@ -543,13 +556,13 @@ func.func @two_interleaved_pairs() {
 
 // CHECK-LABEL: func.func @partial_clique
 // a and c fused; b has no partner so its group is a singleton → not annotated.
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "a"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "a"
 // The b create must not have fused_dma_channel_group.  MLIR prints attrs
 // alphabetically: a group annotation would appear between element_type and
 // name.  The literal transition (no wildcard between them) fails if the
 // attribute is present.  FileCheck substring-matches, so no leading {{.*}}.
 // CHECK:       element_type = memref<8xi32>, name = "b"
-// CHECK:       conduit.create {{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "c"
+// CHECK:       conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "c"
 
 func.func @partial_clique() {
   conduit.create {name = "a", capacity = 8 : i64,
@@ -611,6 +624,7 @@ func.func @partial_clique() {
 
 // CHECK-LABEL: func.func @full_clique
 // CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   fuse_mode
 
 func.func @full_clique() {
   conduit.create {name = "a", capacity = 8 : i64,
@@ -640,5 +654,212 @@ func.func @full_clique() {
   conduit.release %wc {count = 1 : i64, port = "Consume"}
       : !conduit.window<memref<8xi32>>
 
+  return
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
+// (o) fuse_mode = "runtime" via scf.if (Gap A2).
+//
+//     Two conduits on tile [11, 2] with sequential acquire/release inside an
+//     scf.if block (no else).  Because the ops are inside a conditional block,
+//     the pass cannot statically guarantee non-overlap in all executions.
+//     Both conduits receive fuse_mode = "runtime" to signal that the runtime
+//     must arbitrate channel sharing.
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: func.func @fuse_runtime_mode
+// CHECK: conduit.create {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "if_a"
+// CHECK: conduit.create {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "if_b"
+
+func.func @fuse_runtime_mode(%cond: i1) {
+  conduit.create {name = "if_a", capacity = 8 : i64,
+                  producer_tile = array<i64: 11, 2>,
+                  consumer_tiles = array<i64: 11, 3>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+  conduit.create {name = "if_b", capacity = 8 : i64,
+                  producer_tile = array<i64: 11, 2>,
+                  consumer_tiles = array<i64: 11, 4>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+
+  scf.if %cond {
+    %wa = conduit.acquire {name = "if_a", count = 1 : i64, port = "Consume"}
+             : !conduit.window<memref<8xi32>>
+    conduit.release %wa {count = 1 : i64, port = "Consume"}
+        : !conduit.window<memref<8xi32>>
+    %wb = conduit.acquire {name = "if_b", count = 1 : i64, port = "Consume"}
+             : !conduit.window<memref<8xi32>>
+    conduit.release %wb {count = 1 : i64, port = "Consume"}
+        : !conduit.window<memref<8xi32>>
+  }
+  return
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
+// (p) get_memref as activity marker (Gap A3).
+//
+//     Two conduits on tile [12, 2] with sequential conduit.get_memref ops.
+//     get_memref carries an explicit 'name' attribute and should extend the
+//     live interval for its channel just as acquire/release does.
+//     Both conduits are non-overlapping → annotated fuse_mode = "static".
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: func.func @fuse_get_memref
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "get_a"
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "get_b"
+
+func.func @fuse_get_memref() {
+  conduit.create {name = "get_a", capacity = 8 : i64,
+                  producer_tile = array<i64: 12, 2>,
+                  consumer_tiles = array<i64: 12, 3>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+  conduit.create {name = "get_b", capacity = 8 : i64,
+                  producer_tile = array<i64: 12, 2>,
+                  consumer_tiles = array<i64: 12, 4>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+
+  conduit.get_memref {name = "get_a", num_elems = 8 : i64,
+                      offsets = array<i64: 0>, sizes = array<i64: 8>,
+                      strides = array<i64: 1>}
+  conduit.get_memref {name = "get_b", num_elems = 8 : i64,
+                      offsets = array<i64: 0>, sizes = array<i64: 8>,
+                      strides = array<i64: 1>}
+  return
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
+// (q) release_async as activity marker (Gap A5).
+//
+//     Two conduits on tile [13, 2].  Conduit rel_a uses release_async as its
+//     sole activity op.  Conduit rel_b uses a plain acquire + release afterward.
+//     Both are in the same block, non-overlapping.
+//     Both are annotated fuse_mode = "static", same group.
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: func.func @fuse_release_async
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "rel_a"
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "rel_b"
+
+func.func @fuse_release_async() {
+  conduit.create {name = "rel_a", capacity = 8 : i64,
+                  producer_tile = array<i64: 13, 2>,
+                  consumer_tiles = array<i64: 13, 3>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+  conduit.create {name = "rel_b", capacity = 8 : i64,
+                  producer_tile = array<i64: 13, 2>,
+                  consumer_tiles = array<i64: 13, 4>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+
+  // release_async marks the end of rel_a's interval.
+  %tok_a = conduit.release_async {name = "rel_a", count = 1 : i64, port = "Produce"}
+               : !conduit.window.token
+
+  // rel_b starts after rel_a's release_async — non-overlapping.
+  %wb = conduit.acquire {name = "rel_b", count = 1 : i64, port = "Consume"}
+           : !conduit.window<memref<8xi32>>
+  conduit.release %wb {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<8xi32>>
+  return
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
+// (r) MemTile producer (row = 1) not excluded (Gap A6).
+//
+//     Two conduits on MemTile [0, 1] (row=1).  Only row=0 (shim) is excluded
+//     from fusion analysis.  MemTile tiles (row=1) are eligible.
+//     Sequential ops → both annotated fuse_mode = "static", same group.
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: func.func @fuse_memtile_producer
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "mt_a"
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"{{.*}}name = "mt_b"
+
+func.func @fuse_memtile_producer() {
+  // MemTile tiles (row=1) are NOT excluded from fusion analysis.
+  conduit.create {name = "mt_a", capacity = 8 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+  conduit.create {name = "mt_b", capacity = 8 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 0, 4>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+
+  %wa = conduit.acquire {name = "mt_a", count = 1 : i64, port = "Consume"}
+           : !conduit.window<memref<8xi32>>
+  conduit.release %wa {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<8xi32>>
+
+  %wb = conduit.acquire {name = "mt_b", count = 1 : i64, port = "Consume"}
+           : !conduit.window<memref<8xi32>>
+  conduit.release %wb {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<8xi32>>
+  return
+}
+
+// -----
+
+//===----------------------------------------------------------------------===//
+// (s) Cross-block same-name: first-block-wins (Gap A8).
+//
+//     Two conduits on tile [14, 2].  The func body has cross_a then cross_b
+//     (non-overlapping).  An scf.for body also has both conduits in the same
+//     order — both blocks have the same non-overlapping sequential pattern,
+//     so fusion outcome is the same regardless of which block the pass
+//     processes first.  Verifies that multi-block presence does not corrupt
+//     the fusion outcome.
+//
+//     Both conduits are annotated fuse_mode = "static", same group.
+//     fuse_mode = "runtime" must NOT appear.
+//===----------------------------------------------------------------------===//
+
+// CHECK-LABEL: func.func @cross_block_stable
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "cross_a"
+// CHECK: conduit.create {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group{{.*}}name = "cross_b"
+// Both conduits in same group regardless of which block wins.
+// CHECK-NOT: fuse_mode = "runtime"
+
+func.func @cross_block_stable() {
+  conduit.create {name = "cross_a", capacity = 8 : i64,
+                  producer_tile = array<i64: 14, 2>,
+                  consumer_tiles = array<i64: 14, 3>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+  conduit.create {name = "cross_b", capacity = 8 : i64,
+                  producer_tile = array<i64: 14, 2>,
+                  consumer_tiles = array<i64: 14, 4>,
+                  element_type = memref<8xi32>, depth = 1 : i64}
+
+  // Outer block: cross_a then cross_b (non-overlapping).
+  %wa = conduit.acquire {name = "cross_a", count = 1 : i64, port = "Consume"}
+           : !conduit.window<memref<8xi32>>
+  conduit.release %wa {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<8xi32>>
+  %wb = conduit.acquire {name = "cross_b", count = 1 : i64, port = "Consume"}
+           : !conduit.window<memref<8xi32>>
+  conduit.release %wb {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<8xi32>>
+
+  // scf.for body: same order. Both blocks have non-overlapping sequential pattern,
+  // so fusion outcome is the same regardless of which block the pass processes first.
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %i = %c0 to %c4 step %c1 {
+    %wa2 = conduit.acquire {name = "cross_a", count = 1 : i64, port = "Consume"}
+              : !conduit.window<memref<8xi32>>
+    conduit.release %wa2 {count = 1 : i64, port = "Consume"}
+        : !conduit.window<memref<8xi32>>
+    %wb2 = conduit.acquire {name = "cross_b", count = 1 : i64, port = "Consume"}
+              : !conduit.window<memref<8xi32>>
+    conduit.release %wb2 {count = 1 : i64, port = "Consume"}
+        : !conduit.window<memref<8xi32>>
+  }
   return
 }

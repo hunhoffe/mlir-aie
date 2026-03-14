@@ -80,6 +80,8 @@
 
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -266,7 +268,22 @@ struct ConduitFuseChannelsPass
       // interval coloring and record name → group assignments.
       llvm::StringMap<unsigned> nameToGroup;
 
+      // Track whether any block hosting a conduit has an scf::IfOp parent.
+      // Such conduits require runtime (control-packet) mode for safe fusion;
+      // all others can use the static BD chain path.
+      llvm::StringMap<bool> nameNeedsRuntime;
+
       for (auto &[block, items] : blockConduits) {
+        // Check if this block is directly inside an scf::IfOp region.
+        bool inIfBlock = mlir::isa_and_present<mlir::scf::IfOp>(
+            block->getParentOp());
+        for (auto &[name, iv] : items) {
+          if (inIfBlock)
+            nameNeedsRuntime[name] = true;
+          else if (!nameNeedsRuntime.count(name))
+            nameNeedsRuntime[name] = false;
+        }
+
         if (items.size() < 2)
           continue;
 
@@ -292,6 +309,18 @@ struct ConduitFuseChannelsPass
       for (auto &[name, gid] : nameToGroup)
         ++groupCount[gid];
 
+      // For each group, determine fuse_mode: "runtime" if any member has an
+      // scf::IfOp parent block (static BD chain would silently corrupt data
+      // when the branch is not taken); "static" otherwise.
+      llvm::DenseMap<unsigned, bool> groupNeedsRuntime;
+      for (auto &[name, gid] : nameToGroup) {
+        auto it = nameNeedsRuntime.find(name);
+        if (it != nameNeedsRuntime.end() && it->second)
+          groupNeedsRuntime[gid] = true;
+        else if (!groupNeedsRuntime.count(gid))
+          groupNeedsRuntime[gid] = false;
+      }
+
       for (auto &ci : conduits) {
         auto it = nameToGroup.find(ci.name);
         if (it == nameToGroup.end())
@@ -300,9 +329,16 @@ struct ConduitFuseChannelsPass
         if (groupCount[gid] < 2)
           continue;
         std::string label = "group" + std::to_string(gid);
+        mlir::MLIRContext *ctx = module.getContext();
         ci.createOp->setAttr(
             "fused_dma_channel_group",
-            mlir::StringAttr::get(module.getContext(), label));
+            mlir::StringAttr::get(ctx, label));
+        // fuse_mode = "static"  → Pass C emits static BD chain (NextBDOp linking)
+        // fuse_mode = "runtime" → Pass C must use control-packet path (Phase 3)
+        llvm::StringRef fuseMode =
+            groupNeedsRuntime[gid] ? "runtime" : "static";
+        ci.createOp->setAttr("fuse_mode",
+                             mlir::StringAttr::get(ctx, fuseMode));
       }
     }
   }

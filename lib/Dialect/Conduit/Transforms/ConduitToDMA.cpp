@@ -217,6 +217,10 @@ struct ConduitInfo {
   // Populated from producer_tile for shim detection.
   std::string producerTileStr; // "tile(col,row)"
   llvm::SmallVector<std::string> consumerTileStrs; // for link memtile lookup
+  // DMA channel fusion group label (from --conduit-fuse-channels annotation).
+  // Empty string means this conduit is not part of any fused group.
+  // Set by Phase 1 from the fused_dma_channel_group attribute on conduit.create.
+  std::string fuseGroup;
 };
 
 // ---------------------------------------------------------------------------
@@ -320,6 +324,32 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         if (at->size() >= 2) {
           info.hasAllocTile = true;
           info.allocTileCoord = std::make_pair((*at)[0], (*at)[1]);
+        }
+      }
+
+      // Extract fused DMA channel group label (set by --conduit-fuse-channels).
+      if (auto fuseAttr =
+              op->getAttrOfType<mlir::StringAttr>("fused_dma_channel_group")) {
+        info.fuseGroup = fuseAttr.getValue().str();
+
+        // If fuse_mode = "runtime", the group contains conduit ops inside an
+        // scf.if branch.  Static BD chain lowering is incorrect for this case:
+        // the DMA engine runs both members unconditionally even when the branch
+        // is not taken, causing silent data corruption.  The control-packet
+        // path (Phase 3) is not yet implemented.  Reject the program now.
+        if (auto modeAttr =
+                op->getAttrOfType<mlir::StringAttr>("fuse_mode")) {
+          if (modeAttr.getValue() == "runtime") {
+            op.emitError(
+                "conduit-to-dma: fuse_mode=\"runtime\" is not yet supported "
+                "(control-packet BD reprogramming path unimplemented); "
+                "conduit ops inside scf.if branches cannot be fused safely "
+                "with static BD chains — remove the fused_dma_channel_group "
+                "annotation or restructure the program to avoid conditional "
+                "fusion");
+            signalPassFailure();
+            return;
+          }
         }
       }
 
@@ -1465,7 +1495,21 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     //
     // Covers compute→compute, compute→MemTile, and MemTile→compute flows.
     // Shim endpoints are handled separately by Phase 4a/4b.
+    //
+    // Fused channel groups (from --conduit-fuse-channels):
+    //   Conduits annotated with the same fused_dma_channel_group label share
+    //   one hardware MM2S channel slot.  Their live intervals are guaranteed
+    //   non-overlapping by the fusion pass, so the DMA engine is idle between
+    //   uses and can be reprogrammed.  The first conduit in the group that
+    //   reaches this loop allocates the channel; subsequent members reuse it.
     // -----------------------------------------------------------------------
+
+    // group label → assigned MM2S channel (populated as groups are first seen).
+    llvm::StringMap<int32_t> fuseGroupMM2SChannel;
+
+    // group label → ordered list of conduit names in that group (insertion
+    // order = conduitMap walk order = source order).
+    llvm::StringMap<llvm::SmallVector<llvm::StringRef, 4>> fuseGroupMembers;
 
     for (auto &[name, info] : conduitMap) {
       if (info.sharedMemory)
@@ -1490,7 +1534,20 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       builder.setInsertionPoint(deviceBody.getTerminator());
 
       // Assign this conduit's MM2S channel on the producer tile.
-      int32_t mm2sChannel = tileNextMM2SChannel[prodTileVal]++;
+      // For fused groups: reuse the channel already allocated for the group.
+      int32_t mm2sChannel;
+      if (!info.fuseGroup.empty()) {
+        auto it = fuseGroupMM2SChannel.find(info.fuseGroup);
+        if (it != fuseGroupMM2SChannel.end()) {
+          mm2sChannel = it->second; // reuse group's channel
+        } else {
+          mm2sChannel = tileNextMM2SChannel[prodTileVal]++; // first in group
+          fuseGroupMM2SChannel[info.fuseGroup] = mm2sChannel;
+        }
+        fuseGroupMembers[info.fuseGroup].push_back(name);
+      } else {
+        mm2sChannel = tileNextMM2SChannel[prodTileVal]++; // unfused
+      }
       conduitMM2SChannel[name] = mm2sChannel;
 
       for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
@@ -2269,6 +2326,20 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             static_cast<int32_t>(dmaStart.getChannelIndex()));
     });
 
+    // BD range tracking for fused channel groups.
+    //
+    // For each conduit that is part of a fused group (fuseGroup non-empty),
+    // record its first and last BD blocks after Case C emits them.  After the
+    // entire conduitMap loop completes, link consecutive members into a single
+    // BD chain: the last BD of member[i] points to the first BD of member[i+1],
+    // and the last BD of the final member loops back to the first BD of
+    // member[0].  The dma_start already points to member[0]'s first BD.
+    //
+    // Key: conduit name (as StringRef into conduitMap — stable lifetime).
+    // Value: {firstBDBlock, lastBDBlock}.
+    llvm::DenseMap<llvm::StringRef,
+                   std::pair<mlir::Block *, mlir::Block *>> conduitBDRange;
+
     for (auto &[name, info] : conduitMap) {
       if (info.buffers.empty() || !info.prodLock || !info.consLock)
         continue;
@@ -2539,8 +2610,18 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   });
                 }
 
+                // Determine if this conduit is a non-first member of a fused
+                // group (and therefore should reuse the group's dma_start
+                // rather than emitting a new one).
+                bool isFusedNonFirst = false;
+                if (!info.fuseGroup.empty()) {
+                  auto &members = fuseGroupMembers[info.fuseGroup];
+                  isFusedNonFirst = (!members.empty() &&
+                                     members.front() != name);
+                }
+
                 if (existingDMARegion) {
-                  // Add DMA channel to existing DMA op.
+                  // Add BD blocks to existing DMA op.
                   mlir::Region &memRegion = *existingDMARegion;
                   mlir::Block *endBlock = nullptr;
                   for (mlir::Block &block : memRegion)
@@ -2549,7 +2630,6 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                         endBlock = &block; // keep updating — want the last one
 
                   if (endBlock) {
-                    mlir::Operation *oldEnd = endBlock->getTerminator();
                     auto addBlock = [&]() -> mlir::Block * {
                       return builder.createBlock(&memRegion);
                     };
@@ -2558,12 +2638,21 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                       bdBlocks.push_back(addBlock());
                     mlir::Block *newEndBlock = addBlock();
 
-                    builder.setInsertionPointToEnd(endBlock);
-                    oldEnd->erase();
-                    builder.create<AIE::DMAStartOp>(
-                        deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-                        mm2sChannel, static_cast<int32_t>(0),
-                        bdBlocks[0], newEndBlock);
+                    if (isFusedNonFirst) {
+                      // Non-first fused member: do NOT emit a new dma_start.
+                      // The BD blocks are appended to the region; chain linking
+                      // (rewriting NextBD) is deferred until after the full
+                      // conduitMap loop (see post-loop fused-chain pass below).
+                    } else {
+                      // Unfused or first member: erase old EndOp, emit dma_start.
+                      mlir::Operation *oldEnd = endBlock->getTerminator();
+                      builder.setInsertionPointToEnd(endBlock);
+                      oldEnd->erase();
+                      builder.create<AIE::DMAStartOp>(
+                          deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
+                          mm2sChannel, static_cast<int32_t>(0),
+                          bdBlocks[0], newEndBlock);
+                    }
 
                     for (int64_t i = 0; i < depth; ++i) {
                       builder.setInsertionPointToEnd(bdBlocks[i]);
@@ -2592,6 +2681,11 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                     }
                     builder.setInsertionPointToEnd(newEndBlock);
                     builder.create<AIE::EndOp>(deviceOp.getLoc());
+
+                    // Record BD range for fused chain linking.
+                    if (!info.fuseGroup.empty())
+                      conduitBDRange[name] = {bdBlocks.front(),
+                                              bdBlocks.back()};
                   }
                 } else {
                   // Create new DMA op for this tile.
@@ -2610,17 +2704,21 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   auto addBlock = [&]() -> mlir::Block * {
                     return builder.createBlock(&memRegion);
                   };
-                  mlir::Block *dmaStartBlock = addBlock();
+                  mlir::Block *dmaStartBlock = nullptr;
+                  if (!isFusedNonFirst)
+                    dmaStartBlock = addBlock();
                   llvm::SmallVector<mlir::Block *> bdBlocks;
                   for (int64_t i = 0; i < depth; ++i)
                     bdBlocks.push_back(addBlock());
                   mlir::Block *endBlock = addBlock();
 
-                  builder.setInsertionPointToEnd(dmaStartBlock);
-                  builder.create<AIE::DMAStartOp>(
-                      deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-                      mm2sChannel, static_cast<int32_t>(0),
-                      bdBlocks[0], endBlock);
+                  if (!isFusedNonFirst) {
+                    builder.setInsertionPointToEnd(dmaStartBlock);
+                    builder.create<AIE::DMAStartOp>(
+                        deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
+                        mm2sChannel, static_cast<int32_t>(0),
+                        bdBlocks[0], endBlock);
+                  }
 
                   for (int64_t i = 0; i < depth; ++i) {
                     builder.setInsertionPointToEnd(bdBlocks[i]);
@@ -2649,6 +2747,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   }
                   builder.setInsertionPointToEnd(endBlock);
                   builder.create<AIE::EndOp>(deviceOp.getLoc());
+
+                  // Record BD range for fused chain linking.
+                  if (!info.fuseGroup.empty())
+                    conduitBDRange[name] = {bdBlocks.front(), bdBlocks.back()};
                 }
               }
             }
@@ -2929,6 +3031,55 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           builder.setInsertionPointToEnd(endMemBlock);
           builder.create<AIE::EndOp>(deviceOp.getLoc());
         }
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 5.5 post-pass: link fused BD chains.
+    //
+    // For each fused group with >= 2 members that have recorded BD ranges,
+    // rewrite NextBDOp successors to form a single circular chain:
+    //
+    //   member[0] last BD → member[1] first BD
+    //   member[1] last BD → member[2] first BD
+    //   ...
+    //   member[N-1] last BD → member[0] first BD  (wrap-around)
+    //
+    // The dma_start already points to member[0]'s first BD (emitted during
+    // the loop above), so the engine runs member[0], chains to member[1], ...,
+    // then loops back to member[0] indefinitely.
+    // -----------------------------------------------------------------------
+    for (auto &[groupLabel, members] : fuseGroupMembers) {
+      if (members.size() < 2)
+        continue;
+
+      // Collect BD ranges for all members that have entries.
+      llvm::SmallVector<std::pair<mlir::Block *, mlir::Block *>, 4> ranges;
+      for (llvm::StringRef memberName : members) {
+        auto it = conduitBDRange.find(memberName);
+        if (it == conduitBDRange.end())
+          continue; // conduit was skipped (e.g., no buffers/locks)
+        ranges.push_back(it->second);
+      }
+      if (ranges.size() < 2)
+        continue;
+
+      // Rewrite: member[i].lastBD → member[i+1].firstBD.
+      // Final member wraps to member[0].firstBD.
+      for (unsigned i = 0; i < ranges.size(); ++i) {
+        mlir::Block *lastBD = ranges[i].second;
+        mlir::Block *nextFirstBD = ranges[(i + 1) % ranges.size()].first;
+
+        // Find the NextBDOp terminator of lastBD and rewrite its successor.
+        mlir::Operation *term = lastBD->getTerminator();
+        if (!term || !mlir::isa<AIE::NextBDOp>(term))
+          continue; // unexpected terminator — skip
+        auto nextBDOp = mlir::cast<AIE::NextBDOp>(term);
+        // NextBDOp has a single block successor (its destination BD block).
+        // Replace it by erasing the old op and emitting a new one.
+        builder.setInsertionPoint(nextBDOp);
+        builder.create<AIE::NextBDOp>(nextBDOp.getLoc(), nextFirstBD);
+        nextBDOp.erase();
       }
     }
 
