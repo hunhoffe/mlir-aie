@@ -398,7 +398,15 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // hardware relay allocation.  No verifier checks tile validity.
                        // Pass A guarantees a valid MemTile coordinate; Pass C will
                        // fail at lookupTileByCoord if wrong.
-                       OptionalAttr<DenseI64ArrayAttr>:$alloc_tile);
+                       OptionalAttr<DenseI64ArrayAttr>:$alloc_tile,
+                       // repeat_count: optional DMA repeat count.  When present,
+                       // Pass C must set DMAStartOp repeat_count to this value
+                       // instead of hardcoded 0.  Each BD fires repeat_count times
+                       // before advancing to the next BD in the chain.
+                       // Pass A propagates this from aie.objectfifo.create's
+                       // repeat_count attribute.  P1-F rejects repeat_count > 1
+                       // until full Pass C implementation is done.
+                       OptionalAttr<I64Attr>:$repeat_count);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
@@ -406,24 +414,32 @@ def Conduit_Create : Conduit_Op<"create"> {
 def Conduit_RegisterExternalBuffers : Conduit_Op<"register_external_buffers"> {
   let summary = "register host-side external buffers with a shim-DMA conduit";
   let description = [{
-    Covers the pattern of aie.objectfifo_register_external_buffers / shimDMA
-    registration for host ↔ shim data transfer.  The 'base_addr = 0' form
-    indicates runtime-determined addresses (XRT handles buffer mapping).
+    Registers external memory buffers (typically host-side DDR allocations) with
+    a shim DMA conduit endpoint.  The shim DMA will use these buffers instead of
+    on-chip tile memory for the data transfer.
+
+    This covers the aie.objectfifo.register_external_buffers pattern where
+    external buffers (from aie.external_buffer) are bound to a shim tile's DMA
+    for host ↔ device data movement.
 
     Attributes:
-    - name        : conduit channel name (typically a shim DMA channel)
-    - num_buffers : number of external host buffers to register
-    - base_addr   : base address of the first buffer (0 = runtime-determined)
+    - name       : conduit channel name (must match a conduit.create)
+    - tile_coord : [col, row] of the shim tile these buffers are bound to
+
+    Operands:
+    - external_buffers : one or more memref SSA values from aie.external_buffer
 
     Example:
-      conduit.register_external_buffers {name = "shim_chan",
-                                         num_buffers = 2 : i64,
-                                         base_addr = 0 : i64}
+      %buf0 = aie.external_buffer : memref<512xi16>
+      %buf1 = aie.external_buffer : memref<512xi16>
+      conduit.register_external_buffers(%buf0, %buf1)
+          {name = "shim_chan", tile_coord = array<i64: 0, 0>}
+          : (memref<512xi16>, memref<512xi16>)
   }];
   let arguments = (ins StrAttr:$name,
-                       I64Attr:$num_buffers,
-                       I64Attr:$base_addr);
-  let assemblyFormat = "attr-dict";
+                       DenseI64ArrayAttr:$tile_coord,
+                       Variadic<AnyMemRef>:$external_buffers);
+  let assemblyFormat = "`(` $external_buffers `)` attr-dict `:` `(` type($external_buffers) `)`";
 }
 
 // ---------------------------------------------------------------------------

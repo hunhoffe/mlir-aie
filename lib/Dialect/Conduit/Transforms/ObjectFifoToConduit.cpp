@@ -297,6 +297,16 @@ struct ObjectFifoToConduitPass
         accessPatternAttr =
             mlir::DenseI64ArrayAttr::get(ctx, info.accessPattern);
 
+      // Extract repeat_count from the source objectfifo, if present.
+      // P1-F rejects repeat_count > 1 in collectFifoInfo(); values of 0 or 1
+      // are propagated through so Pass C can set DMAStartOp accordingly.
+      mlir::IntegerAttr repeatCountAttr;
+      if (op.getRepeatCount().has_value()) {
+        repeatCountAttr = mlir::IntegerAttr::get(
+            mlir::IntegerType::get(ctx, 64),
+            static_cast<int64_t>(op.getRepeatCount().value()));
+      }
+
       builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
@@ -311,7 +321,8 @@ struct ObjectFifoToConduitPass
           /*routing_mode=*/mlir::StringAttr{},
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
-          /*alloc_tile=*/mlir::DenseI64ArrayAttr{});
+          /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
+          repeatCountAttr);
 
       fifosToErase.push_back(op);
     });
@@ -656,6 +667,42 @@ struct ObjectFifoToConduitPass
     for (auto op : releasesToErase)
       op.erase();
 
+    // Lower aie.objectfifo.register_external_buffers →
+    // conduit.register_external_buffers.
+    //
+    // ORDERING: must run BEFORE Phase 4.5's replaceAllSymbolUses() because
+    // that rewrite changes @fifo_name → @fifo_name_shim_alloc in all
+    // FlatSymbolRefAttr references (including the register_external_buffers
+    // op's objFifo_name attribute).  We need the original name to match the
+    // conduit.create emitted in Phase 2.
+    //
+    // Collects ops first to avoid walk-while-erase.
+    llvm::SmallVector<AIE::ObjectFifoRegisterExternalBuffersOp> extBufOps;
+    module.walk([&](AIE::ObjectFifoRegisterExternalBuffersOp op) {
+      extBufOps.push_back(op);
+    });
+    for (auto extBufOp : extBufOps) {
+      builder.setInsertionPoint(extBufOp);
+
+      // Extract conduit name from the objectfifo symbol reference.
+      std::string name = extBufOp.getObjFifoName().str();
+
+      // Extract shim tile coordinates.
+      auto shimTile =
+          mlir::cast<AIE::TileOp>(extBufOp.getTile().getDefiningOp());
+      llvm::SmallVector<int64_t> tileCoord = {shimTile.getCol(),
+                                               shimTile.getRow()};
+
+      // Collect external buffer SSA values.
+      llvm::SmallVector<mlir::Value> extBufs(extBufOp.getExternalBuffers());
+
+      builder.create<RegisterExternalBuffers>(
+          extBufOp.getLoc(), mlir::StringAttr::get(ctx, name),
+          mlir::DenseI64ArrayAttr::get(ctx, tileCoord), extBufs);
+
+      extBufOp.erase();
+    }
+
     // Phase 4.5: preserve shim DMA symbols for runtime_sequence.
     //
     // When an objectfifo connects to a shim tile (row==0), the
@@ -727,15 +774,6 @@ struct ObjectFifoToConduitPass
     //
     // Fix 3.5: Erasure order is intentional: allocate ops before create ops.
     // Intermediate state is invalid but MLIR does not re-verify within a pass.
-
-    // Fix 1c: register_external_buffers is not yet supported — emit an error
-    // so the pass fails loudly rather than silently dropping the op and
-    // producing incorrect output downstream.
-    module.walk([&](AIE::ObjectFifoRegisterExternalBuffersOp extBufOp) {
-      extBufOp.emitError(
-          "objectfifo-to-conduit: register_external_buffers not yet supported");
-      signalPassFailure();
-    });
 
     // Fix 4i: Build a name→conduit.create map to avoid O(n²) inner walk.
     // Previously this used a nested module.walk to find the matching
