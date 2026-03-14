@@ -71,8 +71,8 @@
 // - Static strides from arith.constant (index or integer type): FIXED — extracted correctly
 // - Multi-dimensional channel indices: not supported (silently dropped)
 // - Async token threading: structural only (air.async.token → !conduit.dma.token)
-// - Dynamic offsets/strides (SSA non-constant, e.g. loop IVs): not supported
-//   (fall back to 0 for offsets/sizes, 1 for strides; logged as limitation)
+// - Dynamic offsets/strides (SSA non-constant, e.g. loop IVs): hard error
+//   (placeholder substitution produces wrong DMA descriptors; emitError+signalPassFailure)
 //
 // Known limitations (documented honestly)
 // ----------------------------------------
@@ -81,8 +81,9 @@
 // - Offset/size/stride Index SSA values are extracted when they come from
 //   arith.constant (ConstantIndexOp, ConstantIntOp, or generic ConstantOp with
 //   integer attribute).  Truly dynamic values (loop induction variables, block
-//   arguments, etc.) fall back to 0/1 defaults; the emitted conduit op carries
-//   those placeholders.  Full dynamic operand threading is a future TODO.
+//   arguments, etc.) cause a hard error (emitError + signalPassFailure) because
+//   placeholder substitution produces incorrect DMA descriptors.
+//   Full dynamic operand threading is a future TODO.
 // - The blocking (non-async) put/get forms with no result SSA value are
 //   lowered to the async form with the result token unused.  This is safe
 //   because the token is not consumed by any downstream op in the original.
@@ -463,19 +464,25 @@ struct AirChannelToConduitPass
       auto sizeVals    = extractStaticInts(sizesRange);
       auto strideVals  = extractStaticInts(stridesRange);
 
-      // Replace any -1 (dynamic) with 0/0/1 placeholders.
-      // (conduit attr is DenseI64ArrayAttr which requires concrete ints.)
-      // Detect whether any value is truly dynamic so we can warn the user.
+      // Check for dynamic (non-constant) offset/size/stride values.
+      // Dynamic values cannot be lowered correctly — the emitted DMA
+      // descriptors would use placeholder values (stride=0 reads/writes
+      // the same address repeatedly), producing silent data corruption
+      // on hardware.  This is a hard error, not a warning.
       bool hasDynamic = false;
-      for (auto &v : offsetVals)  { if (v < 0) { v = 0; hasDynamic = true; } }
-      for (auto &v : sizeVals)    { if (v < 0) { v = 0; hasDynamic = true; } }
-      for (auto &v : strideVals)  { if (v < 0) { v = 1; hasDynamic = true; } }
-      if (hasDynamic)
-        op->emitWarning() << "AirChannelToConduit: channel @" << chanName
+      for (auto &v : offsetVals)  { if (v < 0) { hasDynamic = true; } }
+      for (auto &v : sizeVals)    { if (v < 0) { hasDynamic = true; } }
+      for (auto &v : strideVals)  { if (v < 0) { hasDynamic = true; } }
+      if (hasDynamic) {
+        op->emitError()
+            << "air-channel-to-conduit: channel @" << chanName
             << " has dynamic offset/size/stride operands (e.g., loop IVs or "
                "block arguments) that cannot be extracted statically; "
-               "replaced with placeholder values (0/0/1). "
-               "The emitted conduit transfer descriptor may be incorrect.";
+               "placeholder substitution would produce incorrect DMA "
+               "descriptors and silent data corruption on hardware";
+        signalPassFailure();
+        continue;
+      }
 
       // Emit conduit put_memref_async or get_memref_async.
       bool isPut = isAirChannelPut(op);
