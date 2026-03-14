@@ -3111,6 +3111,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // that any wait ops inside device body are caught first.
     // -----------------------------------------------------------------------
 
+    // Pre-step: clear dep operands from PutMemrefAsync/GetMemrefAsync.
+    // Deps are scheduling hints from the AIR source with no hardware lowering.
+    // Must be cleared BEFORE any Phase 7 erasure — PutMemrefAsync deps can
+    // reference WaitAllAsync results, which Phase 7 erases later.
+    module.walk([&](PutMemrefAsync op) { op.getDepsMutable().clear(); });
+    module.walk([&](GetMemrefAsync op) { op.getDepsMutable().clear(); });
+
     module.walk([&](Wait op) { op.erase(); });
     module.walk([&](Create op) { op.erase(); });
     // conduit.wait_all_async merges tokens but has no hardware lowering — the
