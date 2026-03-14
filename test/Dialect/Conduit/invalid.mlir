@@ -194,3 +194,158 @@ func.func @bad_forward_two_dsts() {
                            mode = "forward", memtile = "tile(0,1)"}
   return
 }
+
+// -----
+
+// M7: CSDF buffer capacity insufficient.
+// producer_rates = [3, 1] (sum=4, period=2); consumer_rates = [2] (sum=2, period=1)
+// M6 balance check: sum(P)*len(C) = 4*1 = 4 == sum(C)*len(P) = 2*2 = 4  ✓  (passes M6)
+// M7 hyper-period simulation (H=lcm(2,1)=2 steps, produce-then-consume each step):
+//   t=0: produce 3 (occ=3), consume 2 (occ=1) — peak=3
+//   t=1: produce 1 (occ=2), consume 2 (occ=0) — peak still 3
+// Peak occupancy = 3 > capacity = 2 → M7 error.
+func.func @bad_csdf_capacity_insufficient() {
+  // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds capacity=2}}
+  conduit.create {name = "csdf_cap_bad", capacity = 2 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<i32>,
+                  depth = 2 : i64,
+                  producer_rates = array<i64: 3, 1>,
+                  consumer_rates = array<i64: 2>}
+  return
+}
+
+// -----
+
+// M7: CSDF hyper-period simulation underflow warning (not an error).
+// producer_rates = [1, 3] (sum=4, period=2); consumer_rates = [3, 1] (sum=4, period=2)
+// M6 balance check: sum(P)*len(C) = 4*2 = 8 == sum(C)*len(P) = 4*2 = 8  ✓  (passes M6)
+// M7 hyper-period simulation (H=lcm(2,2)=2 steps, produce-before-consume each step):
+//   t=0: produce 1 (occ=1), consume 3 → occ=-2 → underflow warning at step 0
+//   t=1: produce 3 (occ=1, after reset), consume 1 → occ=0
+// Peak occupancy = 3 (at t=1 after produce), capacity=4 → no capacity error.
+// This tests that underflow emits emitWarning (not emitOpError): the program is
+// accepted (M6 guarantees feasibility) but the user is warned that the
+// produce-before-consume simulation interleaving hits underflow.
+func.func @warn_csdf_underflow() {
+  // expected-warning@+1 {{M7: CSDF hyper-period simulation: momentary underflow at step 0}}
+  conduit.create {name = "csdf_underflow", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<i32>,
+                  depth = 4 : i64,
+                  producer_rates = array<i64: 1, 3>,
+                  consumer_rates = array<i64: 3, 1>}
+  return
+}
+
+// -----
+
+// M8a: double release — acquire(count=1) + release(count=1) + release(count=1)
+// = cumulative 2 > acquired 1 → hardware lock-counter overflow.
+func.func @m8a_double_release() {
+  conduit.create {name = "dbl", capacity = 1 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<1xi32>,
+                  depth = 1 : i64}
+  // expected-error@+1 {{'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow}}
+  %win = conduit.acquire {name = "dbl", count = 1 : i64, port = "Consume"}
+             : !conduit.window<memref<1xi32>>
+  conduit.release %win {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<1xi32>>
+  conduit.release %win {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<1xi32>>
+  return
+}
+
+// -----
+
+// M8c: !conduit.window<T> is not a token type — rejected by wait_all.
+// (Also triggers M9 warning: acquire has no release in this block.)
+func.func @m8c_wait_all_window_value() {
+  conduit.create {name = "unx", capacity = 1 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<1xi32>,
+                  depth = 1 : i64}
+  // expected-warning@+1 {{M9: acquire has no matching release or release_async in the same block; potential deadlock}}
+  %win = conduit.acquire {name = "unx", count = 1 : i64, port = "Consume"}
+             : !conduit.window<memref<1xi32>>
+  // expected-error@+1 {{'conduit.wait_all' op operand #0 must be variadic of conduit token type, but got '!conduit.window<memref<1xi32>>'}}
+  conduit.wait_all %win : !conduit.window<memref<1xi32>>
+  return
+}
+
+// -----
+
+// M8b: two wait_window on same token → double-materialization, deadlock.
+func.func @m8b_double_wait_window() {
+  conduit.create {name = "dbl_tok", capacity = 1 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<1xi32>,
+                  depth = 1 : i64}
+  // expected-error@+1 {{'conduit.acquire_async' op M8: window.token has 2 conduit.wait_window uses}}
+  %tok = conduit.acquire_async {name = "dbl_tok", count = 1 : i64}
+             : !conduit.window.token
+  %win1 = conduit.wait_window %tok for "dbl_tok"
+              : !conduit.window.token -> !conduit.window<memref<1xi32>>
+  %win2 = conduit.wait_window %tok for "dbl_tok"
+              : !conduit.window.token -> !conduit.window<memref<1xi32>>
+  conduit.release %win1 {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<1xi32>>
+  conduit.release %win2 {count = 1 : i64, port = "Consume"}
+      : !conduit.window<memref<1xi32>>
+  return
+}
+
+// -----
+
+// M8c: i32 operand in wait_all is not a token type.
+func.func @m8c_wait_all_non_token(%bad : i32) {
+  conduit.create {name = "ntok", capacity = 1 : i64}
+  %tok = conduit.put_memref_async {name = "ntok", num_elems = 1 : i64,
+             offsets = array<i64: 0>, sizes = array<i64: 1>,
+             strides = array<i64: 1>} : !conduit.dma.token
+  // expected-error@+1 {{'conduit.wait_all' op operand #1 must be variadic of conduit token type, but got 'i32'}}
+  conduit.wait_all %tok, %bad : !conduit.dma.token, i32
+  return
+}
+
+// -----
+
+// M10: window.token escapes via return — hardware state is not portable.
+func.func @m10_window_token_escape_return() -> !conduit.window.token {
+  conduit.create {name = "esc", capacity = 1 : i64}
+  // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via return}}
+  %tok = conduit.acquire_async {name = "esc", count = 1 : i64}
+             : !conduit.window.token
+  return %tok : !conduit.window.token
+}
+
+// -----
+
+// M10: dma.token escapes via return — hardware state is not portable.
+func.func @m10_dma_token_escape_return() -> !conduit.dma.token {
+  conduit.create {name = "esc_dma", capacity = 64 : i64}
+  // expected-error@+1 {{'conduit.put_memref_async' op M10: token escapes function scope via return}}
+  %tok = conduit.put_memref_async {name = "esc_dma", num_elems = 64 : i64,
+             offsets = array<i64: 0>, sizes = array<i64: 64>,
+             strides = array<i64: 1>} : !conduit.dma.token
+  return %tok : !conduit.dma.token
+}
+
+// -----
+
+// M10: window.token escapes via call argument.
+func.func private @callee(%tok : !conduit.window.token)
+func.func @m10_token_escape_call() {
+  conduit.create {name = "esc_call", capacity = 1 : i64}
+  // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via call argument}}
+  %tok = conduit.acquire_async {name = "esc_call", count = 1 : i64}
+             : !conduit.window.token
+  func.call @callee(%tok) : (!conduit.window.token) -> ()
+  return
+}

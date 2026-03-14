@@ -84,7 +84,7 @@ module @release_async_lowering {
 
         // release_async: non-blocking release.  Pass C must emit
         // use_lock(prodLock, Release, 1) at this point (Step 8d fix).
-        %rel_tok = conduit.release_async {name = "fifo_rel", count = 1 : i64}
+        %rel_tok = conduit.release_async {name = "fifo_rel", count = 1 : i64, port = "Consume"}
                        : !conduit.window.token
 
         // wait_all_async: fan-in of the release token.  No hardware op —

@@ -239,6 +239,13 @@ def Conduit_AsyncTokenType : TypeDef<Conduit_Dialect, "AsyncToken"> {
   let assemblyFormat = "";
 }
 
+// Type constraint accepting any conduit token type for mixed-token variadics.
+// Used by wait_all / wait_all_async which accept a mix of DMA and window tokens.
+def Conduit_AnyTokenType : AnyTypeOf<[Conduit_DMATokenType,
+                                       Conduit_WindowTokenType,
+                                       Conduit_AsyncTokenType],
+                                      "conduit token type">;
+
 // ---------------------------------------------------------------------------
 // Window type — !conduit.window<T>
 // ---------------------------------------------------------------------------
@@ -465,6 +472,7 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
   let arguments = (ins StrAttr:$name, I64Attr:$count, StrAttr:$port);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "attr-dict `:` type($window)";
+  let hasVerifier = 1;
 }
 
 def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
@@ -515,6 +523,7 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
   let arguments = (ins StrAttr:$name, I64Attr:$count);
   let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
+  let hasVerifier = 1;
 }
 
 def Conduit_Release : Conduit_Op<"release"> {
@@ -570,12 +579,14 @@ def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
     is a lock operation (Tier 2 window model), not a DMA transfer.
 
     Hardware lowering (Pass C):
-      aie.use_lock(prodLock, Release, count)
+      port="Consume": aie.use_lock(prodLock, Release, count) -- free up producer slots
+      port="Produce": aie.use_lock(consLock, Release, count) -- signal data ready
       The token signals when the release is complete.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count);
+  let arguments = (ins StrAttr:$name, I64Attr:$count, StrAttr:$port);
   let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
+  let hasVerifier = 1;
 }
 
 def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {
@@ -748,6 +759,7 @@ def Conduit_PutMemrefAsync : Conduit_Op<"put_memref_async"> {
                        DenseI64ArrayAttr:$strides);
   let results   = (outs Conduit_DMATokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
+  let hasVerifier = 1;
 }
 
 def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
@@ -765,6 +777,7 @@ def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
                        DenseI64ArrayAttr:$strides);
   let results   = (outs Conduit_DMATokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
+  let hasVerifier = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +832,7 @@ def Conduit_WaitWindow : Conduit_Op<"wait_window"> {
   let arguments = (ins Conduit_WindowTokenType:$token, StrAttr:$name);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "$token `for` $name attr-dict `:` type($token) `->` type($window)";
+  let hasVerifier = 1;
 }
 
 def Conduit_WaitAll : Conduit_Op<"wait_all"> {
@@ -828,7 +842,7 @@ def Conduit_WaitAll : Conduit_Op<"wait_all"> {
     specified async operations (DMA transfers, lock grants, releases) must
     have finished before execution continues.
 
-    Accepts zero or more tokens (variadic AnyType) so that a mix of
+    Accepts zero or more conduit token types so that a mix of
     !conduit.dma.token (from put/get_memref_async) and !conduit.window.token
     (from acquire_async / release_async) can be waited on together in a
     single fan-in.  This is the canonical cross-tier pattern:
@@ -839,8 +853,9 @@ def Conduit_WaitAll : Conduit_Op<"wait_all"> {
 
     Maps to: air.wait_all [%tok0, %tok1, ...] (blocking, no result).
   }];
-  let arguments = (ins Variadic<AnyType>:$tokens);
+  let arguments = (ins Variadic<Conduit_AnyTokenType>:$tokens);
   let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
+  let hasVerifier = 1;
 }
 
 def Conduit_WaitAllAsync : Conduit_Op<"wait_all_async"> {
@@ -850,7 +865,7 @@ def Conduit_WaitAllAsync : Conduit_Op<"wait_all_async"> {
     are complete.  Non-blocking: the returned token represents the pending
     completion of the fan-in.
 
-    Accepts variadic AnyType inputs (mix of !conduit.dma.token and
+    Accepts variadic conduit token type inputs (mix of !conduit.dma.token and
     !conduit.window.token) and returns a !conduit.dma.token representing the
     merged completion.
 
@@ -865,9 +880,10 @@ def Conduit_WaitAllAsync : Conduit_Op<"wait_all_async"> {
 
     Maps to: air.wait_all async [...] (Pass B source).
   }];
-  let arguments = (ins Variadic<AnyType>:$tokens);
+  let arguments = (ins Variadic<Conduit_AnyTokenType>:$tokens);
   let results   = (outs Conduit_DMATokenType:$result);
   let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
 }
 
 #endif // CONDUIT_DIALECT

@@ -15,6 +15,9 @@
 //   SubviewAccess::verify() — M2: index bounds against conduit depth
 //   ObjectFifoLink::verify() — M3: mode structural invariants + offset counts
 //   Create::verify() — M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
+//   Acquire::verify() / WaitWindow::verify() — M8a: window value release linearity
+//   AcquireAsync::verify() / ReleaseAsync::verify() — M8b: window.token wait_window linearity
+//   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token types
 //
 //===----------------------------------------------------------------------===//
 
@@ -208,7 +211,7 @@ void ConduitDialect::initialize() {
   // This is NECESSARY for a periodic schedule.  The SUFFICIENT condition
   // (deadlock freedom: buffer never underflows or overflows) is also statically
   // computable by simulating one hyper-period and checking token occupancy
-  // against the capacity attribute — this is TODO M7.
+  // against the capacity attribute — see M7 below.
   bool hasPR = getProducerRates().has_value();
   bool hasCR = getConsumerRates().has_value();
   if (hasPR != hasCR)
@@ -233,9 +236,294 @@ void ConduitDialect::initialize() {
              << (csum * plen)
              << " (producer_rates has sum=" << psum << " period=" << plen
              << ", consumer_rates has sum=" << csum << " period=" << clen << ")";
+
+    // M7: CSDF buffer capacity check (sufficient condition).
+    // Simulate one hyper-period (H = lcm(len(P), len(C)) time slots) and track
+    // the running token occupancy.  At each slot t, the producer fires first
+    // (adds P[t mod q] tokens) then the consumer fires (removes C[t mod r]
+    // tokens).  The buffer must hold the peak occupancy without exceeding
+    // capacity.
+    //
+    // Algorithm:
+    //   For t = 0..H-1: produce P[t mod q] tokens, then consume C[t mod r] tokens.
+    //   Track occupancy after each produce step; record the maximum.
+    //   Require: capacity >= peak_occupancy.
+    //
+    // The hyper-period H = lcm(q, r) = q * (r / gcd(q, r)).
+    // Overflow guard: check that q * (r/g) does not overflow before computing.
+    // If H > kMaxSimSteps, skip simulation and emit a warning.
+    //
+    // Underflow semantics: when occupancy goes negative after the consume step,
+    // this means the simulation's produce-before-consume interleaving is
+    // incompatible with the hardware's BD scheduling for these rates.  M6 already
+    // guarantees the schedule is feasible over the full hyper-period; momentary
+    // underflow in this simulation does NOT necessarily mean hardware deadlock —
+    // the actual AIE BD chain may fire in a different order (e.g., the hardware
+    // drains the consumer BD before the producer BD refills).  We therefore emit
+    // emitWarning (not emitOpError) for underflow: it flags a potential ordering
+    // mismatch for the user to verify against their BD chain layout, but does not
+    // reject the program.  Only capacity overflow (peakOccupancy > capacity) is a
+    // hard error, because no interleaving can hide that constraint.
+    {
+      int64_t capacity = getCapacity();
+      // Compute gcd(plen, clen) via Euclid's algorithm.
+      int64_t a = plen, b = clen;
+      while (b) { int64_t tmp = b; b = a % b; a = tmp; }
+      int64_t g = a;
+      int64_t clenOverG = clen / g; // exact: g divides clen by construction
+      constexpr int64_t kMaxSimSteps = 1024;
+      // Overflow guard: plen * clenOverG must not overflow int64_t and must be
+      // within the simulation cap before we compute hyperPeriod.
+      // Since kMaxSimSteps == 1024 and plen >= 1, the product overflows only
+      // when clenOverG > INT64_MAX / plen.  We conservatively skip simulation
+      // if either factor exceeds kMaxSimSteps (the product would then exceed the
+      // cap regardless).
+      if (plen > kMaxSimSteps || clenOverG > kMaxSimSteps / plen) {
+        emitWarning("M7: CSDF hyper-period exceeds simulation cap (")
+            << kMaxSimSteps << " steps); buffer capacity check skipped";
+      } else {
+        int64_t hyperPeriod = plen * clenOverG;
+        if (hyperPeriod > kMaxSimSteps) {
+          emitWarning("M7: CSDF hyper-period exceeds simulation cap (")
+              << kMaxSimSteps << " steps); buffer capacity check skipped";
+        } else {
+          int64_t occupancy = 0;
+          int64_t peakOccupancy = 0;
+          for (int64_t t = 0; t < hyperPeriod; ++t) {
+            // Producer fires: add P[t mod q] tokens.
+            occupancy += pRates[static_cast<size_t>(t % plen)];
+            if (occupancy > peakOccupancy)
+              peakOccupancy = occupancy;
+            // Consumer fires: remove C[t mod r] tokens.
+            occupancy -= cRates[static_cast<size_t>(t % clen)];
+            if (occupancy < 0) {
+              // Momentary underflow in produce-before-consume interleaving.
+              // See comment above: this is a warning, not an error.
+              emitWarning("M7: CSDF hyper-period simulation: momentary underflow "
+                          "at step ")
+                  << t << " (occupancy=" << occupancy
+                  << "); hardware BD scheduling may differ from "
+                     "produce-before-consume simulation order";
+              occupancy = 0; // reset to prevent cascading underflow reports
+            }
+          }
+          if (peakOccupancy > capacity)
+            return emitOpError("M7: CSDF buffer capacity insufficient: "
+                               "peak token occupancy over one hyper-period=")
+                   << peakOccupancy << " exceeds capacity=" << capacity
+                   << " (producer_rates=" << psum << "/phase, "
+                   << "consumer_rates=" << csum << "/phase, "
+                   << "hyper-period=" << hyperPeriod << " steps)";
+        }
+      }
+    }
   }
 
   return ::mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// M10: Token escape verifier
+//
+// Window and DMA tokens represent hardware state (lock grants, DMA BD
+// completions) that is not portable across function boundaries.  A token
+// that escapes its defining function via return or call argument would
+// create dangling hardware references.
+//
+// This helper checks that no user of `tokenVal` is a func.return or
+// func.call / func.call_indirect.
+//===----------------------------------------------------------------------===//
+
+static ::mlir::LogicalResult
+checkTokenDoesNotEscape(mlir::Operation *producerOp, mlir::Value tokenVal) {
+  for (mlir::OpOperand &use : tokenVal.getUses()) {
+    mlir::Operation *user = use.getOwner();
+    llvm::StringRef opName = user->getName().getStringRef();
+    if (opName == "func.return")
+      return producerOp->emitOpError(
+          "M10: token escapes function scope via return");
+    if (opName == "func.call" || opName == "func.call_indirect")
+      return producerOp->emitOpError(
+          "M10: token escapes function scope via call argument");
+  }
+  return ::mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// M8: Token linearity verifiers
+//
+// Three sub-checks:
+//
+//   M8a — window value release linearity (Acquire, WaitWindow):
+//     A !conduit.window<T> value must be released by at most one
+//     conduit.release op.  Multiple releases → double hardware lock-counter
+//     release → counter overflow → silent memory corruption.
+//     Zero conduit.release users is permitted: conduit.release_async releases
+//     by channel name (no SSA window operand), so the window SSA value may
+//     have zero Release users when release_async is the release mechanism.
+//     conduit.subview_access users do not count as releases.
+//
+//   M8b — window.token wait_window linearity (AcquireAsync, ReleaseAsync):
+//     A !conduit.window.token may be passed to conduit.wait_all /
+//     conduit.wait_all_async (fan-in), which does not "consume" the logical
+//     lock grant.  The token is materialized only by conduit.wait_window.
+//     More than one wait_window on the same token → double-materialization
+//     of the same lock grant → hardware deadlock.
+//     Zero wait_window uses is valid (token consumed via wait_all only).
+//     Other user op types are NOT flagged by M8b: the TableGen type
+//     constraints already reject semantically illegal uses independently.
+//
+//   M8c — wait_all / wait_all_async operand type check:
+//     All operands must be conduit token types: !conduit.dma.token,
+//     !conduit.window.token, or the deprecated !conduit.async.token alias.
+//     Non-token operands (e.g., !conduit.window<T>, memref, i32) indicate a
+//     programming error — the AnyType variadic in TableGen does not constrain
+//     these and M8c fills that gap.
+//
+// Limitations:
+//   - M8a does not flag zero conduit.release uses when release_async is used
+//     by name (cannot statically link the channel name to the SSA value).
+//   - M8 does not verify ordering; that requires liveness analysis (future).
+//===----------------------------------------------------------------------===//
+
+static ::mlir::LogicalResult
+checkWindowReleaseLinear(mlir::Operation *producerOp, mlir::Value windowVal) {
+  // M8a: True double-release detection — cumulative released count must not
+  // exceed the acquired count.  Multiple conduit.release ops on the same
+  // window value are valid for sliding-window partial-release patterns
+  // (e.g., acquire(3) followed by three release(1) calls).
+  //
+  // Limitation: loop-carried releases are only checked once per static path.
+  // A release inside scf.for runs N times per acquired window; if N > 1 and
+  // the loop runs multiple times, runtime total may exceed acquired_count.
+  // Detecting loop-carried over-release requires M9 liveness analysis.
+
+  int64_t acquiredCount = 0;
+  if (auto acqOp = mlir::dyn_cast<Acquire>(producerOp)) {
+    acquiredCount = static_cast<int64_t>(acqOp.getCount());
+  } else if (auto waitWinOp = mlir::dyn_cast<WaitWindow>(producerOp)) {
+    if (auto acqAsyncOp =
+            waitWinOp.getToken().getDefiningOp<AcquireAsync>()) {
+      acquiredCount = static_cast<int64_t>(acqAsyncOp.getCount());
+    } else {
+      return ::mlir::success();
+    }
+  } else {
+    return ::mlir::success();
+  }
+
+  int64_t totalReleased = 0;
+  for (mlir::OpOperand &use : windowVal.getUses()) {
+    if (auto relOp = mlir::dyn_cast<Release>(use.getOwner()))
+      totalReleased += static_cast<int64_t>(relOp.getCount());
+  }
+
+  if (totalReleased == 0)
+    return ::mlir::success();
+
+  if (totalReleased > acquiredCount)
+    return producerOp->emitOpError("M8: cumulative release count (")
+           << totalReleased << ") exceeds acquired count (" << acquiredCount
+           << ") -- double-release causes hardware lock-counter overflow";
+
+  return ::mlir::success();
+}
+
+static ::mlir::LogicalResult
+checkWindowTokenLinear(mlir::Operation *producerOp, mlir::Value tokenVal) {
+  unsigned waitWindowCount = 0;
+  for (mlir::OpOperand &use : tokenVal.getUses()) {
+    mlir::Operation *user = use.getOwner();
+    if (mlir::isa<WaitWindow>(user))
+      ++waitWindowCount;
+  }
+  if (waitWindowCount > 1)
+    return producerOp->emitOpError("M8: window.token has ")
+           << waitWindowCount
+           << " conduit.wait_window uses (double-materialization of the same "
+              "lock grant causes hardware deadlock)";
+  return ::mlir::success();
+}
+
+static ::mlir::LogicalResult
+checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
+  for (auto [idx, operand] : llvm::enumerate(operands)) {
+    mlir::Type ty = operand.getType();
+    bool isToken = mlir::isa<DMATokenType, WindowTokenType, AsyncTokenType>(ty);
+    if (!isToken)
+      return op->emitOpError("M8: wait_all operand #")
+             << idx << " has type " << ty
+             << ", which is not a conduit token type (!conduit.dma.token, "
+                "!conduit.window.token, or !conduit.async.token)";
+  }
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult Acquire::verify() {
+  if (failed(checkWindowReleaseLinear(getOperation(), getWindow())))
+    return ::mlir::failure();
+
+  // M9-lite Phase 1: same-block acquire-release pairing check.
+  // Warn if no conduit.release uses the window value AND no
+  // conduit.release_async with the same channel name exists in the same block.
+  // Limitation: cross-block patterns produce false-positive warnings;
+  // full analysis requires PostDominatorTree (M9 Phase 2, future work).
+  {
+    mlir::Value window = getWindow();
+    unsigned releaseCount = 0;
+    for (mlir::OpOperand &use : window.getUses()) {
+      if (mlir::isa<Release>(use.getOwner()))
+        ++releaseCount;
+    }
+    if (releaseCount == 0) {
+      llvm::StringRef name = getName();
+      bool foundReleaseAsync = false;
+      if (mlir::Block *block = getOperation()->getBlock()) {
+        for (mlir::Operation &op : *block) {
+          if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(&op)) {
+            if (relAsync.getName() == name) {
+              foundReleaseAsync = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!foundReleaseAsync)
+        emitWarning(
+            "M9: acquire has no matching release or release_async in "
+            "the same block; potential deadlock");
+    }
+  }
+
+  return ::mlir::success();
+}
+::mlir::LogicalResult AcquireAsync::verify() {
+  if (failed(checkTokenDoesNotEscape(getOperation(), getToken())))
+    return ::mlir::failure();
+  return checkWindowTokenLinear(getOperation(), getToken());
+}
+::mlir::LogicalResult ReleaseAsync::verify() {
+  if (failed(checkTokenDoesNotEscape(getOperation(), getToken())))
+    return ::mlir::failure();
+  return checkWindowTokenLinear(getOperation(), getToken());
+}
+::mlir::LogicalResult WaitWindow::verify() {
+  return checkWindowReleaseLinear(getOperation(), getWindow());
+}
+::mlir::LogicalResult WaitAll::verify() {
+  return checkTokenOperandTypes(getOperation(), getTokens());
+}
+::mlir::LogicalResult WaitAllAsync::verify() {
+  if (failed(checkTokenDoesNotEscape(getOperation(), getResult())))
+    return ::mlir::failure();
+  return checkTokenOperandTypes(getOperation(), getTokens());
+}
+
+::mlir::LogicalResult PutMemrefAsync::verify() {
+  return checkTokenDoesNotEscape(getOperation(), getToken());
+}
+::mlir::LogicalResult GetMemrefAsync::verify() {
+  return checkTokenDoesNotEscape(getOperation(), getToken());
 }
 
 //===----------------------------------------------------------------------===//

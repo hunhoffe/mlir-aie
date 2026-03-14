@@ -65,13 +65,24 @@
 //    (via SSA replacement; no explicit type conversion needed because
 //    conduit ops produce !conduit.dma.token results directly)
 //
+// Coverage
+// --------
+// - Static-shape SPSC programs: handled (offsets/sizes/strides from arith.constant extracted)
+// - Static strides from arith.constant (index or integer type): FIXED — extracted correctly
+// - Multi-dimensional channel indices: not supported (silently dropped)
+// - Async token threading: structural only (air.async.token → !conduit.dma.token)
+// - Dynamic offsets/strides (SSA non-constant, e.g. loop IVs): not supported
+//   (fall back to 0 for offsets/sizes, 1 for strides; logged as limitation)
+//
 // Known limitations (documented honestly)
 // ----------------------------------------
 // - Only [1,1] scalar channels supported; multi-dimensional indices ignored.
 // - num_elems is computed from static sizes only; dynamic sizes fall back to 1.
-// - Offset/size/stride Index SSA values from the AIR op are dropped when
-//   non-static; the emitted conduit op carries empty arrays in that case.
-//   Full dynamic operand threading is a future TODO.
+// - Offset/size/stride Index SSA values are extracted when they come from
+//   arith.constant (ConstantIndexOp, ConstantIntOp, or generic ConstantOp with
+//   integer attribute).  Truly dynamic values (loop induction variables, block
+//   arguments, etc.) fall back to 0/1 defaults; the emitted conduit op carries
+//   those placeholders.  Full dynamic operand threading is a future TODO.
 // - The blocking (non-async) put/get forms with no result SSA value are
 //   lowered to the async form with the result token unused.  This is safe
 //   because the token is not consumed by any downstream op in the original.
@@ -97,6 +108,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <limits>
 #include <string>
 
 namespace xilinx::conduit {
@@ -153,6 +165,39 @@ static std::string getChanName(mlir::Operation *op) {
   return "";
 }
 
+/// Try to extract a compile-time integer value from an SSA value defined by
+/// an arith constant op (ConstantIndexOp, ConstantIntOp, or the generic
+/// arith::ConstantOp with an IntegerAttr).  Returns the value on success,
+/// or std::nullopt for truly dynamic (non-constant) values.
+///
+/// Note: ConstantIndexOp, ConstantIntOp, and ConstantFloatOp are C++ wrapper
+/// classes that all share the same MLIR op class (arith::ConstantOp) and the
+/// same TypeID.  The dyn_cast<ConstantIndexOp> / dyn_cast<ConstantIntOp>
+/// dispatches succeed based on each wrapper's classof() predicate, which
+/// inspects the result type of the underlying ConstantOp.
+static std::optional<int64_t> tryExtractConstInt(mlir::Value v) {
+  mlir::Operation *defOp = v.getDefiningOp();
+  if (!defOp)
+    return std::nullopt;
+  if (auto cOp = mlir::dyn_cast<mlir::arith::ConstantIndexOp>(defOp))
+    return cOp.value();
+  if (auto cOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(defOp))
+    return cOp.value();
+  // Generic arith::ConstantOp fallback: handles integer constants whose result
+  // type (e.g., i32, i64) doesn't satisfy ConstantIndexOp or ConstantIntOp's
+  // classof().  Use getZExtValue() (unsigned) to avoid sign-extending large
+  // values into negative int64_t (which would be misinterpreted by the caller's
+  // dynamic-value guard).  Skip values that don't fit in a non-negative int64_t.
+  if (auto cOp = mlir::dyn_cast<mlir::arith::ConstantOp>(defOp)) {
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(cOp.getValue())) {
+      uint64_t raw = intAttr.getValue().getZExtValue();
+      if (raw <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+        return static_cast<int64_t>(raw);
+    }
+  }
+  return std::nullopt;
+}
+
 /// Compute num_elems as the product of static integer constant sizes.
 /// The sizes are Index-typed SSA values; we look for arith.constant defs.
 /// If any size is dynamic (not a constant), returns 0.
@@ -161,18 +206,10 @@ static int64_t computeNumElems(mlir::ValueRange sizes) {
     return 1; // scalar: 1 element
   int64_t prod = 1;
   for (mlir::Value v : sizes) {
-    mlir::Operation *defOp = v.getDefiningOp();
-    if (!defOp)
-      return 0;
-    if (auto cOp = mlir::dyn_cast<mlir::arith::ConstantIndexOp>(defOp)) {
-      prod *= cOp.value();
-    } else if (auto cOp =
-                   mlir::dyn_cast<mlir::arith::ConstantIntOp>(defOp)) {
-      prod *= cOp.value();
-    } else {
-      // Not a static constant — return 0 to signal dynamic
-      return 0;
-    }
+    auto maybeVal = tryExtractConstInt(v);
+    if (!maybeVal)
+      return 0; // Not a static constant — signal dynamic
+    prod *= *maybeVal;
   }
   return prod;
 }
@@ -182,19 +219,8 @@ static int64_t computeNumElems(mlir::ValueRange sizes) {
 static llvm::SmallVector<int64_t> extractStaticInts(mlir::ValueRange vals) {
   llvm::SmallVector<int64_t> result;
   for (mlir::Value v : vals) {
-    mlir::Operation *defOp = v.getDefiningOp();
-    if (!defOp) {
-      result.push_back(-1);
-      continue;
-    }
-    if (auto cOp = mlir::dyn_cast<mlir::arith::ConstantIndexOp>(defOp)) {
-      result.push_back(cOp.value());
-    } else if (auto cOp =
-                   mlir::dyn_cast<mlir::arith::ConstantIntOp>(defOp)) {
-      result.push_back(cOp.value());
-    } else {
-      result.push_back(-1);
-    }
+    auto maybeVal = tryExtractConstInt(v);
+    result.push_back(maybeVal.value_or(-1));
   }
   return result;
 }
@@ -263,6 +289,14 @@ struct AirChannelToConduitPass
         waitAllToRewrite.push_back(op);
     });
 
+    // Phase 1b: pre-scan for existing conduit.create ops so Phase 2 does not
+    // emit duplicates when a conduit.create with tile info already exists.
+    module.walk([&](Create existingCreate) {
+      auto nameAttr = existingCreate.getName();
+      if (!nameAttr.empty())
+        channelCreateOps[nameAttr.str()] = existingCreate.getOperation();
+    });
+
     // Phase 2: emit conduit.create for each air.channel declaration.
     for (mlir::Operation *op : channelDeclsToErase) {
       std::string name = getSymName(op);
@@ -270,6 +304,11 @@ struct AirChannelToConduitPass
         // No sym_name — skip.
         continue;
       }
+
+      // Skip if a conduit.create with this name already exists (e.g., one
+      // with tile info inserted by a prior placement step).
+      if (channelCreateOps.count(name))
+        continue;
 
       builder.setInsertionPoint(op);
       mlir::Location loc = op->getLoc();
@@ -377,8 +416,16 @@ struct AirChannelToConduitPass
       mlir::OperandRange allOps = op->getOperands();
       int32_t base = 0;
       // async deps: skip (conduit put/get_memref_async do not take dep tokens)
+      if (ndeps > 0)
+        op->emitWarning() << "AirChannelToConduit: " << ndeps
+            << " async dependency token(s) dropped for channel @" << chanName
+            << "; execution ordering may be incorrect";
       base += ndeps;
       // indices (ignored — only [1,1] channels supported)
+      if (nidx > 0)
+        op->emitWarning() << "AirChannelToConduit: " << nidx
+            << " multi-dimensional channel index operand(s) dropped for @"
+            << chanName << "; only [1,1] scalar channels are supported";
       base += nidx;
       // memref
       mlir::ValueRange offsetsRange, sizesRange, stridesRange;
@@ -391,18 +438,30 @@ struct AirChannelToConduitPass
 
       // Compute num_elems from static sizes.
       int64_t numElems = computeNumElems(sizesRange);
-      if (numElems == 0) numElems = 1; // fallback for dynamic
+      if (numElems == 0) {
+        numElems = 1; // fallback for dynamic
+        op->emitWarning() << "AirChannelToConduit: channel @" << chanName
+            << " has all-dynamic sizes; num_elems defaulting to 1";
+      }
 
       // Extract static values for the structured attrs.
       auto offsetVals  = extractStaticInts(offsetsRange);
       auto sizeVals    = extractStaticInts(sizesRange);
       auto strideVals  = extractStaticInts(stridesRange);
 
-      // Replace any -1 (dynamic) with 0 in the arrays
-      // (conduit attr is DenseI64ArrayAttr which requires concrete ints).
-      for (auto &v : offsetVals)  if (v < 0) v = 0;
-      for (auto &v : sizeVals)    if (v < 0) v = 0;
-      for (auto &v : strideVals)  if (v < 0) v = 1;
+      // Replace any -1 (dynamic) with 0/0/1 placeholders.
+      // (conduit attr is DenseI64ArrayAttr which requires concrete ints.)
+      // Detect whether any value is truly dynamic so we can warn the user.
+      bool hasDynamic = false;
+      for (auto &v : offsetVals)  { if (v < 0) { v = 0; hasDynamic = true; } }
+      for (auto &v : sizeVals)    { if (v < 0) { v = 0; hasDynamic = true; } }
+      for (auto &v : strideVals)  { if (v < 0) { v = 1; hasDynamic = true; } }
+      if (hasDynamic)
+        op->emitWarning() << "AirChannelToConduit: channel @" << chanName
+            << " has dynamic offset/size/stride operands (e.g., loop IVs or "
+               "block arguments) that cannot be extracted statically; "
+               "replaced with placeholder values (0/0/1). "
+               "The emitted conduit transfer descriptor may be incorrect.";
 
       // Emit conduit put_memref_async or get_memref_async.
       bool isPut = isAirChannelPut(op);
