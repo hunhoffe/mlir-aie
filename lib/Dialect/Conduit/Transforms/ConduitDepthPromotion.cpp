@@ -249,23 +249,23 @@ struct ConduitDepthPromotePass
       // Criterion 1: CSDF / cyclostatic access pattern.
       if (createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
               "access_pattern")) {
-        llvm::errs() << "conduit-depth-promote: skipping '" << name
-                     << "' -- CSDF access pattern\n";
+        createOp->emitRemark("conduit-depth-promote: skipping '")
+            << name << "' -- CSDF access pattern";
         continue;
       }
       if (createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
               "producer_rates") ||
           createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
               "consumer_rates")) {
-        llvm::errs() << "conduit-depth-promote: skipping '" << name
-                     << "' -- CSDF rates present\n";
+        createOp->emitRemark("conduit-depth-promote: skipping '")
+            << name << "' -- CSDF rates present";
         continue;
       }
 
       // Criterion 2: linked conduit.
       if (linkedNames.count(name)) {
-        llvm::errs() << "conduit-depth-promote: skipping '" << name
-                     << "' -- linked conduit\n";
+        createOp->emitRemark("conduit-depth-promote: skipping '")
+            << name << "' -- linked conduit";
         continue;
       }
 
@@ -273,15 +273,15 @@ struct ConduitDepthPromotePass
       // conduit.create is always at device-body level — never inside a loop.
       // We check whether any acquire for this conduit name is inside a loop.
       if (!nameHasLoopAcquire.count(name) || !nameHasLoopAcquire[name]) {
-        llvm::errs() << "conduit-depth-promote: skipping '" << name
-                     << "' -- no loop context\n";
+        createOp->emitRemark("conduit-depth-promote: skipping '")
+            << name << "' -- no loop context";
         continue;
       }
 
       // Criterion 4: passthrough-only.
       if (nameAllPassthrough.count(name) && nameAllPassthrough[name]) {
-        llvm::errs() << "conduit-depth-promote: skipping '" << name
-                     << "' -- passthrough-only (no compute)\n";
+        createOp->emitRemark("conduit-depth-promote: skipping '")
+            << name << "' -- passthrough-only (no compute)";
         continue;
       }
 
@@ -312,8 +312,8 @@ struct ConduitDepthPromotePass
         }
       }
       if (!uniform) {
-        llvm::errs() << "conduit-depth-promote: skipping '" << name
-                     << "' -- non-uniform acquire/release counts\n";
+        createOp->emitRemark("conduit-depth-promote: skipping '")
+            << name << "' -- non-uniform acquire/release counts";
         continue;
       }
 
@@ -337,8 +337,8 @@ struct ConduitDepthPromotePass
         }
       }
       if (memOverBudget) {
-        llvm::errs() << "conduit-depth-promote: skipping '" << name
-                     << "' -- memory budget exceeded\n";
+        createOp->emitRemark("conduit-depth-promote: skipping '")
+            << name << "' -- memory budget exceeded";
         continue;
       }
 
@@ -354,8 +354,8 @@ struct ConduitDepthPromotePass
           }
         }
         if (lockOverBudget) {
-          llvm::errs() << "conduit-depth-promote: skipping '" << name
-                       << "' -- AIE1 lock budget exceeded\n";
+          createOp->emitRemark("conduit-depth-promote: skipping '")
+              << name << "' -- AIE1 lock budget exceeded";
           continue;
         }
       }
@@ -372,8 +372,8 @@ struct ConduitDepthPromotePass
           }
         }
         if (bdOverBudget) {
-          llvm::errs() << "conduit-depth-promote: skipping '" << name
-                       << "' -- BD budget exceeded\n";
+          createOp->emitRemark("conduit-depth-promote: skipping '")
+              << name << "' -- BD budget exceeded";
           continue;
         }
       }
@@ -404,13 +404,15 @@ struct ConduitDepthPromotePass
       }
 
       ++promoted;
-      llvm::errs() << "conduit-depth-promote: promoted '" << name
-                   << "' from depth-1 to depth-2\n";
+      createOp->emitRemark("conduit-depth-promote: promoted '")
+          << name << "' from depth-1 to depth-2";
     }
 
-    if (promoted > 0)
-      llvm::errs() << "conduit-depth-promote: promoted " << promoted
-                   << " conduit(s) to depth-2\n";
+    if (promoted > 0) {
+      // Summary remark on the module op for test visibility.
+      module.emitRemark("conduit-depth-promote: promoted ")
+          << promoted << " conduit(s) to depth-2";
+    }
   }
 };
 
