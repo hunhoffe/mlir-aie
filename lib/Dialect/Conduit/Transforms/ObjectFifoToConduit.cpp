@@ -129,6 +129,10 @@ struct FifoInfo {
 struct ObjectFifoToConduitPass
     : impl::ObjectFifoToConduitBase<ObjectFifoToConduitPass> {
 
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<ConduitDialect>();
+  }
+
   // -----------------------------------------------------------------------
   // Shared state across phases
   // -----------------------------------------------------------------------

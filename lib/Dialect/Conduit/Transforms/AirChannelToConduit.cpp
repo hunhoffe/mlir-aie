@@ -255,6 +255,10 @@ static llvm::SmallVector<int32_t> getOperandSegments(mlir::Operation *op) {
 struct AirChannelToConduitPass
     : impl::AirChannelToConduitBase<AirChannelToConduitPass> {
 
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<ConduitDialect>();
+  }
+
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
     mlir::OpBuilder builder(module.getContext());
