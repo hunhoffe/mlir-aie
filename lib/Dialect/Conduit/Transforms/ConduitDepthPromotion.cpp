@@ -37,9 +37,9 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace xilinx::conduit {
@@ -69,9 +69,9 @@ static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
 // ---------------------------------------------------------------------------
 
 /// Collect conduit names that appear in any objectfifo_link (src or dst).
-static llvm::DenseSet<llvm::StringRef>
+static llvm::StringSet<>
 collectLinkedConduitNames(mlir::ModuleOp module) {
-  llvm::DenseSet<llvm::StringRef> linked;
+  llvm::StringSet<> linked;
   module.walk([&](ObjectFifoLink op) {
     if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs")) {
       for (auto s : srcsAttr)
@@ -153,10 +153,10 @@ struct ConduitDepthPromotePass
     // Step 3: Collect acquire/release ops per conduit name for
     // uniformity checks (exclusion criteria #4, #5).
     // name -> list of acquire counts
-    llvm::DenseMap<llvm::StringRef, llvm::SmallVector<int64_t>> acquireCounts;
-    llvm::DenseMap<llvm::StringRef, llvm::SmallVector<int64_t>> releaseCounts;
-    llvm::DenseMap<llvm::StringRef, bool> nameHasLoopAcquire;
-    llvm::DenseMap<llvm::StringRef, bool> nameAllPassthrough;
+    llvm::StringMap<llvm::SmallVector<int64_t>> acquireCounts;
+    llvm::StringMap<llvm::SmallVector<int64_t>> releaseCounts;
+    llvm::StringMap<bool> nameHasLoopAcquire;
+    llvm::StringMap<bool> nameAllPassthrough;
 
     module.walk([&](mlir::Operation *op) {
       if (mlir::isa<Acquire, AcquireAsync>(op)) {
