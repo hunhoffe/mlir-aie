@@ -391,7 +391,8 @@ def Conduit_Create : Conduit_Op<"create"> {
                        OptionalAttr<DenseI64ArrayAttr>:$access_pattern,
                        OptionalAttr<StrAttr>:$routing_mode,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_rates,
-                       OptionalAttr<DenseI64ArrayAttr>:$consumer_rates);
+                       OptionalAttr<DenseI64ArrayAttr>:$consumer_rates,
+                       OptionalAttr<DenseI64ArrayAttr>:$alloc_tile);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
