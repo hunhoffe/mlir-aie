@@ -33,7 +33,7 @@ def ObjectFifoToConduit : Pass<"objectfifo-to-conduit", "::mlir::ModuleOp"> {
         → conduit.create + conduit.annotate (producer_tile, consumer_tile_N)
 
       aie.objectfifo.link [@srcs] -> [@dsts] ([jo][do])
-        → conduit.objectfifo_link {srcs, dsts, mode, offsets, memtile}
+        → conduit.link {srcs, dsts, mode, offsets, memtile}
 
       aie.objectfifo.acquire @name (Role, count)
         → conduit.acquire {name, count}
@@ -118,7 +118,7 @@ def ConduitToDMA : Pass<"conduit-to-dma", "::mlir::ModuleOp"> {
       conduit.create {name, capacity} + tile annotations
         → aie.buffer (depth-many) + aie.lock (prod + cons) per tile
 
-      conduit.objectfifo_link {srcs, dsts, mode, memtile, offsets}
+      conduit.link {srcs, dsts, mode, memtile, offsets}
         → MemTile DMA BD chain: aie.dma_start, aie.dma_bd, aie.next_bd,
           aie.use_lock inside aie.memtile_dma
 
@@ -165,7 +165,7 @@ def ConduitDepthPromote : Pass<"conduit-depth-promote", "::mlir::ModuleOp"> {
 
     Exclusion criteria (any one disqualifies):
       1. CSDF / cyclostatic access pattern
-      2. Linked conduit (objectfifo_link source or destination)
+      2. Linked conduit (link source or destination)
       3. No surrounding loop (no overlap benefit without iteration)
       4. Passthrough-only (acquire immediately followed by release, no compute)
       5. Non-uniform acquire/release counts across uses
