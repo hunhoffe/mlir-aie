@@ -68,23 +68,9 @@ void lowerPhase(ConduitToDMAState &state) {
           ConduitInfo &cinfo = it->second;
 
           // Resolve per-tile buffers and rotation counter.
-          llvm::SmallVector<AIE::BufferOp> *tileBuffers = &cinfo.buffers;
-          AIE::BufferOp tileRotationBuf = cinfo.rotationBuf;
-          {
-            mlir::Operation *coreOp = op->getParentOp();
-            while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
-              coreOp = coreOp->getParentOp();
-            if (coreOp) {
-              mlir::Value coreTile =
-                  mlir::cast<AIE::CoreOp>(coreOp).getTile();
-              auto bufIt = cinfo.consumerTileBuffers.find(coreTile);
-              if (bufIt != cinfo.consumerTileBuffers.end())
-                tileBuffers = &bufIt->second;
-              auto rotIt = cinfo.consumerTileRotationBufs.find(coreTile);
-              if (rotIt != cinfo.consumerTileRotationBufs.end())
-                tileRotationBuf = rotIt->second;
-            }
-          }
+          auto resolved = cinfo.resolveForTile(op);
+          llvm::SmallVector<AIE::BufferOp> *tileBuffers = resolved.buffers;
+          AIE::BufferOp tileRotationBuf = resolved.rotationBuf;
 
           {
             int64_t bufIdx = static_cast<int64_t>(tileBuffers->size()) > 1
@@ -193,25 +179,10 @@ void lowerPhase(ConduitToDMAState &state) {
     Port port = op.getPort();
 
     // Resolve per-tile lock pair and rotation counter.
-    AIE::LockOp resolvedProdLock = cinfo.prodLock;
-    AIE::LockOp resolvedConsLock = cinfo.consLock;
-    AIE::BufferOp resolvedRotationBuf = cinfo.rotationBuf;
-    {
-      mlir::Operation *coreOp = op->getParentOp();
-      while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
-        coreOp = coreOp->getParentOp();
-      if (coreOp) {
-        mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
-        auto lockIt = cinfo.consumerTileLocks.find(coreTile);
-        if (lockIt != cinfo.consumerTileLocks.end()) {
-          resolvedProdLock = lockIt->second.first;
-          resolvedConsLock = lockIt->second.second;
-        }
-        auto rotIt = cinfo.consumerTileRotationBufs.find(coreTile);
-        if (rotIt != cinfo.consumerTileRotationBufs.end())
-          resolvedRotationBuf = rotIt->second;
-      }
-    }
+    auto resolved = cinfo.resolveForTile(op);
+    AIE::LockOp resolvedProdLock = resolved.prodLock;
+    AIE::LockOp resolvedConsLock = resolved.consLock;
+    AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
 
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
@@ -265,25 +236,11 @@ void lowerPhase(ConduitToDMAState &state) {
     int64_t count = static_cast<int64_t>(op.getCount());
     Port port = op.getPort();
 
-    AIE::LockOp resolvedProdLock = cinfo.prodLock;
-    AIE::LockOp resolvedConsLock = cinfo.consLock;
-    AIE::BufferOp resolvedRotationBuf = cinfo.rotationBuf;
-    mlir::Operation *acquireCoreOp = op->getParentOp();
-    while (acquireCoreOp && !mlir::isa<AIE::CoreOp>(acquireCoreOp))
-      acquireCoreOp = acquireCoreOp->getParentOp();
-    {
-      if (acquireCoreOp) {
-        mlir::Value coreTile = mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
-        auto lockIt = cinfo.consumerTileLocks.find(coreTile);
-        if (lockIt != cinfo.consumerTileLocks.end()) {
-          resolvedProdLock = lockIt->second.first;
-          resolvedConsLock = lockIt->second.second;
-        }
-        auto rotIt = cinfo.consumerTileRotationBufs.find(coreTile);
-        if (rotIt != cinfo.consumerTileRotationBufs.end())
-          resolvedRotationBuf = rotIt->second;
-      }
-    }
+    auto resolved = cinfo.resolveForTile(op);
+    AIE::LockOp resolvedProdLock = resolved.prodLock;
+    AIE::LockOp resolvedConsLock = resolved.consLock;
+    AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
+    mlir::Operation *acquireCoreOp = resolved.coreOp;
 
     AIE::LockOp lock =
         (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
@@ -396,21 +353,9 @@ void lowerPhase(ConduitToDMAState &state) {
       }
     }
 
-    AIE::LockOp resolvedProdLock = cinfo.prodLock;
-    AIE::LockOp resolvedConsLock = cinfo.consLock;
-    {
-      mlir::Operation *coreOp = op->getParentOp();
-      while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
-        coreOp = coreOp->getParentOp();
-      if (coreOp) {
-        mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
-        auto lockIt = cinfo.consumerTileLocks.find(coreTile);
-        if (lockIt != cinfo.consumerTileLocks.end()) {
-          resolvedProdLock = lockIt->second.first;
-          resolvedConsLock = lockIt->second.second;
-        }
-      }
-    }
+    auto resolved = cinfo.resolveForTile(op);
+    AIE::LockOp resolvedProdLock = resolved.prodLock;
+    AIE::LockOp resolvedConsLock = resolved.consLock;
 
     builder.setInsertionPoint(op);
     AIE::LockOp lock = (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
@@ -450,21 +395,9 @@ void lowerPhase(ConduitToDMAState &state) {
         continue;
       ConduitInfo &cinfo = it->second;
 
-      AIE::LockOp resolvedProdLock = cinfo.prodLock;
-      AIE::LockOp resolvedConsLock = cinfo.consLock;
-      {
-        mlir::Operation *coreOp = op->getParentOp();
-        while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
-          coreOp = coreOp->getParentOp();
-        if (coreOp) {
-          mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
-          auto lockIt = cinfo.consumerTileLocks.find(coreTile);
-          if (lockIt != cinfo.consumerTileLocks.end()) {
-            resolvedProdLock = lockIt->second.first;
-            resolvedConsLock = lockIt->second.second;
-          }
-        }
-      }
+      auto resolved = cinfo.resolveForTile(op);
+      AIE::LockOp resolvedProdLock = resolved.prodLock;
+      AIE::LockOp resolvedConsLock = resolved.consLock;
 
       AIE::LockOp lock =
           (ainfo.port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
@@ -496,25 +429,10 @@ void lowerPhase(ConduitToDMAState &state) {
     ConduitInfo &cinfo = it->second;
 
     Port port = op.getPort();
-    AIE::LockOp resolvedProdLock = cinfo.prodLock;
-    AIE::LockOp resolvedConsLock = cinfo.consLock;
-    AIE::BufferOp resolvedRotationBuf = cinfo.rotationBuf;
-    {
-      mlir::Operation *coreOp = op->getParentOp();
-      while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
-        coreOp = coreOp->getParentOp();
-      if (coreOp) {
-        mlir::Value coreTile = mlir::cast<AIE::CoreOp>(coreOp).getTile();
-        auto lockIt = cinfo.consumerTileLocks.find(coreTile);
-        if (lockIt != cinfo.consumerTileLocks.end()) {
-          resolvedProdLock = lockIt->second.first;
-          resolvedConsLock = lockIt->second.second;
-        }
-        auto rotIt = cinfo.consumerTileRotationBufs.find(coreTile);
-        if (rotIt != cinfo.consumerTileRotationBufs.end())
-          resolvedRotationBuf = rotIt->second;
-      }
-    }
+    auto resolved = cinfo.resolveForTile(op);
+    AIE::LockOp resolvedProdLock = resolved.prodLock;
+    AIE::LockOp resolvedConsLock = resolved.consLock;
+    AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
 
     builder.setInsertionPoint(op);
     int64_t count = static_cast<int64_t>(op.getCount());

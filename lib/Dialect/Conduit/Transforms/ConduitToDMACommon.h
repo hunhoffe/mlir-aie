@@ -89,7 +89,7 @@ struct ConduitInfo {
   // Alloc tile override from objectfifo.allocate delegate tile.
   bool hasAllocTile = false;
   std::pair<int64_t, int64_t> allocTileCoord = {-1, -1};
-  // Legacy string form for ObjectFifoLink memtile lookup.
+  // Legacy string form for Link memtile lookup.
   std::string producerTileStr; // "tile(col,row)"
   llvm::SmallVector<std::string> consumerTileStrs;
   // DMA channel fusion group label (from --conduit-fuse-channels annotation).
@@ -137,6 +137,48 @@ struct ConduitInfo {
   AIE::BufferOp rotationBuf;
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
       consumerTileRotationBufs; // tile → rotation counter buffer
+
+  // --- Helper methods ---
+
+  // Result of resolving per-tile resources from the enclosing CoreOp.
+  struct ResolvedTileResources {
+    AIE::LockOp prodLock;
+    AIE::LockOp consLock;
+    llvm::SmallVector<AIE::BufferOp> *buffers = nullptr;
+    AIE::BufferOp rotationBuf;
+    mlir::Operation *coreOp = nullptr;
+  };
+
+  // Resolve per-tile locks, buffers, and rotation counter for an op
+  // inside a CoreOp.  Walks the parent chain to find the enclosing CoreOp,
+  // then looks up per-tile overrides in consumerTileLocks/Buffers/RotationBufs.
+  ResolvedTileResources resolveForTile(mlir::Operation *op) {
+    ResolvedTileResources res;
+    res.prodLock = prodLock;
+    res.consLock = consLock;
+    res.buffers = &buffers;
+    res.rotationBuf = rotationBuf;
+
+    res.coreOp = op->getParentOp();
+    while (res.coreOp && !mlir::isa<AIE::CoreOp>(res.coreOp))
+      res.coreOp = res.coreOp->getParentOp();
+    if (!res.coreOp)
+      return res;
+
+    mlir::Value coreTile = mlir::cast<AIE::CoreOp>(res.coreOp).getTile();
+    auto lockIt = consumerTileLocks.find(coreTile);
+    if (lockIt != consumerTileLocks.end()) {
+      res.prodLock = lockIt->second.first;
+      res.consLock = lockIt->second.second;
+    }
+    auto bufIt = consumerTileBuffers.find(coreTile);
+    if (bufIt != consumerTileBuffers.end())
+      res.buffers = &bufIt->second;
+    auto rotIt = consumerTileRotationBufs.find(coreTile);
+    if (rotIt != consumerTileRotationBufs.end())
+      res.rotationBuf = rotIt->second;
+    return res;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -282,6 +324,73 @@ struct ConduitToDMAState {
                                    srcChan, dstTile, dstBundle, dstChan);
     }
   }
+
+  // Result of allocating a lock pair (AIE2) or per-slot locks (AIE1).
+  struct AllocatedLocks {
+    AIE::LockOp prodLock;
+    AIE::LockOp consLock;
+    llvm::SmallVector<AIE::LockOp> aie1Locks;
+  };
+
+  // Allocate a producer/consumer lock pair on the given tile.
+  // AIE2: emits prod_lock (init=depth) + cons_lock (init=0).
+  // AIE1: emits depth-many per-slot locks (init=0); prod=cons=locks[0].
+  AllocatedLocks allocateLockPair(mlir::Value tileVal,
+                                  llvm::StringRef prefix, int64_t depth) {
+    AllocatedLocks locks;
+    if (isAIE2) {
+      {
+        int lockIdx = lockIdCounter[tileVal]++;
+        std::string symName = (prefix + "_prod_lock_0").str();
+        AIE::LockOp lk = builder->create<AIE::LockOp>(
+            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(depth));
+        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+        locks.prodLock = lk;
+      }
+      {
+        int lockIdx = lockIdCounter[tileVal]++;
+        std::string symName = (prefix + "_cons_lock_0").str();
+        AIE::LockOp lk = builder->create<AIE::LockOp>(
+            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(0));
+        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+        locks.consLock = lk;
+      }
+    } else {
+      for (int64_t i = 0; i < depth; ++i) {
+        int lockIdx = lockIdCounter[tileVal]++;
+        std::string symName =
+            (prefix + "_lock_" + llvm::Twine(i)).str();
+        AIE::LockOp lk = builder->create<AIE::LockOp>(
+            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(0));
+        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+        locks.aie1Locks.push_back(lk);
+      }
+      if (!locks.aie1Locks.empty()) {
+        locks.prodLock = locks.aie1Locks[0];
+        locks.consLock = locks.aie1Locks[0];
+      }
+    }
+    return locks;
+  }
+
+  // Allocate `count` buffers of type `bufTy` on the given tile.
+  llvm::SmallVector<AIE::BufferOp> allocateBuffers(
+      mlir::Value tileVal, llvm::StringRef prefix,
+      mlir::Type bufTy, int64_t count) {
+    llvm::SmallVector<AIE::BufferOp> bufs;
+    for (int64_t i = 0; i < count; ++i) {
+      std::string symName =
+          (prefix + "_buff_" + llvm::Twine(i)).str();
+      auto buf = builder->create<AIE::BufferOp>(
+          deviceOp.getLoc(), bufTy, tileVal,
+          mlir::StringAttr::get(ctx, symName),
+          /*address=*/mlir::IntegerAttr{},
+          /*initial_value=*/mlir::ElementsAttr{},
+          /*mem_bank=*/mlir::IntegerAttr{});
+      bufs.push_back(buf);
+    }
+    return bufs;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -305,7 +414,7 @@ void allocPhase(ConduitToDMAState &state);
 /// Phase 4.5a: Non-adjacent conduit flow emission.
 void routePhase(ConduitToDMAState &state);
 
-/// Phase 5: Lower conduit.objectfifo_link → MemTile DMA BD chain.
+/// Phase 5: Lower conduit.link → MemTile DMA BD chain.
 /// Phase 5.5: Generate aie.mem BD chains for simple (non-link) conduits.
 /// Phase 5.5 post-pass: Link fused BD chains.
 void linkPhase(ConduitToDMAState &state);
