@@ -134,6 +134,12 @@ struct ConduitInfo {
   // These get aie.shim_dma_allocation + aie.flow, not aie.buffer + aie.lock.
   llvm::SmallVector<std::pair<int64_t, int64_t>> shimConsumerTileCoords;
   int64_t depth = 1;
+  // Producer-side effective depth: min(depth, maxProdAcquire+1).
+  // When the producer never acquires more than M buffers at once, only M+1
+  // buffers are needed on the producer side (the +1 allows the DMA to fill
+  // the next buffer while the producer processes the current one).
+  // Populated by Phase 2.5; 0 means "use raw depth" (no optimization).
+  int64_t effectiveDepth = 0;
   int64_t capacity = 0;
   mlir::Type elemType; // actual element memref type (may be null)
   // Cyclostatic (CSDF) access pattern from conduit.create access_pattern attr.
@@ -450,6 +456,40 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     });
 
     // -----------------------------------------------------------------------
+    // Phase 2.5: compute effectiveDepth for producer-side buffer optimization.
+    //
+    // For each conduit, find the maximum Produce-port acquire count
+    // (maxProdAcquire).  The producer only needs min(depth, maxProdAcquire+1)
+    // buffers on the producer side — the +1 allows the DMA/consumer to fill
+    // the next buffer while the producer processes the current one.
+    //
+    // This matches the stateful transform's optimization and avoids wasting
+    // scarce tile memory for conduits with small acquire windows (e.g., CSDF
+    // with maxAcquire=1 but depth=4 would allocate 2 instead of 4 buffers).
+    // -----------------------------------------------------------------------
+    {
+      llvm::DenseMap<llvm::StringRef, int64_t> maxProdAcquire;
+      module.walk([&](Acquire acqOp) {
+        if (acqOp.getPort() == "Produce") {
+          int64_t count = static_cast<int64_t>(acqOp.getCount());
+          auto &cur = maxProdAcquire[acqOp.getName()];
+          if (count > cur)
+            cur = count;
+        }
+      });
+      for (auto &[name, info] : conduitMap) {
+        int64_t depth = info.depth > 0 ? info.depth : 1;
+        auto it = maxProdAcquire.find(name);
+        if (it != maxProdAcquire.end()) {
+          int64_t effDepth = std::min(depth, it->second + 1);
+          info.effectiveDepth = effDepth;
+        } else {
+          info.effectiveDepth = depth;
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // Phase 3: for each conduit.create, allocate aie.buffer + aie.lock pairs
     //          in the aie.device body.
     // -----------------------------------------------------------------------
@@ -524,6 +564,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           continue;
 
         int64_t depth = info.depth > 0 ? info.depth : 1;
+        int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
         mlir::Type bufTy = info.elemType;
         if (!bufTy) {
           int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
@@ -537,8 +578,8 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
         mlir::Value prodTileVal = prodTile.getResult();
 
-        // Allocate depth-many buffers on the producer tile.
-        for (int64_t i = 0; i < depth; ++i) {
+        // Allocate prodDepth-many buffers on the producer tile.
+        for (int64_t i = 0; i < prodDepth; ++i) {
           std::string symName = name.str() + "_buff_" + std::to_string(i);
           auto buf = builder.create<AIE::BufferOp>(
               deviceOp.getLoc(), bufTy, prodTileVal,
@@ -550,13 +591,13 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         }
 
         if (isAIE2) {
-          // AIE2: two semaphore locks — prod_lock (init=depth) and cons_lock (init=0).
+          // AIE2: two semaphore locks — prod_lock (init=prodDepth) and cons_lock (init=0).
           {
             int lockIdx = lockIdCounter[prodTileVal]++;
             std::string symName = name.str() + "_prod_lock_0";
             AIE::LockOp lk = builder.create<AIE::LockOp>(
                 deviceOp.getLoc(), prodTileVal, lockIdx,
-                static_cast<int>(depth));
+                static_cast<int>(prodDepth));
             lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
             info.prodLock = lk;
           }
@@ -570,10 +611,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             info.consLock = lk;
           }
         } else {
-          // AIE1: one lock per buffer slot (init=0 = empty), depth-many total.
+          // AIE1: one lock per buffer slot (init=0 = empty), prodDepth-many total.
           // Each BD block uses ONE lock (its own slot's lock), so no
           // multiple-lock-per-BD-block violation.
-          for (int64_t i = 0; i < depth; ++i) {
+          for (int64_t i = 0; i < prodDepth; ++i) {
             int lockIdx = lockIdCounter[prodTileVal]++;
             std::string symName = name.str() + "_lock_" + std::to_string(i);
             AIE::LockOp lk = builder.create<AIE::LockOp>(
@@ -785,6 +826,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           continue;
 
         int64_t depth = info.depth > 0 ? info.depth : 1;
+        int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
         mlir::Type bufTy = info.elemType;
         if (!bufTy) {
           int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
@@ -798,7 +840,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
         mlir::Value prodTileVal = prodTile.getResult();
 
-        for (int64_t i = 0; i < depth; ++i) {
+        for (int64_t i = 0; i < prodDepth; ++i) {
           std::string symName = name.str() + "_buff_" + std::to_string(i);
           auto buf = builder.create<AIE::BufferOp>(
               deviceOp.getLoc(), bufTy, prodTileVal,
@@ -811,7 +853,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           { int lockIdx = lockIdCounter[prodTileVal]++;
             std::string symName = name.str() + "_prod_lock_0";
             AIE::LockOp lk = builder.create<AIE::LockOp>(
-                deviceOp.getLoc(), prodTileVal, lockIdx, static_cast<int>(depth));
+                deviceOp.getLoc(), prodTileVal, lockIdx, static_cast<int>(prodDepth));
             lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
             info.prodLock = lk; }
           { int lockIdx = lockIdCounter[prodTileVal]++;
@@ -821,7 +863,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
             info.consLock = lk; }
         } else {
-          for (int64_t i = 0; i < depth; ++i) {
+          for (int64_t i = 0; i < prodDepth; ++i) {
             int lockIdx = lockIdCounter[prodTileVal]++;
             std::string symName = name.str() + "_lock_" + std::to_string(i);
             AIE::LockOp lk = builder.create<AIE::LockOp>(
@@ -924,9 +966,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               if (pTile) {
                 mlir::Value pTileVal = pTile.getResult();
                 if (!info.consumerTileBuffers.count(pTileVal)) {
-                  // Allocate depth-many buffers on the producer compute tile.
+                  // Allocate prodDepth-many buffers on the producer compute tile.
+                  int64_t prodDepth = info.effectiveDepth > 0
+                                          ? info.effectiveDepth
+                                          : depth;
                   llvm::SmallVector<AIE::BufferOp> pBufs;
-                  for (int64_t i = 0; i < depth; ++i) {
+                  for (int64_t i = 0; i < prodDepth; ++i) {
                     std::string symName =
                         name.str() + "_buff_" + std::to_string(i);
                     auto buf = builder.create<AIE::BufferOp>(
@@ -946,7 +991,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                       std::string symName = name.str() + "_prod_lock_0";
                       AIE::LockOp lk = builder.create<AIE::LockOp>(
                           deviceOp.getLoc(), pTileVal, lockIdx,
-                          static_cast<int>(depth));
+                          static_cast<int>(prodDepth));
                       lk.setSymNameAttr(
                           mlir::StringAttr::get(ctx, symName));
                       pProdLock = lk;
@@ -964,7 +1009,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   } else {
                     // AIE1: one lock per buffer slot.
                     llvm::SmallVector<AIE::LockOp> pA1Locks;
-                    for (int64_t i = 0; i < depth; ++i) {
+                    for (int64_t i = 0; i < prodDepth; ++i) {
                       int lockIdx = lockIdCounter[pTileVal]++;
                       std::string symName =
                           name.str() + "_lock_" + std::to_string(i);
@@ -985,8 +1030,8 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                   info.consumerTileBuffers[pTileVal] = pBufs;
                   info.consumerTileLocks[pTileVal] = {pProdLock, pConsLock};
 
-                  // Rotation counter for depth > 1.
-                  if (depth > 1) {
+                  // Rotation counter for prodDepth > 1.
+                  if (prodDepth > 1) {
                     auto counterTy = mlir::MemRefType::get(
                         {1}, mlir::IntegerType::get(ctx, 32));
                     AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
@@ -1129,6 +1174,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
+      int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
         int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
@@ -1142,7 +1188,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         builder.setInsertionPointToStart(&deviceBody);
 
       llvm::SmallVector<AIE::BufferOp> prodBuffers;
-      for (int64_t i = 0; i < depth; ++i) {
+      for (int64_t i = 0; i < prodDepth; ++i) {
         std::string symName = name.str() + "_buff_" + std::to_string(i);
         auto buf = builder.create<AIE::BufferOp>(
             deviceOp.getLoc(), bufTy, prodTileVal,
@@ -1161,7 +1207,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           std::string symName = name.str() + "_prod_lock_0";
           AIE::LockOp lk = builder.create<AIE::LockOp>(
               deviceOp.getLoc(), prodTileVal, lockIdx,
-              static_cast<int>(depth));
+              static_cast<int>(prodDepth));
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
           pProdLock = lk;
         }
@@ -1175,7 +1221,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
           pConsLock = lk;
         }
       } else {
-        for (int64_t i = 0; i < depth; ++i) {
+        for (int64_t i = 0; i < prodDepth; ++i) {
           int lockIdx = lockIdCounter[prodTileVal]++;
           std::string symName = name.str() + "_lock_" + std::to_string(i);
           AIE::LockOp lk = builder.create<AIE::LockOp>(
@@ -1195,7 +1241,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (!isAIE2)
         info.consumerTileAIE1Locks[prodTileVal] = pAIE1Locks;
 
-      if (depth > 1 && conduitNamesWithConsumerAcquire.count(name)) {
+      if (prodDepth > 1 && conduitNamesWithConsumerAcquire.count(name)) {
         auto counterTy =
             mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
         AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
@@ -1596,6 +1642,15 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
       ConduitInfo &srcInfo = srcIt->second;
 
+      // Resolve MemTile-side buffers for the S2MM/MM2S BD chain.
+      // srcInfo.buffers holds the FIRST consumer's buffers (consIdx==0 in
+      // Phase 3d), which may be a compute tile in broadcast scenarios.
+      // For the MemTile DMA, we need the buffers allocated ON the MemTile.
+      mlir::Value memTileResult = memtile.getResult();
+      auto memBufsIt = srcInfo.consumerTileBuffers.find(memTileResult);
+      auto &linkBufs = (memBufsIt != srcInfo.consumerTileBuffers.end())
+          ? memBufsIt->second : srcInfo.buffers;
+
       // Determine depth from the src conduit (clamped to at least 1).
       int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
       // Per-buffer element count (capacity / depth).
@@ -1922,7 +1977,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               acqAction,
               static_cast<int32_t>(isAIE2 ? 1 : aie1S2MMAcqVal));
           builder.create<AIE::DMABDOp>(
-              loc, srcInfo.buffers[bufIdx].getResult(),
+              loc, linkBufs[bufIdx].getResult(),
               static_cast<int>(dstOffset),
               static_cast<int>(dstLen));
           builder.create<AIE::UseLockOp>(
@@ -2090,9 +2145,9 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             if (mm2sAcqLock)
               builder.create<AIE::UseLockOp>(loc, mm2sAcqLock.getResult(), acqAction,
                   static_cast<int32_t>(isAIE2 ? 1 : aie1MM2SAcqVal));
-            if (!srcInfo.buffers.empty())
+            if (!linkBufs.empty())
               builder.create<AIE::DMABDOp>(loc,
-                  srcInfo.buffers[i % srcInfo.buffers.size()].getResult(),
+                  linkBufs[i % linkBufs.size()].getResult(),
                   static_cast<int>(dstOffset), static_cast<int>(dstLen));
             if (mm2sRelLock)
               builder.create<AIE::UseLockOp>(loc, mm2sRelLock.getResult(),
@@ -2781,7 +2836,6 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         if (it != conduitMap.end() && !it->second.buffers.empty()) {
           int64_t idx = op.getIndex();
           ConduitInfo &cinfo = it->second;
-          int64_t depth = cinfo.depth > 0 ? cinfo.depth : 1;
 
           // Broadcast buffer correctness: resolve to the buffer vector for the
           // specific consumer tile that contains this SubviewAccess.
@@ -2823,17 +2877,18 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             // buffer (rotationBuf) is also on the consumer tile and is
             // inaccessible from the producer core.  Use static selection for
             // Produce-port acquires regardless of depth.
+            int64_t numBufs = static_cast<int64_t>(tileBuffers->size());
             bool useStaticSelection =
-                (depth == 1 || !tileRotationBuf || acquirePort == "Produce");
+                (numBufs <= 1 || !tileRotationBuf || acquirePort == "Produce");
             if (useStaticSelection) {
-              // Depth-1 case, no rotation buffer, or produce-port: static selection.
+              // Single-buffer case, no rotation buffer, or produce-port: static selection.
               mlir::Value bufVal = (*tileBuffers)[bufIdx].getResult();
               if (bufVal.getType() == op.getResult().getType()) {
                 op.getResult().replaceAllUsesWith(bufVal);
                 replaced = true;
               }
             } else {
-              // Depth>1 case, Consume port: dynamic selection via counter + index_switch.
+              // Multi-buffer case, Consume port: dynamic selection via counter + index_switch.
               builder.setInsertionPoint(op);
               mlir::Location loc = op.getLoc();
 
@@ -2852,27 +2907,27 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               if (idx > 0) {
                 mlir::Value idxConst =
                     builder.create<mlir::arith::ConstantIndexOp>(loc, idx);
-                // Compute (counter + idx) % depth for correct wrap-around.
+                // Compute (counter + idx) % numBufs for correct wrap-around.
                 mlir::Value sum = builder.create<mlir::arith::AddIOp>(
                     loc, ctrIdx, idxConst);
                 mlir::Value depthConst =
-                    builder.create<mlir::arith::ConstantIndexOp>(loc, depth);
+                    builder.create<mlir::arith::ConstantIndexOp>(loc, numBufs);
                 absIdx = builder.create<mlir::arith::RemUIOp>(loc, sum,
                                                                depthConst);
               }
 
-              // Emit scf.index_switch over [0..depth-1].
+              // Emit scf.index_switch over [0..numBufs-1].
               mlir::Type bufTy = op.getResult().getType();
               llvm::SmallVector<int64_t> caseVals;
-              for (int64_t i = 0; i < depth; ++i)
+              for (int64_t i = 0; i < numBufs; ++i)
                 caseVals.push_back(i);
 
               auto switchOp = builder.create<mlir::scf::IndexSwitchOp>(
                   loc, mlir::TypeRange{bufTy}, absIdx, caseVals,
-                  /*numRegions=*/static_cast<int>(depth));
+                  /*numRegions=*/static_cast<int>(numBufs));
 
               // Fill each case region: yield tileBuffers[i].
-              for (int64_t i = 0; i < depth; ++i) {
+              for (int64_t i = 0; i < numBufs; ++i) {
                 mlir::Block *caseBlock =
                     &switchOp.getCaseRegions()[i].emplaceBlock();
                 mlir::OpBuilder caseBuilder(ctx);
