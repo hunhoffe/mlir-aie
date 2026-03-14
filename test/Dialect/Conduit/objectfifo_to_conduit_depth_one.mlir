@@ -28,9 +28,9 @@
 // CHECK:       scf.for
 // CHECK:         conduit.acquire
 // CHECK-SAME:       name = "input_fifo"
-// CHECK-SAME:       port = "Consume"
+// CHECK-SAME:       port = #conduit.port<Consume>
 // CHECK:         conduit.release
-// CHECK-SAME:       port = "Consume"
+// CHECK-SAME:       port = #conduit.port<Consume>
 // CHECK:     }
 // CHECK-NOT: aie.objectfifo
 // CHECK-NOT: conduit.annotate

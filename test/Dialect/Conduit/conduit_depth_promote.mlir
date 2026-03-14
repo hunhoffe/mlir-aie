@@ -51,13 +51,13 @@ func.func @eligible_loop_fifo(%result: memref<8xi32>) {
   %c1 = arith.constant 1 : index
   %c8 = arith.constant 8 : index
   scf.for %i = %c0 to %c8 step %c1 {
-    %win = conduit.acquire {name = "loop_fifo", count = 1 : i64, port = "Consume"}
+    %win = conduit.acquire {name = "loop_fifo", count = 1 : i64, port = #conduit.port<Consume>}
                : !conduit.window<memref<8xi32>>
     %elem = conduit.subview_access %win {index = 0 : i64}
                : !conduit.window<memref<8xi32>> -> memref<8xi32>
     // Real compute: copy element to result (not a passthrough).
     memref.copy %elem, %result : memref<8xi32> to memref<8xi32>
-    conduit.release %win {count = 1 : i64, port = "Consume"}
+    conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
         : !conduit.window<memref<8xi32>>
   }
   return
@@ -97,10 +97,10 @@ func.func @passthrough_not_promoted() {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   scf.for %i = %c0 to %c4 step %c1 {
-    %win = conduit.acquire {name = "passthrough_fifo", count = 1 : i64, port = "Consume"}
+    %win = conduit.acquire {name = "passthrough_fifo", count = 1 : i64, port = #conduit.port<Consume>}
                : !conduit.window<memref<4xi32>>
     // No compute between acquire and release — pure passthrough.
-    conduit.release %win {count = 1 : i64, port = "Consume"}
+    conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
         : !conduit.window<memref<4xi32>>
   }
   return

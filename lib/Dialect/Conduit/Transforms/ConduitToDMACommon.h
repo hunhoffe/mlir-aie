@@ -146,7 +146,7 @@ struct ConduitInfo {
 // ---------------------------------------------------------------------------
 struct AsyncAcquireInfo {
   std::string conduitName;
-  std::string port;
+  Port port;
   int64_t count;
 };
 

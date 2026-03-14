@@ -45,6 +45,13 @@ using namespace xilinx::conduit;
 #define GET_TYPEDEF_CLASSES
 #include "aie/Dialect/Conduit/IR/ConduitTypes.cpp.inc"
 
+// Include generated enum definitions (Port enum)
+#include "aie/Dialect/Conduit/IR/ConduitEnums.cpp.inc"
+
+// Include generated attribute definitions (PortAttr)
+#define GET_ATTRDEF_CLASSES
+#include "aie/Dialect/Conduit/IR/ConduitAttrDefs.cpp.inc"
+
 //===----------------------------------------------------------------------===//
 // Conduit dialect — initialize
 //===----------------------------------------------------------------------===//
@@ -52,6 +59,10 @@ using namespace xilinx::conduit;
 #include "aie/Dialect/Conduit/IR/ConduitOpsDialect.cpp.inc"
 
 void ConduitDialect::initialize() {
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "aie/Dialect/Conduit/IR/ConduitAttrDefs.cpp.inc"
+      >();
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "aie/Dialect/Conduit/IR/ConduitTypes.cpp.inc"

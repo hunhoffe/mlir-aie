@@ -27,6 +27,13 @@
 // Include generated dialect declarations
 #include "aie/Dialect/Conduit/IR/ConduitOpsDialect.h.inc"
 
+// Include generated enum declarations (Port enum)
+#include "aie/Dialect/Conduit/IR/ConduitEnums.h.inc"
+
+// Include generated attribute class declarations (PortAttr)
+#define GET_ATTRDEF_CLASSES
+#include "aie/Dialect/Conduit/IR/ConduitAttrDefs.h.inc"
+
 // Include generated type class declarations
 #define GET_TYPEDEF_CLASSES
 #include "aie/Dialect/Conduit/IR/ConduitTypes.h.inc"

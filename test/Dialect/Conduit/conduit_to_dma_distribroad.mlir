@@ -175,9 +175,9 @@ module @distribroad {
 
         // Release both windows (Consume port → free the producer lock slot).
         // In the fixed lowering these emit aie.use_lock(prodLock, Release, 1).
-        conduit.release %win_slice   {count = 1 : i64, port = "Consume"}
+        conduit.release %win_slice   {count = 1 : i64, port = #conduit.port<Consume>}
                            : !conduit.window<memref<16xi32>>
-        conduit.release %win_weights {count = 1 : i64, port = "Consume"}
+        conduit.release %win_weights {count = 1 : i64, port = #conduit.port<Consume>}
                            : !conduit.window<memref<8xi32>>
       }
 

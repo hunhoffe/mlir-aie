@@ -13,9 +13,9 @@
 //   - The window type prints without the conduit.window prefix (MLIR mnemonic
 //     omission): <memref<N x T>> rather than !conduit.window<memref<N x T>>.
 //   - conduit.release: window SSA value first, then attr-dict:
-//       conduit.release %win {count = K : i64, port = "Consume"} : <memref<...>>
+//       conduit.release %win {count = K : i64, port = #conduit.port<Consume>} : <memref<...>>
 //   - conduit.subview_access uses {index = i : i64}, not bracket syntax.
-//   - conduit.acquire requires port = "Produce"|"Consume".
+//   - conduit.acquire requires port = #conduit.port<Produce>|"Consume".
 
 // CHECK-LABEL: func.func @blocking_acquire_roundtrip
 func.func @blocking_acquire_roundtrip() {
@@ -24,8 +24,8 @@ func.func @blocking_acquire_roundtrip() {
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 1
   // CHECK-SAME: name = "input"
-  // CHECK-SAME: port = "Consume"
-  %win = conduit.acquire {name = "input", count = 1 : i64, port = "Consume"}
+  // CHECK-SAME: port = #conduit.port<Consume>
+  %win = conduit.acquire {name = "input", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<10xi32>>
 
   // CHECK: conduit.subview_access
@@ -35,7 +35,7 @@ func.func @blocking_acquire_roundtrip() {
 
   // CHECK: conduit.release
   // CHECK-SAME: count = 1
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<10xi32>>
 
   return
@@ -48,7 +48,7 @@ func.func @sliding_window_partial_release() {
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 4
   // CHECK-SAME: name = "weights"
-  %win = conduit.acquire {name = "weights", count = 4 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "weights", count = 4 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<4xi32>>
 
   // CHECK: conduit.subview_access
@@ -63,7 +63,7 @@ func.func @sliding_window_partial_release() {
   // Sliding release: release only 2 of 4 acquired slots.
   // CHECK: conduit.release
   // CHECK-SAME: count = 2
-  conduit.release %win {count = 2 : i64, port = "Consume"}
+  conduit.release %win {count = 2 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<4xi32>>
 
   return
@@ -92,7 +92,7 @@ func.func @async_acquire_wait_window() {
               : !conduit.window<memref<16xi32>> -> memref<16xi32>
 
   // CHECK: conduit.release
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<16xi32>>
 
   return
@@ -128,7 +128,7 @@ func.func @async_acquire_with_overlap() {
                 : !conduit.window<memref<1xi32>> -> memref<1xi32>
 
   // CHECK: conduit.release
-  conduit.release %win_out {count = 1 : i64, port = "Consume"}
+  conduit.release %win_out {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
 
   return

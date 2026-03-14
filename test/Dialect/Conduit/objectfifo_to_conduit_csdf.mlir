@@ -27,11 +27,11 @@
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 1
 // CHECK-SAME:     name = "fifo"
-// CHECK-SAME:     port = "Produce"
+// CHECK-SAME:     port = #conduit.port<Produce>
 // CHECK:       conduit.release
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 1
-// CHECK-SAME:     port = "Produce"
+// CHECK-SAME:     port = #conduit.port<Produce>
 // CHECK:       conduit.release
 
 // --- Consumer core: CSDF sequence {1, 2, 1} ---
@@ -39,15 +39,15 @@
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 1
 // CHECK-SAME:     name = "fifo"
-// CHECK-SAME:     port = "Consume"
+// CHECK-SAME:     port = #conduit.port<Consume>
 // CHECK:       conduit.release
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 2
-// CHECK-SAME:     port = "Consume"
+// CHECK-SAME:     port = #conduit.port<Consume>
 // CHECK:       conduit.release
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 1
-// CHECK-SAME:     port = "Consume"
+// CHECK-SAME:     port = #conduit.port<Consume>
 // CHECK:       conduit.release
 
 // --- No residual ObjectFIFO ops ---

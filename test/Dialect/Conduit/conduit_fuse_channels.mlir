@@ -62,14 +62,14 @@ func.func @fuse_sequential() {
                   depth = 1 : i64}
 
   // chan_a ops execute, then chan_b ops — non-overlapping.
-  %wa = conduit.acquire {name = "chan_a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "chan_a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %wb = conduit.acquire {name = "chan_b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "chan_b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -100,13 +100,13 @@ func.func @no_fuse_interleaved() {
   // Interleaved: acquire A, acquire B, release A, release B.
   // live(A) = [acquire_A, release_A]  live(B) = [acquire_B, release_B]
   // Intervals overlap → no fusion.
-  %wa = conduit.acquire {name = "chan_a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "chan_a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  %wb = conduit.acquire {name = "chan_b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "chan_b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -147,19 +147,19 @@ func.func @fuse_three_sequential() {
                   consumer_tiles = array<i64: 1, 5>,
                   element_type = memref<8xi32>, depth = 1 : i64}
 
-  %w1 = conduit.acquire {name = "c1", count = 1 : i64, port = "Consume"}
+  %w1 = conduit.acquire {name = "c1", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %w1 {count = 1 : i64, port = "Consume"}
+  conduit.release %w1 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %w2 = conduit.acquire {name = "c2", count = 1 : i64, port = "Consume"}
+  %w2 = conduit.acquire {name = "c2", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %w2 {count = 1 : i64, port = "Consume"}
+  conduit.release %w2 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %w3 = conduit.acquire {name = "c3", count = 1 : i64, port = "Consume"}
+  %w3 = conduit.acquire {name = "c3", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %w3 {count = 1 : i64, port = "Consume"}
+  conduit.release %w3 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -186,13 +186,13 @@ func.func @no_fuse_different_tiles() {
                   consumer_tiles = array<i64: 1, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
 
-  %wa = conduit.acquire {name = "tile0_chan", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "tile0_chan", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  %wb = conduit.acquire {name = "tile1_chan", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "tile1_chan", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -246,13 +246,13 @@ func.func @idempotent() {
                   consumer_tiles = array<i64: 2, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
 
-  %wa = conduit.acquire {name = "id_a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "id_a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  %wb = conduit.acquire {name = "id_b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "id_b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -288,13 +288,13 @@ func.func @fuse_async_path() {
   %win_a = conduit.wait_window %tok_a for "async_a"
                : !conduit.window.token -> !conduit.window<memref<8xi32>>
   // conduit.release traces win_a → wait_window → "async_a"
-  conduit.release %win_a {count = 1 : i64, port = "Consume"}
+  conduit.release %win_a {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   // Sync acquire path for async_b — begins after async_a is fully released.
-  %win_b = conduit.acquire {name = "async_b", count = 1 : i64, port = "Consume"}
+  %win_b = conduit.acquire {name = "async_b", count = 1 : i64, port = #conduit.port<Consume>}
                : !conduit.window<memref<8xi32>>
-  conduit.release %win_b {count = 1 : i64, port = "Consume"}
+  conduit.release %win_b {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -405,24 +405,24 @@ func.func @fuse_four_sequential() {
                   consumer_tiles = array<i64: 6, 6>,
                   element_type = memref<8xi32>, depth = 1 : i64}
 
-  %wp = conduit.acquire {name = "p", count = 1 : i64, port = "Consume"}
+  %wp = conduit.acquire {name = "p", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wp {count = 1 : i64, port = "Consume"}
+  conduit.release %wp {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %wq = conduit.acquire {name = "q", count = 1 : i64, port = "Consume"}
+  %wq = conduit.acquire {name = "q", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wq {count = 1 : i64, port = "Consume"}
+  conduit.release %wq {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %wr = conduit.acquire {name = "r", count = 1 : i64, port = "Consume"}
+  %wr = conduit.acquire {name = "r", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wr {count = 1 : i64, port = "Consume"}
+  conduit.release %wr {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %ws = conduit.acquire {name = "s", count = 1 : i64, port = "Consume"}
+  %ws = conduit.acquire {name = "s", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %ws {count = 1 : i64, port = "Consume"}
+  conduit.release %ws {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -446,9 +446,9 @@ func.func @no_annotate_singleton() {
                   consumer_tiles = array<i64: 7, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
 
-  %w = conduit.acquire {name = "solo", count = 1 : i64, port = "Consume"}
+  %w = conduit.acquire {name = "solo", count = 1 : i64, port = #conduit.port<Consume>}
           : !conduit.window<memref<8xi32>>
-  conduit.release %w {count = 1 : i64, port = "Consume"}
+  conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -506,24 +506,24 @@ func.func @two_interleaved_pairs() {
                   element_type = memref<8xi32>, depth = 1 : i64}
 
   // Pair 1: a and b windows overlap — cannot share a channel with each other.
-  %wa = conduit.acquire {name = "a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  %wb = conduit.acquire {name = "b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   // Pair 2: c and d windows overlap — cannot share a channel with each other.
   // But pair 2 starts after pair 1 ends, so a+c and b+d are non-overlapping.
-  %wc = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %wc = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  %wd = conduit.acquire {name = "d", count = 1 : i64, port = "Consume"}
+  %wd = conduit.acquire {name = "d", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wc {count = 1 : i64, port = "Consume"}
+  conduit.release %wc {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  conduit.release %wd {count = 1 : i64, port = "Consume"}
+  conduit.release %wd {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -579,19 +579,19 @@ func.func @partial_clique() {
                   element_type = memref<8xi32>, depth = 1 : i64}
 
   // a∩b overlap (a not yet released when b is acquired).
-  %wa = conduit.acquire {name = "a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  %wb = conduit.acquire {name = "b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   // b∩c overlap (b not yet released when c is acquired).
-  %wc = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %wc = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   // a and c are disjoint: a ended at release_a, c started at acquire_c later.
-  conduit.release %wc {count = 1 : i64, port = "Consume"}
+  conduit.release %wc {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -641,17 +641,17 @@ func.func @full_clique() {
                   element_type = memref<8xi32>, depth = 1 : i64}
 
   // All three acquired before any released — all intervals mutually overlap.
-  %wa = conduit.acquire {name = "a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  %wb = conduit.acquire {name = "b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  %wc = conduit.acquire {name = "c", count = 1 : i64, port = "Consume"}
+  %wc = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  conduit.release %wc {count = 1 : i64, port = "Consume"}
+  conduit.release %wc {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   return
@@ -684,13 +684,13 @@ func.func @fuse_runtime_mode(%cond: i1) {
                   element_type = memref<8xi32>, depth = 1 : i64}
 
   scf.if %cond {
-    %wa = conduit.acquire {name = "if_a", count = 1 : i64, port = "Consume"}
+    %wa = conduit.acquire {name = "if_a", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
-    conduit.release %wa {count = 1 : i64, port = "Consume"}
+    conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
         : !conduit.window<memref<8xi32>>
-    %wb = conduit.acquire {name = "if_b", count = 1 : i64, port = "Consume"}
+    %wb = conduit.acquire {name = "if_b", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
-    conduit.release %wb {count = 1 : i64, port = "Consume"}
+    conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
         : !conduit.window<memref<8xi32>>
   }
   return
@@ -756,13 +756,13 @@ func.func @fuse_release_async() {
                   element_type = memref<8xi32>, depth = 1 : i64}
 
   // release_async marks the end of rel_a's interval.
-  %tok_a = conduit.release_async {name = "rel_a", count = 1 : i64, port = "Produce"}
+  %tok_a = conduit.release_async {name = "rel_a", count = 1 : i64, port = #conduit.port<Produce>}
                : !conduit.window.token
 
   // rel_b starts after rel_a's release_async — non-overlapping.
-  %wb = conduit.acquire {name = "rel_b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "rel_b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -792,14 +792,14 @@ func.func @fuse_memtile_producer() {
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
 
-  %wa = conduit.acquire {name = "mt_a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "mt_a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %wb = conduit.acquire {name = "mt_b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "mt_b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -837,13 +837,13 @@ func.func @cross_block_stable() {
                   element_type = memref<8xi32>, depth = 1 : i64}
 
   // Outer block: cross_a then cross_b (non-overlapping).
-  %wa = conduit.acquire {name = "cross_a", count = 1 : i64, port = "Consume"}
+  %wa = conduit.acquire {name = "cross_a", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wa {count = 1 : i64, port = "Consume"}
+  conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
-  %wb = conduit.acquire {name = "cross_b", count = 1 : i64, port = "Consume"}
+  %wb = conduit.acquire {name = "cross_b", count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
-  conduit.release %wb {count = 1 : i64, port = "Consume"}
+  conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
   // scf.for body: same order. Both blocks have non-overlapping sequential pattern,
@@ -852,13 +852,13 @@ func.func @cross_block_stable() {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   scf.for %i = %c0 to %c4 step %c1 {
-    %wa2 = conduit.acquire {name = "cross_a", count = 1 : i64, port = "Consume"}
+    %wa2 = conduit.acquire {name = "cross_a", count = 1 : i64, port = #conduit.port<Consume>}
               : !conduit.window<memref<8xi32>>
-    conduit.release %wa2 {count = 1 : i64, port = "Consume"}
+    conduit.release %wa2 {count = 1 : i64, port = #conduit.port<Consume>}
         : !conduit.window<memref<8xi32>>
-    %wb2 = conduit.acquire {name = "cross_b", count = 1 : i64, port = "Consume"}
+    %wb2 = conduit.acquire {name = "cross_b", count = 1 : i64, port = #conduit.port<Consume>}
               : !conduit.window<memref<8xi32>>
-    conduit.release %wb2 {count = 1 : i64, port = "Consume"}
+    conduit.release %wb2 {count = 1 : i64, port = #conduit.port<Consume>}
         : !conduit.window<memref<8xi32>>
   }
   return

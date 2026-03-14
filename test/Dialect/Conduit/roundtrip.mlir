@@ -16,8 +16,8 @@ func.func @window_ops() {
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 2 : i64
   // CHECK-SAME: name = "w1"
-  // CHECK-SAME: port = "Consume"
-  %win = conduit.acquire {name = "w1", count = 2 : i64, port = "Consume"}
+  // CHECK-SAME: port = #conduit.port<Consume>
+  %win = conduit.acquire {name = "w1", count = 2 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // CHECK: conduit.subview_access
   // CHECK-SAME: index = 0 : i64
@@ -25,8 +25,8 @@ func.func @window_ops() {
              : !conduit.window<memref<8xi32>> -> memref<8xi32>
   // CHECK: conduit.release
   // CHECK-SAME: count = 2 : i64
-  // CHECK-SAME: port = "Consume"
-  conduit.release %win {count = 2 : i64, port = "Consume"}
+  // CHECK-SAME: port = #conduit.port<Consume>
+  conduit.release %win {count = 2 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -87,12 +87,12 @@ func.func @async_ops() {
 // CHECK-LABEL: func.func @subview_op
 func.func @subview_op() {
   conduit.create {name = "buf", capacity = 8 : i64}
-  %win = conduit.acquire {name = "buf", count = 2 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "buf", count = 2 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // CHECK: conduit.subview_access
   %elem = conduit.subview_access %win {index = 0 : i64}
              : !conduit.window<memref<8xi32>> -> memref<8xi32>
-  conduit.release %win {count = 2 : i64, port = "Consume"}
+  conduit.release %win {count = 2 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -129,7 +129,7 @@ func.func @acquire_async_op() {
   // CHECK: conduit.subview_access
   %out = conduit.subview_access %window {index = 0 : i64}
              : !conduit.window<memref<9xi32>> -> memref<9xi32>
-  conduit.release %window {count = 1 : i64, port = "Consume"}
+  conduit.release %window {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<9xi32>>
   return
 }
@@ -139,11 +139,11 @@ func.func @acquire_async_op() {
 // conduit.wait accepts !conduit.dma.token only; use wait_all for window tokens.
 func.func @release_async_op() {
   conduit.create {name = "out", capacity = 2 : i64}
-  %win = conduit.acquire {name = "out", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "out", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<2xi32>>
   // CHECK: conduit.release_async
   // CHECK-SAME: !conduit.window.token
-  %rel_tok = conduit.release_async {name = "out", count = 1 : i64, port = "Consume"}
+  %rel_tok = conduit.release_async {name = "out", count = 1 : i64, port = #conduit.port<Consume>}
                  : !conduit.window.token
   // wait_all accepts AnyType variadic — can wait on a window.token here.
   // CHECK: conduit.wait_all

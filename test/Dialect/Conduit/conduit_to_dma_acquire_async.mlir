@@ -106,7 +106,7 @@ module @async_window_path {
         func.call @process(%elem) : (memref<8xi32>) -> ()
 
         // release emits use_lock(prodLock, Release, 1).
-        conduit.release %win {count = 1 : i64, port = "Consume"}
+        conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
             : !conduit.window<memref<8xi32>>
       }
       aie.end

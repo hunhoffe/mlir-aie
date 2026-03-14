@@ -49,7 +49,7 @@ void lowerPhase(ConduitToDMAState &state) {
     llvm::SmallVector<SubviewAccess> subviewsToErase;
     module.walk([&](SubviewAccess op) {
       llvm::StringRef conduitName;
-      llvm::StringRef acquirePort;
+      Port acquirePort = Port::Consume;
       if (auto acqOp = mlir::dyn_cast_or_null<Acquire>(
               op.getWindow().getDefiningOp())) {
         conduitName = acqOp.getName();
@@ -57,7 +57,7 @@ void lowerPhase(ConduitToDMAState &state) {
       } else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
                      op.getWindow().getDefiningOp())) {
         conduitName = waitOp.getName();
-        acquirePort = "Consume";
+        acquirePort = Port::Consume;
       }
 
       bool replaced = false;
@@ -92,7 +92,7 @@ void lowerPhase(ConduitToDMAState &state) {
                                  : 0;
             int64_t numBufs = static_cast<int64_t>(tileBuffers->size());
             bool useStaticSelection =
-                (numBufs <= 1 || !tileRotationBuf || acquirePort == "Produce");
+                (numBufs <= 1 || !tileRotationBuf || acquirePort == Port::Produce);
             if (useStaticSelection) {
               mlir::Value bufVal = (*tileBuffers)[bufIdx].getResult();
               if (bufVal.getType() == op.getResult().getType()) {
@@ -190,7 +190,7 @@ void lowerPhase(ConduitToDMAState &state) {
     ConduitInfo &cinfo = it->second;
     builder.setInsertionPoint(op);
     int64_t count = static_cast<int64_t>(op.getCount());
-    llvm::StringRef port = op.getPort();
+    Port port = op.getPort();
 
     // Resolve per-tile lock pair and rotation counter.
     AIE::LockOp resolvedProdLock = cinfo.prodLock;
@@ -214,15 +214,15 @@ void lowerPhase(ConduitToDMAState &state) {
     }
 
     AIE::LockOp lock =
-        (port == "Consume") ? resolvedProdLock : resolvedConsLock;
+        (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
       int32_t relVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == "Consume" ? 0 : 1);
+                              : (port == Port::Consume ? 0 : 1);
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }
     // Counter increment for depth>1 Consume port.
-    if (resolvedRotationBuf && port == "Consume" && cinfo.depth > 1) {
+    if (resolvedRotationBuf && port == Port::Consume && cinfo.depth > 1) {
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
@@ -247,7 +247,11 @@ void lowerPhase(ConduitToDMAState &state) {
     op.erase();
 
   // Step 4: Acquire → use_lock + counter init; erase (collect-then-erase).
-  std::set<std::pair<std::string, mlir::Operation *>> counterInitialized;
+  // Track (conduitName, tileCoord) pairs to avoid double-initializing
+  // rotation counters.  Uses tile coordinates instead of Operation* to
+  // ensure deterministic behavior across runs.
+  std::set<std::pair<std::string, std::pair<int64_t, int64_t>>>
+      counterInitialized;
 
   llvm::SmallVector<Acquire> acquiresToErase;
   module.walk([&](Acquire op) {
@@ -259,7 +263,7 @@ void lowerPhase(ConduitToDMAState &state) {
     ConduitInfo &cinfo = it->second;
     builder.setInsertionPoint(op);
     int64_t count = static_cast<int64_t>(op.getCount());
-    llvm::StringRef port = op.getPort();
+    Port port = op.getPort();
 
     AIE::LockOp resolvedProdLock = cinfo.prodLock;
     AIE::LockOp resolvedConsLock = cinfo.consLock;
@@ -282,12 +286,19 @@ void lowerPhase(ConduitToDMAState &state) {
     }
 
     AIE::LockOp lock =
-        (port == "Produce") ? resolvedProdLock : resolvedConsLock;
+        (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
 
     // Counter init for depth>1 Consume acquires.
-    if (resolvedRotationBuf && port == "Consume" && cinfo.depth > 1) {
-      auto key = std::make_pair(op.getName().str(), acquireCoreOp);
-      if (acquireCoreOp && !counterInitialized.count(key)) {
+    if (resolvedRotationBuf && port == Port::Consume && cinfo.depth > 1 &&
+        acquireCoreOp) {
+      mlir::Value coreTileVal =
+          mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
+      auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
+      auto tileCoord = std::make_pair(
+          static_cast<int64_t>(coreTileOp.getCol()),
+          static_cast<int64_t>(coreTileOp.getRow()));
+      auto key = std::make_pair(op.getName().str(), tileCoord);
+      if (!counterInitialized.count(key)) {
         counterInitialized.insert(key);
         mlir::Block *entryBlock = &acquireCoreOp->getRegion(0).front();
         mlir::OpBuilder initBuilder(entryBlock, entryBlock->begin());
@@ -305,7 +316,7 @@ void lowerPhase(ConduitToDMAState &state) {
 
     if (lock) {
       int32_t acqVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == "Produce" ? 0 : 1);
+                              : (port == Port::Produce ? 0 : 1);
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      acqAction, acqVal);
     }
@@ -355,7 +366,7 @@ void lowerPhase(ConduitToDMAState &state) {
   module.walk([&](AcquireAsync op) {
     AsyncAcquireInfo info;
     info.conduitName = op.getName().str();
-    info.port = "Consume";
+    info.port = Port::Consume;
     info.count = static_cast<int64_t>(op.getCount());
     state.asyncAcquireMap[op.getToken()] = info;
     asyncAcquiresToErase.push_back(op);
@@ -374,7 +385,7 @@ void lowerPhase(ConduitToDMAState &state) {
     }
     ConduitInfo &cinfo = it->second;
 
-    llvm::StringRef port = "Consume";
+    Port port = Port::Consume;
     int64_t count = 1;
     {
       auto ait = state.asyncAcquireMap.find(op.getToken());
@@ -402,10 +413,10 @@ void lowerPhase(ConduitToDMAState &state) {
     }
 
     builder.setInsertionPoint(op);
-    AIE::LockOp lock = (port == "Produce") ? resolvedProdLock : resolvedConsLock;
+    AIE::LockOp lock = (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
       int32_t acqVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == "Produce" ? 0 : 1);
+                              : (port == Port::Produce ? 0 : 1);
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      acqAction, acqVal);
     }
@@ -456,10 +467,10 @@ void lowerPhase(ConduitToDMAState &state) {
       }
 
       AIE::LockOp lock =
-          (ainfo.port == "Produce") ? resolvedProdLock : resolvedConsLock;
+          (ainfo.port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
       if (lock) {
         int32_t acqVal = isAIE2 ? static_cast<int32_t>(ainfo.count)
-                                : (ainfo.port == "Produce" ? 0 : 1);
+                                : (ainfo.port == Port::Produce ? 0 : 1);
         builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                        acqAction, acqVal);
       }
@@ -484,7 +495,7 @@ void lowerPhase(ConduitToDMAState &state) {
     }
     ConduitInfo &cinfo = it->second;
 
-    llvm::StringRef port = op.getPort();
+    Port port = op.getPort();
     AIE::LockOp resolvedProdLock = cinfo.prodLock;
     AIE::LockOp resolvedConsLock = cinfo.consLock;
     AIE::BufferOp resolvedRotationBuf = cinfo.rotationBuf;
@@ -508,15 +519,15 @@ void lowerPhase(ConduitToDMAState &state) {
     builder.setInsertionPoint(op);
     int64_t count = static_cast<int64_t>(op.getCount());
     AIE::LockOp lock =
-        (port == "Consume") ? resolvedProdLock : resolvedConsLock;
+        (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
       int32_t relVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == "Consume" ? 0 : 1);
+                              : (port == Port::Consume ? 0 : 1);
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }
     // Counter increment for depth>1 Consume port.
-    if (resolvedRotationBuf && port == "Consume" && cinfo.depth > 1) {
+    if (resolvedRotationBuf && port == Port::Consume && cinfo.depth > 1) {
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);

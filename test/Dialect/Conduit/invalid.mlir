@@ -29,12 +29,12 @@ func.func @bad_subview_index() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 2 : i64}
-  %win = conduit.acquire {name = "fifo", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "fifo", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // expected-error@+1 {{'conduit.subview_access' op index 2 out of bounds for conduit of depth 2}}
   %elem = conduit.subview_access %win {index = 2 : i64}
              : !conduit.window<memref<8xi32>> -> memref<8xi32>
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
@@ -251,11 +251,11 @@ func.func @m8a_double_release() {
                   element_type = memref<1xi32>,
                   depth = 1 : i64}
   // expected-error@+1 {{'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow}}
-  %win = conduit.acquire {name = "dbl", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "dbl", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
-  conduit.release %win {count = 1 : i64, port = "Consume"}
+  conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
   return
 }
@@ -269,7 +269,7 @@ func.func @m8c_wait_all_window_value() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,
                   depth = 1 : i64}
-  %win = conduit.acquire {name = "unx", count = 1 : i64, port = "Consume"}
+  %win = conduit.acquire {name = "unx", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
   // expected-error@+1 {{'conduit.wait_all' op operand #0 must be variadic of conduit token type, but got '!conduit.window<memref<1xi32>>'}}
   conduit.wait_all %win : !conduit.window<memref<1xi32>>
@@ -292,9 +292,9 @@ func.func @m8b_double_wait_window() {
               : !conduit.window.token -> !conduit.window<memref<1xi32>>
   %win2 = conduit.wait_window %tok for "dbl_tok"
               : !conduit.window.token -> !conduit.window<memref<1xi32>>
-  conduit.release %win1 {count = 1 : i64, port = "Consume"}
+  conduit.release %win1 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
-  conduit.release %win2 {count = 1 : i64, port = "Consume"}
+  conduit.release %win2 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
   return
 }
