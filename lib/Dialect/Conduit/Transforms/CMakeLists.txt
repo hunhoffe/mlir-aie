@@ -6,13 +6,20 @@
 # (c) Copyright 2026 Advanced Micro Devices, Inc.
 
 add_mlir_dialect_library(ConduitTransforms
+  PARTIAL_SOURCES_INTENDED
   AirChannelToConduit.cpp
+  ConduitCheckChannels.cpp
   ConduitDepthPromotion.cpp
   ConduitFuseChannels.cpp
   ConduitLivenessCheck.cpp
   ConduitPairingCheck.cpp
+  ConduitToDMAAlloc.cpp
+  ConduitToDMACollect.cpp
+  ConduitToDMALink.cpp
+  ConduitToDMALower.cpp
+  ConduitToDMAPass.cpp
+  ConduitToDMARoute.cpp
   ObjectFifoToConduit.cpp
-  ConduitToDMA.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${AIE_BINARY_DIR}/include
