@@ -46,14 +46,18 @@
 // CHECK:         aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
 
-// --- Shim locks for DMA host-side coordination (one prod+cons pair per fifo) ---
-// CHECK:     aie.lock(%{{.*}}tile_0_0,
-// CHECK:     aie.lock(%{{.*}}tile_0_0,
+// --- Shim allocations (Pass A batches all shim_dma_allocation before locks) ---
 // CHECK:     aie.shim_dma_allocation
+// CHECK:     aie.shim_dma_allocation
+
+// --- Shim locks + flow for fifo_a ---
+// CHECK:     aie.lock(%{{.*}}tile_0_0,
+// CHECK:     aie.lock(%{{.*}}tile_0_0,
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA :
+
+// --- Shim locks + flow for fifo_b ---
 // CHECK:     aie.lock(%{{.*}}tile_0_0,
 // CHECK:     aie.lock(%{{.*}}tile_0_0,
-// CHECK:     aie.shim_dma_allocation
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA :
 
 // --- Two aie.mem blocks, one per conduit, each with its own S2MM chain ---

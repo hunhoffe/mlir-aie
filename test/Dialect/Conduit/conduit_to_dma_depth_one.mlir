@@ -97,14 +97,16 @@
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], Release, 1)
 // CHECK:     }
 
-// --- Shim-side locks (Task #23 fix: emitted after core in Phase 4) ---
+// --- Shim allocation (Pass A emits before Phase 4 locks) ---
+// CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc
+
+// --- Shim-side locks (Phase 4 emits after shim_dma_allocation) ---
 // CHECK:     aie.lock(%{{.*}}tile_0_0
 // CHECK-SAME:   sym_name = "input_fifo_prod_lock_0"
 // CHECK:     aie.lock(%{{.*}}tile_0_0
 // CHECK-SAME:   sym_name = "input_fifo_cons_lock_0"
 
-// --- Shim allocation and flow (Pass C emits both correctly) ---
-// CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc
+// --- Flow (Phase 4 emits after shim locks) ---
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
 
 // --- Tile DMA region: Pass C emits aie.mem with S2MM BD ring ---

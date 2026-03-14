@@ -143,7 +143,7 @@ func.func @release_async_op() {
              : !conduit.window<memref<2xi32>>
   // CHECK: conduit.release_async
   // CHECK-SAME: !conduit.window.token
-  %rel_tok = conduit.release_async {name = "out", count = 1 : i64}
+  %rel_tok = conduit.release_async {name = "out", count = 1 : i64, port = "Consume"}
                  : !conduit.window.token
   // wait_all accepts AnyType variadic — can wait on a window.token here.
   // CHECK: conduit.wait_all

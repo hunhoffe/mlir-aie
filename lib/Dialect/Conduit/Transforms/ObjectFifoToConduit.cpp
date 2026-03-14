@@ -292,9 +292,42 @@ struct ObjectFifoToConduitPass
         dstAttrs.push_back(mlir::StringAttr::get(ctx, flat.getValue()));
       }
 
-      // Heuristic memtile: consumer tile of the first src fifo
+      // Relay tile detection: find the tile that sits between the source and
+      // destination fifos in the link.  By definition, the relay tile is the
+      // PRODUCER of the destination fifo (it receives data from upstream and
+      // forwards it downstream).
+      //
+      // The old heuristic ("consumer of first src fifo") fails for broadcast
+      // links where the source fifo has multiple consumers — it picks the
+      // first consumer in array order, which may be a compute tile rather
+      // than the actual MemTile relay.
+      //
+      // New logic: use the producer tile of the first dst fifo.  This is
+      // always correct because in an objectfifo.link, each dst fifo's
+      // producer IS the relay tile.  Falls back to consumer of first src
+      // if no dst fifo info is available.
       std::string memtileStr = "unknown";
-      if (!fifoIns.empty()) {
+      bool found = false;
+
+      // Primary: producer of the first dst fifo.
+      if (!fifoOuts.empty()) {
+        auto firstDstSym = mlir::cast<mlir::FlatSymbolRefAttr>(fifoOuts[0]);
+        auto nameAttr = mlir::StringAttr::get(ctx, firstDstSym.getValue());
+        auto it = fifoInfoMap.find(nameAttr);
+        if (it != fifoInfoMap.end() &&
+            it->second.producerTileArr.size() >= 2) {
+          int64_t col = it->second.producerTileArr[0];
+          int64_t row = it->second.producerTileArr[1];
+          std::string s;
+          llvm::raw_string_ostream os(s);
+          os << "tile(" << col << "," << row << ")";
+          memtileStr = os.str();
+          found = true;
+        }
+      }
+
+      // Fallback: consumer of first src fifo (original heuristic).
+      if (!found && !fifoIns.empty()) {
         auto firstSym = mlir::cast<mlir::FlatSymbolRefAttr>(fifoIns[0]);
         auto nameAttr = mlir::StringAttr::get(ctx, firstSym.getValue());
         auto it = fifoInfoMap.find(nameAttr);
@@ -537,8 +570,83 @@ struct ObjectFifoToConduitPass
     for (auto op : releasesToErase)
       op.erase();
 
-    // Phase 5 (deferred erase): erase objectfifo create ops now that all
-    // acquire/release/subview ops have been rewritten.
+    // Phase 4.5: preserve shim DMA symbols for runtime_sequence.
+    //
+    // When an objectfifo connects to a shim tile (row==0), the
+    // runtime_sequence contains aiex.npu.dma_wait / aiex.npu.dma_memcpy_nd
+    // ops that reference the objectfifo symbol.  Erasing the objectfifo
+    // without providing a replacement symbol causes the verifier to fail.
+    // Fix: emit aie.shim_dma_allocation @<name>_shim_alloc and rewrite all
+    // symbol uses before erasing the objectfifo.
+    for (AIE::ObjectFifoCreateOp op : fifosToErase) {
+      auto prodTile =
+          mlir::cast<AIE::TileOp>(op.getProducerTile().getDefiningOp());
+      int64_t prodRow = prodTile.getRow();
+
+      AIE::TileOp shimTile;
+      AIE::DMAChannelDir channelDir;
+
+      if (prodRow == 0) {
+        shimTile = prodTile;
+        channelDir = AIE::DMAChannelDir::MM2S;
+      } else {
+        for (mlir::Value cons : op.getConsumerTiles()) {
+          auto consTile = mlir::cast<AIE::TileOp>(cons.getDefiningOp());
+          if (consTile.getRow() == 0) {
+            shimTile = consTile;
+            channelDir = AIE::DMAChannelDir::S2MM;
+            break;
+          }
+        }
+      }
+
+      if (!shimTile)
+        continue;
+
+      auto deviceOp = op->getParentOfType<AIE::DeviceOp>();
+      if (!deviceOp)
+        continue;
+
+      std::string allocSym = op.getSymName().str() + "_shim_alloc";
+
+      builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
+      builder.create<AIE::ShimDMAAllocationOp>(
+          op.getLoc(), allocSym, shimTile.getResult(),
+          channelDir,
+          /*channel_index=*/static_cast<int64_t>(0),
+          /*plio=*/false,
+          /*packet=*/nullptr);
+
+      if (mlir::failed(mlir::SymbolTable::replaceAllSymbolUses(
+              op.getSymNameAttr(), builder.getStringAttr(allocSym),
+              deviceOp))) {
+        op.emitWarning("ObjectFifoToConduit: failed to rewrite symbol uses "
+                       "for shim-connected objectfifo '")
+            << op.getSymName() << "'";
+      }
+    }
+
+    // Phase 5 (deferred erase): erase objectfifo allocate ops first, then
+    // objectfifo create ops.  Erasure order matters: ObjectFifoAllocateOp's
+    // verifier does a symbol-table lookup for the referenced ObjectFifoCreateOp.
+    // If we erase the create op first, any surviving allocate op fires the
+    // verifier and emits "cannot retrieve associated object FIFO".
+    // Fix: erase all allocate ops before erasing the create ops they reference.
+    //
+    // Note: the delegate tile information from objectfifo.allocate controls
+    // buffer placement in the stateful transform.  Conduit IR does not yet
+    // carry an alloc_tile attribute on conduit.create, so Pass C will use its
+    // default tile selection heuristic.  This is a potential L2 gap for
+    // programs where the delegate tile differs from the heuristic's choice;
+    // a future conduit.create {alloc_tile = ...} attribute can encode the
+    // override.
+    llvm::SmallVector<AIE::ObjectFifoAllocateOp> allocatesToErase;
+    module.walk([&](AIE::ObjectFifoAllocateOp op) {
+      allocatesToErase.push_back(op);
+    });
+    for (AIE::ObjectFifoAllocateOp op : allocatesToErase)
+      op.erase();
+
     for (AIE::ObjectFifoCreateOp op : fifosToErase)
       op.erase();
   }
