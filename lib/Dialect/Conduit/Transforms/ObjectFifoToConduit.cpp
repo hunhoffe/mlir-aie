@@ -129,14 +129,32 @@ struct FifoInfo {
 struct ObjectFifoToConduitPass
     : impl::ObjectFifoToConduitBase<ObjectFifoToConduitPass> {
 
-  void runOnOperation() override {
-    mlir::ModuleOp module = getOperation();
-    mlir::OpBuilder builder(module.getContext());
-    mlir::MLIRContext *ctx = module.getContext();
+  // -----------------------------------------------------------------------
+  // Shared state across phases
+  // -----------------------------------------------------------------------
+
+  /// Name → fifo metadata, populated by collectFifoInfo().
+  llvm::DenseMap<mlir::StringAttr, FifoInfo> fifoInfoMap;
+
+  /// ObjectFifo create ops to erase after all rewrites complete.
+  llvm::SmallVector<AIE::ObjectFifoCreateOp> fifosToErase;
+
+  /// Subview, acquire, and release ops to erase after Phase 4.
+  llvm::SmallVector<AIE::ObjectFifoSubviewAccessOp> subviewsToErase;
+  llvm::SmallVector<AIE::ObjectFifoAcquireOp> acquiresToErase;
+  llvm::SmallVector<AIE::ObjectFifoReleaseOp> releasesToErase;
+
+  // -----------------------------------------------------------------------
+  // Phase 1: collectFifoInfo
+  // -----------------------------------------------------------------------
+  //
+  // Walk the module to build fifoInfoMap (name → tile/depth/type info) and
+  // detect cyclostatic (CSDF) access patterns from acquire op counts.
+
+  void collectFifoInfo(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
+    fifoInfoMap.clear();
 
     // Phase 1: collect FifoInfo for all aie.objectfifo ops.
-    llvm::DenseMap<mlir::StringAttr, FifoInfo> fifoInfoMap;
-
     module.walk([&](AIE::ObjectFifoCreateOp op) {
       FifoInfo info;
       // Producer tile
@@ -172,6 +190,20 @@ struct ObjectFifoToConduitPass
         info.elemType = mlir::MemRefType::get(
             {1}, mlir::IntegerType::get(ctx, 32));
         info.numElems = 1;
+      }
+
+      // P1-F: detect repeat_count on the objectfifo.  When present and > 1,
+      // the DMA must repeat each buffer descriptor N times.  Pass A does not
+      // propagate this to conduit.create, and Pass C hardcodes repeat_count=0
+      // on DMAStartOp — the DMA runs once instead of N times.  Until full
+      // implementation, reject with a hard error to prevent silent wrong output.
+      if (op.getRepeatCount().has_value() && op.getRepeatCount().value() > 1) {
+        op.emitError("objectfifo-to-conduit: repeat_count=")
+            << op.getRepeatCount().value()
+            << " is not yet supported; DMA would run once instead of "
+            << op.getRepeatCount().value()
+            << " times, producing wrong hardware output";
+        signalPassFailure();
       }
 
       fifoInfoMap[op.getSymNameAttr()] = std::move(info);
@@ -220,13 +252,27 @@ struct ObjectFifoToConduitPass
           it->second.accessPattern = counts;
       }
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // Phase 2–4: transformFifos
+  // -----------------------------------------------------------------------
+  //
+  // Emit conduit.create / conduit.objectfifo_link / conduit.acquire /
+  // conduit.subview_access / conduit.release, replacing all ObjectFIFO ops.
+  // Original ops are collected in erasure vectors for later cleanup.
+
+  void transformFifos(mlir::ModuleOp module, mlir::OpBuilder &builder,
+                      mlir::MLIRContext *ctx) {
+    fifosToErase.clear();
+    subviewsToErase.clear();
+    acquiresToErase.clear();
+    releasesToErase.clear();
 
     // Phase 2: rewrite each aie.objectfifo → conduit.create with typed attrs.
     // NOTE: do NOT erase the objectfifo op here — the AIE verifier requires
     // aie.objectfifo.acquire to reference a live objectfifo symbol.  Collect
     // for deferred erasure after Phase 4 completes.
-
-    llvm::SmallVector<AIE::ObjectFifoCreateOp> fifosToErase;
 
     module.walk([&](AIE::ObjectFifoCreateOp op) {
       builder.setInsertionPoint(op);
@@ -274,6 +320,15 @@ struct ObjectFifoToConduitPass
     module.walk([&](AIE::ObjectFifoLinkOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
+
+      // P1-F: reject repeat_count on link ops (same rationale as create ops).
+      if (op.getRepeatCount().has_value() && op.getRepeatCount().value() > 1) {
+        op.emitError("objectfifo-to-conduit: repeat_count=")
+            << op.getRepeatCount().value()
+            << " on objectfifo.link is not yet supported";
+        signalPassFailure();
+        return;
+      }
 
       auto fifoIns = op.getFifoIns();
       auto fifoOuts = op.getFifoOuts();
@@ -398,11 +453,8 @@ struct ObjectFifoToConduitPass
     //   acquire op is erased.  This prevents the acquire result SSA value from
     //   being invalidated while we still need it for the subview rewrite.
 
-    llvm::SmallVector<AIE::ObjectFifoSubviewAccessOp> subviewsToErase;
-    llvm::SmallVector<AIE::ObjectFifoAcquireOp> acquiresToErase;
-    llvm::SmallVector<AIE::ObjectFifoReleaseOp> releasesToErase;
-
-    // Phase 4: rewrite acquire/release/subview.access in one pass per block.
+    // Per-block window maps: block → (fifo name → window SSA value).
+    // Populated as each block is visited; used for cross-block lookups.
     //
     // Domination invariant: conduit.release takes a !conduit.window<T> SSA
     // operand that must dominate the release site.  A flat module.walk over
@@ -424,9 +476,6 @@ struct ObjectFifoToConduitPass
     //   If found, we reuse that dominating window SSA value directly — no
     //   phantom, no warning.  If not found (truly unreachable acquire), we
     //   fall back to the phantom + C1 warning as before.
-    //
-    // Per-block window maps: block → (fifo name → window SSA value).
-    // Populated as each block is visited; used for cross-block lookups.
     llvm::DenseMap<mlir::Block *, llvm::DenseMap<mlir::StringAttr, mlir::Value>>
         allBlockWindowMaps;
 
@@ -588,7 +637,17 @@ struct ObjectFifoToConduitPass
         }
       }
     });
+  }
 
+  // -----------------------------------------------------------------------
+  // Phase 4.5+: eraseOriginalOps
+  // -----------------------------------------------------------------------
+  //
+  // Erase all original ObjectFIFO ops (subview, acquire, release, create)
+  // and emit shim DMA allocation symbols + allocate delegate tile transfer.
+
+  void eraseOriginalOps(mlir::ModuleOp module, mlir::OpBuilder &builder,
+                        mlir::MLIRContext *ctx) {
     // Deferred erasure: erase subviews before acquires (subview uses acquire result).
     for (auto op : subviewsToErase)
       op.erase();
@@ -711,6 +770,20 @@ struct ObjectFifoToConduitPass
 
     for (AIE::ObjectFifoCreateOp op : fifosToErase)
       op.erase();
+  }
+
+  // -----------------------------------------------------------------------
+  // runOnOperation: orchestrate the three phases
+  // -----------------------------------------------------------------------
+
+  void runOnOperation() override {
+    mlir::ModuleOp module = getOperation();
+    mlir::OpBuilder builder(module.getContext());
+    mlir::MLIRContext *ctx = module.getContext();
+
+    collectFifoInfo(module, ctx);
+    transformFifos(module, builder, ctx);
+    eraseOriginalOps(module, builder, ctx);
   }
 };
 
