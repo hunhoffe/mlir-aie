@@ -51,6 +51,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_OBJECTFIFOTOCONDUIT
 #define GEN_PASS_DECL_CONDUITTODMA
 #define GEN_PASS_DECL_AIRCHANNELTOCONDUIT
+#define GEN_PASS_DECL_CONDUITDEPTHPROMOTE
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -67,6 +68,10 @@ createAirChannelToConduitPass();
 
 /// Pass C: lower Conduit IR to aie.dma_bd / aie.lock / aie.buffer / aie.flow.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createConduitToDMAPass();
+
+/// Depth promotion: promote eligible depth-1 conduits to depth-2.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitDepthPromotePass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)
