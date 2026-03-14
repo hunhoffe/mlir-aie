@@ -18,6 +18,9 @@
 //   Acquire::verify() / WaitWindow::verify() — M8a: window value release linearity
 //   AcquireAsync::verify() / ReleaseAsync::verify() — M8b: window.token wait_window linearity
 //   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token types
+//   Acquire::verify() — M9: same-block acquire-release pairing diagnostic (llvm::errs)
+//   WaitWindow::verify() — M9: same-block wait_window-release pairing diagnostic
+//   AcquireAsync::verify() — M9: same-block acquire_async-wait_window pairing diagnostic
 //
 //===----------------------------------------------------------------------===//
 
@@ -463,12 +466,86 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   if (failed(checkWindowReleaseLinear(getOperation(), getWindow())))
     return ::mlir::failure();
 
+  // M9 Phase 2: same-block acquire-release pairing diagnostic.
+  // Check that at least one conduit.release in the same block uses
+  // this acquire's window value.  Missing release → leaked lock grant.
+  // Uses llvm::errs() to avoid MLIR diagnostic recursion during verify.
+  {
+    mlir::Value winVal = getWindow();
+    mlir::Block *block = getOperation()->getBlock();
+    if (block) {
+      bool foundRelease = false;
+      for (mlir::OpOperand &use : winVal.getUses()) {
+        mlir::Operation *user = use.getOwner();
+        if (mlir::isa<Release>(user) && user->getBlock() == block) {
+          foundRelease = true;
+          break;
+        }
+      }
+      if (!foundRelease) {
+        // Check for release_async by name (no SSA link to window).
+        bool foundReleaseAsync = false;
+        llvm::StringRef conduitName = getName();
+        for (mlir::Operation &op : *block) {
+          if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(op)) {
+            if (relAsync.getName() == conduitName) {
+              foundReleaseAsync = true;
+              break;
+            }
+          }
+        }
+        if (!foundReleaseAsync) {
+          llvm::errs() << "M9: conduit.acquire '" << getName()
+                       << "' has no matching conduit.release or "
+                          "conduit.release_async in the same block\n";
+        }
+      }
+    }
+  }
+
   return ::mlir::success();
 }
 ::mlir::LogicalResult AcquireAsync::verify() {
   if (failed(checkTokenDoesNotEscape(getOperation(), getToken())))
     return ::mlir::failure();
-  return checkWindowTokenLinear(getOperation(), getToken());
+  if (failed(checkWindowTokenLinear(getOperation(), getToken())))
+    return ::mlir::failure();
+
+  // M9 Phase 2: same-block acquire_async-wait_window pairing diagnostic.
+  // An acquire_async produces a window.token that should be consumed by
+  // a conduit.wait_window in the same block to materialize the window.
+  {
+    mlir::Value tokenVal = getToken();
+    mlir::Block *block = getOperation()->getBlock();
+    if (block) {
+      bool foundWaitWindow = false;
+      for (mlir::OpOperand &use : tokenVal.getUses()) {
+        mlir::Operation *user = use.getOwner();
+        if (mlir::isa<WaitWindow>(user) && user->getBlock() == block) {
+          foundWaitWindow = true;
+          break;
+        }
+      }
+      if (!foundWaitWindow) {
+        // Not an error if the token goes to wait_all/wait_all_async
+        // (fan-in pattern). Only warn if there's no wait_window at all.
+        bool hasAnyWaitWindow = false;
+        for (mlir::OpOperand &use : tokenVal.getUses()) {
+          if (mlir::isa<WaitWindow>(use.getOwner())) {
+            hasAnyWaitWindow = true;
+            break;
+          }
+        }
+        if (!hasAnyWaitWindow) {
+          llvm::errs() << "M9: conduit.acquire_async '" << getName()
+                       << "' has no conduit.wait_window use "
+                          "(token never materialized to window)\n";
+        }
+      }
+    }
+  }
+
+  return ::mlir::success();
 }
 ::mlir::LogicalResult ReleaseAsync::verify() {
   if (failed(checkTokenDoesNotEscape(getOperation(), getToken())))
@@ -476,7 +553,52 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   return checkWindowTokenLinear(getOperation(), getToken());
 }
 ::mlir::LogicalResult WaitWindow::verify() {
-  return checkWindowReleaseLinear(getOperation(), getWindow());
+  if (failed(checkWindowReleaseLinear(getOperation(), getWindow())))
+    return ::mlir::failure();
+
+  // M9 Phase 2: same-block wait_window-release pairing diagnostic.
+  // After wait_window materializes the window, there should be a
+  // conduit.release in the same block consuming the window value.
+  {
+    mlir::Value winVal = getWindow();
+    mlir::Block *block = getOperation()->getBlock();
+    if (block) {
+      bool foundRelease = false;
+      for (mlir::OpOperand &use : winVal.getUses()) {
+        mlir::Operation *user = use.getOwner();
+        if (mlir::isa<Release>(user) && user->getBlock() == block) {
+          foundRelease = true;
+          break;
+        }
+      }
+      if (!foundRelease) {
+        // Check for release_async by name.
+        bool foundReleaseAsync = false;
+        // WaitWindow takes a token; get the conduit name from the
+        // defining AcquireAsync if available.
+        llvm::StringRef conduitName;
+        if (auto acqAsync = getToken().getDefiningOp<AcquireAsync>())
+          conduitName = acqAsync.getName();
+        if (!conduitName.empty()) {
+          for (mlir::Operation &op : *block) {
+            if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(op)) {
+              if (relAsync.getName() == conduitName) {
+                foundReleaseAsync = true;
+                break;
+              }
+            }
+          }
+        }
+        if (!foundReleaseAsync) {
+          llvm::errs() << "M9: conduit.wait_window has no matching "
+                          "conduit.release or conduit.release_async "
+                          "in the same block\n";
+        }
+      }
+    }
+  }
+
+  return ::mlir::success();
 }
 ::mlir::LogicalResult WaitAll::verify() {
   return checkTokenOperandTypes(getOperation(), getTokens());
