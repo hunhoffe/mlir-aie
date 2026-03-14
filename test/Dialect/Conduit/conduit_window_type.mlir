@@ -7,7 +7,7 @@
 //   (b) conduit.acquire returns !conduit.window<T>.
 //   (c) conduit.subview_access takes a !conduit.window<T> SSA operand.
 //   (d) conduit.release takes a !conduit.window<T> SSA operand.
-//   (e) conduit.wait_window exists (17th op in the dialect).
+//   (e) conduit.wait_window exists (16-op dialect; wait_window is the window materialization op).
 //
 // Syntax notes:
 //   - The window type prints without the conduit.window prefix (MLIR mnemonic
@@ -76,16 +76,16 @@ func.func @async_acquire_wait_window() {
 
   // CHECK: conduit.acquire_async
   // CHECK-SAME: name = "async_input"
-  // CHECK-SAME: !conduit.async.token
+  // CHECK-SAME: !conduit.window.token
   %tok = conduit.acquire_async {name = "async_input", count = 1 : i64}
-             : !conduit.async.token
+             : !conduit.window.token
 
   // CHECK: conduit.wait_window
   // CHECK-SAME: for "async_input"
-  // CHECK-SAME: !conduit.async.token
+  // CHECK-SAME: !conduit.window.token
   // CHECK-SAME: <memref<16xi32>>
   %win = conduit.wait_window %tok for "async_input"
-             : !conduit.async.token -> !conduit.window<memref<16xi32>>
+             : !conduit.window.token -> !conduit.window<memref<16xi32>>
 
   // CHECK: conduit.subview_access
   %elem = conduit.subview_access %win {index = 0 : i64}
@@ -107,21 +107,21 @@ func.func @async_acquire_with_overlap() {
   // CHECK: conduit.put_memref_async
   %dma_tok = conduit.put_memref_async {name = "in", num_elems = 9 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 9>,
-                 strides = array<i64: 1>} : !conduit.async.token
+                 strides = array<i64: 1>} : !conduit.dma.token
 
   // CHECK: conduit.acquire_async
   %acq_tok = conduit.acquire_async {name = "out", count = 1 : i64}
-                 : !conduit.async.token
+                 : !conduit.window.token
 
   // DMA wait is void — does NOT return a window.
   // CHECK: conduit.wait
-  conduit.wait %dma_tok : !conduit.async.token
+  conduit.wait %dma_tok : !conduit.dma.token
 
   // Acquire wait returns the window handle via the dedicated op.
   // CHECK: conduit.wait_window
   // CHECK-SAME: for "out"
   %win_out = conduit.wait_window %acq_tok for "out"
-                 : !conduit.async.token -> !conduit.window<memref<1xi32>>
+                 : !conduit.window.token -> !conduit.window<memref<1xi32>>
 
   // CHECK: conduit.subview_access
   %result = conduit.subview_access %win_out {index = 0 : i64}

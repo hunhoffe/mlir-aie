@@ -1,11 +1,4 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
-// XFAIL: *
-//
-// Known gaps:
-//   1. Pass A: access_pattern not appearing in conduit.create output.
-//   2. Pass C: SubviewAccess depth>1 path creates scf.index_switch for
-//      produce-port acquires in cores without scf.for; crashes when SCF
-//      dialect is not loaded.  Fix: skip rotation-counter for produce-port.
 //
 // Pass A + Pass C end-to-end CSDF (cyclostatic synchronous dataflow) test.
 //
@@ -17,28 +10,43 @@
 //   The consumer core uses_lock counts must vary as {1, 2, 1}, matching the
 //   cyclostatic access pattern.  This is the core of CSDF support.
 //
-// NOTE on known gaps vs. --aie-objectFifo-stateful-transform:
-//   The stateful transform places the locks on the producer tile (shared mem).
-//   Pass C currently places them on the consumer tile (tracked separately).
-//   This test checks the lock count correctness for CSDF, not the placement.
-//   Lock placement for L1 shared-mem fifos is a separate known gap.
+// Shared memory note:
+//   tile(2,2) and tile(2,3) are adjacent compute tiles and share memory.
+//   Pass C Phase 3c takes the shared memory path: buffers and locks are
+//   allocated on the PRODUCER tile (2,2), not the consumer tile.
+//   The rotation counter buffer (memref<1xi32>) is allocated on the
+//   consumer tile (2,3) since it is accessed only by the consumer core.
+//
+// Producer-core correctness (port-gated fix):
+//   Produce-port SubviewAccess ops must use STATIC buffer selection (no
+//   rotation counter).  The rotation counter is on the consumer tile and is
+//   inaccessible from the producer core.  The producer core must contain
+//   ONLY aie.use_lock and memref.store ops; it must NOT contain any
+//   scf.index_switch or memref.load of the rotation counter buffer.
 
 // CHECK-LABEL: module @csdf_l1_test
 // CHECK:   aie.device(xcve2302) {
 // CHECK:     %[[T22:.*]] = aie.tile(2, 2)
 // CHECK:     %[[T23:.*]] = aie.tile(2, 3)
 
-// --- Locks allocated on consumer tile (tile 2,3) by Pass C Phase 3 ---
+// --- Locks and buffers allocated on PRODUCER tile (tile 2,2) by Phase 3c ---
+// Four depth buffers (depth=4) on the producer tile (shared memory).
+// CHECK:     aie.buffer(%[[T22]])
+// CHECK:     aie.buffer(%[[T22]])
+// CHECK:     aie.buffer(%[[T22]])
+// CHECK:     aie.buffer(%[[T22]])
 // prodLock init=4 (4 free slots for producer), consLock init=0.
-// CHECK:     %[[PRODLOCK:.*]] = aie.lock(%[[T23]]
+// CHECK:     %[[PRODLOCK:.*]] = aie.lock(%[[T22]]
 // CHECK-SAME:   init = 4
-// CHECK:     %[[CONSLOCK:.*]] = aie.lock(%[[T23]]
+// CHECK:     %[[CONSLOCK:.*]] = aie.lock(%[[T22]]
 // CHECK-SAME:   init = 0
 
 // --- Producer core: 4 produce-1-at-a-time acquire/release pairs ---
+// Critical fix (port-gated): NO scf.index_switch, NO rotation counter load.
 // Each acquire(Produce,1): acquire prodLock with count=1.
 // Each release(Produce,1): release consLock with count=1.
 // CHECK:     aie.core(%[[T22]]) {
+// CHECK-NOT:   scf.index_switch
 // CHECK:       aie.use_lock(%[[PRODLOCK]], AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock(%[[CONSLOCK]], Release, 1)
 // CHECK:       aie.use_lock(%[[PRODLOCK]], AcquireGreaterEqual, 1)

@@ -1,8 +1,6 @@
 // RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit %s | FileCheck %s
 //
 // Pass B (--air-channel-to-conduit) basic test: lowers air.channel.put/get to Conduit Tier 3 ops.
-// NOTE: offsets/sizes/strides are empty arrays in current implementation (not yet extracted from
-// generic air.channel.put operands). num_elems defaults to 1. This is a known gap in Pass B.
 //
 // Pass B test: lower air.channel.put / air.channel.get to Conduit Tier 3 ops.
 //
@@ -12,8 +10,8 @@
 //
 // The program contains:
 //   - one air.channel declaration @chan [1, 1]
-//   - one air.channel.put (async)
-//   - one air.channel.get (async)
+//   - one air.channel.put (async) with 8x8 descriptor: offsets=[0,0], sizes=[8,8], strides=[8,1]
+//   - one air.channel.get (async) with matching descriptor
 //   - one air.wait_all (async)
 //
 // This is the SPMD-specialized form that Pass B receives (Task #32):
@@ -22,8 +20,8 @@
 // Expected output after --air-channel-to-conduit:
 //   - conduit.create {name="chan", capacity=1, depth=1}
 //     with element_type inferred from the put memref operand type
-//   - conduit.put_memref_async with name="chan", static sizes/strides
-//   - conduit.get_memref_async with name="chan"
+//   - conduit.put_memref_async with name="chan", num_elems=64, offsets/sizes/strides extracted
+//   - conduit.get_memref_async with name="chan", num_elems=64, matching descriptor
 //   - conduit.wait_all_async joining the two tokens
 //   - NO air.channel / air.wait_all ops remaining
 
@@ -39,22 +37,27 @@
 // CHECK-SAME: name = "chan"
 //
 // --- air.channel.put becomes conduit.put_memref_async ---
-// Current limitation: offsets/sizes/strides are empty (not extracted from
-// generic air.channel.put operands); num_elems defaults to 1.
+// Static descriptor: offsets=[0,0], sizes=[8,8], strides=[8,1], num_elems=8*8=64
 // CHECK:   %[[TOK0:.*]] = conduit.put_memref_async
 // CHECK-SAME: name = "chan"
-// CHECK-SAME: num_elems = 1
-// CHECK-SAME: : !conduit.async.token
+// CHECK-SAME: num_elems = 64
+// CHECK-SAME: offsets = array<i64: 0, 0>
+// CHECK-SAME: sizes = array<i64: 8, 8>
+// CHECK-SAME: strides = array<i64: 8, 1>
+// CHECK-SAME: : !conduit.dma.token
 //
 // --- air.channel.get becomes conduit.get_memref_async ---
 // CHECK:   %[[TOK1:.*]] = conduit.get_memref_async
 // CHECK-SAME: name = "chan"
-// CHECK-SAME: num_elems = 1
-// CHECK-SAME: : !conduit.async.token
+// CHECK-SAME: num_elems = 64
+// CHECK-SAME: offsets = array<i64: 0, 0>
+// CHECK-SAME: sizes = array<i64: 8, 8>
+// CHECK-SAME: strides = array<i64: 8, 1>
+// CHECK-SAME: : !conduit.dma.token
 //
 // --- air.wait_all async becomes conduit.wait_all_async ---
 // CHECK:   conduit.wait_all_async %[[TOK0]], %[[TOK1]]
-// CHECK-SAME: (!conduit.async.token, !conduit.async.token) -> !conduit.async.token
+// CHECK-SAME: (!conduit.dma.token, !conduit.dma.token) -> !conduit.dma.token
 //
 // --- No residual AIR ops ---
 // CHECK-NOT: air.channel
