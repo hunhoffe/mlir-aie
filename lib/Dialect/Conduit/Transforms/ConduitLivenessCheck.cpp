@@ -108,11 +108,18 @@ checkWindowLiveness(mlir::Operation *producerOp, mlir::Value windowVal,
   }
 
   // No release found via either path: the lock grant is permanently held.
-  return producerOp->emitError(
-      "M11: window lock grant is never released — "
-      "no conduit.release or conduit.release_async for channel '")
-      << conduitName
-      << "' found in this function; leaked lock causes hardware deadlock";
+  // Include the channel name, producer op kind, and enclosing function name
+  // to help the user locate the problematic acquire.
+  llvm::StringRef opKind = producerOp->getName().getStringRef();
+  auto diag = producerOp->emitError(
+      "M11: window lock grant from ")
+      << opKind << " on channel '" << conduitName
+      << "' is never released — "
+         "no conduit.release or conduit.release_async found";
+  // Attach a note with the enclosing function name for context.
+  if (auto funcOp = producerOp->getParentOfType<mlir::func::FuncOp>())
+    diag.attachNote(funcOp.getLoc()) << "in function '@" << funcOp.getName() << "'";
+  return mlir::failure();
 }
 
 struct ConduitLivenessCheckPass

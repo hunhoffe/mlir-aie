@@ -106,13 +106,14 @@ func.func @ok_partial_release() {
 // FAILING: acquire with no release anywhere in the function
 //===----------------------------------------------------------------------===//
 
+// expected-note@+1 {{in function '@fail_no_release'}}
 func.func @fail_no_release() {
   conduit.create {name = "c", capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  // expected-error@+1 {{M11: window lock grant is never released}}
+  // expected-error@+1 {{M11: window lock grant from conduit.acquire on channel 'c' is never released}}
   %win = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   return
@@ -124,6 +125,7 @@ func.func @fail_no_release() {
 // FAILING: async acquire (wait_window) with no release
 //===----------------------------------------------------------------------===//
 
+// expected-note@+1 {{in function '@fail_wait_window_no_release'}}
 func.func @fail_wait_window_no_release() {
   conduit.create {name = "c", capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
@@ -132,7 +134,7 @@ func.func @fail_wait_window_no_release() {
                   depth = 1 : i64}
   %tok = conduit.acquire_async {name = "c", count = 1 : i64}
              : !conduit.window.token
-  // expected-error@+1 {{M11: window lock grant is never released}}
+  // expected-error@+1 {{M11: window lock grant from conduit.wait_window on channel 'c' is never released}}
   %win = conduit.wait_window %tok for "c"
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
   return
@@ -144,6 +146,7 @@ func.func @fail_wait_window_no_release() {
 // FAILING: two acquires, only one released — second window leaks
 //===----------------------------------------------------------------------===//
 
+// expected-note@+1 {{in function '@fail_second_acquire_leaked'}}
 func.func @fail_second_acquire_leaked() {
   conduit.create {name = "c", capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
@@ -156,7 +159,7 @@ func.func @fail_second_acquire_leaked() {
   conduit.release %w1 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   // Second acquire: NOT released — leaked lock grant.
-  // expected-error@+1 {{M11: window lock grant is never released}}
+  // expected-error@+1 {{M11: window lock grant from conduit.acquire on channel 'c' is never released}}
   %w2 = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
             : !conduit.window<memref<8xi32>>
   return
@@ -169,13 +172,14 @@ func.func @fail_second_acquire_leaked() {
 // (name scoping is per-channel, not global)
 //===----------------------------------------------------------------------===//
 
+// expected-note@+1 {{in function '@fail_wrong_channel_release_async'}}
 func.func @fail_wrong_channel_release_async() {
   conduit.create {name = "c", capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  // expected-error@+1 {{M11: window lock grant is never released}}
+  // expected-error@+1 {{M11: window lock grant from conduit.acquire on channel 'c' is never released}}
   %win = conduit.acquire {name = "c", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // release_async names channel "other", not "c" — M11 on "c" still fires.
