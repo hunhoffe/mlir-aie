@@ -416,11 +416,16 @@ struct AirChannelToConduitPass
       // Slice operands.
       mlir::OperandRange allOps = op->getOperands();
       int32_t base = 0;
-      // async deps: skip (conduit put/get_memref_async do not take dep tokens)
-      if (ndeps > 0)
-        op->emitWarning() << "AirChannelToConduit: " << ndeps
-            << " async dependency token(s) dropped for channel @" << chanName
-            << "; execution ordering may be incorrect";
+      // Collect async dependency tokens that have already been converted to
+      // conduit token types.  Unconverted air.async.token deps are dropped
+      // (no Conduit hardware equivalent).
+      llvm::SmallVector<mlir::Value> depTokens;
+      for (int32_t i = 0; i < ndeps; ++i) {
+        mlir::Value dep = allOps[base + i];
+        if (mlir::isa<DMATokenType, WindowTokenType, AsyncTokenType>(
+                dep.getType()))
+          depTokens.push_back(dep);
+      }
       base += ndeps;
       // indices (ignored — only [1,1] channels supported)
       if (nidx > 0)
@@ -474,7 +479,8 @@ struct AirChannelToConduitPass
             mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
             mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
             mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
-            mlir::DenseI64ArrayAttr::get(ctx, strideVals));
+            mlir::DenseI64ArrayAttr::get(ctx, strideVals),
+            depTokens);
       } else {
         newOp = builder.create<GetMemrefAsync>(
             loc, conduitTokenTy,
@@ -482,7 +488,8 @@ struct AirChannelToConduitPass
             mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
             mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
             mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
-            mlir::DenseI64ArrayAttr::get(ctx, strideVals));
+            mlir::DenseI64ArrayAttr::get(ctx, strideVals),
+            depTokens);
       }
 
       // Replace all uses of the old async token result with the new token.

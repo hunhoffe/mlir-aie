@@ -757,9 +757,10 @@ def Conduit_PutMemrefAsync : Conduit_Op<"put_memref_async"> {
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
-                       DenseI64ArrayAttr:$strides);
+                       DenseI64ArrayAttr:$strides,
+                       Variadic<Conduit_AnyTokenType>:$deps);
   let results   = (outs Conduit_DMATokenType:$token);
-  let assemblyFormat = "attr-dict `:` type($token)";
+  let assemblyFormat = "(`[` $deps^ `:` type($deps) `]`)? attr-dict `:` type($token)";
   let hasVerifier = 1;
 }
 
@@ -775,9 +776,10 @@ def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
-                       DenseI64ArrayAttr:$strides);
+                       DenseI64ArrayAttr:$strides,
+                       Variadic<Conduit_AnyTokenType>:$deps);
   let results   = (outs Conduit_DMATokenType:$token);
-  let assemblyFormat = "attr-dict `:` type($token)";
+  let assemblyFormat = "(`[` $deps^ `:` type($deps) `]`)? attr-dict `:` type($token)";
   let hasVerifier = 1;
 }
 
