@@ -198,6 +198,12 @@ struct ConduitInfo {
   AIE::BufferOp rotationBuf;
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
       consumerTileRotationBufs; // tile → rotation counter buffer
+  // Alloc tile override: when objectfifo.allocate specifies a delegate tile,
+  // Pass A stores the [col, row] in conduit.create's alloc_tile attribute.
+  // Pass C uses this to place buffers/locks on the delegate tile instead of
+  // the default producer tile in the shared memory path.
+  bool hasAllocTile = false;
+  std::pair<int64_t, int64_t> allocTileCoord = {-1, -1};
   // Routing mode: "circuit" (default) or "packet".
   // When "packet", Phase 4 emits aie.packet_flow instead of aie.flow.
   std::string routingMode = "circuit";
@@ -300,6 +306,16 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       // getRoutingMode() returns std::optional<StringRef>.
       if (auto rm = op.getRoutingMode())
         info.routingMode = rm->str();
+
+      // Extract alloc_tile delegate coordinates.
+      // getAllocTile() returns std::optional<ArrayRef<int64_t>> with [col, row].
+      // Set by Pass A Phase 4.5b from objectfifo.allocate's delegate tile.
+      if (auto at = op.getAllocTile()) {
+        if (at->size() >= 2) {
+          info.hasAllocTile = true;
+          info.allocTileCoord = std::make_pair((*at)[0], (*at)[1]);
+        }
+      }
 
       conduitMap[op.getName()] = std::move(info);
     });
@@ -418,6 +434,19 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         for (auto s : linkOp.getSrcs())
           linkJoinSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
       }
+    });
+
+    // Pre-scan: collect conduit names that have at least one Consume-port
+    // acquire op. Conduits without consumer acquires (e.g., link destinations
+    // with no aie.core body) don't need rotation counter buffers.
+    llvm::StringSet<> conduitNamesWithConsumerAcquire;
+    module.walk([&](Acquire acqOp) {
+      if (acqOp.getPort() == "Consume")
+        conduitNamesWithConsumerAcquire.insert(acqOp.getName());
+    });
+    module.walk([&](AcquireAsync acqOp) {
+      // AcquireAsync is always consumer-side (no port attribute).
+      conduitNamesWithConsumerAcquire.insert(acqOp.getName());
     });
 
     // -----------------------------------------------------------------------
@@ -605,9 +634,18 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
             // --- Shared memory path ---
             info.sharedMemory = true;
 
-            AIE::TileOp prodTile = lookupTileByCoord(prodCol, prodRow);
+            // Determine the allocation tile: use alloc_tile if specified,
+            // otherwise default to the producer tile.
+            int64_t allocCol = prodCol, allocRow = prodRow;
+            if (info.hasAllocTile) {
+              allocCol = info.allocTileCoord.first;
+              allocRow = info.allocTileCoord.second;
+            }
+
+            AIE::TileOp allocTile = lookupTileByCoord(allocCol, allocRow);
             AIE::TileOp consTile = lookupTileByCoord(consCol, consRow);
-            if (!prodTile || !consTile) {
+            AIE::TileOp prodTile = lookupTileByCoord(prodCol, prodRow);
+            if (!allocTile || !consTile || !prodTile) {
               module.emitWarning(
                   "conduit-to-dma: shared memory conduit '" + name.str() +
                   "' has missing tile op; falling back to DMA path");
@@ -627,10 +665,14 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
               else
                 builder.setInsertionPointToStart(&deviceBody);
 
+              // Use the allocation tile for buffer/lock placement.
+              // When alloc_tile is set (from objectfifo.allocate), buffers and
+              // locks go on the delegate tile instead of the producer tile.
+              mlir::Value allocTileVal = allocTile.getResult();
               mlir::Value prodTileVal = prodTile.getResult();
               mlir::Value consTileVal = consTile.getResult();
 
-              // Allocate depth-many buffers on the PRODUCER tile.
+              // Allocate depth-many buffers on the ALLOCATION tile.
               // Both producer and consumer cores can access these via the
               // shared memory interface (no DMA needed).
               llvm::SmallVector<AIE::BufferOp> sharedBuffers;
@@ -638,7 +680,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                 std::string symName =
                     name.str() + "_buff_" + std::to_string(i);
                 auto buf = builder.create<AIE::BufferOp>(
-                    deviceOp.getLoc(), bufTy, prodTileVal,
+                    deviceOp.getLoc(), bufTy, allocTileVal,
                     mlir::StringAttr::get(ctx, symName),
                     /*address=*/mlir::IntegerAttr{},
                     /*initial_value=*/mlir::ElementsAttr{},
@@ -647,26 +689,26 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                 info.buffers.push_back(buf);
               }
 
-              // Allocate lock(s) on the PRODUCER tile.
+              // Allocate lock(s) on the ALLOCATION tile.
               AIE::LockOp sharedProdLock;
               AIE::LockOp sharedConsLock;
               if (isAIE2) {
                 // AIE2: two semaphore locks.
                 {
-                  int lockIdx = lockIdCounter[prodTileVal]++;
+                  int lockIdx = lockIdCounter[allocTileVal]++;
                   std::string symName = name.str() + "_prod_lock_0";
                   AIE::LockOp lk = builder.create<AIE::LockOp>(
-                      deviceOp.getLoc(), prodTileVal, lockIdx,
+                      deviceOp.getLoc(), allocTileVal, lockIdx,
                       static_cast<int>(depth));
                   lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
                   sharedProdLock = lk;
                   info.prodLock = lk;
                 }
                 {
-                  int lockIdx = lockIdCounter[prodTileVal]++;
+                  int lockIdx = lockIdCounter[allocTileVal]++;
                   std::string symName = name.str() + "_cons_lock_0";
                   AIE::LockOp lk = builder.create<AIE::LockOp>(
-                      deviceOp.getLoc(), prodTileVal, lockIdx,
+                      deviceOp.getLoc(), allocTileVal, lockIdx,
                       static_cast<int>(0));
                   lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
                   sharedConsLock = lk;
@@ -676,10 +718,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
                 // AIE1: one lock per buffer slot (init=0 = empty), depth-many.
                 // Each BD block uses ONE lock (its own slot's lock).
                 for (int64_t i = 0; i < depth; ++i) {
-                  int lockIdx = lockIdCounter[prodTileVal]++;
+                  int lockIdx = lockIdCounter[allocTileVal]++;
                   std::string symName = name.str() + "_lock_" + std::to_string(i);
                   AIE::LockOp lk = builder.create<AIE::LockOp>(
-                      deviceOp.getLoc(), prodTileVal, lockIdx,
+                      deviceOp.getLoc(), allocTileVal, lockIdx,
                       static_cast<int>(0));
                   lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
                   info.aie1Locks.push_back(lk);
@@ -714,7 +756,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
               // Rotation counter for depth>1 (on consumer tile — the consumer
               // core uses it, so it lives in the consumer's local memory).
-              if (depth > 1) {
+              if (depth > 1 && conduitNamesWithConsumerAcquire.count(name)) {
                 auto counterTy = mlir::MemRefType::get(
                     {1}, mlir::IntegerType::get(ctx, 32));
                 info.rotationBuf = builder.create<AIE::BufferOp>(
@@ -1029,7 +1071,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         // Each consumer tile needs its own local counter — the counter lives in
         // tile-local memory so it is not accessible from other tiles.
         // Mirrors the stateful transform's `buffer_col_row : memref<1xi32>`.
-        if (depth > 1) {
+        if (depth > 1 && conduitNamesWithConsumerAcquire.count(name)) {
           auto counterTy =
               mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
           AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
@@ -1153,7 +1195,7 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       if (!isAIE2)
         info.consumerTileAIE1Locks[prodTileVal] = pAIE1Locks;
 
-      if (depth > 1) {
+      if (depth > 1 && conduitNamesWithConsumerAcquire.count(name)) {
         auto counterTy =
             mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
         AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
