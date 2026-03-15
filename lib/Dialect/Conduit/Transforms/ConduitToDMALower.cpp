@@ -37,7 +37,6 @@ void lowerPhase(ConduitToDMAState &state) {
   mlir::OpBuilder &builder = *state.builder;
   mlir::MLIRContext *ctx = state.ctx;
   mlir::ModuleOp module = state.module;
-  const bool isAIE2 = state.isAIE2Plus();
   const AIE::LockAction acqAction = state.acqAction;
 
   // -----------------------------------------------------------------------
@@ -187,8 +186,7 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
-      int32_t relVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == Port::Consume ? 0 : 1);
+      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(count));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }
@@ -272,8 +270,7 @@ void lowerPhase(ConduitToDMAState &state) {
     }
 
     if (lock) {
-      int32_t acqVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == Port::Produce ? 0 : 1);
+      int32_t acqVal = state.lockAcqValue(port, static_cast<int32_t>(count));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      acqAction, acqVal);
     }
@@ -360,8 +357,7 @@ void lowerPhase(ConduitToDMAState &state) {
     builder.setInsertionPoint(op);
     AIE::LockOp lock = (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
-      int32_t acqVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == Port::Produce ? 0 : 1);
+      int32_t acqVal = state.lockAcqValue(port, static_cast<int32_t>(count));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      acqAction, acqVal);
     }
@@ -402,8 +398,7 @@ void lowerPhase(ConduitToDMAState &state) {
       AIE::LockOp lock =
           (ainfo.port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
       if (lock) {
-        int32_t acqVal = isAIE2 ? static_cast<int32_t>(ainfo.count)
-                                : (ainfo.port == Port::Produce ? 0 : 1);
+        int32_t acqVal = state.lockAcqValue(ainfo.port, static_cast<int32_t>(ainfo.count));
         builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                        acqAction, acqVal);
       }
@@ -439,8 +434,7 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
-      int32_t relVal = isAIE2 ? static_cast<int32_t>(count)
-                              : (port == Port::Consume ? 0 : 1);
+      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(count));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }

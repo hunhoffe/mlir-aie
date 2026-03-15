@@ -214,13 +214,23 @@ struct ConduitToDMAState {
   // Convenience: true for AIE2 and AIE2p (all non-AIE1 architectures).
   bool isAIE2Plus() const { return aieArch != AIE::AIEArch::AIE1; }
 
-  // AIE1 BD block lock value constants.
-  // S2MM: acquire(0) [empty], release(1) [full].
-  // MM2S: acquire(1) [full], release(0) [empty].
-  static constexpr int32_t aie1S2MMAcqVal = 0;
-  static constexpr int32_t aie1S2MMRelVal = 1;
-  static constexpr int32_t aie1MM2SAcqVal = 1;
-  static constexpr int32_t aie1MM2SRelVal = 0;
+  /// Lock acquire value for DMA BD chains and core-side operations.
+  /// Port::Produce (S2MM / core-produces): AIE1 acquires empty slot (0).
+  /// Port::Consume (MM2S / core-consumes): AIE1 acquires full slot (1).
+  /// AIE2+: always returns count (AcquireGreaterEqual semantics).
+  int32_t lockAcqValue(Port port, int32_t count) const {
+    if (isAIE2Plus()) return count;
+    return (port == Port::Consume) ? 1 : 0;
+  }
+
+  /// Lock release value for DMA BD chains and core-side operations.
+  /// Port::Produce (S2MM / core-produces): AIE1 releases full slot (1).
+  /// Port::Consume (MM2S / core-consumes): AIE1 releases empty slot (0).
+  /// AIE2+: always returns count.
+  int32_t lockRelValue(Port port, int32_t count = 1) const {
+    if (isAIE2Plus()) return count;
+    return (port == Port::Consume) ? 0 : 1;
+  }
 
   // Conduit metadata map.  MapVector preserves insertion order (= source
   // order) for deterministic iteration in allocation and BD generation.
