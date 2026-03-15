@@ -341,7 +341,12 @@ struct AirChannelToConduitPass
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
           /*repeat_count=*/mlir::IntegerAttr{},
-          /*consumer_depths=*/mlir::DenseI64ArrayAttr{});
+          /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
+          /*disable_synchronization=*/mlir::BoolAttr{},
+          /*via_DMA=*/mlir::BoolAttr{},
+          /*iter_count=*/mlir::IntegerAttr{},
+          /*producer_dimensions=*/mlir::Attribute{},
+          /*consumer_dimensions=*/mlir::Attribute{});
 
       channelCreateOps[name] = createOp;
     }

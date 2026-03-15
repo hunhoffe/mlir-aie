@@ -138,6 +138,23 @@ struct ConduitInfo {
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
       consumerTileRotationBufs; // tile → rotation counter buffer
 
+  // --- New feature flags (populated by Phase 1 from conduit.create attrs) ---
+
+  // disable_synchronization: suppress all lock allocation and use_lock ops.
+  bool disableSynchronization = false;
+  // via_DMA: force DMA routing even for adjacent tiles (skip shared-mem path).
+  bool viaDMA = false;
+  // iter_count: number of DMA iterations (> 0 → DMAStartOp repeat_count = K-1,
+  // non-circular BD chain with terminal aie.end).
+  int64_t iterCount = 0;
+  // bdChainRepeatCount: from objectfifo repeat_count.  Number of times each BD
+  // fires before advancing to the next buffer.  0/1 = once (no unrolling).
+  int64_t bdChainRepeatCount = 0;
+  // Producer-side BDDimLayout descriptor (may be null/empty).
+  AIE::BDDimLayoutArrayAttr producerDimensions;
+  // Per-consumer BDDimLayout descriptors (parallel to consumerTileCoords).
+  llvm::SmallVector<AIE::BDDimLayoutArrayAttr> consumerDimensions;
+
   // --- Helper methods ---
 
   // Result of resolving per-tile resources from the enclosing CoreOp.
@@ -346,17 +363,20 @@ struct ConduitToDMAState {
   };
 
   // Allocate a producer/consumer lock pair on the given tile.
-  // AIE2: emits prod_lock (init=depth) + cons_lock (init=0).
+  // AIE2: emits prod_lock (init=prodInit) + cons_lock (init=0).
+  //   prodInit defaults to depth; pass a different value for repeat_count scaling.
   // AIE1: emits depth-many per-slot locks (init=0); prod=cons=locks[0].
   AllocatedLocks allocateLockPair(mlir::Value tileVal,
-                                  llvm::StringRef prefix, int64_t depth) {
+                                  llvm::StringRef prefix, int64_t depth,
+                                  int64_t prodInit = -1) {
+    if (prodInit < 0) prodInit = depth;
     AllocatedLocks locks;
     if (isAIE2Plus()) {
       {
         int lockIdx = lockIdCounter[tileVal]++;
         std::string symName = (prefix + "_prod_lock_0").str();
         AIE::LockOp lk = builder->create<AIE::LockOp>(
-            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(depth));
+            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(prodInit));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         locks.prodLock = lk;
       }
@@ -397,21 +417,28 @@ struct ConduitToDMAState {
 
   /// Emit DMA BD block content into an existing block:
   ///   1. UseLockOp (acquire) — skipped if acqLock is null
-  ///   2. DMABDOp — skipped if buffer is null
+  ///   2. DMABDOp — skipped if buffer is null; emits BDDimLayout if dims non-empty
   ///   3. UseLockOp (release) — skipped if relLock is null
   /// Sets the builder insertion point to the end of the block.
   /// NextBDOp is NOT emitted; the caller controls ring linkage.
   void emitBDBlock(mlir::Location loc, mlir::Block *block,
                    mlir::Value acqLock, int32_t acqVal,
                    mlir::Value buffer, int64_t offset, int64_t len,
-                   mlir::Value relLock, int32_t relVal) {
+                   mlir::Value relLock, int32_t relVal,
+                   AIE::BDDimLayoutArrayAttr dims = {}) {
     builder->setInsertionPointToEnd(block);
     if (acqLock)
       builder->create<AIE::UseLockOp>(loc, acqLock, acqAction, acqVal);
-    if (buffer)
-      builder->create<AIE::DMABDOp>(loc, buffer,
-                                    static_cast<int>(offset),
-                                    static_cast<int>(len));
+    if (buffer) {
+      if (dims && !dims.getValue().empty())
+        builder->create<AIE::DMABDOp>(loc, buffer,
+                                      static_cast<int>(offset),
+                                      static_cast<int>(len), dims);
+      else
+        builder->create<AIE::DMABDOp>(loc, buffer,
+                                      static_cast<int>(offset),
+                                      static_cast<int>(len));
+    }
     if (relLock)
       builder->create<AIE::UseLockOp>(loc, relLock,
                                       AIE::LockAction::Release, relVal);

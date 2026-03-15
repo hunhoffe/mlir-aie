@@ -184,7 +184,12 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
-      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(count));
+      // Scale release count by repeat_count for Produce port: the producer
+      // core releases N lock units per buffer (one per DMA repetition).
+      int64_t effectiveCount = count;
+      if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
+        effectiveCount *= cinfo->bdChainRepeatCount;
+      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }
@@ -267,7 +272,12 @@ void lowerPhase(ConduitToDMAState &state) {
     }
 
     if (lock) {
-      int32_t acqVal = state.lockAcqValue(port, static_cast<int32_t>(count));
+      // Scale acquire count by repeat_count: the core must wait for all N
+      // DMA repetitions before accessing the buffer.
+      int64_t effectiveCount = count;
+      if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
+        effectiveCount *= cinfo->bdChainRepeatCount;
+      int32_t acqVal = state.lockAcqValue(port, static_cast<int32_t>(effectiveCount));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      acqAction, acqVal);
     }
@@ -428,7 +438,11 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
-      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(count));
+      // Scale release count by repeat_count for Produce port (async).
+      int64_t effectiveCount = count;
+      if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
+        effectiveCount *= cinfo->bdChainRepeatCount;
+      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }

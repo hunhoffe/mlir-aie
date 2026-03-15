@@ -219,21 +219,6 @@ struct ObjectFifoToConduitPass
         info.numElems = 1;
       }
 
-      // P1-F: detect repeat_count on the objectfifo.  When present and > 1,
-      // the DMA must repeat each buffer descriptor N times.  Pass A does not
-      // propagate this to conduit.create, and Pass C hardcodes repeat_count=0
-      // on DMAStartOp — the DMA runs once instead of N times.  Until full
-      // implementation, reject with a hard error to prevent silent wrong output.
-      if (op.getRepeatCount().has_value() && op.getRepeatCount().value() > 1) {
-        op.emitError("objectfifo-to-conduit: repeat_count=")
-            << op.getRepeatCount().value()
-            << " is not yet supported; DMA would run once instead of "
-            << op.getRepeatCount().value()
-            << " times, producing wrong hardware output";
-        signalPassFailure();
-        passFailed = true;
-      }
-
       fifoInfoMap[op.getSymNameAttr()] = std::move(info);
     });
 
@@ -352,6 +337,57 @@ struct ObjectFifoToConduitPass
         consumerDepthsAttr =
             mlir::DenseI64ArrayAttr::get(ctx, info.consumerDepths);
 
+      // Propagate disable_synchronization.
+      mlir::BoolAttr disableSyncAttr;
+      if (op.getDisableSynchronization())
+        disableSyncAttr = mlir::BoolAttr::get(ctx, true);
+
+      // Propagate iter_count.
+      mlir::IntegerAttr iterCountAttr;
+      if (op.getIterCount().has_value()) {
+        iterCountAttr = mlir::IntegerAttr::get(
+            mlir::IntegerType::get(ctx, 64),
+            static_cast<int64_t>(op.getIterCount().value()));
+      }
+
+      // Propagate dimensionsToStream (producer side).
+      // Stored as generic mlir::Attribute to avoid cross-dialect tablegen dep.
+      mlir::Attribute prodDimsAttr;
+      {
+        auto dims = op.getDimensionsToStreamAttr();
+        if (dims && !dims.getValue().empty())
+          prodDimsAttr = dims;
+      }
+
+      // Propagate dimensionsFromStreamPerConsumer (per-consumer).
+      // Check that at least one consumer has non-empty dims (the outer array
+      // is always non-empty even for fifos with no dims — it has one [] per
+      // consumer — so we must check the inner arrays).
+      mlir::Attribute consDimsAttr;
+      {
+        auto dims = op.getDimensionsFromStreamPerConsumerAttr();
+        bool hasNonEmptyDims = false;
+        if (dims) {
+          for (auto consArr : dims.getValue()) {
+            if (!consArr.getValue().empty()) {
+              hasNonEmptyDims = true;
+              break;
+            }
+          }
+        }
+        if (hasNonEmptyDims)
+          consDimsAttr = dims;
+      }
+
+      // Propagate via_DMA.
+      // Auto-set via_DMA=true when dimensionsToStream or dimensionsFromStream
+      // are non-empty: the shared-memory path skips DMA BDs entirely, which
+      // would silently drop the dimension transforms. Forcing DMA ensures the
+      // BDDimLayout attributes are applied at the hardware level.
+      mlir::BoolAttr viaDMAAttr;
+      if (op.getVia_DMA() || prodDimsAttr || consDimsAttr)
+        viaDMAAttr = mlir::BoolAttr::get(ctx, true);
+
       builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
@@ -368,7 +404,12 @@ struct ObjectFifoToConduitPass
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
           repeatCountAttr,
-          consumerDepthsAttr);
+          consumerDepthsAttr,
+          disableSyncAttr,
+          viaDMAAttr,
+          iterCountAttr,
+          prodDimsAttr,
+          consDimsAttr);
 
       fifosToErase.push_back(op);
     });
@@ -377,16 +418,6 @@ struct ObjectFifoToConduitPass
     module.walk([&](AIE::ObjectFifoLinkOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
-
-      // P1-F: reject repeat_count on link ops (same rationale as create ops).
-      if (op.getRepeatCount().has_value() && op.getRepeatCount().value() > 1) {
-        op.emitError("objectfifo-to-conduit: repeat_count=")
-            << op.getRepeatCount().value()
-            << " on objectfifo.link is not yet supported";
-        signalPassFailure();
-        passFailed = true;
-        return;
-      }
 
       auto fifoIns = op.getFifoIns();
       auto fifoOuts = op.getFifoOuts();

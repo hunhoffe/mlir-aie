@@ -252,7 +252,8 @@ void routePhase(ConduitToDMAState &state) {
       // (Phase 3c) — no DMA flow needed.  For broadcast (multi-consumer),
       // Phase 3c is skipped; all consumers use DMA, so flows are needed
       // for every consumer regardless of adjacency.
-      if (info.consumerTileCoords.size() == 1) {
+      // Exception: via_DMA=true forces DMA even for adjacent tiles.
+      if (!info.viaDMA && info.consumerTileCoords.size() == 1) {
         bool rightAdj = state.targetModel->isLegalMemAffinity(
             prodCol, prodRow, consCol, consRow);
         bool leftAdj = state.targetModel->isLegalMemAffinity(
