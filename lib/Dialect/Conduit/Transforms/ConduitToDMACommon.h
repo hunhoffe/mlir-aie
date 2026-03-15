@@ -395,6 +395,28 @@ struct ConduitToDMAState {
     return &it->second;
   }
 
+  /// Emit DMA BD block content into an existing block:
+  ///   1. UseLockOp (acquire) — skipped if acqLock is null
+  ///   2. DMABDOp — skipped if buffer is null
+  ///   3. UseLockOp (release) — skipped if relLock is null
+  /// Sets the builder insertion point to the end of the block.
+  /// NextBDOp is NOT emitted; the caller controls ring linkage.
+  void emitBDBlock(mlir::Location loc, mlir::Block *block,
+                   mlir::Value acqLock, int32_t acqVal,
+                   mlir::Value buffer, int64_t offset, int64_t len,
+                   mlir::Value relLock, int32_t relVal) {
+    builder->setInsertionPointToEnd(block);
+    if (acqLock)
+      builder->create<AIE::UseLockOp>(loc, acqLock, acqAction, acqVal);
+    if (buffer)
+      builder->create<AIE::DMABDOp>(loc, buffer,
+                                    static_cast<int>(offset),
+                                    static_cast<int>(len));
+    if (relLock)
+      builder->create<AIE::UseLockOp>(loc, relLock,
+                                      AIE::LockAction::Release, relVal);
+  }
+
   // Allocate `count` buffers of type `bufTy` on the given tile.
   llvm::SmallVector<AIE::BufferOp> allocateBuffers(
       mlir::Value tileVal, llvm::StringRef prefix,
