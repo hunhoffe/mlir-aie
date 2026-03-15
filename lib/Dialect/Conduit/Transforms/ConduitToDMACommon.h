@@ -281,6 +281,7 @@ struct ConduitToDMAState {
   llvm::StringSet<> linkSrcNamesEarly;  // distribute sources only
   llvm::StringSet<> linkJoinSrcNames;   // join sources
   llvm::StringSet<> linkSrcNames;       // all link sources (both)
+  llvm::StringSet<> linkDstNames;       // all link destinations (both)
 
   // Conduit names with at least one Consume-port acquire op.
   llvm::StringSet<> conduitNamesWithConsumerAcquire;

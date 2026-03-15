@@ -428,11 +428,11 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // Pass A propagates this from objectfifo.create.
                        // Pass C: skip allocateLockPair; lower acquire/release to no-ops.
                        OptionalAttr<BoolAttr>:$disable_synchronization,
-                       // via_DMA: when true, force DMA path even for adjacent tiles
+                       // viaDMA: when true, force DMA path even for adjacent tiles
                        // that would otherwise use shared memory.  Pass A propagates
                        // from objectfifo.create.  Pass C: skip Phase 3c shared-memory
                        // path and emit aie.flow for adjacent tiles.
-                       OptionalAttr<BoolAttr>:$via_DMA,
+                       OptionalAttr<BoolAttr>:$viaDMA,
                        // iter_count: number of DMA task-queue iterations.
                        // Maps to DMAStartOp.repeat_count = iter_count - 1 with a
                        // non-circular BD chain (last BD → aie.end).
@@ -704,11 +704,11 @@ def Conduit_Link : Conduit_Op<"link"> {
   let summary = "link conduits via a MemTile relay for hardware-mediated distribute or join";
   let description = [{
     Represents aie.objectfifo.link semantics: hardware-mediated data relay
-    through a MemTile with optional byte-offset splits.
+    through a MemTile with optional element-offset splits.
 
     Three modes:
-    - "distribute": 1 source → N destinations, each starting at a byte offset
-    - "join":       N sources (each at a byte offset) → 1 destination
+    - "distribute": 1 source → N destinations, each starting at an element offset
+    - "join":       N sources (each at an element offset) → 1 destination
     - "forward":    exactly 1 source → exactly 1 destination; direct pass-through
                     relay with no splitting or joining (invariant: srcs.size()==1,
                     dsts.size()==1)
