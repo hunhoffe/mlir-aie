@@ -78,15 +78,15 @@ void linkPhase(ConduitToDMAState &state) {
 
     std::string srcName =
         mlir::cast<mlir::StringAttr>(srcs[0]).getValue().str();
-    auto srcIt = state.conduitMap.find(srcName);
-    if (srcIt == state.conduitMap.end() || srcIt->second.buffers.empty()) {
+    ConduitInfo *srcInfoPtr = state.lookupConduit(srcName);
+    if (!srcInfoPtr || srcInfoPtr->buffers.empty()) {
       linkOp.emitError("conduit-to-dma: src conduit '" + srcName +
                        "' buffers not allocated for link op");
       state.passFailed = true;
       return;
     }
 
-    ConduitInfo &srcInfo = srcIt->second;
+    ConduitInfo &srcInfo = *srcInfoPtr;
 
     // Resolve MemTile-side buffers for the BD chain.
     mlir::Value memTileResult = memtile.getResult();
@@ -151,16 +151,15 @@ void linkPhase(ConduitToDMAState &state) {
 
     if (!isDistribute && !dsts.empty()) {
       std::string jDstName = mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
-      auto jDstIt = state.conduitMap.find(jDstName);
-      if (jDstIt == state.conduitMap.end()) {
+      ConduitInfo *jDstInfo = state.lookupConduit(jDstName);
+      if (!jDstInfo) {
         linkOp.emitWarning("conduit-to-dma: join destination conduit '")
             << jDstName << "' not found — BD lengths defaulting to 1";
       } else {
-        ConduitInfo &jDstInfo = jDstIt->second;
-        int64_t jDstDepth = jDstInfo.depth > 0 ? jDstInfo.depth : 1;
-        joinDstPerBufForLen = jDstInfo.capacity > 0 ? jDstInfo.capacity / jDstDepth : 1;
+        int64_t jDstDepth = jDstInfo->depth > 0 ? jDstInfo->depth : 1;
+        joinDstPerBufForLen = jDstInfo->capacity > 0 ? jDstInfo->capacity / jDstDepth : 1;
 
-        mlir::Type intBufTy = jDstInfo.elemType;
+        mlir::Type intBufTy = jDstInfo->elemType;
         if (!intBufTy)
           intBufTy = mlir::MemRefType::get({joinDstPerBufForLen}, mlir::IntegerType::get(ctx, 32));
 
@@ -210,12 +209,11 @@ void linkPhase(ConduitToDMAState &state) {
       for (unsigned dstIdx = 0; dstIdx < numDsts; ++dstIdx) {
         std::string dstName =
             mlir::cast<mlir::StringAttr>(dsts[dstIdx]).getValue().str();
-        auto dstIt = state.conduitMap.find(dstName);
-        if (dstIt == state.conduitMap.end() ||
-            dstIt->second.consumerTileCoords.empty())
+        ConduitInfo *dstInfo = state.lookupConduit(dstName);
+        if (!dstInfo || dstInfo->consumerTileCoords.empty())
           continue;
 
-        auto [dstConsCol, dstConsRow] = dstIt->second.consumerTileCoords[0];
+        auto [dstConsCol, dstConsRow] = dstInfo->consumerTileCoords[0];
         AIE::TileOp dstConsTile =
             state.lookupTileByCoord(dstConsCol, dstConsRow);
         if (!dstConsTile)
@@ -249,10 +247,10 @@ void linkPhase(ConduitToDMAState &state) {
       for (unsigned srcIdx = 0; srcIdx < srcs.size(); ++srcIdx) {
         std::string sName =
             mlir::cast<mlir::StringAttr>(srcs[srcIdx]).getValue().str();
-        auto sIt = state.conduitMap.find(sName);
-        if (sIt == state.conduitMap.end())
+        ConduitInfo *sInfo = state.lookupConduit(sName);
+        if (!sInfo)
           continue;
-        auto [srcProdCol, srcProdRow] = sIt->second.producerTileCoord;
+        auto [srcProdCol, srcProdRow] = sInfo->producerTileCoord;
         if (srcProdCol < 0 || srcProdRow == 0)
           continue;
         AIE::TileOp srcProdTile = state.lookupTileByCoord(srcProdCol, srcProdRow);
@@ -268,18 +266,16 @@ void linkPhase(ConduitToDMAState &state) {
       // Destination flow: memtile MM2S 0 → dst consumer.
       if (!dsts.empty()) {
         std::string dstName = mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
-        auto dstIt = state.conduitMap.find(dstName);
-        if (dstIt != state.conduitMap.end()) {
-          ConduitInfo &dstFlowInfo = dstIt->second;
-          for (unsigned ci = 0; ci < dstFlowInfo.consumerTileCoords.size(); ++ci) {
-            auto [consCol, consRow] = dstFlowInfo.consumerTileCoords[ci];
+        if (ConduitInfo *dstFlowInfo = state.lookupConduit(dstName)) {
+          for (unsigned ci = 0; ci < dstFlowInfo->consumerTileCoords.size(); ++ci) {
+            auto [consCol, consRow] = dstFlowInfo->consumerTileCoords[ci];
             AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
             if (consTile)
               builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
                   AIE::WireBundle::DMA, 0, consTile.getResult(),
                   AIE::WireBundle::DMA, 0);
           }
-          for (auto [shimCol, shimRow] : dstFlowInfo.shimConsumerTileCoords) {
+          for (auto [shimCol, shimRow] : dstFlowInfo->shimConsumerTileCoords) {
             AIE::TileOp shimTile = state.lookupTileByCoord(shimCol, shimRow);
             if (shimTile)
               builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
