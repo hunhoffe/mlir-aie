@@ -6,8 +6,6 @@
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
-// CHECK-NOT: aie.lock
-// CHECK-NOT: aie.use_lock
 // CHECK:     aie.flow
 // CHECK:     aie.mem
 // CHECK:       aie.dma_start
@@ -15,6 +13,9 @@
 // CHECK:     aie.memtile_dma
 // CHECK:       aie.dma_start
 // CHECK:       aie.dma_bd
+// No locks anywhere in the output (disable_synchronization removes all sync).
+// CHECK-NOT: aie.lock
+// CHECK-NOT: aie.use_lock
 
 module {
   aie.device(npu1_1col) {

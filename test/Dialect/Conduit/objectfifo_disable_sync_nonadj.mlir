@@ -6,8 +6,6 @@
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(xcve2302) {
-// CHECK-NOT: aie.lock
-// CHECK-NOT: aie.use_lock
 // CHECK:     aie.buffer({{.*}}) {sym_name = "of_buff_0"}
 // CHECK:     aie.buffer({{.*}}) {sym_name = "of_cons_buff_0"}
 // CHECK:     aie.flow
@@ -19,6 +17,9 @@
 // CHECK:     aie.mem({{.*}}) {
 // CHECK:       aie.dma_start(S2MM
 // CHECK:       aie.dma_bd
+// No locks anywhere (disable_synchronization removes all sync).
+// CHECK-NOT: aie.lock
+// CHECK-NOT: aie.use_lock
 // No residual Conduit ops
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire

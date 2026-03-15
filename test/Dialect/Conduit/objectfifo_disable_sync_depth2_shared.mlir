@@ -10,8 +10,6 @@
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
-// CHECK-NOT: aie.lock
-// CHECK-NOT: aie.use_lock
 // 2 buffers on producer tile (shared memory)
 // CHECK:     aie.buffer({{.*}}) {sym_name = "of_buff_0"} : memref<16xi32>
 // CHECK:     aie.buffer({{.*}}) {sym_name = "of_buff_1"} : memref<16xi32>
@@ -28,6 +26,9 @@
 // CHECK:       arith.remui
 // CHECK:       memref.store
 // CHECK:       aie.end
+// No locks anywhere (disable_synchronization removes all sync).
+// CHECK-NOT: aie.lock
+// CHECK-NOT: aie.use_lock
 // No residual Conduit ops
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire

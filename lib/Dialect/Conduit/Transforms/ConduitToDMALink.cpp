@@ -112,6 +112,18 @@ void linkPhase(ConduitToDMAState &state) {
     if (isDistribute && numDsts > 0) {
       builder.setInsertionPoint(state.deviceBody->getTerminator());
       for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx) {
+        // Scale per-slice lock init by the destination fifo's repeat_count.
+        // The MemTile MM2S fires linkDepth×repeat times before releasing.
+        int64_t dstRepeat = 1;
+        {
+          std::string dstNameR =
+              mlir::cast<mlir::StringAttr>(dsts[sliceIdx]).getValue().str();
+          if (ConduitInfo *dstInfoR = state.lookupConduit(dstNameR))
+            if (dstInfoR->bdChainRepeatCount > 1)
+              dstRepeat = dstInfoR->bdChainRepeatCount;
+        }
+        int64_t sliceProdInit = linkDepth * dstRepeat;
+
         if (isAIE2) {
           {
             int lockIdx = state.lockIdCounter[memtileVal]++;
@@ -119,7 +131,7 @@ void linkPhase(ConduitToDMAState &state) {
                                   std::to_string(sliceIdx);
             AIE::LockOp lk = builder.create<AIE::LockOp>(
                 state.deviceOp.getLoc(), memtileVal, lockIdx,
-                static_cast<int>(linkDepth));
+                static_cast<int>(sliceProdInit));
             lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
             sliceProdLocks.push_back(lk);
           }
@@ -477,17 +489,23 @@ void linkPhase(ConduitToDMAState &state) {
           mm2sRelLock = sliceProdLocks[dstIdx];
         }
 
-        // Look up dst fifo's producerDimensions for the MemTile MM2S BD.
+        // Look up dst fifo's producerDimensions and repeat_count.
         AIE::BDDimLayoutArrayAttr dstProdDims;
+        int64_t mm2sDstRepeat = 1;
         {
           std::string dstName2 =
               mlir::cast<mlir::StringAttr>(dsts[dstIdx]).getValue().str();
-          if (ConduitInfo *dstInfo = state.lookupConduit(dstName2))
+          if (ConduitInfo *dstInfo = state.lookupConduit(dstName2)) {
             dstProdDims = dstInfo->producerDimensions;
+            if (dstInfo->bdChainRepeatCount > 1)
+              mm2sDstRepeat = dstInfo->bdChainRepeatCount;
+          }
         }
+        // Unroll by repeat_count: each source buffer is sent repeat times.
+        int64_t thisDstEffective = thisDstDepth * mm2sDstRepeat;
 
         llvm::SmallVector<mlir::Block *> sendBDBlocks;
-        for (int64_t i = 0; i < thisDstDepth; ++i)
+        for (int64_t i = 0; i < thisDstEffective; ++i)
           sendBDBlocks.push_back(addBlock());
 
         mlir::Block *nextChainBlock;
@@ -502,16 +520,18 @@ void linkPhase(ConduitToDMAState &state) {
         builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S,
             static_cast<int32_t>(dstIdx), 0, sendBDBlocks[0], nextChainBlock);
 
-        for (int64_t i = 0; i < thisDstDepth; ++i) {
+        for (int64_t i = 0; i < thisDstEffective; ++i) {
+          // Each source buffer (linkBufs[j]) is repeated mm2sDstRepeat times.
           mlir::Value buf = !linkBufs.empty()
-              ? linkBufs[i % linkBufs.size()].getResult() : mlir::Value{};
+              ? linkBufs[(i / mm2sDstRepeat) % linkBufs.size()].getResult()
+              : mlir::Value{};
           state.emitBDBlock(loc, sendBDBlocks[i],
               mm2sAcqLock ? mm2sAcqLock.getResult() : mlir::Value{},
               state.lockAcqValue(Port::Consume, 1),
               buf, dstOffset, dstLen,
               mm2sRelLock ? mm2sRelLock.getResult() : mlir::Value{},
               state.lockRelValue(Port::Consume), dstProdDims);
-          builder.create<AIE::NextBDOp>(loc, sendBDBlocks[(i + 1) % thisDstDepth]);
+          builder.create<AIE::NextBDOp>(loc, sendBDBlocks[(i + 1) % thisDstEffective]);
         }
         prevChainBlock = nextChainBlock;
       }

@@ -5,8 +5,11 @@
 // with repeat_count lowered from 3 to 2.
 //
 // Expected:
-// - MemTile S2MM ingest has 2*depth = 4 BD blocks (unrolled)
-// - Producer lock init for of1/of2 = repeat_count * depth = 2 * 2 = 4
+// - MemTile S2MM ingest: 4 BD blocks (of0.depth=2 × numDsts=2)
+// - MemTile MM2S per destination: 4 BD blocks (of0.depth=2 × of1.repeat_count=2),
+//   each source buffer repeated twice consecutively
+// - Per-slice MemTile lock init = linkDepth * repeat_count = 2 * 2 = 4
+// - Consumer tile lock init = depth * repeat_count = 2 * 2 = 4
 
 // CHECK-LABEL: module @linkDistRepeat
 // CHECK:   aie.device(npu1) {
@@ -29,13 +32,24 @@
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd ^bb1
-// MemTile MM2S channel 0 (of1): 2 BD blocks
+// MemTile MM2S channel 0 (of1): 4 BD blocks (linkDepth=2 × repeat_count=2)
+// Each source buffer is sent repeat_count=2 times consecutively.
 // CHECK:       aie.dma_start(MM2S, 0
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
-// MemTile MM2S channel 1 (of2): 2 BD blocks
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// Circular: loops back to first BD
+// CHECK:       aie.next_bd ^bb6
+// MemTile MM2S channel 1 (of2): 4 BD blocks (linkDepth=2 × repeat_count=2)
 // CHECK:       aie.dma_start(MM2S, 1
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
