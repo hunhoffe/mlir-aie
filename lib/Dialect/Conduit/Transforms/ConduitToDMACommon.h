@@ -386,6 +386,15 @@ struct ConduitToDMAState {
     return locks;
   }
 
+  /// Look up a conduit by name in the conduitMap.
+  /// Returns nullptr if not found.
+  ConduitInfo *lookupConduit(mlir::StringRef name) {
+    auto it = conduitMap.find(name.str());
+    if (it == conduitMap.end())
+      return nullptr;
+    return &it->second;
+  }
+
   // Allocate `count` buffers of type `bufTy` on the given tile.
   llvm::SmallVector<AIE::BufferOp> allocateBuffers(
       mlir::Value tileVal, llvm::StringRef prefix,

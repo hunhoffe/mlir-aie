@@ -61,13 +61,12 @@ void lowerPhase(ConduitToDMAState &state) {
 
       bool replaced = false;
       if (!conduitName.empty()) {
-        auto it = state.conduitMap.find(conduitName.str());
-        if (it != state.conduitMap.end() && !it->second.buffers.empty()) {
+        ConduitInfo *cinfo = state.lookupConduit(conduitName);
+        if (cinfo && !cinfo->buffers.empty()) {
           int64_t idx = op.getIndex();
-          ConduitInfo &cinfo = it->second;
 
           // Resolve per-tile buffers and rotation counter.
-          auto resolved = cinfo.resolveForTile(op);
+          auto resolved = cinfo->resolveForTile(op);
           llvm::SmallVector<AIE::BufferOp> *tileBuffers = resolved.buffers;
           AIE::BufferOp tileRotationBuf = resolved.rotationBuf;
 
@@ -167,18 +166,17 @@ void lowerPhase(ConduitToDMAState &state) {
       releasesToErase.push_back(op);
       return;
     }
-    auto it = state.conduitMap.find(conduitName.str());
-    if (it == state.conduitMap.end()) {
+    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    if (!cinfo) {
       releasesToErase.push_back(op);
       return;
     }
-    ConduitInfo &cinfo = it->second;
     builder.setInsertionPoint(op);
     int64_t count = static_cast<int64_t>(op.getCount());
     Port port = op.getPort();
 
     // Resolve per-tile lock pair and rotation counter.
-    auto resolved = cinfo.resolveForTile(op);
+    auto resolved = cinfo->resolveForTile(op);
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
     AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
@@ -191,7 +189,7 @@ void lowerPhase(ConduitToDMAState &state) {
                                      AIE::LockAction::Release, relVal);
     }
     // Counter increment for depth>1 Consume port.
-    if (resolvedRotationBuf && port == Port::Consume && cinfo.depth > 1) {
+    if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1) {
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
@@ -202,7 +200,7 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
       mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, cinfo.depth);
+          builder, loc, i32Ty, cinfo->depth);
       mlir::Value result =
           builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
       builder.create<mlir::memref::StoreOp>(
@@ -224,17 +222,16 @@ void lowerPhase(ConduitToDMAState &state) {
 
   llvm::SmallVector<Acquire> acquiresToErase;
   module.walk([&](Acquire op) {
-    auto it = state.conduitMap.find(op.getName().str());
-    if (it == state.conduitMap.end()) {
+    ConduitInfo *cinfo = state.lookupConduit(op.getName());
+    if (!cinfo) {
       acquiresToErase.push_back(op);
       return;
     }
-    ConduitInfo &cinfo = it->second;
     builder.setInsertionPoint(op);
     int64_t count = static_cast<int64_t>(op.getCount());
     Port port = op.getPort();
 
-    auto resolved = cinfo.resolveForTile(op);
+    auto resolved = cinfo->resolveForTile(op);
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
     AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
@@ -244,7 +241,7 @@ void lowerPhase(ConduitToDMAState &state) {
         (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
 
     // Counter init for depth>1 Consume acquires.
-    if (resolvedRotationBuf && port == Port::Consume && cinfo.depth > 1 &&
+    if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1 &&
         acquireCoreOp) {
       mlir::Value coreTileVal =
           mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
@@ -330,14 +327,13 @@ void lowerPhase(ConduitToDMAState &state) {
   llvm::SmallVector<WaitWindow> waitWindowsToErase;
   module.walk([&](WaitWindow op) {
     llvm::StringRef conduitName = op.getName();
-    auto it = state.conduitMap.find(conduitName.str());
-    if (it == state.conduitMap.end()) {
+    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    if (!cinfo) {
       op.emitError("conduit-to-dma: wait_window references unknown conduit '")
           << conduitName << "'";
       state.passFailed = true;
       return;
     }
-    ConduitInfo &cinfo = it->second;
 
     Port port = Port::Consume;
     int64_t count = 1;
@@ -350,7 +346,7 @@ void lowerPhase(ConduitToDMAState &state) {
       }
     }
 
-    auto resolved = cinfo.resolveForTile(op);
+    auto resolved = cinfo->resolveForTile(op);
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
 
@@ -386,12 +382,11 @@ void lowerPhase(ConduitToDMAState &state) {
         continue;
 
       const AsyncAcquireInfo &ainfo = ait->second;
-      auto it = state.conduitMap.find(ainfo.conduitName);
-      if (it == state.conduitMap.end())
+      ConduitInfo *cinfo = state.lookupConduit(ainfo.conduitName);
+      if (!cinfo)
         continue;
-      ConduitInfo &cinfo = it->second;
 
-      auto resolved = cinfo.resolveForTile(op);
+      auto resolved = cinfo->resolveForTile(op);
       AIE::LockOp resolvedProdLock = resolved.prodLock;
       AIE::LockOp resolvedConsLock = resolved.consLock;
 
@@ -416,15 +411,14 @@ void lowerPhase(ConduitToDMAState &state) {
   llvm::SmallVector<ReleaseAsync> releaseAsyncsToErase;
   module.walk([&](ReleaseAsync op) {
     llvm::StringRef conduitName = op.getName();
-    auto it = state.conduitMap.find(conduitName.str());
-    if (it == state.conduitMap.end()) {
+    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    if (!cinfo) {
       releaseAsyncsToErase.push_back(op);
       return;
     }
-    ConduitInfo &cinfo = it->second;
 
     Port port = op.getPort();
-    auto resolved = cinfo.resolveForTile(op);
+    auto resolved = cinfo->resolveForTile(op);
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
     AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
@@ -439,7 +433,7 @@ void lowerPhase(ConduitToDMAState &state) {
                                      AIE::LockAction::Release, relVal);
     }
     // Counter increment for depth>1 Consume port.
-    if (resolvedRotationBuf && port == Port::Consume && cinfo.depth > 1) {
+    if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1) {
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
@@ -450,7 +444,7 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
       mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, cinfo.depth);
+          builder, loc, i32Ty, cinfo->depth);
       mlir::Value result =
           builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
       builder.create<mlir::memref::StoreOp>(
