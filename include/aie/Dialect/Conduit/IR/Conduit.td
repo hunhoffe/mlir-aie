@@ -420,7 +420,35 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // elemNumber in aie.objectfifo).  Pass C should allocate
                        // consumer-side buffers using these depths.
                        // When absent, all consumers use 'depth'.
-                       OptionalAttr<DenseI64ArrayAttr>:$consumer_depths);
+                       OptionalAttr<DenseI64ArrayAttr>:$consumer_depths,
+                       // disable_synchronization: when true, suppress all lock
+                       // allocation and use_lock emission for this conduit.
+                       // Producer and consumer run without synchronization
+                       // (suitable for streaming pipelines with no backpressure).
+                       // Pass A propagates this from objectfifo.create.
+                       // Pass C: skip allocateLockPair; lower acquire/release to no-ops.
+                       OptionalAttr<BoolAttr>:$disable_synchronization,
+                       // via_DMA: when true, force DMA path even for adjacent tiles
+                       // that would otherwise use shared memory.  Pass A propagates
+                       // from objectfifo.create.  Pass C: skip Phase 3c shared-memory
+                       // path and emit aie.flow for adjacent tiles.
+                       OptionalAttr<BoolAttr>:$via_DMA,
+                       // iter_count: number of DMA task-queue iterations.
+                       // Maps to DMAStartOp.repeat_count = iter_count - 1 with a
+                       // non-circular BD chain (last BD → aie.end).
+                       // Pass A propagates from objectfifo.create iter_count.
+                       OptionalAttr<I64Attr>:$iter_count,
+                       // producer_dimensions: BDDimLayout traversal descriptor for
+                       // the producer (MM2S) DMA BD chain.  Carried as-is from the
+                       // objectfifo dimensionsToStream attribute.
+                       // producer_dimensions: BDDimLayout traversal descriptor for
+                       // the producer (MM2S) DMA BD chain. Stored as generic Attr
+                       // (AIE::BDDimLayoutArrayAttr at runtime) to avoid cross-dialect
+                       // tablegen dependency. Use getProducerDimensionsTyped() in C++.
+                       OptionalAttr<AnyAttr>:$producer_dimensions,
+                       // consumer_dimensions: per-consumer BDDimLayout array.
+                       // Stored as generic Attr (AIE::BDDimLayoutArrayArrayAttr at runtime).
+                       OptionalAttr<AnyAttr>:$consumer_dimensions);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }

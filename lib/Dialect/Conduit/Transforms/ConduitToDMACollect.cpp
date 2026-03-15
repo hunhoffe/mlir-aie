@@ -116,6 +116,28 @@ void collectPhase(ConduitToDMAState &state) {
       }
     }
 
+    // New feature attributes.
+    if (auto attr = op.getDisableSynchronization())
+      if (*attr)
+        info.disableSynchronization = true;
+    if (auto attr = op.getVia_DMA())
+      if (*attr)
+        info.viaDMA = true;
+    if (auto attr = op.getIterCount())
+      info.iterCount = static_cast<int64_t>(*attr);
+    if (auto attr = op.getRepeatCount())
+      info.bdChainRepeatCount = static_cast<int64_t>(*attr);
+    if (auto attr = op.getProducerDimensions()) {
+      if (auto typed = mlir::dyn_cast<AIE::BDDimLayoutArrayAttr>(*attr))
+        info.producerDimensions = typed;
+    }
+    if (auto attr = op.getConsumerDimensions()) {
+      if (auto typed = mlir::dyn_cast<AIE::BDDimLayoutArrayArrayAttr>(*attr)) {
+        for (auto dims : typed.getValue())
+          info.consumerDimensions.push_back(dims);
+      }
+    }
+
     state.conduitMap[op.getName().str()] = std::move(info);
   });
 

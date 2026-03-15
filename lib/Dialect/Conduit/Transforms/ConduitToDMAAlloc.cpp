@@ -74,10 +74,15 @@ void allocPhase(ConduitToDMAState &state) {
       mlir::Value prodTileVal = prodTile.getResult();
 
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
-      auto locks = state.allocateLockPair(prodTileVal, name, prodDepth);
-      info.prodLock = locks.prodLock;
-      info.consLock = locks.consLock;
-      info.aie1Locks = std::move(locks.aie1Locks);
+      if (!info.disableSynchronization) {
+        // repeat_count > 1 scales prod lock init: each buffer is DMA'd N times.
+        int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+        int64_t prodInit = prodDepth * repeatN;
+        auto locks = state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
+        info.prodLock = locks.prodLock;
+        info.consLock = locks.consLock;
+        info.aie1Locks = std::move(locks.aie1Locks);
+      }
       continue;
     }
 
@@ -86,8 +91,10 @@ void allocPhase(ConduitToDMAState &state) {
     //
     // If producer and single consumer are adjacent tiles, buffers and locks
     // go on the producer (or alloc_tile delegate) — no DMA needed.
+    // Skip when via_DMA=true: force DMA path even for adjacent tiles.
     // -------------------------------------------------------------------
-    if (info.consumerTileCoords.size() == 1 &&
+    if (!info.viaDMA &&
+        info.consumerTileCoords.size() == 1 &&
         info.shimConsumerTileCoords.empty() &&
         !state.linkSrcNamesEarly.count(name) &&
         !state.linkJoinSrcNames.count(name)) {
@@ -143,13 +150,18 @@ void allocPhase(ConduitToDMAState &state) {
                 state.allocateBuffers(allocTileVal, name, bufTy, depth);
             info.buffers = sharedBuffers;
 
-            // Allocate lock(s) on the allocation tile.
-            auto locks = state.allocateLockPair(allocTileVal, name, depth);
-            AIE::LockOp sharedProdLock = locks.prodLock;
-            AIE::LockOp sharedConsLock = locks.consLock;
-            info.prodLock = locks.prodLock;
-            info.consLock = locks.consLock;
-            info.aie1Locks = std::move(locks.aie1Locks);
+            // Allocate lock(s) on the allocation tile (skip if disable_synchronization).
+            AIE::LockOp sharedProdLock, sharedConsLock;
+            if (!info.disableSynchronization) {
+              int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+              int64_t prodInit = depth * repeatN;
+              auto locks = state.allocateLockPair(allocTileVal, name, depth, prodInit);
+              sharedProdLock = locks.prodLock;
+              sharedConsLock = locks.consLock;
+              info.prodLock = locks.prodLock;
+              info.consLock = locks.consLock;
+              info.aie1Locks = std::move(locks.aie1Locks);
+            }
 
             // Register locks keyed on consumer and producer tiles for Phase 6.
             info.consumerTileLocks[consTileVal] = {sharedProdLock,
@@ -211,10 +223,14 @@ void allocPhase(ConduitToDMAState &state) {
       mlir::Value prodTileVal = prodTile.getResult();
 
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
-      auto locks = state.allocateLockPair(prodTileVal, name, prodDepth);
-      info.prodLock = locks.prodLock;
-      info.consLock = locks.consLock;
-      info.aie1Locks = std::move(locks.aie1Locks);
+      if (!info.disableSynchronization) {
+        int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+        int64_t prodInit = prodDepth * repeatN;
+        auto locks = state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
+        info.prodLock = locks.prodLock;
+        info.consLock = locks.consLock;
+        info.aie1Locks = std::move(locks.aie1Locks);
+      }
       continue;
     }
 
@@ -308,18 +324,23 @@ void allocPhase(ConduitToDMAState &state) {
         continue; // advance to next consIdx
       }
 
-      // Allocate lock(s) on the consumer tile.
-      auto consLocks = state.allocateLockPair(consTileVal, consPrefix, depth);
-      AIE::LockOp thisProdLock = consLocks.prodLock;
-      AIE::LockOp thisConsLock = consLocks.consLock;
-      if (consIdx == 0) {
-        info.prodLock = consLocks.prodLock;
-        info.consLock = consLocks.consLock;
+      // Allocate lock(s) on the consumer tile (skip if disable_synchronization).
+      AIE::LockOp thisProdLock, thisConsLock;
+      if (!info.disableSynchronization) {
+        int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+        int64_t prodInit = depth * repeatN;
+        auto consLocks = state.allocateLockPair(consTileVal, consPrefix, depth, prodInit);
+        thisProdLock = consLocks.prodLock;
+        thisConsLock = consLocks.consLock;
+        if (consIdx == 0) {
+          info.prodLock = consLocks.prodLock;
+          info.consLock = consLocks.consLock;
+          if (!isAIE2)
+            info.aie1Locks = consLocks.aie1Locks;
+        }
         if (!isAIE2)
-          info.aie1Locks = consLocks.aie1Locks;
+          info.consumerTileAIE1Locks[consTileVal] = consLocks.aie1Locks;
       }
-      if (!isAIE2)
-        info.consumerTileAIE1Locks[consTileVal] = consLocks.aie1Locks;
 
       info.consumerTileLocks[consTileVal] = {thisProdLock, thisConsLock};
       info.consumerTileBuffers[consTileVal] = consBuffers;
@@ -378,7 +399,8 @@ void allocPhase(ConduitToDMAState &state) {
           needsProdSide = true;
       }
     }
-    if (!needsProdSide)
+    // via_DMA forces DMA even for adjacent tiles.
+    if (!needsProdSide && !info.viaDMA)
       continue;
 
     int64_t depth = info.depth > 0 ? info.depth : 1;
@@ -396,14 +418,20 @@ void allocPhase(ConduitToDMAState &state) {
       builder.setInsertionPointToStart(state.deviceBody);
 
     auto prodBuffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
-    auto prodLocks = state.allocateLockPair(prodTileVal, name, prodDepth);
 
-    info.consumerTileLocks[prodTileVal] = {prodLocks.prodLock,
-                                           prodLocks.consLock};
+    AIE::LockOp prodLockProd, prodLockCons;
+    if (!info.disableSynchronization) {
+      int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+      int64_t prodInit = prodDepth * repeatN;
+      auto prodLocks = state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
+      prodLockProd = prodLocks.prodLock;
+      prodLockCons = prodLocks.consLock;
+      if (!isAIE2)
+        info.consumerTileAIE1Locks[prodTileVal] = std::move(prodLocks.aie1Locks);
+    }
+
+    info.consumerTileLocks[prodTileVal] = {prodLockProd, prodLockCons};
     info.consumerTileBuffers[prodTileVal] = prodBuffers;
-    if (!isAIE2)
-      info.consumerTileAIE1Locks[prodTileVal] =
-          std::move(prodLocks.aie1Locks);
 
     if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name)) {
       auto counterTy =
