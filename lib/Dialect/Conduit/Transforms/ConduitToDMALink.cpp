@@ -342,14 +342,14 @@ void linkPhase(ConduitToDMAState &state) {
         builder.create<AIE::UseLockOp>(
             loc, sliceProdLocks[sliceIdx].getResult(),
             acqAction,
-            static_cast<int32_t>(isAIE2 ? 1 : state.aie1S2MMAcqVal));
+            state.lockAcqValue(Port::Produce, 1));
         builder.create<AIE::DMABDOp>(
             loc, linkBufs[bufIdx].getResult(),
             static_cast<int>(dstOffset), static_cast<int>(dstLen));
         builder.create<AIE::UseLockOp>(
             loc, sliceConsLocks[sliceIdx].getResult(),
             AIE::LockAction::Release,
-            static_cast<int32_t>(isAIE2 ? 1 : state.aie1S2MMRelVal));
+            state.lockRelValue(Port::Produce));
         mlir::Block *nextIngest = ingestBlocks[(blkIdx + 1) % totalIngest];
         builder.create<AIE::NextBDOp>(loc, nextIngest);
       }
@@ -399,14 +399,14 @@ void linkPhase(ConduitToDMAState &state) {
           builder.setInsertionPointToEnd(srcIngestBlocks[srcIdx][i]);
           if (srcIdx < joinSrcProdLocks.size())
             builder.create<AIE::UseLockOp>(loc, joinSrcProdLocks[srcIdx].getResult(),
-                acqAction, static_cast<int32_t>(isAIE2 ? 1 : state.aie1S2MMAcqVal));
+                acqAction, state.lockAcqValue(Port::Produce, 1));
           if (!joinIntermediateBuffers.empty())
             builder.create<AIE::DMABDOp>(loc,
                 joinIntermediateBuffers[i % joinIntermediateBuffers.size()].getResult(),
                 static_cast<int>(srcOffset), static_cast<int>(srcLen));
           if (srcIdx < joinSrcConsLocks.size())
             builder.create<AIE::UseLockOp>(loc, joinSrcConsLocks[srcIdx].getResult(),
-                AIE::LockAction::Release, static_cast<int32_t>(isAIE2 ? 1 : state.aie1S2MMRelVal));
+                AIE::LockAction::Release, state.lockRelValue(Port::Produce));
           builder.create<AIE::NextBDOp>(loc, srcIngestBlocks[srcIdx][(i + 1) % jDepth]);
         }
       }
@@ -452,13 +452,13 @@ void linkPhase(ConduitToDMAState &state) {
         builder.setInsertionPointToEnd(sendBDBlocks[bdIdx]);
         if (srcIdx < joinSrcConsLocks.size())
           builder.create<AIE::UseLockOp>(loc, joinSrcConsLocks[srcIdx].getResult(),
-              acqAction, static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SAcqVal));
+              acqAction, state.lockAcqValue(Port::Consume, 1));
         builder.create<AIE::DMABDOp>(loc,
             joinIntermediateBuffers[bufIdx % joinIntermediateBuffers.size()].getResult(),
             static_cast<int>(mm2sOffsets[srcIdx]), static_cast<int>(mm2sLens[srcIdx]));
         if (srcIdx < joinSrcProdLocks.size())
           builder.create<AIE::UseLockOp>(loc, joinSrcProdLocks[srcIdx].getResult(),
-              AIE::LockAction::Release, static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SRelVal));
+              AIE::LockAction::Release, state.lockRelValue(Port::Consume));
         builder.create<AIE::NextBDOp>(loc, sendBDBlocks[(bdIdx + 1) % totalBDs]);
       }
     } else {
@@ -501,7 +501,7 @@ void linkPhase(ConduitToDMAState &state) {
           builder.setInsertionPointToEnd(sendBDBlocks[i]);
           if (mm2sAcqLock)
             builder.create<AIE::UseLockOp>(loc, mm2sAcqLock.getResult(), acqAction,
-                static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SAcqVal));
+                state.lockAcqValue(Port::Consume, 1));
           if (!linkBufs.empty())
             builder.create<AIE::DMABDOp>(loc,
                 linkBufs[i % linkBufs.size()].getResult(),
@@ -509,7 +509,7 @@ void linkPhase(ConduitToDMAState &state) {
           if (mm2sRelLock)
             builder.create<AIE::UseLockOp>(loc, mm2sRelLock.getResult(),
                 AIE::LockAction::Release,
-                static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SRelVal));
+                state.lockRelValue(Port::Consume));
           builder.create<AIE::NextBDOp>(loc, sendBDBlocks[(i + 1) % thisDstDepth]);
         }
         prevChainBlock = nextChainBlock;
@@ -634,7 +634,7 @@ void linkPhase(ConduitToDMAState &state) {
               isAIE2 ? pProdLock.getResult() : blockAcq;
           builder.create<AIE::UseLockOp>(
               state.deviceOp.getLoc(), blockAcq, acqAction,
-              static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SAcqVal));
+              state.lockAcqValue(Port::Consume, 1));
           builder.create<AIE::DMABDOp>(
               state.deviceOp.getLoc(),
               prodBuffers[i % prodBuffers.size()].getResult(),
@@ -642,7 +642,7 @@ void linkPhase(ConduitToDMAState &state) {
           builder.create<AIE::UseLockOp>(
               state.deviceOp.getLoc(), blockRel,
               AIE::LockAction::Release,
-              static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SRelVal));
+              state.lockRelValue(Port::Consume));
           builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                         bdBlocks[(i + 1) % depth]);
         }
@@ -696,7 +696,7 @@ void linkPhase(ConduitToDMAState &state) {
             : blockLock;
         builder.create<AIE::UseLockOp>(
             state.deviceOp.getLoc(), blockLock, acqAction,
-            static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SAcqVal));
+            state.lockAcqValue(Port::Consume, 1));
         builder.create<AIE::DMABDOp>(
             state.deviceOp.getLoc(),
             info.buffers[i % info.buffers.size()].getResult(),
@@ -704,7 +704,7 @@ void linkPhase(ConduitToDMAState &state) {
         builder.create<AIE::UseLockOp>(
             state.deviceOp.getLoc(), blockRelLock,
             AIE::LockAction::Release,
-            static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SRelVal));
+            state.lockRelValue(Port::Consume));
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % depth]);
       }
@@ -820,7 +820,7 @@ void linkPhase(ConduitToDMAState &state) {
                         isAIE2 ? mm2sRelLock.getResult() : blockAcq;
                     builder.create<AIE::UseLockOp>(
                         state.deviceOp.getLoc(), blockAcq, acqAction,
-                        static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SAcqVal));
+                        state.lockAcqValue(Port::Consume, 1));
                     builder.create<AIE::DMABDOp>(
                         state.deviceOp.getLoc(),
                         prodBuffers[i % prodBuffers.size()].getResult(),
@@ -828,7 +828,7 @@ void linkPhase(ConduitToDMAState &state) {
                     builder.create<AIE::UseLockOp>(
                         state.deviceOp.getLoc(), blockRel,
                         AIE::LockAction::Release,
-                        static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SRelVal));
+                        state.lockRelValue(Port::Consume));
                     builder.create<AIE::NextBDOp>(
                         state.deviceOp.getLoc(), bdBlocks[(i + 1) % depth]);
                   }
@@ -882,7 +882,7 @@ void linkPhase(ConduitToDMAState &state) {
                       isAIE2 ? mm2sRelLock.getResult() : blockAcq;
                   builder.create<AIE::UseLockOp>(
                       state.deviceOp.getLoc(), blockAcq, acqAction,
-                      static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SAcqVal));
+                      state.lockAcqValue(Port::Consume, 1));
                   builder.create<AIE::DMABDOp>(
                       state.deviceOp.getLoc(),
                       prodBuffers[i % prodBuffers.size()].getResult(),
@@ -890,7 +890,7 @@ void linkPhase(ConduitToDMAState &state) {
                   builder.create<AIE::UseLockOp>(
                       state.deviceOp.getLoc(), blockRel,
                       AIE::LockAction::Release,
-                      static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SRelVal));
+                      state.lockRelValue(Port::Consume));
                   builder.create<AIE::NextBDOp>(
                       state.deviceOp.getLoc(), bdBlocks[(i + 1) % depth]);
                 }
@@ -954,13 +954,13 @@ void linkPhase(ConduitToDMAState &state) {
                    : info.aie1Locks[i % info.aie1Locks.size()].getResult());
         builder.create<AIE::UseLockOp>(state.deviceOp.getLoc(), blockAcqVal,
                                        acqAction,
-                                       static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SAcqVal));
+                                       state.lockAcqValue(Port::Consume, 1));
         builder.create<AIE::DMABDOp>(state.deviceOp.getLoc(),
                                      info.buffers[i].getResult(), 0,
                                      static_cast<int>(perBufLen));
         builder.create<AIE::UseLockOp>(state.deviceOp.getLoc(), blockRelVal,
                                        AIE::LockAction::Release,
-                                       static_cast<int32_t>(isAIE2 ? 1 : state.aie1MM2SRelVal));
+                                       state.lockRelValue(Port::Consume));
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % depth]);
       }
@@ -1089,13 +1089,13 @@ void linkPhase(ConduitToDMAState &state) {
                      : (*tileAIE1Locks)[i % tileAIE1Locks->size()].getResult());
           builder.create<AIE::UseLockOp>(
               state.deviceOp.getLoc(), blockLockAcq,
-              acqAction, static_cast<int32_t>(isAIE2 ? 1 : state.aie1S2MMAcqVal));
+              acqAction, state.lockAcqValue(Port::Produce, 1));
           builder.create<AIE::DMABDOp>(
               state.deviceOp.getLoc(), (*tileBuffers)[i % tileBuffers->size()].getResult(),
               0, static_cast<int>(perBufLen));
           builder.create<AIE::UseLockOp>(
               state.deviceOp.getLoc(), blockLockRel,
-              AIE::LockAction::Release, static_cast<int32_t>(isAIE2 ? 1 : state.aie1S2MMRelVal));
+              AIE::LockAction::Release, state.lockRelValue(Port::Produce));
           builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                         bdBlocks[(i + 1) % depth]);
         }
