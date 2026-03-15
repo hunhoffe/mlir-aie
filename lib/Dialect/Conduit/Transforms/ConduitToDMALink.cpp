@@ -34,10 +34,12 @@ void linkPhase(ConduitToDMAState &state) {
   const AIE::AIETargetModel &targetModel = *state.targetModel;
   (void)ctx; // suppress unused warning when not used in all paths
 
-  // Collect ALL link source names for Phase 5.5 skip logic.
+  // Collect ALL link source and destination names for Phase 5.5 skip logic.
   state.module.walk([&](Link linkOp) {
     for (auto s : linkOp.getSrcs())
       state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+    for (auto d : linkOp.getDsts())
+      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
   });
 
   // -----------------------------------------------------------------------
@@ -709,10 +711,12 @@ void linkPhase(ConduitToDMAState &state) {
       continue;
 
     // Case C: non-adjacent producer MM2S on producer tile.
+    // Skip link destinations: their MemTile MM2S BDs are emitted in Phase 5.
     {
       auto [prodCol, prodRow] = info.producerTileCoord;
       if (prodCol >= 0 && prodRow >= 1 &&
           !state.linkSrcNames.count(name) &&
+          !state.linkDstNames.count(name) &&
           !info.consumerTileCoords.empty()) {
         AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
         if (prodTile) {

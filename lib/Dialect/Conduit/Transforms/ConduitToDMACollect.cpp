@@ -120,7 +120,7 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto attr = op.getDisableSynchronization())
       if (*attr)
         info.disableSynchronization = true;
-    if (auto attr = op.getVia_DMA())
+    if (auto attr = op.getViaDMA())
       if (*attr)
         info.viaDMA = true;
     if (auto attr = op.getIterCount())
