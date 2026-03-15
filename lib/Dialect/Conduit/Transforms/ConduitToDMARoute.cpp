@@ -113,6 +113,28 @@ void routePhase(ConduitToDMAState &state) {
 
       builder.setInsertionPoint(state.deviceBody->getTerminator());
 
+      // Shim-side consumer locks (AIE2: prod_lock + cons_lock;
+      // AIE1: not needed — shim locks managed differently).
+      // These are referenced by the host runtime when programming
+      // shim S2MM DMA BDs; without them, the runtime has no locks
+      // for flow control on the receive path.
+      if (isAIE2) {
+        int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
+        std::string symName = name + "_cons_prod_lock_0";
+        AIE::LockOp lk = builder.create<AIE::LockOp>(
+            state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
+            static_cast<int>(0));
+        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+      }
+      if (isAIE2) {
+        int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
+        std::string symName = name + "_cons_cons_lock_0";
+        AIE::LockOp lk = builder.create<AIE::LockOp>(
+            state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
+            static_cast<int>(0));
+        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+      }
+
       std::string allocSym = name + "_shim_alloc";
       state.shimConduitNames.insert(name);
       if (!mlir::SymbolTable::lookupSymbolIn(
