@@ -21,7 +21,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">IRON<span id="projectnumber">&#160;2d8ec3fa6bc5a78f212274633dd2031011f38883</span>
+   <div id="projectname">IRON<span id="projectnumber">&#160;1e400306479ef709a0f897e330cd51fc297f9a13</span>
    </div>
   </td>
  </tr>
@@ -96,7 +96,8 @@ Variables</h2></td></tr>
 <tr class="memitem:a7c705e3a7fb7b14b5b028e59e5e62430" id="r_a7c705e3a7fb7b14b5b028e59e5e62430"><td class="memItemLeft" align="right" valign="top">&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="namespaceutils_1_1jit.html#a7c705e3a7fb7b14b5b028e59e5e62430">_compiled_kernels</a> = CircularCache(max_size=1)</td></tr>
 <tr class="separator:a7c705e3a7fb7b14b5b028e59e5e62430"><td class="memSeparator" colspan="2">&#160;</td></tr>
 </table>
-<h2 class="groupheader">Function Documentation</h2>
+<a name="details" id="details"></a><h2 class="groupheader">Detailed Description</h2>
+<div class="textblock"><pre class="fragment">JIT decorator for compiling and running IRON-decorated functions on the NPU.</pre> </div><h2 class="groupheader">Function Documentation</h2>
 <a id="afe76838a07fbc8ee0e692cdbd3f4b20e" name="afe76838a07fbc8ee0e692cdbd3f4b20e"></a>
 <h2 class="memtitle"><span class="permalink"><a href="#afe76838a07fbc8ee0e692cdbd3f4b20e">&#9670;&#160;</a></span>_filter_tensor_args()</h2>
 
@@ -120,13 +121,16 @@ Variables</h2></td></tr>
   </tr>
 </table>
 </div><div class="memdoc">
-<pre class="fragment">Filter out non-tensor arguments from args. Required for Algorithms because
-they pass ExternalFunction and scalar values in their signature that should
-not be interpreted as runtime sequence arguments.
+<pre class="fragment">Filter out non-tensor arguments from args.
+
+Algorithm functions may include Kernel/ExternalFunction instances and scalar
+compile-time constants in their Python signature that must not be forwarded
+to the NPU kernel as runtime buffer arguments.
 
 Removes:
-- ExternalFunction instances
-- Scalar values (int, float, np.integer, np.floating), embedded as MLIR constants
+- Kernel and ExternalFunction instances (resolved at compile time via link_with)
+- Scalar values (int, float, np.integer, np.floating) used as MLIR constants
+- Callables (e.g. lambda configuration helpers)
 </pre> 
 </div>
 </div>
