@@ -56,6 +56,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITLIVENESSCHECK
 #define GEN_PASS_DECL_CONDUITFUSECHANNELS
 #define GEN_PASS_DECL_CONDUITCHECKCHANNELS
+#define GEN_PASS_DECL_CONDUITINFERMODES
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -93,6 +94,11 @@ createConduitFuseChannelsPass();
 /// Channel check: validate that no tile exceeds its hardware DMA channel limit.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitCheckChannelsPass();
+
+/// Mode inference: resolve routing_mode="any" conduits to "circuit" or "packet"
+/// using the R3 + Step 3.5 decision procedure.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitInferModesPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

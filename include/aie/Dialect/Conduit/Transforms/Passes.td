@@ -354,4 +354,53 @@ def ConduitCheckChannels : Pass<"conduit-check-channels", "::mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Mode Inference — conduit-infer-modes (P2-C)
+//===----------------------------------------------------------------------===//
+
+def ConduitInferModes : Pass<"conduit-infer-modes", "::mlir::ModuleOp"> {
+  let summary = "Resolve routing_mode=\"any\" conduits to \"circuit\" or \"packet\"";
+  let description = [{
+    Walks conduit.create ops with routing_mode="any" and resolves them to a
+    concrete routing mode by applying the R3 + Step 3.5 decision procedure:
+
+      R3a. Adjacent tiles (isLegalMemAffinity) with no via_DMA override:
+           resolve to "circuit".  Pass C Phase 3c will use shared memory,
+           consuming no DMA channel.
+
+      R3b. Circuit-mode MM2S DMA channel available on the producer tile:
+           resolve to "circuit".  Channel budget is tracked per-tile in
+           source order, matching Pass C Phase 4.5a allocation order.
+
+      Step 3.5. All circuit MM2S channels exhausted on the producer tile:
+           resolve to "packet" if global packet flow ID budget remains.
+           Each consumer endpoint costs one packet ID.
+
+      Step 4. Both circuit and packet modes exhausted: emit a hard error.
+
+    The inference order within a module matches the conduit.create source
+    order (same as Pass C), ensuring the circuit/packet split is consistent
+    between this pass and subsequent Pass C execution.
+
+    Cascade conduits (routing_mode="cascade") and conduits that already have
+    a concrete routing mode ("circuit" or "packet") are skipped.
+
+    Non-"any" conduits that consume DMA channels (circuit-mode, non-adjacent,
+    non-shim) are pre-accounted before "any" conduits are resolved, so the
+    budget seen by "any" conduits is accurate.
+
+    This pass runs AFTER Pass A or Pass B and BEFORE Pass C.
+    It is OPT-IN and NOT part of the default pipeline.
+
+    Run with:  aie-opt --conduit-infer-modes <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitInferModesPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES
