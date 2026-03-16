@@ -1,4 +1,5 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma --split-input-file %s | FileCheck %s
+// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma --split-input-file %s | FileCheck %s --check-prefix=CHECK-D1
 //
 // Regression test: shim producer lock init value must be 0 (oracle match).
 //
@@ -76,6 +77,52 @@ module @shim_lock_init_test {
         %1 = aie.objectfifo.subview.access %0[0] : !aie.objectfifosubview<memref<8xi32>> -> memref<8xi32>
         func.call @process_data(%1) : (memref<8xi32>) -> ()
         aie.objectfifo.release @shim_fifo(Consume, 1)
+      }
+
+      aie.end
+    } {dynamic_objfifo_lowering = true}
+  }
+}
+
+// -----
+// CHECK-D1-LABEL: module @shim_lock_init_depth1
+// CHECK-D1:   aie.device(npu1_1col) {
+// CHECK-D1:     aie.lock(%{{.*}}tile_0_2
+// CHECK-D1-SAME:   init = 1
+// CHECK-D1-SAME:   sym_name = "shim_d1_fifo_cons_prod_lock_0"
+// CHECK-D1:     aie.lock(%{{.*}}tile_0_2
+// CHECK-D1-SAME:   init = 0
+// CHECK-D1-SAME:   sym_name = "shim_d1_fifo_cons_cons_lock_0"
+// CHECK-D1:     aie.shim_dma_allocation @{{.*}}shim_alloc
+// CHECK-D1:     aie.lock(%{{.*}}tile_0_0
+// CHECK-D1-SAME:   init = 0
+// CHECK-D1-SAME:   sym_name = "shim_d1_fifo_prod_lock_0"
+// CHECK-D1:     aie.lock(%{{.*}}tile_0_0
+// CHECK-D1-SAME:   init = 0
+// CHECK-D1-SAME:   sym_name = "shim_d1_fifo_cons_lock_0"
+// CHECK-D1:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
+// Depth=1 shim-to-compute: verifies shim locks init=0 (no ping-pong buffers).
+module @shim_lock_init_depth1 {
+  aie.device(npu1_1col) {
+    func.func @process_data_d1(%buf: memref<8xi32>) -> () {
+      return
+    }
+
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    // depth=1: single-buffer; shim locks must be init=0
+    aie.objectfifo @shim_d1_fifo(%tile_0_0, {%tile_0_2}, 1 : i32) : !aie.objectfifo<memref<8xi32>>
+
+    %core_0_2 = aie.core(%tile_0_2) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c4 = arith.constant 4 : index
+
+      scf.for %arg0 = %c0 to %c4 step %c1 {
+        %0 = aie.objectfifo.acquire @shim_d1_fifo(Consume, 1) : !aie.objectfifosubview<memref<8xi32>>
+        %1 = aie.objectfifo.subview.access %0[0] : !aie.objectfifosubview<memref<8xi32>> -> memref<8xi32>
+        func.call @process_data_d1(%1) : (memref<8xi32>) -> ()
+        aie.objectfifo.release @shim_d1_fifo(Consume, 1)
       }
 
       aie.end

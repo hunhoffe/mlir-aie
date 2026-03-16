@@ -34,8 +34,8 @@
 // CHECK:     %[[CONS_CONS:.*]] = aie.lock(%{{.*}}tile_0_2
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "input_fifo_cons_cons_lock_0"
-// --- Rotation counter buffer (no sym_name, anonymous) ---
-// CHECK:     aie.buffer(%{{.*}}tile_0_2) : memref<1xi32>
+// --- Rotation counter buffer (shared per-tile buffer, deterministic sym_name) ---
+// CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "_conduit_rot_ctr_tile_0_2"} : memref<1xi32>
 // --- Core body: counter init, scf.index_switch, and counter increment ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       memref.store {{.*}} : memref<1xi32>

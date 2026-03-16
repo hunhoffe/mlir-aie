@@ -36,8 +36,8 @@
 // CHECK-LABEL: module @rotation_modulo_test
 // CHECK:   aie.device(npu1_1col) {
 
-// --- Rotation counter buffer (memref<1xi32>) ---
-// CHECK:     aie.buffer(%{{.*}}tile_0_2) : memref<1xi32>
+// --- Rotation counter buffer (shared per-tile, deterministic sym_name) ---
+// CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "_conduit_rot_ctr_tile_0_2"} : memref<1xi32>
 
 // --- Core body: counter init, loop, and rotation counter update ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {

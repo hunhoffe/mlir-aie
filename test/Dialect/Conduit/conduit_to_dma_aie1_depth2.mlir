@@ -19,8 +19,8 @@
 // CHECK: aie.lock({{.*}}) {init = 0 : i32, sym_name = "data_fifo{{.*}}lock_0"
 // CHECK: aie.lock({{.*}}) {init = 0 : i32, sym_name = "data_fifo{{.*}}lock_1"
 
-// --- Rotation counter buffer (memref<1xi32>) ---
-// CHECK: aie.buffer(%{{.*}}) : memref<1xi32>
+// --- Rotation counter buffer (shared per-tile, deterministic sym_name) ---
+// CHECK: aie.buffer(%{{.*}}) {sym_name = "_conduit_rot_ctr_tile_0_2"} : memref<1xi32>
 
 // --- Core body: rotation counter init, scf.index_switch, arith.remui (fix 1b) ---
 // CHECK: aie.core(
