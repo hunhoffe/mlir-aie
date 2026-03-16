@@ -326,6 +326,11 @@ void allocPhase(ConduitToDMAState &state) {
       // MemTile-side lock allocation (Phase 5 handles those for distribute).
       // Also allocate producer-side buffers+locks for compute producers.
       if (state.linkSrcNamesEarly.count(name)) {
+        // Populate info.buffers for consIdx==0 so lowerPhase() SubviewAccess
+        // resolution can find the first consumer's buffer set even when lock
+        // allocation is skipped (fixes broadcast conduit crash).
+        if (consIdx == 0)
+          info.buffers = consBuffers;
         info.consumerTileBuffers[consTileVal] = consBuffers;
 
         // Distribute sources with a compute producer: allocate producer-side
