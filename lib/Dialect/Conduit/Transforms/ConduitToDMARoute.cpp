@@ -36,6 +36,10 @@ void routePhase(ConduitToDMAState &state) {
   // -----------------------------------------------------------------------
 
   for (auto &[name, info] : state.conduitMap) {
+    // Cascade conduits: no shim DMA, no aie.flow — handled below.
+    if (info.routingMode == "cascade")
+      continue;
+
     auto [prodCol, prodRow] = info.producerTileCoord;
     if (prodCol < 0)
       continue;
@@ -206,6 +210,8 @@ void routePhase(ConduitToDMAState &state) {
   // -----------------------------------------------------------------------
 
   for (auto &[name, info] : state.conduitMap) {
+    if (info.routingMode == "cascade")
+      continue;
     if (info.sharedMemory)
       continue;
     if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))
@@ -274,6 +280,67 @@ void routePhase(ConduitToDMAState &state) {
                      AIE::WireBundle::DMA, mm2sChannel,
                      consTileVal, AIE::WireBundle::DMA, s2mmChannel);
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // Phase 4c: Emit aie.cascade_flow for cascade-mode conduits.
+  //
+  // Cascade is point-to-point: exactly one producer tile, one consumer tile.
+  // No aie.buffer, aie.lock, aie.dma_bd, or aie.flow is emitted.
+  // The existing --aie-lower-cascade-flows pass converts cascade_flow to
+  // aie.configure_cascade (sets direction registers on both tiles).
+  // -----------------------------------------------------------------------
+
+  for (auto &[name, info] : state.conduitMap) {
+    if (info.routingMode != "cascade")
+      continue;
+
+    auto [prodCol, prodRow] = info.producerTileCoord;
+    if (prodCol < 0) {
+      state.deviceOp.emitWarning(
+          llvm::Twine("conduit-to-dma: cascade conduit '") + name +
+          "' has no producer tile — skipped");
+      continue;
+    }
+
+    // Cascade is strictly point-to-point (no broadcast, no shim).
+    if (info.consumerTileCoords.size() != 1) {
+      state.deviceOp.emitError(
+          llvm::Twine("conduit-to-dma: cascade conduit '") + name +
+          "' must have exactly one consumer tile (cascade is point-to-point), got ")
+          << info.consumerTileCoords.size();
+      state.passFailed = true;
+      continue;
+    }
+    if (!info.shimConsumerTileCoords.empty()) {
+      state.deviceOp.emitError(
+          llvm::Twine("conduit-to-dma: cascade conduit '") + name +
+          "' has a shim consumer tile — cascade cannot connect to shim tiles");
+      state.passFailed = true;
+      continue;
+    }
+
+    AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
+    if (!prodTile) {
+      state.deviceOp.emitWarning(
+          llvm::Twine("conduit-to-dma: cascade conduit '") + name +
+          "' producer tile not found in device — skipped");
+      continue;
+    }
+
+    auto [consCol, consRow] = info.consumerTileCoords[0];
+    AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
+    if (!consTile) {
+      state.deviceOp.emitWarning(
+          llvm::Twine("conduit-to-dma: cascade conduit '") + name +
+          "' consumer tile not found in device — skipped");
+      continue;
+    }
+
+    builder.setInsertionPoint(state.deviceBody->getTerminator());
+    builder.create<AIE::CascadeFlowOp>(state.deviceOp.getLoc(),
+                                        prodTile.getResult(),
+                                        consTile.getResult());
   }
 }
 

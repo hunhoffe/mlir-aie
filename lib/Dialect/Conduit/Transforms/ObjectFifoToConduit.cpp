@@ -388,6 +388,22 @@ struct ObjectFifoToConduitPass
       if (op.getVia_DMA() || prodDimsAttr || consDimsAttr)
         viaDMAAttr = mlir::BoolAttr::get(ctx, true);
 
+      // Propagate via_cascade → routing_mode = "cascade".
+      // Cascade has no hardware FIFO; depth must be 1.
+      mlir::StringAttr routingModeAttr;
+      if (op.getViaCascade()) {
+        if (info.depth != 1) {
+          op.emitError(
+              "objectfifo-to-conduit: via_cascade=true requires depth=1 "
+              "(cascade has no hardware FIFO buffering), got depth=")
+              << info.depth;
+          signalPassFailure();
+          passFailed = true;
+          return; // skip conduit.create for this fifo
+        }
+        routingModeAttr = mlir::StringAttr::get(ctx, "cascade");
+      }
+
       builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
@@ -399,7 +415,7 @@ struct ObjectFifoToConduitPass
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
           /*link_mode=*/mlir::StringAttr{},
           accessPatternAttr,
-          /*routing_mode=*/mlir::StringAttr{},
+          routingModeAttr,
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
@@ -543,6 +559,13 @@ struct ObjectFifoToConduitPass
     //   acquire op is erased.  This prevents the acquire result SSA value from
     //   being invalidated while we still need it for the subview rewrite.
 
+    // Collect cascade fifo names for Phase 4 dispatch.
+    llvm::DenseSet<mlir::StringAttr> cascadeFifoNames;
+    module.walk([&](AIE::ObjectFifoCreateOp op) {
+      if (op.getViaCascade())
+        cascadeFifoNames.insert(op.getSymNameAttr());
+    });
+
     // Per-block window maps: block → (fifo name → window SSA value).
     // Populated as each block is visited; used for cross-block lookups.
     //
@@ -630,6 +653,52 @@ struct ObjectFifoToConduitPass
           if (!elemType)
             elemType = mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
 
+          // Cascade path: two sub-cases.
+          //
+          // Consume: emit get_cascade with the memref's element type (scalar),
+          //   find all memref.load users of %elem0 and replace their results with
+          //   the get value, then erase the loads.  The subview and acquire are
+          //   collected for deferred erasure in the normal order.
+          //
+          // Produce: do NOT process at acquire time — the stored value isn't
+          //   available until the user's memref.store runs.  The release handler
+          //   below walks the produce acquire, finds the subview, finds the store,
+          //   extracts the stored value, emits put_cascade, then erases the store,
+          //   subview, and acquire in dependency order (store → subview → acquire).
+          //   The acquire is NOT added to acquiresToErase here; the release handler
+          //   takes ownership of erasure.
+          if (cascadeFifoNames.count(nameAttr)) {
+            if (port == Port::Consume) {
+              // Scalar element type (e.g., i32 from memref<1xi32>).
+              mlir::Type elemTy = elemType.getElementType();
+              auto getCascOp = builder.create<GetCascade>(
+                  loc, elemTy, mlir::StringAttr::get(ctx, name));
+              mlir::Value cascVal = getCascOp.getValue(); // scalar i32/vector
+
+              mlir::Value subviewResult = op.getResult();
+              for (mlir::Operation *user :
+                   llvm::make_early_inc_range(subviewResult.getUsers())) {
+                if (auto accessOp =
+                        mlir::dyn_cast<AIE::ObjectFifoSubviewAccessOp>(user)) {
+                  // Replace memref.load users of %elem0 with the cascade value.
+                  mlir::Value elem0 = accessOp.getResult(); // memref<1xi32>
+                  for (mlir::Operation *loadUser :
+                       llvm::make_early_inc_range(elem0.getUsers())) {
+                    if (auto loadOp =
+                            mlir::dyn_cast<mlir::memref::LoadOp>(loadUser)) {
+                      loadOp.getResult().replaceAllUsesWith(cascVal);
+                      loadOp.erase();
+                    }
+                  }
+                  subviewsToErase.push_back(accessOp);
+                }
+              }
+              acquiresToErase.push_back(op);
+            }
+            // Produce: skip acquire; release handler does everything.
+            continue;
+          }
+
           auto winTy = WindowType::get(ctx, elemType);
           mlir::Value winVal = builder.create<Acquire>(
               loc, winTy, mlir::StringAttr::get(ctx, name),
@@ -677,6 +746,87 @@ struct ObjectFifoToConduitPass
                           : Port::Consume;
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
+
+          // Cascade release handling.
+          if (cascadeFifoNames.count(nameAttr)) {
+            if (port == Port::Produce) {
+              // Find the corresponding acquire for this fifo in this block
+              // (scanning forward is safe since we process in PreOrder).
+              // The acquire was NOT added to acquiresToErase; we own it here.
+              AIE::ObjectFifoAcquireOp acqOp;
+              for (mlir::Operation &scan : *block) {
+                if (auto a = mlir::dyn_cast<AIE::ObjectFifoAcquireOp>(scan)) {
+                  if (a.getObjFifoName() == name &&
+                      a.getPort() == AIE::ObjectFifoPort::Produce)
+                    acqOp = a;
+                }
+              }
+
+              if (!acqOp) {
+                op->emitWarning(
+                    "objectfifo-to-conduit: cascade Produce release for '")
+                    << name << "' has no matching acquire — put_cascade skipped";
+                releasesToErase.push_back(op);
+                continue;
+              }
+
+              // Find the subview.access op (user of the acquire result).
+              AIE::ObjectFifoSubviewAccessOp accessOp;
+              for (mlir::Operation *user : acqOp.getResult().getUsers()) {
+                if (auto a = mlir::dyn_cast<AIE::ObjectFifoSubviewAccessOp>(user))
+                  accessOp = a;
+              }
+
+              if (!accessOp) {
+                op->emitWarning(
+                    "objectfifo-to-conduit: cascade Produce acquire for '")
+                    << name << "' has no subview.access user — put_cascade skipped";
+                releasesToErase.push_back(op);
+                acqOp->erase();
+                continue;
+              }
+
+              // Find the memref.store into elem0 and extract the stored value.
+              // The stored value becomes the cascade stream value.
+              mlir::Value elem0 = accessOp.getResult(); // memref<T>
+              mlir::Value storedVal;
+              llvm::SmallVector<mlir::memref::StoreOp> storesToErase;
+              for (mlir::Operation *storeUser :
+                   llvm::make_early_inc_range(elem0.getUsers())) {
+                if (auto storeOp =
+                        mlir::dyn_cast<mlir::memref::StoreOp>(storeUser)) {
+                  storedVal = storeOp.getValueToStore();
+                  storesToErase.push_back(storeOp);
+                }
+              }
+
+              if (storedVal) {
+                builder.setInsertionPoint(op);
+                builder.create<PutCascade>(
+                    loc, mlir::StringAttr::get(ctx, name), storedVal);
+              } else {
+                op->emitWarning(
+                    "objectfifo-to-conduit: cascade Produce '")
+                    << name << "' has no memref.store into elem0 — "
+                       "put_cascade skipped (no value to send)";
+              }
+
+              // Erase in dependency order: stores → subview → acquire.
+              for (auto s : storesToErase)
+                s.erase();
+              if (accessOp.getResult().use_empty())
+                accessOp.erase();
+              if (acqOp.getResult().use_empty())
+                acqOp.erase();
+
+              releasesToErase.push_back(op);
+              continue;
+            }
+
+            // Cascade Consume releases are no-ops (no hardware lock to release).
+            releasesToErase.push_back(op);
+            continue;
+          }
 
           // First try the local block's window map (same-block acquire).
           mlir::Value winVal = blockWindowMap.lookup(nameAttr);

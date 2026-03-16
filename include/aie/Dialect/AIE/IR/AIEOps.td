@@ -1831,6 +1831,11 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
         BDDimLayoutArrayAttr:$dimensionsToStream,
         BDDimLayoutArrayArrayAttr:$dimensionsFromStreamPerConsumer,
         DefaultValuedAttr<BoolAttr, "false">:$via_DMA,
+        // via_cascade==true forces the cascade hardware path for this FIFO.
+        // Cascade bypasses DMA, memory, and AXI switch; depth must be 1.
+        // Pass A propagates this as routing_mode = "cascade" on conduit.create
+        // and replaces acquire/subview/release with conduit.put/get_cascade.
+        DefaultValuedAttr<BoolAttr, "false">:$via_cascade,
         DefaultValuedAttr<BoolAttr, "false">:$plio,
         // disable_synchronization==true will skip lock generation for
         // objectfifo synchronous accesses

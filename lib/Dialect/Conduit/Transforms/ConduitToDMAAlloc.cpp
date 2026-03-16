@@ -34,6 +34,10 @@ void allocPhase(ConduitToDMAState &state) {
   const AIE::AIETargetModel &targetModel = *state.targetModel;
 
   for (auto &[name, info] : state.conduitMap) {
+    // Cascade conduits use no buffers, locks, or DMA — skip entirely.
+    if (info.routingMode == "cascade")
+      continue;
+
     if (info.consumerTileCoords.empty() &&
         info.shimConsumerTileCoords.empty()) {
       // Producer-only conduit (shim DMA source) — handled in Phase 4.
@@ -367,6 +371,8 @@ void allocPhase(ConduitToDMAState &state) {
   //           compute→compute conduits.
   // -------------------------------------------------------------------
   for (auto &[name, info] : state.conduitMap) {
+    if (info.routingMode == "cascade")
+      continue;
     if (info.sharedMemory)
       continue;
     if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))

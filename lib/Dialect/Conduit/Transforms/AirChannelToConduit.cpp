@@ -68,8 +68,14 @@
 // Coverage
 // --------
 // - Static-shape SPSC programs: handled (offsets/sizes/strides from arith.constant extracted)
-// - Static strides from arith.constant (index or integer type): FIXED — extracted correctly
-// - Multi-dimensional channel indices: not supported (silently dropped)
+// - Static strides from arith.constant (index or integer type): extracted correctly
+// - channel_type propagation: "dma_packet" → routing_mode = "packet" on conduit.create;
+//   "cascade" → routing_mode = "cascade" (put/get rewritten to conduit.put_cascade / conduit.get_cascade);
+//   "dma_stream" / absent → circuit default (no routing_mode attr)
+// - broadcast_shape: emits a diagnostic warning (not silently dropped); full broadcast
+//   topology lowering is a future TODO
+// - Multi-dimensional channel indices [M,N]: warned and dropped; only [1,1] scalar channels
+//   supported (multi-dim channels require a pre-pass to specialize indices)
 // - Async token threading: structural only (air.async.token → !conduit.dma.token)
 // - Dynamic offsets/strides (SSA non-constant, e.g. loop IVs): hard error
 //   (placeholder substitution produces wrong DMA descriptors; emitError+signalPassFailure)
@@ -87,9 +93,15 @@
 // - The blocking (non-async) put/get forms with no result SSA value are
 //   lowered to the async form with the result token unused.  This is safe
 //   because the token is not consumed by any downstream op in the original.
-// - air.execute regions (async wrappers) are not transformed; they remain
-//   in the output as unregistered ops when --allow-unregistered-dialect is
-//   used.  Pass B's scope is limited to channel ops as per Task #32.
+// - air.execute regions (async wrappers): correctly passed through as unregistered
+//   ops (with --allow-unregistered-dialect); the memref SSA values they yield are
+//   consumed by put/get and correctly decoded by Phase 2b element_type patching.
+// - broadcast_shape: conduit.create has no broadcast_shape field; full broadcast
+//   topology (capacity, routing hints) is deferred. A warning is emitted.
+// - cascade channels: the air.channel.put/get operand is a memref; Pass B emits
+//   a memref.load before conduit.put_cascade (put path) or memref.store after
+//   conduit.get_cascade (get path).  Multi-element cascade memrefs (>1 element)
+//   are not yet supported — only element [0] is transferred.
 //
 //===----------------------------------------------------------------------===//
 
@@ -257,6 +269,9 @@ struct AirChannelToConduitPass
 
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<ConduitDialect>();
+    // memref and arith needed for cascade load/store in put/get lowering.
+    registry.insert<mlir::memref::MemRefDialect>();
+    registry.insert<mlir::arith::ArithDialect>();
   }
 
   void runOnOperation() override {
@@ -323,6 +338,31 @@ struct AirChannelToConduitPass
       builder.setInsertionPoint(op);
       mlir::Location loc = op->getLoc();
 
+      // 5a: Propagate channel_type → routing_mode on conduit.create.
+      //   "dma_packet" → routing_mode = "packet"
+      //   "cascade"    → hard error (not supported in Conduit)
+      //   "dma_stream" / absent → leave routing_mode empty (circuit default)
+      mlir::StringAttr routingMode{};
+      if (auto ctAttr = op->getAttrOfType<mlir::StringAttr>("channel_type")) {
+        llvm::StringRef ct = ctAttr.getValue();
+        if (ct == "dma_packet") {
+          routingMode = mlir::StringAttr::get(ctx, "packet");
+        } else if (ct == "cascade") {
+          routingMode = mlir::StringAttr::get(ctx, "cascade");
+        }
+        // "dma_stream" → leave routingMode empty (circuit default)
+      }
+
+      // 5b: Warn on broadcast_shape (not silently dropped).
+      if (auto bsAttr = op->getAttr("broadcast_shape")) {
+        op->emitWarning()
+            << "air-channel-to-conduit: channel @" << name
+            << " has broadcast_shape = " << bsAttr
+            << "; broadcast topology is not yet propagated into Conduit IR "
+               "(conduit.create will use default capacity=1). "
+               "TODO: map broadcast_shape to conduit capacity/routing attrs.";
+      }
+
       // Default: capacity=1, depth=1, no element_type (unknown until put/get seen).
       // element_type will be patched after put/get scan below.
       mlir::Operation *createOp = builder.create<Create>(
@@ -336,7 +376,7 @@ struct AirChannelToConduitPass
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
           /*link_mode=*/mlir::StringAttr{},
           /*access_pattern=*/mlir::DenseI64ArrayAttr{},
-          /*routing_mode=*/mlir::StringAttr{},
+          /*routing_mode=*/routingMode,
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
@@ -470,57 +510,127 @@ struct AirChannelToConduitPass
             << " has all-dynamic sizes; num_elems defaulting to 1";
       }
 
-      // Extract static values for the structured attrs.
+      // Determine routing mode first — cascade channels skip the dynamic-strides
+      // check because offsets/sizes/strides are irrelevant (we only load/store
+      // element[0] of the memref, regardless of the DMA descriptor).
+      bool isCascade = false;
+      {
+        auto it = channelCreateOps.find(chanName);
+        if (it != channelCreateOps.end()) {
+          if (auto createTypedOp = mlir::dyn_cast<Create>(it->second)) {
+            auto rmOpt = createTypedOp.getRoutingMode();
+            if (rmOpt && *rmOpt == "cascade")
+              isCascade = true;
+          }
+        }
+      }
+
+      // Extract static values for the structured attrs (DMA path only).
       auto offsetVals  = extractStaticInts(offsetsRange);
       auto sizeVals    = extractStaticInts(sizesRange);
       auto strideVals  = extractStaticInts(stridesRange);
 
       // Check for dynamic (non-constant) offset/size/stride values.
-      // Dynamic values cannot be lowered correctly — the emitted DMA
-      // descriptors would use placeholder values (stride=0 reads/writes
-      // the same address repeatedly), producing silent data corruption
-      // on hardware.  This is a hard error, not a warning.
-      bool hasDynamic = false;
-      for (auto &v : offsetVals)  { if (v < 0) { hasDynamic = true; } }
-      for (auto &v : sizeVals)    { if (v < 0) { hasDynamic = true; } }
-      for (auto &v : strideVals)  { if (v < 0) { hasDynamic = true; } }
-      if (hasDynamic) {
-        op->emitError()
-            << "air-channel-to-conduit: channel @" << chanName
-            << " has dynamic offset/size/stride operands (e.g., loop IVs or "
-               "block arguments) that cannot be extracted statically; "
-               "placeholder substitution would produce incorrect DMA "
-               "descriptors and silent data corruption on hardware";
-        signalPassFailure();
-        continue;
+      // Dynamic values cannot be lowered correctly for DMA channels — the
+      // emitted BD descriptors would use placeholder values producing silent
+      // data corruption.  Cascade channels are exempt: they ignore
+      // offsets/sizes/strides entirely (only element[0] is transferred).
+      if (!isCascade) {
+        bool hasDynamic = false;
+        for (auto &v : offsetVals)  { if (v < 0) { hasDynamic = true; } }
+        for (auto &v : sizeVals)    { if (v < 0) { hasDynamic = true; } }
+        for (auto &v : strideVals)  { if (v < 0) { hasDynamic = true; } }
+        if (hasDynamic) {
+          op->emitError()
+              << "air-channel-to-conduit: channel @" << chanName
+              << " has dynamic offset/size/stride operands (e.g., loop IVs or "
+                 "block arguments) that cannot be extracted statically; "
+                 "placeholder substitution would produce incorrect DMA "
+                 "descriptors and silent data corruption on hardware";
+          signalPassFailure();
+          continue;
+        }
       }
 
-      // Emit conduit put_memref_async or get_memref_async.
       bool isPut = isAirChannelPut(op);
-      mlir::Operation *newOp;
-      if (isPut) {
-        newOp = builder.create<PutMemrefAsync>(
-            loc, conduitTokenTy,
-            mlir::StringAttr::get(ctx, chanName),
-            mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
-            mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
-            mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
-            mlir::DenseI64ArrayAttr::get(ctx, strideVals),
-            depTokens);
-      } else {
-        newOp = builder.create<GetMemrefAsync>(
-            loc, conduitTokenTy,
-            mlir::StringAttr::get(ctx, chanName),
-            mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
-            mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
-            mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
-            mlir::DenseI64ArrayAttr::get(ctx, strideVals),
-            depTokens);
-      }
+      mlir::Operation *newOp = nullptr;
 
-      // Replace all uses of the old async token result with the new token.
-      if (op->getNumResults() >= 1 && newOp->getNumResults() >= 1)
-        op->getResult(0).replaceAllUsesWith(newOp->getResult(0));
+      if (isCascade) {
+        // Cascade channels: emit conduit.put_cascade / conduit.get_cascade.
+        // The air.channel.put/get carries a memref operand; for cascade we
+        // need to load/store the value from/to the memref.
+        // Get the memref operand to determine the element type.
+        mlir::Value memrefVal;
+        auto segsLocal = getOperandSegments(op);
+        if (segsLocal.size() >= 3) {
+          int32_t ndepsL = segsLocal[0];
+          int32_t nidxL = segsLocal[1];
+          int32_t memrefPosL = ndepsL + nidxL;
+          if (static_cast<int32_t>(op->getNumOperands()) > memrefPosL)
+            memrefVal = op->getOperand(memrefPosL);
+        } else if (op->getNumOperands() >= 1) {
+          memrefVal = op->getOperand(0);
+        }
+
+        if (!memrefVal || !mlir::isa<mlir::MemRefType>(memrefVal.getType())) {
+          op->emitError()
+              << "air-channel-to-conduit: cascade channel @" << chanName
+              << " put/get has no accessible memref operand; cannot infer "
+                 "cascade value type";
+          signalPassFailure();
+          continue;
+        }
+
+        auto memrefTy = mlir::cast<mlir::MemRefType>(memrefVal.getType());
+        mlir::Type elemTy = memrefTy.getElementType();
+
+        if (isPut) {
+          // Load the value from the memref and put it onto the cascade stream.
+          mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+          mlir::Value loadedVal = builder.create<mlir::memref::LoadOp>(
+              loc, memrefVal, mlir::ValueRange{c0});
+          newOp = builder.create<PutCascade>(
+              loc,
+              mlir::StringAttr::get(ctx, chanName),
+              loadedVal);
+        } else {
+          // Get the cascade value and store it into the memref.
+          auto getCascOp = builder.create<GetCascade>(
+              loc, elemTy,
+              mlir::StringAttr::get(ctx, chanName));
+          mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+          builder.create<mlir::memref::StoreOp>(
+              loc, getCascOp.getValue(), memrefVal, mlir::ValueRange{c0});
+          newOp = getCascOp;
+        }
+        // Cascade ops have no async token result.
+        // No SSA token replacement needed.
+      } else {
+        // Normal DMA path: emit conduit put_memref_async or get_memref_async.
+        if (isPut) {
+          newOp = builder.create<PutMemrefAsync>(
+              loc, conduitTokenTy,
+              mlir::StringAttr::get(ctx, chanName),
+              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
+              mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
+              mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
+              mlir::DenseI64ArrayAttr::get(ctx, strideVals),
+              depTokens);
+        } else {
+          newOp = builder.create<GetMemrefAsync>(
+              loc, conduitTokenTy,
+              mlir::StringAttr::get(ctx, chanName),
+              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
+              mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
+              mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
+              mlir::DenseI64ArrayAttr::get(ctx, strideVals),
+              depTokens);
+        }
+
+        // Replace all uses of the old async token result with the new token.
+        if (op->getNumResults() >= 1 && newOp->getNumResults() >= 1)
+          op->getResult(0).replaceAllUsesWith(newOp->getResult(0));
+      }
 
       putGetToErase.push_back(op);
     }

@@ -225,8 +225,8 @@ void ConduitDialect::initialize() {
   }
   if (auto rmOpt = getRoutingMode()) {
     llvm::StringRef rm = *rmOpt;
-    if (rm != "circuit" && rm != "packet")
-      return emitOpError("routing_mode must be \"circuit\" or \"packet\", got \"")
+    if (rm != "circuit" && rm != "packet" && rm != "cascade")
+      return emitOpError("routing_mode must be \"circuit\", \"packet\", or \"cascade\", got \"")
              << rm << "\"";
   }
 
@@ -547,6 +547,86 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 }
 ::mlir::LogicalResult GetMemrefAsync::verify() {
   return checkTokenDoesNotEscape(getOperation(), getToken());
+}
+
+//===----------------------------------------------------------------------===//
+// Cascade op verifiers
+//
+// Verify that the referenced conduit.create has routing_mode = "cascade".
+// Walk up to the enclosing ModuleOp and search for the matching create op.
+//===----------------------------------------------------------------------===//
+
+static ::mlir::LogicalResult
+checkCascadeConduit(mlir::Operation *op, llvm::StringRef name) {
+  mlir::Operation *ancestor = op->getParentOp();
+  while (ancestor && !mlir::isa<mlir::ModuleOp>(ancestor))
+    ancestor = ancestor->getParentOp();
+  if (!ancestor)
+    return ::mlir::success(); // No module found — skip (test fragment).
+
+  bool found = false;
+  bool wrongMode = false;
+  ancestor->walk([&](Create createOp) -> mlir::WalkResult {
+    if (createOp.getName() != name)
+      return mlir::WalkResult::advance();
+    found = true;
+    auto rmOpt = createOp.getRoutingMode();
+    if (!rmOpt || *rmOpt != "cascade")
+      wrongMode = true;
+    return mlir::WalkResult::interrupt();
+  });
+
+  if (found && wrongMode)
+    return op->emitOpError("references conduit '")
+           << name << "' which does not have routing_mode = \"cascade\"";
+  // If not found: conduit.create may not be in scope yet (test fragment).
+  return ::mlir::success();
+}
+
+/// Return the bit-width of an integer or vector-of-integer type, or 0.
+static unsigned cascadeTypeBitWidth(mlir::Type ty) {
+  if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(ty))
+    return intTy.getWidth();
+  if (auto vecTy = mlir::dyn_cast<mlir::VectorType>(ty)) {
+    if (auto eltInt = mlir::dyn_cast<mlir::IntegerType>(vecTy.getElementType()))
+      return static_cast<unsigned>(vecTy.getNumElements()) * eltInt.getWidth();
+  }
+  return 0;
+}
+
+/// Validate cascade value type: must be an integer or integer vector.
+/// Architecture-correct widths: AIE1=384 bits, AIE2=512 bits.
+/// Wrong basic type → error. Non-standard width → error (prevents silent
+/// mismatch; use vector<16xi32> for AIE2 or vector<8xi48>/i384 for AIE1).
+static ::mlir::LogicalResult
+checkCascadeValueType(mlir::Operation *op, mlir::Type ty) {
+  unsigned bits = cascadeTypeBitWidth(ty);
+  if (bits == 0) {
+    return op->emitOpError("cascade value type ")
+           << ty << " is not an integer or integer vector type; cascade "
+              "requires a fixed-width integer or integer vector matching the "
+              "architecture cascade width (AIE1: i384 or vector<8xi48>, "
+              "AIE2: i512 or vector<16xi32>)";
+  }
+  if (bits != 384 && bits != 512) {
+    return op->emitOpError("cascade value type ")
+           << ty << " has width " << bits
+           << " bits; must be 384 bits (AIE1: i384 or vector<8xi48>) "
+              "or 512 bits (AIE2: i512 or vector<16xi32>)";
+  }
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult PutCascade::verify() {
+  if (failed(checkCascadeConduit(getOperation(), getName())))
+    return ::mlir::failure();
+  return checkCascadeValueType(getOperation(), getValue().getType());
+}
+
+::mlir::LogicalResult GetCascade::verify() {
+  if (failed(checkCascadeConduit(getOperation(), getName())))
+    return ::mlir::failure();
+  return checkCascadeValueType(getOperation(), getValue().getType());
 }
 
 //===----------------------------------------------------------------------===//

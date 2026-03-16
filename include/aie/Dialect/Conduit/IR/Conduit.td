@@ -956,4 +956,64 @@ def Conduit_WaitAllAsync : Conduit_Op<"wait_all_async"> {
   let hasVerifier = 1;
 }
 
+// ---------------------------------------------------------------------------
+// Cascade ops — register-level inter-tile cascade stream
+//
+// These ops represent direct tile-to-tile cascade connections that bypass
+// the DMA engine, memory, and AXI switch entirely.  They appear inside
+// aie.core bodies and lower 1:1 to aie.put_cascade / aie.get_cascade.
+//
+// The 'name' attribute ties these ops to their conduit.create declaration
+// (which must have routing_mode = "cascade").  This allows Conduit analysis
+// passes to operate uniformly over all inter-tile connections.
+//
+// Unlike Tier 2/3 ops, cascade ops carry no memory, locks, or DMA BDs.
+// Pass C Phase 4 emits aie.cascade_flow for the device-level connection;
+// Pass C Phase 6 lowers these core-body ops 1:1 to aie.put/get_cascade.
+// ---------------------------------------------------------------------------
+
+def Conduit_PutCascade : Conduit_Op<"put_cascade"> {
+  let summary = "Write a vector value to the cascade output port of this tile.";
+  let description = [{
+    Cascade core-body op.  Writes the given value to the cascade output port
+    of the current tile.  The 'name' attribute references the conduit.create
+    declaration that must have routing_mode = "cascade".
+
+    The value type must match the cascade stream width of the target
+    architecture (e.g., i512 or vector<16xi32> for AIE2; i384 or
+    vector<8xi48> for AIE1).
+
+    Pass C Phase 6 lowers this 1:1 to aie.put_cascade(value : type).
+
+    Example:
+      conduit.put_cascade "cas" (%v : vector<16xi32>)
+  }];
+  let arguments = (ins StrAttr:$name, AnyType:$value);
+  let results = (outs);
+  let assemblyFormat = "$name `(` $value `:` type($value) `)` attr-dict";
+  let hasVerifier = 1;
+}
+
+def Conduit_GetCascade : Conduit_Op<"get_cascade"> {
+  let summary = "Read a vector value from the cascade input port of this tile.";
+  let description = [{
+    Cascade core-body op.  Reads a value from the cascade input port of the
+    current tile.  The 'name' attribute references the conduit.create
+    declaration that must have routing_mode = "cascade".
+
+    The result type must match the cascade stream width of the target
+    architecture (e.g., i512 or vector<16xi32> for AIE2; i384 or
+    vector<8xi48> for AIE1).
+
+    Pass C Phase 6 lowers this 1:1 to %v = aie.get_cascade() : type.
+
+    Example:
+      %v = conduit.get_cascade "cas" : vector<16xi32>
+  }];
+  let arguments = (ins StrAttr:$name);
+  let results = (outs AnyType:$value);
+  let assemblyFormat = "$name attr-dict `:` type($value)";
+  let hasVerifier = 1;
+}
+
 #endif // CONDUIT_DIALECT

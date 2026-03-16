@@ -287,6 +287,35 @@ void lowerPhase(ConduitToDMAState &state) {
     op.erase();
 
   // -----------------------------------------------------------------------
+  // Phase 6c: Lower cascade core-body ops.
+  //   conduit.put_cascade → aie.put_cascade(value : type)
+  //   conduit.get_cascade → %v = aie.get_cascade() : type
+  // These are 1:1 lowerings; no locks, buffers, or DMA BDs involved.
+  // -----------------------------------------------------------------------
+  {
+    llvm::SmallVector<PutCascade> putCascadesToErase;
+    module.walk([&](PutCascade op) {
+      mlir::OpBuilder b(op);
+      b.create<AIE::PutCascadeOp>(op.getLoc(), op.getValue());
+      putCascadesToErase.push_back(op);
+    });
+    for (auto op : putCascadesToErase)
+      op.erase();
+  }
+  {
+    llvm::SmallVector<GetCascade> getCascadesToErase;
+    module.walk([&](GetCascade op) {
+      mlir::OpBuilder b(op);
+      mlir::Type valTy = op.getValue().getType();
+      auto aieGetOp = b.create<AIE::GetCascadeOp>(op.getLoc(), valTy);
+      op.getValue().replaceAllUsesWith(aieGetOp.getCascadeValue());
+      getCascadesToErase.push_back(op);
+    });
+    for (auto op : getCascadesToErase)
+      op.erase();
+  }
+
+  // -----------------------------------------------------------------------
   // Phase 7: Erase remaining Conduit ops.
   // -----------------------------------------------------------------------
 

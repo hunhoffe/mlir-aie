@@ -81,6 +81,16 @@ void linkPhase(ConduitToDMAState &state) {
     std::string srcName =
         mlir::cast<mlir::StringAttr>(srcs[0]).getValue().str();
     ConduitInfo *srcInfoPtr = state.lookupConduit(srcName);
+
+    // Guard: cascade-mode conduits cannot be used with conduit.link.
+    if (srcInfoPtr && srcInfoPtr->routingMode == "cascade") {
+      linkOp.emitError("conduit.link cannot use cascade-mode conduit '" +
+                       srcName + "' — cascade is point-to-point and has no "
+                       "MemTile relay or DMA BD chain");
+      state.passFailed = true;
+      return;
+    }
+
     if (!srcInfoPtr || srcInfoPtr->buffers.empty()) {
       linkOp.emitError("conduit-to-dma: src conduit '" + srcName +
                        "' buffers not allocated for link op");
