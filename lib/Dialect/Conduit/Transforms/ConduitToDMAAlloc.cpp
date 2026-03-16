@@ -18,11 +18,260 @@
 //   3d: Non-adjacent compute→compute producer-side allocation
 //   Consumer tile allocation (broadcast: per-tile buffers+locks)
 //
+// Rotation counter packing:
+//   Multiple conduits on the same tile share a single memref<N xi32> counter
+//   buffer (matching the oracle's allocation). A pre-scan pass counts how many
+//   counter slots each tile needs; one shared buffer is created per tile and
+//   each conduit is assigned a slot index within it.
+//
 //===----------------------------------------------------------------------===//
 
 #include "ConduitToDMACommon.h"
 
 namespace xilinx::conduit {
+
+// ---------------------------------------------------------------------------
+// Helper: assign the next rotation counter slot for a tile.
+// Returns the slot index. The shared buffer for the tile must already exist
+// in state.tileRotationBuf (populated by the pre-scan pass).
+// ---------------------------------------------------------------------------
+static int64_t assignRotationSlot(ConduitToDMAState &state,
+                                  mlir::Value tileVal) {
+  int64_t slot = state.tileRotationBufNextSlot[tileVal]++;
+  return slot;
+}
+
+// ---------------------------------------------------------------------------
+// Pre-scan: count how many rotation counter slots each tile needs, then
+// create one shared memref<N xi32> buffer per tile.
+//
+// This mirrors exactly the conditions checked during the main allocation pass
+// so that the shared buffer has exactly the right size.
+// ---------------------------------------------------------------------------
+static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
+  mlir::OpBuilder &builder = *state.builder;
+  mlir::MLIRContext *ctx = state.ctx;
+  const AIE::AIETargetModel &targetModel = *state.targetModel;
+
+  // Per-tile slot counts (consumer + producer counters).
+  llvm::DenseMap<mlir::Value, int64_t> tileSlotCount;
+
+  auto addConsumerSlot = [&](mlir::Value tileVal) {
+    tileSlotCount[tileVal]++;
+  };
+  auto addProducerSlot = [&](mlir::Value tileVal) {
+    tileSlotCount[tileVal]++;
+  };
+
+  for (auto &[name, info] : state.conduitMap) {
+    if (info.consumerTileCoords.empty() &&
+        info.shimConsumerTileCoords.empty())
+      continue;
+
+    // Phase 3b path.
+    if (info.consumerTileCoords.empty() &&
+        !info.shimConsumerTileCoords.empty()) {
+      if (state.linkDstNames.count(name))
+        continue;
+      auto [prodCol, prodRow] = info.producerTileCoord;
+      if (prodCol < 0 || prodRow == 0)
+        continue;
+      AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
+      if (!prodTile)
+        continue;
+      int64_t depth = info.depth > 0 ? info.depth : 1;
+      int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+        addProducerSlot(prodTile.getResult());
+      continue;
+    }
+
+    // Phase 3c path (shared memory, adjacent tiles).
+    if (!info.viaDMA &&
+        info.consumerTileCoords.size() == 1 &&
+        info.shimConsumerTileCoords.empty() &&
+        !state.linkSrcNamesEarly.count(name) &&
+        !state.linkJoinSrcNames.count(name)) {
+      auto [prodCol, prodRow] = info.producerTileCoord;
+      auto [consCol, consRow] = info.consumerTileCoords[0];
+      bool prodIsShim = (prodRow == 0);
+      bool consIsShim = (consRow == 0);
+      bool prodIsMemtile = targetModel.isMemTile(prodCol, prodRow);
+      bool consIsMemtile = targetModel.isMemTile(consCol, consRow);
+      if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile) {
+        bool rightShared = targetModel.isLegalMemAffinity(
+            prodCol, prodRow, consCol, consRow);
+        bool leftShared = targetModel.isLegalMemAffinity(
+            consCol, consRow, prodCol, prodRow);
+        if (rightShared || leftShared) {
+          AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
+          AIE::TileOp consTile  = state.lookupTileByCoord(consCol, consRow);
+          AIE::TileOp prodTile  = state.lookupTileByCoord(prodCol, prodRow);
+          if (info.hasAllocTile) {
+            allocTile = state.lookupTileByCoord(info.allocTileCoord.first,
+                                                info.allocTileCoord.second);
+          }
+          if (allocTile && consTile && prodTile) {
+            int64_t depth = info.depth > 0 ? info.depth : 1;
+            if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
+              addConsumerSlot(consTile.getResult());
+            if (depth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+              addProducerSlot(prodTile.getResult());
+            continue;
+          }
+        }
+      }
+    }
+
+    // Phase 3j path (join sources).
+    if (state.linkJoinSrcNames.count(name)) {
+      auto [prodCol, prodRow] = info.producerTileCoord;
+      if (prodCol < 0 || prodRow < 2)
+        continue;
+      AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
+      if (!prodTile)
+        continue;
+      int64_t depth = info.depth > 0 ? info.depth : 1;
+      int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+        addProducerSlot(prodTile.getResult());
+      continue;
+    }
+
+    // Normal consumer loop path.
+    int64_t depth = info.depth > 0 ? info.depth : 1;
+    for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
+         ++consIdx) {
+      auto [consCol, consRow] = info.consumerTileCoords[consIdx];
+      AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
+      if (!consTile)
+        continue;
+      mlir::Value consTileVal = consTile.getResult();
+
+      if (state.linkSrcNamesEarly.count(name)) {
+        // linkSrcNamesEarly: producer-side counter on compute producer tile.
+        auto [pCol, pRow] = info.producerTileCoord;
+        if (pCol >= 0 && pRow >= 2) {
+          AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
+          if (pTile && !info.consumerTileBuffers.count(pTile.getResult())) {
+            int64_t prodDepth = info.effectiveDepth > 0
+                                    ? info.effectiveDepth : depth;
+            if (prodDepth > 1 &&
+                state.conduitNamesWithProducerAcquire.count(name))
+              addProducerSlot(pTile.getResult());
+          }
+        }
+        continue;
+      }
+
+      // Regular consumer tile rotation counter.
+      if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
+        addConsumerSlot(consTileVal);
+    }
+  }
+
+  // Phase 3d: producer-side counters for non-adjacent compute→compute.
+  for (auto &[name, info] : state.conduitMap) {
+    if (info.sharedMemory)
+      continue;
+    if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))
+      continue;
+    if (state.linkDstNames.count(name))
+      continue;
+    auto [prodCol, prodRow] = info.producerTileCoord;
+    if (prodCol < 0 || prodRow == 0)
+      continue;
+    if (info.consumerTileCoords.empty())
+      continue;
+    AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
+    if (!prodTile)
+      continue;
+    mlir::Value prodTileVal = prodTile.getResult();
+    if (info.consumerTileBuffers.count(prodTileVal))
+      continue;
+
+    bool needsProdSide = false;
+    if (info.consumerTileCoords.size() > 1) {
+      needsProdSide = true;
+    } else {
+      auto [consCol, consRow] = info.consumerTileCoords[0];
+      if (consRow >= 1) {
+        bool rightAdj = state.targetModel->isLegalMemAffinity(
+            prodCol, prodRow, consCol, consRow);
+        bool leftAdj = state.targetModel->isLegalMemAffinity(
+            consCol, consRow, prodCol, prodRow);
+        if (!rightAdj && !leftAdj)
+          needsProdSide = true;
+      }
+    }
+    if (!needsProdSide && !info.viaDMA)
+      continue;
+
+    int64_t depth = info.depth > 0 ? info.depth : 1;
+    int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+    if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
+      addConsumerSlot(prodTileVal);
+    if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+      addProducerSlot(prodTileVal);
+  }
+
+  // Create one shared memref<N xi32> buffer per tile that needs N > 0 slots.
+  if (state.insertAfterTile)
+    builder.setInsertionPointAfter(state.insertAfterTile);
+  else
+    builder.setInsertionPointToStart(state.deviceBody);
+
+  for (auto &[tileVal, count] : tileSlotCount) {
+    if (count <= 0)
+      continue;
+    auto counterTy = mlir::MemRefType::get({count},
+                                           mlir::IntegerType::get(ctx, 32));
+    AIE::BufferOp sharedBuf = builder.create<AIE::BufferOp>(
+        state.deviceOp.getLoc(), counterTy, tileVal,
+        /*sym_name=*/mlir::StringAttr{},
+        /*address=*/mlir::IntegerAttr{},
+        /*initial_value=*/mlir::ElementsAttr{},
+        /*mem_bank=*/mlir::IntegerAttr{});
+    state.tileRotationBuf[tileVal] = sharedBuf;
+    state.tileRotationBufNextSlot[tileVal] = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: assign a consumer rotation counter slot for a conduit on a tile.
+// Must only be called for tiles that have a shared buffer (created by
+// prescanAndCreateRotationBufs).
+// ---------------------------------------------------------------------------
+static void assignConsumerRotationSlot(ConduitToDMAState &state,
+                                       ConduitInfo &info,
+                                       mlir::Value tileVal,
+                                       bool isPrimary) {
+  auto bufIt = state.tileRotationBuf.find(tileVal);
+  if (bufIt == state.tileRotationBuf.end())
+    return; // no counter needed for this tile
+  AIE::BufferOp sharedBuf = bufIt->second;
+  int64_t slot = assignRotationSlot(state, tileVal);
+  info.consumerTileRotationBufs[tileVal] = sharedBuf;
+  info.consumerTileRotationBufSlots[tileVal] = slot;
+  if (isPrimary) {
+    info.rotationBuf = sharedBuf;
+    info.rotationBufSlot = slot;
+  }
+}
+
+static void assignProducerRotationSlot(ConduitToDMAState &state,
+                                       ConduitInfo &info,
+                                       mlir::Value tileVal) {
+  auto bufIt = state.tileRotationBuf.find(tileVal);
+  if (bufIt == state.tileRotationBuf.end())
+    return;
+  AIE::BufferOp sharedBuf = bufIt->second;
+  int64_t slot = assignRotationSlot(state, tileVal);
+  info.producerTileRotationBufs[tileVal] = sharedBuf;
+  info.producerTileRotationBufSlots[tileVal] = slot;
+  info.producerRotationBuf = sharedBuf;
+  info.producerRotationBufSlot = slot;
+}
 
 void allocPhase(ConduitToDMAState &state) {
   if (!state.deviceOp)
@@ -32,6 +281,9 @@ void allocPhase(ConduitToDMAState &state) {
   mlir::MLIRContext *ctx = state.ctx;
   const bool isAIE2 = state.isAIE2Plus();
   const AIE::AIETargetModel &targetModel = *state.targetModel;
+
+  // Pre-scan: count rotation counter slots per tile and create shared buffers.
+  prescanAndCreateRotationBufs(state);
 
   for (auto &[name, info] : state.conduitMap) {
     // Cascade conduits use no buffers, locks, or DMA — skip entirely.
@@ -98,18 +350,9 @@ void allocPhase(ConduitToDMAState &state) {
         info.consLock = locks.consLock;
         info.aie1Locks = std::move(locks.aie1Locks);
       }
-      // Producer rotation counter for depth>1 produce-mode acquires.
-      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
-        auto counterTy = mlir::MemRefType::get(
-            {1}, mlir::IntegerType::get(ctx, 32));
-        AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
-            state.deviceOp.getLoc(), counterTy, prodTileVal,
-            /*sym_name=*/mlir::StringAttr{},
-            /*address=*/mlir::IntegerAttr{},
-            /*initial_value=*/mlir::ElementsAttr{},
-            /*mem_bank=*/mlir::IntegerAttr{});
-        info.producerTileRotationBufs[prodTileVal] = rotBuf;
-      }
+      // Producer rotation counter slot (shared buffer created by pre-scan).
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+        assignProducerRotationSlot(state, info, prodTileVal);
       continue;
     }
 
@@ -240,31 +483,14 @@ void allocPhase(ConduitToDMAState &state) {
               info.consumerTileAIE1Locks[prodTileVal] = info.aie1Locks;
             }
 
-            // Rotation counter for depth>1 on consumer tile.
-            if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name)) {
-              auto counterTy = mlir::MemRefType::get(
-                  {1}, mlir::IntegerType::get(ctx, 32));
-              info.rotationBuf = builder.create<AIE::BufferOp>(
-                  state.deviceOp.getLoc(), counterTy, consTileVal,
-                  /*sym_name=*/mlir::StringAttr{},
-                  /*address=*/mlir::IntegerAttr{},
-                  /*initial_value=*/mlir::ElementsAttr{},
-                  /*mem_bank=*/mlir::IntegerAttr{});
-              info.consumerTileRotationBufs[consTileVal] = info.rotationBuf;
-            }
+            // Consumer rotation counter slot (shared buffer, pre-created).
+            if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
+              assignConsumerRotationSlot(state, info, consTileVal,
+                                        /*isPrimary=*/true);
 
-            // Producer rotation counter for depth>1 produce-mode acquires.
-            if (depth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
-              auto counterTy = mlir::MemRefType::get(
-                  {1}, mlir::IntegerType::get(ctx, 32));
-              AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
-                  state.deviceOp.getLoc(), counterTy, prodTileVal,
-                  /*sym_name=*/mlir::StringAttr{},
-                  /*address=*/mlir::IntegerAttr{},
-                  /*initial_value=*/mlir::ElementsAttr{},
-                  /*mem_bank=*/mlir::IntegerAttr{});
-              info.producerTileRotationBufs[prodTileVal] = rotBuf;
-            }
+            // Producer rotation counter slot.
+            if (depth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+              assignProducerRotationSlot(state, info, prodTileVal);
 
             continue; // skip normal DMA consumer loop
           }
@@ -308,18 +534,9 @@ void allocPhase(ConduitToDMAState &state) {
         info.consLock = locks.consLock;
         info.aie1Locks = std::move(locks.aie1Locks);
       }
-      // Producer rotation counter for depth>1 produce-mode acquires.
-      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
-        auto counterTy = mlir::MemRefType::get(
-            {1}, mlir::IntegerType::get(ctx, 32));
-        AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
-            state.deviceOp.getLoc(), counterTy, prodTileVal,
-            /*sym_name=*/mlir::StringAttr{},
-            /*address=*/mlir::IntegerAttr{},
-            /*initial_value=*/mlir::ElementsAttr{},
-            /*mem_bank=*/mlir::IntegerAttr{});
-        info.producerTileRotationBufs[prodTileVal] = rotBuf;
-      }
+      // Producer rotation counter slot.
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+        assignProducerRotationSlot(state, info, prodTileVal);
       continue;
     }
 
@@ -400,17 +617,8 @@ void allocPhase(ConduitToDMAState &state) {
                                                     pLocks.consLock};
 
                 if (prodDepth > 1 &&
-                    state.conduitNamesWithProducerAcquire.count(name)) {
-                  auto counterTy = mlir::MemRefType::get(
-                      {1}, mlir::IntegerType::get(ctx, 32));
-                  AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
-                      state.deviceOp.getLoc(), counterTy, pTileVal,
-                      /*sym_name=*/mlir::StringAttr{},
-                      /*address=*/mlir::IntegerAttr{},
-                      /*initial_value=*/mlir::ElementsAttr{},
-                      /*mem_bank=*/mlir::IntegerAttr{});
-                  info.producerTileRotationBufs[pTileVal] = rotBuf;
-                }
+                    state.conduitNamesWithProducerAcquire.count(name))
+                  assignProducerRotationSlot(state, info, pTileVal);
               }
             }
           }
@@ -440,20 +648,10 @@ void allocPhase(ConduitToDMAState &state) {
       info.consumerTileLocks[consTileVal] = {thisProdLock, thisConsLock};
       info.consumerTileBuffers[consTileVal] = consBuffers;
 
-      // Rotation counter for depth>1 on each consumer tile.
-      if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name)) {
-        auto counterTy =
-            mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
-        AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
-            state.deviceOp.getLoc(), counterTy, consTileVal,
-            /*sym_name=*/mlir::StringAttr{},
-            /*address=*/mlir::IntegerAttr{},
-            /*initial_value=*/mlir::ElementsAttr{},
-            /*mem_bank=*/mlir::IntegerAttr{});
-        info.consumerTileRotationBufs[consTileVal] = rotBuf;
-        if (consIdx == 0)
-          info.rotationBuf = rotBuf;
-      }
+      // Consumer rotation counter slot (shared buffer, pre-created).
+      if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
+        assignConsumerRotationSlot(state, info, consTileVal,
+                                   /*isPrimary=*/(consIdx == 0));
     }
   }
 
@@ -535,29 +733,14 @@ void allocPhase(ConduitToDMAState &state) {
     info.consumerTileLocks[prodTileVal] = {prodLockProd, prodLockCons};
     info.consumerTileBuffers[prodTileVal] = prodBuffers;
 
-    if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name)) {
-      auto counterTy =
-          mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
-      AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
-          state.deviceOp.getLoc(), counterTy, prodTileVal,
-          /*sym_name=*/mlir::StringAttr{},
-          /*address=*/mlir::IntegerAttr{},
-          /*initial_value=*/mlir::ElementsAttr{},
-          /*mem_bank=*/mlir::IntegerAttr{});
-      info.consumerTileRotationBufs[prodTileVal] = rotBuf;
-    }
-    // Producer rotation counter for depth>1 produce-mode acquires.
-    if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
-      auto counterTy =
-          mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
-      AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
-          state.deviceOp.getLoc(), counterTy, prodTileVal,
-          /*sym_name=*/mlir::StringAttr{},
-          /*address=*/mlir::IntegerAttr{},
-          /*initial_value=*/mlir::ElementsAttr{},
-          /*mem_bank=*/mlir::IntegerAttr{});
-      info.producerTileRotationBufs[prodTileVal] = rotBuf;
-    }
+    // Consumer rotation counter slot (for conduits where producer tile is
+    // also the "consumer" of the lock — e.g., shared-memory fallback).
+    if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
+      assignConsumerRotationSlot(state, info, prodTileVal,
+                                 /*isPrimary=*/true);
+    // Producer rotation counter slot.
+    if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+      assignProducerRotationSlot(state, info, prodTileVal);
   }
 }
 

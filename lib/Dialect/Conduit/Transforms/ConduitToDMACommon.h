@@ -219,16 +219,23 @@ struct ConduitInfo {
   llvm::DenseMap<mlir::Value, llvm::SmallVector<AIE::LockOp>>
       consumerTileAIE1Locks; // tile → [lock_0, ..., lock_{depth-1}]
 
-  // For depth>1: rotation counter buffer on the consumer tile.
-  AIE::BufferOp rotationBuf;
+  // For depth>1: rotation counter — shared per-tile buffer + slot index.
+  // Multiple conduits on the same tile share one memref<N xi32> buffer;
+  // each conduit is assigned a unique slot index within that buffer.
+  AIE::BufferOp rotationBuf;       // shared tile buffer (consumer direction)
+  int64_t rotationBufSlot = 0;     // slot index within that buffer
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
-      consumerTileRotationBufs; // tile → consumer rotation counter buffer
+      consumerTileRotationBufs;  // tile → shared rotation buffer
+  llvm::DenseMap<mlir::Value, int64_t>
+      consumerTileRotationBufSlots; // tile → slot index for this conduit
 
-  // For depth>1 produce-mode: rotation counter buffer on the producer tile.
-  // Separate from consumerTileRotationBufs so a tile that both produces and
-  // consumes keeps independent counters for each direction.
+  // For depth>1 produce-mode: rotation counter on the producer tile.
+  AIE::BufferOp producerRotationBuf;   // shared tile buffer (producer direction)
+  int64_t producerRotationBufSlot = 0; // slot index within that buffer
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
-      producerTileRotationBufs; // tile → producer rotation counter buffer
+      producerTileRotationBufs;  // tile → shared rotation buffer
+  llvm::DenseMap<mlir::Value, int64_t>
+      producerTileRotationBufSlots; // tile → slot index for this conduit
 
   // --- New feature flags (populated by Phase 1 from conduit.create attrs) ---
 
@@ -254,8 +261,10 @@ struct ConduitInfo {
     AIE::LockOp prodLock;
     AIE::LockOp consLock;
     llvm::SmallVector<AIE::BufferOp> *buffers = nullptr;
-    AIE::BufferOp rotationBuf;         // consumer-side rotation counter
-    AIE::BufferOp producerRotationBuf; // producer-side rotation counter
+    AIE::BufferOp rotationBuf;           // shared tile buffer (consumer dir)
+    int64_t rotationBufSlot = 0;         // slot index within that buffer
+    AIE::BufferOp producerRotationBuf;   // shared tile buffer (producer dir)
+    int64_t producerRotationBufSlot = 0; // slot index within that buffer
     mlir::Operation *coreOp = nullptr;
   };
 
@@ -268,6 +277,9 @@ struct ConduitInfo {
     res.consLock = consLock;
     res.buffers = &buffers;
     res.rotationBuf = rotationBuf;
+    res.rotationBufSlot = rotationBufSlot;
+    res.producerRotationBuf = producerRotationBuf;
+    res.producerRotationBufSlot = producerRotationBufSlot;
 
     res.coreOp = op->getParentOp();
     while (res.coreOp && !mlir::isa<AIE::CoreOp>(res.coreOp))
@@ -287,9 +299,15 @@ struct ConduitInfo {
     auto rotIt = consumerTileRotationBufs.find(coreTile);
     if (rotIt != consumerTileRotationBufs.end())
       res.rotationBuf = rotIt->second;
+    auto rotSlotIt = consumerTileRotationBufSlots.find(coreTile);
+    if (rotSlotIt != consumerTileRotationBufSlots.end())
+      res.rotationBufSlot = rotSlotIt->second;
     auto prodRotIt = producerTileRotationBufs.find(coreTile);
     if (prodRotIt != producerTileRotationBufs.end())
       res.producerRotationBuf = prodRotIt->second;
+    auto prodRotSlotIt = producerTileRotationBufSlots.find(coreTile);
+    if (prodRotSlotIt != producerTileRotationBufSlots.end())
+      res.producerRotationBufSlot = prodRotSlotIt->second;
     return res;
   }
 };
@@ -384,6 +402,12 @@ struct ConduitToDMAState {
   // Conduit names with at least one Produce-port acquire op (for producer
   // rotation counter allocation when depth > 1).
   llvm::StringSet<> conduitNamesWithProducerAcquire;
+
+  // Per-tile shared rotation counter buffer pool.
+  // Populated by allocPhase() pre-scan; each tile that needs N rotation
+  // counters gets one memref<N xi32> buffer shared across all conduits.
+  llvm::DenseMap<mlir::Value, AIE::BufferOp> tileRotationBuf;
+  llvm::DenseMap<mlir::Value, int64_t> tileRotationBufNextSlot;
 
   // Shim conduit names for Phase 4.5 symbol rewriting.
   llvm::StringSet<> shimConduitNames;
