@@ -972,7 +972,7 @@ def Conduit_WaitAllAsync : Conduit_Op<"wait_all_async"> {
 // Pass C Phase 6 lowers these core-body ops 1:1 to aie.put/get_cascade.
 // ---------------------------------------------------------------------------
 
-def Conduit_PutCascade : Conduit_Op<"put_cascade"> {
+def Conduit_PutCascade : Conduit_Op<"put_cascade", [MemoryEffects<[MemWrite]>]> {
   let summary = "Write a vector value to the cascade output port of this tile.";
   let description = [{
     Cascade core-body op.  Writes the given value to the cascade output port
@@ -994,7 +994,7 @@ def Conduit_PutCascade : Conduit_Op<"put_cascade"> {
   let hasVerifier = 1;
 }
 
-def Conduit_GetCascade : Conduit_Op<"get_cascade"> {
+def Conduit_GetCascade : Conduit_Op<"get_cascade", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Read a vector value from the cascade input port of this tile.";
   let description = [{
     Cascade core-body op.  Reads a value from the cascade input port of the

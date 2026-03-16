@@ -401,6 +401,19 @@ struct ObjectFifoToConduitPass
           passFailed = true;
           return; // skip conduit.create for this fifo
         }
+        // CSDF patterns require buffering that the cascade stream cannot
+        // provide. Cascade is a single-register pass-through with no queue;
+        // any rate other than 1:1 produces deadlock or data corruption.
+        // Detect CSDF by checking whether Phase 1.5 observed varying acquire
+        // counts (non-empty accessPattern means at least two distinct counts).
+        if (!info.accessPattern.empty()) {
+          op.emitError(
+              "cascade conduit requires SDF rate (1,1); CSDF patterns "
+              "require buffering which cascade cannot provide");
+          signalPassFailure();
+          passFailed = true;
+          return; // skip conduit.create for this fifo
+        }
         routingModeAttr = mlir::StringAttr::get(ctx, "cascade");
       }
 
@@ -634,6 +647,115 @@ struct ObjectFifoToConduitPass
       llvm::DenseMap<mlir::StringAttr, mlir::Value> &blockWindowMap =
           allBlockWindowMaps[block];
 
+      // Sequential acquire pattern (P2-D: AIE2_delayed_release):
+      //
+      // ObjectFIFO acquire semantics: acquire(N) means "I need N total
+      // elements right now", not "give me N more".  If you call acquire(2)
+      // then acquire(1) then acquire(3) then release(3), the stateful
+      // transform emits: AcquireGreaterEqual(2), [nothing], AcquireGreaterEqual(1),
+      // [nothing], Release(3) — only the incremental delta is acquired each step.
+      //
+      // The Conduit IR window model is acquire-one-window-at-a-time.  To match
+      // the oracle, Pass A collapses each release-group of consecutive acquires
+      // into a SINGLE conduit.acquire with the MAXIMUM count in the group, then
+      // reuses that one window for all subview_access rewrites within the group.
+      //
+      // Pre-scan: for each block, walk its ops in program order and group
+      // consecutive acquires on the same (fifo, port) pair between releases.
+      // Record (acquire_op → effective_max_count_for_group).  When an acquire's
+      // count does not exceed the current group max, it is "subsumed" by the
+      // first acquire in the group and will not emit a new conduit.acquire.
+      //
+      // Only applies to non-cascade fifos (cascade has no window semantics).
+      //
+      // Example:  acquire(2), acquire(1), acquire(3), acquire(1), release(3)
+      //   group max = 3 (from acquire(3))
+      //   first acquire in group → conduit.acquire{count=3}
+      //   remaining acquires → suppressed; reuse group window
+      //   release(3) → conduit.release %groupWin {count=3}  [M8: 3≤3 OK]
+
+      // Key: (fifo-name-attr, port-enum-as-int64)
+      using GroupKey = std::pair<mlir::StringAttr, int64_t>;
+      // Map from acquire-op ptr to the effective max count for its group.
+      llvm::DenseMap<mlir::Operation *, int64_t> acqGroupMax;
+      // Map from acquire-op ptr to whether it is the first (non-suppressed)
+      // acquire in its group — only the first emits conduit.acquire.
+      llvm::DenseMap<mlir::Operation *, bool> acqIsGroupLeader;
+
+      {
+        // current max held and the group leader op for each (name, port).
+        llvm::DenseMap<GroupKey, int64_t> heldMax;
+        llvm::DenseMap<GroupKey, mlir::Operation *> groupLeader;
+
+        for (mlir::Operation &rawOp : *block) {
+          if (auto acqOp = mlir::dyn_cast<AIE::ObjectFifoAcquireOp>(rawOp)) {
+            auto nameAttr =
+                mlir::StringAttr::get(ctx, acqOp.getObjFifoName().str());
+            // Skip cascade fifos — they have no window semantics.
+            if (cascadeFifoNames.count(nameAttr))
+              continue;
+            int64_t portInt =
+                (acqOp.getPort() == AIE::ObjectFifoPort::Produce) ? 0 : 1;
+            GroupKey key = {nameAttr, portInt};
+            int64_t newCount = acqOp.acqNumber();
+            int64_t &held = heldMax[key];
+            if (newCount > held) {
+              // This acquire extends the group (or starts a new one if held==0).
+              if (held == 0) {
+                // New group: this op is the leader.
+                groupLeader[key] = &rawOp;
+                acqIsGroupLeader[&rawOp] = true;
+              } else {
+                // Extends existing group: update the current leader's effective
+                // max so Pass C generates the right count.
+                mlir::Operation *leader = groupLeader[key];
+                acqGroupMax[leader] =
+                    std::max(acqGroupMax.count(leader) ? acqGroupMax[leader]
+                                                       : heldMax[key],
+                             newCount);
+                acqIsGroupLeader[&rawOp] = false;
+              }
+              held = newCount;
+            } else {
+              // Sub-max acquire: suppressed; reuse the current group leader.
+              acqIsGroupLeader[&rawOp] = false;
+            }
+          } else if (auto relOp =
+                         mlir::dyn_cast<AIE::ObjectFifoReleaseOp>(rawOp)) {
+            auto nameAttr =
+                mlir::StringAttr::get(ctx, relOp.getObjFifoName().str());
+            if (cascadeFifoNames.count(nameAttr))
+              continue;
+            int64_t portInt =
+                (relOp.getPort() == AIE::ObjectFifoPort::Produce) ? 0 : 1;
+            GroupKey key = {nameAttr, portInt};
+            // Finalise group leader's effective max (covers the case where the
+            // leader was never updated by an extending acquire).
+            if (groupLeader.count(key)) {
+              mlir::Operation *leader = groupLeader[key];
+              if (!acqGroupMax.count(leader))
+                acqGroupMax[leader] = heldMax[key];
+            }
+            // Reset group tracking.
+            heldMax[key] = 0;
+            groupLeader.erase(key);
+          }
+        }
+        // Finalise any open groups at end of block (no trailing release).
+        for (auto &[key, leader] : groupLeader) {
+          if (!acqGroupMax.count(leader))
+            acqGroupMax[leader] = heldMax[key];
+        }
+      } // end pre-scan
+
+      // Per-block group-window map: fifo name → current group leader's
+      // conduit.acquire SSA value.  Used to reuse the group window for
+      // suppressed (sub-max) acquires and for releases.
+      llvm::DenseMap<mlir::StringAttr, mlir::Value> blockGroupWindow;
+      // Per-block held count: tracks how many elements are currently held
+      // so we know when to update the group window after an extending acquire.
+      llvm::DenseMap<mlir::StringAttr, int64_t> blockHeldCount;
+
       for (mlir::Operation &rawOp : llvm::make_early_inc_range(*block)) {
         if (auto op = mlir::dyn_cast<AIE::ObjectFifoAcquireOp>(rawOp)) {
           builder.setInsertionPoint(op);
@@ -699,11 +821,38 @@ struct ObjectFifoToConduitPass
             continue;
           }
 
-          auto winTy = WindowType::get(ctx, elemType);
-          mlir::Value winVal = builder.create<Acquire>(
-              loc, winTy, mlir::StringAttr::get(ctx, name),
-              mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-              PortAttr::get(ctx, port));
+          // Sequential acquire pattern (P2-D):
+          // The pre-scan determined whether this acquire is a group leader
+          // (first/max in its release-group) or is subsumed by the leader.
+          //
+          // - Group leader: emit conduit.acquire{count=effective_max}, record
+          //   as blockGroupWindow.  The count used is the pre-scan max (not the
+          //   raw op count) so that sub-max acquires in the same group are
+          //   covered by this single window — M8 sees release_count ≤ max.
+          // - Subsumed acquire: no conduit.acquire emitted; subview_access ops
+          //   are rewritten to use the current blockGroupWindow instead.
+
+          mlir::Value winVal;
+          bool isLeader = acqIsGroupLeader.lookup(&rawOp);
+          if (isLeader || !blockGroupWindow.count(nameAttr)) {
+            // Emit one conduit.acquire for the group.
+            // Use the pre-scanned group max as the effective count so the
+            // single window covers all elements that will be released.
+            int64_t effectiveCount = acqGroupMax.count(&rawOp)
+                                         ? acqGroupMax[&rawOp]
+                                         : count;
+            auto winTy = WindowType::get(ctx, elemType);
+            winVal = builder.create<Acquire>(
+                loc, winTy, mlir::StringAttr::get(ctx, name),
+                mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                       effectiveCount),
+                PortAttr::get(ctx, port));
+            // Record as the group leader window.
+            blockGroupWindow[nameAttr] = winVal;
+          } else {
+            // Subsumed acquire: reuse the existing group window.
+            winVal = blockGroupWindow[nameAttr];
+          }
 
           // Record the window for subsequent releases in this block and for
           // cross-block lookups in dominated nested blocks.
@@ -828,8 +977,23 @@ struct ObjectFifoToConduitPass
             continue;
           }
 
-          // First try the local block's window map (same-block acquire).
-          mlir::Value winVal = blockWindowMap.lookup(nameAttr);
+          // Sequential acquire pattern (P2-D): for releases in the same block,
+          // prefer the group leader window (blockGroupWindow) over the most
+          // recently seen acquire window (blockWindowMap).  The group leader
+          // window was emitted with count=max_in_group, so M8's invariant
+          // release_count ≤ acquired_count is satisfied.
+          //
+          // After the release, clear the group window so the next acquire in
+          // this block starts a new group.
+          mlir::Value winVal = blockGroupWindow.lookup(nameAttr);
+          if (winVal) {
+            // Same-block sequential acquire group: use group leader window.
+            blockGroupWindow.erase(nameAttr);
+            blockHeldCount.erase(nameAttr);
+          } else {
+            // No group window in this block — try blockWindowMap (same block).
+            winVal = blockWindowMap.lookup(nameAttr);
+          }
 
           if (!winVal) {
             // Cross-block case: look for a window value in a dominating

@@ -60,13 +60,17 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 
 namespace xilinx::conduit {
@@ -122,6 +126,96 @@ checkWindowLiveness(mlir::Operation *producerOp, mlir::Value windowVal,
   return mlir::failure();
 }
 
+// ---------------------------------------------------------------------------
+// Mixed-mode DMA/cascade liveness check (P2-B).
+//
+// In a core body that acquires DMA data via aie.use_lock(Acquire, val>=1)
+// and then sends it on the cascade stream via aie.put_cascade, the lock
+// acquisition must dominate the put_cascade in the CFG.  If it does not,
+// the put_cascade may send stale data before the DMA transfer completes.
+//
+// The check is conservative: if the use-def chain of the put_cascade value
+// contains a memref.load, we treat it as potentially DMA-dependent and
+// require any DMA consumer lock acquisition in the same core to dominate
+// the put_cascade.  When the chain contains no loads (pure register
+// arithmetic from constants/get_cascade/etc.) we skip the check.
+// ---------------------------------------------------------------------------
+
+// Walk the def chain of 'val' to determine if it depends on a memref.load.
+// Returns true if any load is found within a bounded depth (avoids cycles).
+static bool valueComesFromLoad(mlir::Value val, unsigned depthLimit = 16) {
+  if (depthLimit == 0)
+    return false;
+  mlir::Operation *defOp = val.getDefiningOp();
+  if (!defOp)
+    return false; // block argument — not a load
+  if (mlir::isa<mlir::memref::LoadOp>(defOp))
+    return true;
+  // Recurse through operands of arithmetic / vector / cast ops.
+  for (mlir::Value operand : defOp->getOperands())
+    if (valueComesFromLoad(operand, depthLimit - 1))
+      return true;
+  return false;
+}
+
+// Check one aie.core region for mixed-mode ordering violations.
+// Returns true if any error was emitted.
+static bool checkMixedModeLiveness(mlir::Region &coreRegion,
+                                   mlir::DominanceInfo &domInfo) {
+  using namespace xilinx::AIE;
+
+  // Collect DMA consumer lock acquisitions (use_lock with Acquire or
+  // AcquireGreaterEqual and value >= 1).  These signal that DMA data has
+  // arrived and the buffer is safe to read.
+  llvm::SmallVector<UseLockOp, 4> dmaWaits;
+  coreRegion.walk([&](UseLockOp lockOp) {
+    auto action = lockOp.getAction();
+    if (action != LockAction::Acquire && action != LockAction::AcquireGreaterEqual)
+      return;
+    // value >= 1 indicates a data-ready signal (not a zero-init acquire).
+    auto maybeVal = lockOp.getValue();
+    if (!maybeVal.has_value() || *maybeVal < 1)
+      return;
+    dmaWaits.push_back(lockOp);
+  });
+
+  // Collect aie.put_cascade ops.
+  llvm::SmallVector<PutCascadeOp, 4> cascadePuts;
+  coreRegion.walk([&](PutCascadeOp putOp) {
+    cascadePuts.push_back(putOp);
+  });
+
+  // If either set is empty, no mixed-mode interaction exists.
+  if (dmaWaits.empty() || cascadePuts.empty())
+    return false;
+
+  bool anyError = false;
+
+  for (PutCascadeOp putOp : cascadePuts) {
+    // Determine if the value being sent is load-dependent.
+    // Use the conservative fallback: if any load appears in the def chain,
+    // treat this put_cascade as potentially DMA-dependent.
+    mlir::Value cascadeVal = putOp.getCascadeValue();
+    bool isDMADependent = valueComesFromLoad(cascadeVal);
+
+    if (!isDMADependent)
+      continue; // independent of DMA data — no ordering required
+
+    // Check that every DMA wait dominates this put_cascade.
+    for (UseLockOp lockOp : dmaWaits) {
+      if (!domInfo.dominates(lockOp.getOperation(), putOp.getOperation())) {
+        putOp.emitError(
+            "put_cascade may fire before DMA transfer completes: "
+            "ensure aie.use_lock(Acquire) dominates this op");
+        anyError = true;
+        break; // one error per put_cascade is sufficient
+      }
+    }
+  }
+
+  return anyError;
+}
+
 struct ConduitLivenessCheckPass
     : public impl::ConduitLivenessCheckBase<ConduitLivenessCheckPass> {
 
@@ -148,6 +242,18 @@ struct ConduitLivenessCheckPass
                                        waitOp.getName(), asyncNames)))
           anyFailure = true;
       });
+    });
+
+    // -----------------------------------------------------------------------
+    // P2-B: Mixed-mode DMA/cascade liveness check.
+    // Walk all aie.core regions (post-Pass-C lowered IR) and check that
+    // aie.use_lock(Acquire) dominates aie.put_cascade when the cascade value
+    // is loaded from a DMA-filled buffer.
+    // -----------------------------------------------------------------------
+    mlir::DominanceInfo domInfo(module);
+    module.walk([&](AIE::CoreOp coreOp) {
+      if (checkMixedModeLiveness(coreOp.getBody(), domInfo))
+        anyFailure = true;
     });
 
     if (anyFailure)

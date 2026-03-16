@@ -168,6 +168,16 @@ void linkPhase(ConduitToDMAState &state) {
     }
 
     // Join intermediate buffers and locks.
+    //
+    // The join destination conduit's buffers were NOT pre-allocated in
+    // Phase 3 (linkDstNames skip). Phase 5 allocates them here directly
+    // on the memtile, then records them into jDstInfo->buffers so that
+    // later phases (Phase 5.5 skip, Phase 6/7 erase) see the correct resources.
+    //
+    // Per-source lock pairs (one pair per S2MM channel) are also allocated
+    // here. Phase 3 no longer allocates a redundant single lock pair for
+    // the join destination. This eliminates the former +2 buffer / +2 lock
+    // resource surplus.
     llvm::SmallVector<AIE::BufferOp> joinIntermediateBuffers;
     llvm::SmallVector<AIE::LockOp> joinSrcProdLocks;
     llvm::SmallVector<AIE::LockOp> joinSrcConsLocks;
@@ -190,31 +200,38 @@ void linkPhase(ConduitToDMAState &state) {
         builder.setInsertionPoint(state.deviceBody->getTerminator());
         unsigned numJoinSrcs = static_cast<unsigned>(srcs.size());
 
+        // Allocate join intermediate buffers on the memtile (depth-many).
+        // Record them in jDstInfo->buffers so Phase 6/7 can look them up.
         for (int64_t i = 0; i < jDstDepth; ++i) {
-          std::string symName = jDstName + "_join_buff_" + std::to_string(i);
+          std::string symName = jDstName + "_buff_" + std::to_string(i);
           auto buf = builder.create<AIE::BufferOp>(state.deviceOp.getLoc(), intBufTy, memtileVal,
               mlir::StringAttr::get(ctx, symName), mlir::IntegerAttr{},
               mlir::ElementsAttr{}, mlir::IntegerAttr{});
           joinIntermediateBuffers.push_back(buf);
         }
+        // Register in jDstInfo so downstream phases see the correct buffers.
+        jDstInfo->buffers = joinIntermediateBuffers;
 
+        // Allocate per-source lock pairs on the memtile.
+        // Each S2MM channel i acquires joinSrcProdLocks[i] and releases
+        // joinSrcConsLocks[i]; the MM2S chain acquires cons and releases prod.
         for (unsigned srcIdx = 0; srcIdx < numJoinSrcs; ++srcIdx) {
           if (isAIE2) {
             { int lockIdx = state.lockIdCounter[memtileVal]++;
-              std::string symName = jDstName + "_join_prod_lock_" + std::to_string(srcIdx);
+              std::string symName = jDstName + "_prod_lock_" + std::to_string(srcIdx);
               AIE::LockOp lk = builder.create<AIE::LockOp>(
                   state.deviceOp.getLoc(), memtileVal, lockIdx, static_cast<int>(jDstDepth));
               lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
               joinSrcProdLocks.push_back(lk); }
             { int lockIdx = state.lockIdCounter[memtileVal]++;
-              std::string symName = jDstName + "_join_cons_lock_" + std::to_string(srcIdx);
+              std::string symName = jDstName + "_cons_lock_" + std::to_string(srcIdx);
               AIE::LockOp lk = builder.create<AIE::LockOp>(
                   state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
               lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
               joinSrcConsLocks.push_back(lk); }
           } else {
             int lockIdx = state.lockIdCounter[memtileVal]++;
-            std::string symName = jDstName + "_join_lock_" + std::to_string(srcIdx);
+            std::string symName = jDstName + "_lock_" + std::to_string(srcIdx);
             AIE::LockOp lk = builder.create<AIE::LockOp>(
                 state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
             lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
@@ -287,7 +304,10 @@ void linkPhase(ConduitToDMAState &state) {
             static_cast<int32_t>(srcIdx));
       }
 
-      // Destination flow: memtile MM2S 0 → dst consumer.
+      // Destination flow: memtile MM2S 0 → dst compute consumer.
+      // NOTE: shim consumer flows are handled by Phase 4b (routePhase) which
+      // iterates all conduits with shimConsumerTileCoords. We must NOT emit
+      // the shim flow here to avoid duplicating Phase 4b's emission.
       if (!dsts.empty()) {
         std::string dstName = mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
         if (ConduitInfo *dstFlowInfo = state.lookupConduit(dstName)) {
@@ -299,13 +319,9 @@ void linkPhase(ConduitToDMAState &state) {
                   AIE::WireBundle::DMA, 0, consTile.getResult(),
                   AIE::WireBundle::DMA, 0);
           }
-          for (auto [shimCol, shimRow] : dstFlowInfo->shimConsumerTileCoords) {
-            AIE::TileOp shimTile = state.lookupTileByCoord(shimCol, shimRow);
-            if (shimTile)
-              builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
-                  AIE::WireBundle::DMA, 0, shimTile.getResult(),
-                  AIE::WireBundle::DMA, 0);
-          }
+          // Shim consumer flows are NOT emitted here. Phase 4b emits
+          // prodTile→shimTile for join destination conduits that have
+          // shimConsumerTileCoords. Emitting here would produce duplicates.
         }
       }
     }
@@ -595,6 +611,80 @@ void linkPhase(ConduitToDMAState &state) {
   state.deviceOp.walk([&](AIE::MemTileDMAOp mtOp) {
     tileToDMARegion[mtOp.getTile()] = &mtOp.getBody();
   });
+
+  // -----------------------------------------------------------------------
+  // Phase 5.5e: Build aie.shim_dma BD chains for external-buffer conduits.
+  //
+  // When conduit.register_external_buffers was present, the shim DMA must
+  // use the registered external buffer(s) in its BD chain instead of
+  // allocated tile-memory buffers.  Phase 4a already emitted the shim
+  // locks (shimProdLock / shimConsLock) and shim_dma_allocation.
+  // -----------------------------------------------------------------------
+  for (auto &[name, info] : state.conduitMap) {
+    if (info.externalBuffers.empty())
+      continue;
+    auto [prodCol, prodRow] = info.producerTileCoord;
+    if (prodCol < 0 || prodRow != 0)
+      continue; // only shim producers
+
+    AIE::TileOp shimTile = state.lookupTileByCoord(prodCol, prodRow);
+    if (!shimTile)
+      continue;
+
+    mlir::Value shimTileVal = shimTile.getResult();
+    builder.setInsertionPoint(state.deviceBody->getTerminator());
+
+    // Build aie.shim_dma with one BD per external buffer.
+    auto shimDMAOp =
+        builder.create<AIE::ShimDMAOp>(state.deviceOp.getLoc(), shimTileVal);
+    mlir::Region &shimRegion = shimDMAOp.getBody();
+    auto addShimBlock = [&]() -> mlir::Block * {
+      return builder.createBlock(&shimRegion);
+    };
+
+    mlir::Block *entryBlock = addShimBlock();
+    unsigned numExtBufs = info.externalBuffers.size();
+    llvm::SmallVector<mlir::Block *> bdBlocks;
+    for (unsigned i = 0; i < numExtBufs; ++i)
+      bdBlocks.push_back(addShimBlock());
+    mlir::Block *endBlock = addShimBlock();
+
+    builder.setInsertionPointToEnd(entryBlock);
+    builder.create<AIE::DMAStartOp>(
+        state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
+        static_cast<int32_t>(0), static_cast<int32_t>(0),
+        bdBlocks[0], endBlock);
+
+    for (unsigned i = 0; i < numExtBufs; ++i) {
+      mlir::Value extBuf = info.externalBuffers[i];
+      // Determine length from the external buffer memref type.
+      int64_t bufLen = 1;
+      auto mref = mlir::dyn_cast<mlir::MemRefType>(extBuf.getType());
+      if (mref && !mref.getShape().empty()) {
+        bufLen = 1;
+        for (int64_t d : mref.getShape())
+          if (!mlir::ShapedType::isDynamic(d))
+            bufLen *= d;
+      }
+
+      mlir::Value acqLock =
+          info.shimProdLock ? info.shimProdLock.getResult() : mlir::Value{};
+      mlir::Value relLock =
+          info.shimConsLock ? info.shimConsLock.getResult() : mlir::Value{};
+
+      state.emitBDBlock(
+          state.deviceOp.getLoc(), bdBlocks[i],
+          acqLock, state.lockAcqValue(Port::Consume, 1),
+          extBuf, 0, bufLen,
+          relLock, state.lockRelValue(Port::Consume));
+      // Circular ring.
+      builder.create<AIE::NextBDOp>(
+          state.deviceOp.getLoc(), bdBlocks[(i + 1) % numExtBufs]);
+    }
+
+    builder.setInsertionPointToEnd(endBlock);
+    builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+  }
 
   for (auto &[name, info] : state.conduitMap) {
     // For disable_synchronization conduits, locks are null by design — skip the

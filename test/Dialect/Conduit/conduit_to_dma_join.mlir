@@ -28,12 +28,36 @@
 
 // CHECK-LABEL: module @link_join_offsets
 // CHECK:   aie.device(xcve2302) {
-// --- Four flows: 3 compute tiles to memtile (S2MM channels 0,1,2),
-//     and memtile MM2S channel 0 to shim ---
+//
+// Resource parity check: after the join-L2 fix, Conduit now produces
+// exactly the same resources as --aie-objectFifo-stateful-transform:
+//   8 buffers, 14 locks, 4 flows, 18 BDs, 36 use_locks.
+//
+// Phase 4b emits the shim allocation + shim locks + memtile→shim flow
+// BEFORE Phase 5 emits the per-source flows. Order differs from the
+// stateful transform but is functionally equivalent.
+//
+// --- Shim DMA allocation for link4 ---
+// CHECK:     aie.shim_dma_allocation @link4_shim_alloc
+// --- Shim locks (2 locks on shim tile, emitted by Phase 4b) ---
+// CHECK:     aie.lock({{.*}}shim{{.*}}2_0
+// CHECK:     aie.lock({{.*}}shim{{.*}}2_0
+// --- memtile→shim flow emitted by Phase 4b ---
+// CHECK:     aie.flow(%{{.*}}mem_tile_2_1, DMA : 0, %{{.*}}shim{{.*}}2_0, DMA : 0)
+// --- Join destination buffers (2 buffers on memtile) ---
+// CHECK:     aie.buffer(%{{.*}}mem_tile_2_1) {{.*}} memref<48xi32>
+// CHECK:     aie.buffer(%{{.*}}mem_tile_2_1) {{.*}} memref<48xi32>
+// --- 6 per-source lock pairs on memtile (3 sources × 2 locks) ---
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 0) {init = 2
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 1) {init = 0
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 2) {init = 2
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 3) {init = 0
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 4) {init = 2
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 5) {init = 0
+// --- Per-source flows: 3 compute tiles → memtile S2MM channels 0, 1, 2 ---
 // CHECK:     aie.flow(%{{.*}}tile_2_2, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 0)
 // CHECK:     aie.flow(%{{.*}}tile_2_3, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 1)
 // CHECK:     aie.flow(%{{.*}}tile_3_3, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 2)
-// CHECK:     aie.flow(%{{.*}}mem_tile_2_1, DMA : 0, %{{.*}}shim{{.*}}2_0, DMA : 0)
 // --- MemTile DMA for join: 3 S2MM channels ingesting slices, 1 MM2S channel output ---
 // CHECK:     aie.memtile_dma(%{{.*}}mem_tile_2_1) {
 // Three S2MM starts (channels 0, 1, 2 — one per source)

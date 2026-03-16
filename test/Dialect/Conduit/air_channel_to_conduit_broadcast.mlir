@@ -1,33 +1,41 @@
 // RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit %s 2>&1 | FileCheck %s
 //
-// Pass B (--air-channel-to-conduit) broadcast_shape diagnostic test.
+// Pass B (--air-channel-to-conduit) broadcast_shape topology test.
 //
-// Verifies that air.channel declarations with a broadcast_shape attribute produce
-// a diagnostic warning (not silently dropped) and still emit a conduit.create.
+// Verifies that air.channel declarations with a broadcast_shape attribute:
+//   1. Emit a remark (not a warning) naming the computed capacity.
+//   2. Emit conduit.create with capacity = product(broadcast_shape) = 4.
+//   3. Retain routing_mode = "packet" from channel_type = "dma_packet".
 //
-// Sprint item 5b: broadcast_shape → warning + conduit.create emission.
+// broadcast_shape = [1, 4] → capacity = 1 × 4 = 4.
+//
+// Consumer tile coordinates are NOT available at this stage (no tile-placement
+// pre-pass). conduit.create is emitted with correct capacity but empty
+// consumer_tiles; full wiring requires a subsequent placement pass.
 //
 // Note: FileCheck is run on combined stdout+stderr (2>&1) so it can check
-// the warning message emitted by mlir's diagnostic system.
+// the remark emitted by mlir's diagnostic system.
 
 // Output order (stderr+stdout combined):
-//   line 1: warning: ... broadcast_shape ...
-//   line 2: "air.channel"() ... (source echo from diagnostic)
-//   line 3: ^
-//   line 4: note: see current operation: ...
-//   line 5: module {
-//   line 6: conduit.create {...name = "bcast_chan"...routing_mode = "packet"}
+//   line 1: remark: ... broadcast_shape ... capacity=4 ...
+//   line 2-3: source echo + note
+//   line 4: module {
+//   line 5: conduit.create {...capacity = 4...name = "bcast_chan"...routing_mode = "packet"}
 //
 // Checks must follow the output order.
 
-// 1. Warning contains "broadcast_shape".
-// CHECK: warning{{.*}}broadcast_shape
+// 1. Remark contains "broadcast_shape" and "capacity=4".
+// CHECK: remark{{.*}}broadcast_shape
+// CHECK-SAME: capacity=4
 
 // 2. Module opens (comes before conduit.create in output).
 // CHECK: module {
 
-// 3. conduit.create with name and routing_mode on same line.
-// CHECK: conduit.create{{.*}}name = "bcast_chan"{{.*}}routing_mode = "packet"
+// 3. conduit.create with correct capacity, name, and routing_mode.
+// CHECK: conduit.create
+// CHECK-SAME: capacity = 4
+// CHECK-SAME: name = "bcast_chan"
+// CHECK-SAME: routing_mode = "packet"
 
 // 4. No further air.channel ops in module body (source echoes already passed).
 // CHECK-NOT: air.channel

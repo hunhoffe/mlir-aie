@@ -353,22 +353,48 @@ struct AirChannelToConduitPass
         // "dma_stream" → leave routingMode empty (circuit default)
       }
 
-      // 5b: Warn on broadcast_shape (not silently dropped).
+      // 5b: Propagate broadcast_shape → conduit capacity.
+      //
+      // broadcast_shape = [d0, d1, ...] describes the fan-out topology:
+      //   capacity = product(broadcast_shape)  (total number of consumers)
+      //
+      // Consumer tile coordinates are NOT available at this stage — tile
+      // placement is performed by a separate AIR pass. We set capacity so
+      // that Pass C (--conduit-to-dma) knows the fan-out count, and emit a
+      // diagnostic note (not a warning) so the user knows partial topology
+      // information has been propagated.
+      //
+      // Full topology lowering (consumer_tiles, conduit.link) requires a
+      // tile-placement pre-pass to map each broadcast consumer to a tile.
+      int64_t broadcastCapacity = 1;
       if (auto bsAttr = op->getAttr("broadcast_shape")) {
-        op->emitWarning()
-            << "air-channel-to-conduit: channel @" << name
-            << " has broadcast_shape = " << bsAttr
-            << "; broadcast topology is not yet propagated into Conduit IR "
-               "(conduit.create will use default capacity=1). "
-               "TODO: map broadcast_shape to conduit capacity/routing attrs.";
+        if (auto denseAttr = mlir::dyn_cast<mlir::DenseI64ArrayAttr>(bsAttr)) {
+          for (int64_t dim : denseAttr.asArrayRef())
+            broadcastCapacity *= dim;
+          // Emit a note (not warning) that capacity was propagated.
+          // Consumer tile wiring requires a placement pre-pass.
+          op->emitRemark()
+              << "air-channel-to-conduit: channel @" << name
+              << " broadcast_shape=" << bsAttr
+              << " → conduit capacity=" << broadcastCapacity
+              << "; consumer tile coordinates not available (requires "
+                 "tile-placement pre-pass). conduit.create emitted with "
+                 "correct capacity; consumer_tiles left empty.";
+        } else {
+          // Non-dense broadcast_shape: fall back to warning.
+          op->emitWarning()
+              << "air-channel-to-conduit: channel @" << name
+              << " has broadcast_shape=" << bsAttr
+              << " in unrecognized format; capacity defaulting to 1";
+        }
       }
 
-      // Default: capacity=1, depth=1, no element_type (unknown until put/get seen).
+      // Emit conduit.create with broadcast capacity (or 1 for non-broadcast).
       // element_type will be patched after put/get scan below.
       mlir::Operation *createOp = builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), broadcastCapacity),
           /*producer_tile=*/mlir::DenseI64ArrayAttr{},
           /*consumer_tiles=*/mlir::DenseI64ArrayAttr{},
           /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
@@ -551,6 +577,81 @@ struct AirChannelToConduitPass
           continue;
         }
       }
+
+      // For cascade channels, warn on non-trivial (non-zero) constant offsets
+      // and non-trivial sizes/strides, and error on fully dynamic operands.
+      // Only element[0] is ever transferred; strided slices are silently wrong
+      // without these diagnostics.
+      //
+      // NOTE: the error flag cascadeHadError is checked AFTER all three loops
+      // so that we can report all bad operands in one pass before skipping the
+      // op. Using `continue` inside the inner loops would only skip to the next
+      // element in that loop — it would NOT skip the outer putGetToRewrite loop.
+      bool cascadeHadError = false;
+      if (isCascade) {
+        // Check offsets: warn if constant non-zero, error if dynamic.
+        for (mlir::Value v : offsetsRange) {
+          auto maybeVal = tryExtractConstInt(v);
+          if (!maybeVal) {
+            op->emitError()
+                << "air-channel-to-conduit: cascade channel @" << chanName
+                << " has a fully dynamic offset operand; intent cannot be "
+                   "inferred — only element[0] will be transferred regardless";
+            signalPassFailure();
+            cascadeHadError = true;
+          } else if (*maybeVal != 0) {
+            op->emitWarning()
+                << "air-channel-to-conduit: cascade channel @" << chanName
+                << " has a non-zero offset (" << *maybeVal
+                << "); only element[0] will be transferred — "
+                   "strided-slice semantics are not supported for cascade";
+          }
+        }
+
+        // Check sizes: warn if non-trivial constant (not matching full element),
+        // error if dynamic.
+        for (mlir::Value v : sizesRange) {
+          auto maybeVal = tryExtractConstInt(v);
+          if (!maybeVal) {
+            op->emitError()
+                << "air-channel-to-conduit: cascade channel @" << chanName
+                << " has a fully dynamic size operand; intent cannot be "
+                   "inferred — only element[0] will be transferred regardless";
+            signalPassFailure();
+            cascadeHadError = true;
+          } else if (*maybeVal != 1) {
+            // Size of 1 is trivial (single-element cascade); warn on larger.
+            op->emitWarning()
+                << "air-channel-to-conduit: cascade channel @" << chanName
+                << " has a non-unit size (" << *maybeVal
+                << "); only element[0] will be transferred — "
+                   "multi-element cascade slices are not supported";
+          }
+        }
+
+        // Check strides: warn if non-trivial constant, error if dynamic.
+        for (mlir::Value v : stridesRange) {
+          auto maybeVal = tryExtractConstInt(v);
+          if (!maybeVal) {
+            op->emitError()
+                << "air-channel-to-conduit: cascade channel @" << chanName
+                << " has a fully dynamic stride operand; intent cannot be "
+                   "inferred — only element[0] will be transferred regardless";
+            signalPassFailure();
+            cascadeHadError = true;
+          } else if (*maybeVal != 1) {
+            // Stride of 1 is the trivial (unit) stride; warn on others.
+            op->emitWarning()
+                << "air-channel-to-conduit: cascade channel @" << chanName
+                << " has a non-unit stride (" << *maybeVal
+                << "); only element[0] will be transferred — "
+                   "non-unit strides are not supported for cascade";
+          }
+        }
+      }
+      // Skip this op entirely if a cascade error was signaled.
+      if (cascadeHadError)
+        continue;
 
       bool isPut = isAirChannelPut(op);
       mlir::Operation *newOp = nullptr;

@@ -50,6 +50,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 
 #include <string>
@@ -62,6 +63,137 @@ namespace xilinx::conduit {
 namespace {
 
 using TileCoord = std::pair<int64_t, int64_t>;
+
+// ---------------------------------------------------------------------------
+// P2-E: Convergence hazard check.
+//
+// After Pass C has emitted all aie.packet_flow ops, walk the module and
+// check for convergence hazards: two packet flows sharing the same physical
+// source port (tile + bundle + channel) that both route to the SAME
+// destination tile with DIFFERENT packet IDs.
+//
+// When the switchbox arbitrates packets on a shared port, flits from different
+// IDs are interleaved.  If two flows target the same consumer through the same
+// source port, the consumer sees an unpredictable interleaving of packets from
+// both flows — ordering is not guaranteed under sustained load.
+//
+// The check reconstructs the port → [(flow_id, dest_tile)] map directly from
+// the emitted aie.packet_flow ops and flags any port where a collision exists.
+//
+// This is an OPT-IN post-pass check; it emits warnings (not errors) and does
+// not signal pass failure, because the condition is a hazard rather than a
+// hard correctness violation (it depends on workload timing).
+// ---------------------------------------------------------------------------
+
+// Key identifying a physical source port: (tile_col, tile_row, bundle, channel).
+struct SourcePortKey {
+  int32_t col;
+  int32_t row;
+  uint32_t bundle; // AIE::WireBundle as uint32_t for DenseMap
+  uint32_t channel;
+
+  bool operator==(const SourcePortKey &o) const {
+    return col == o.col && row == o.row &&
+           bundle == o.bundle && channel == o.channel;
+  }
+};
+
+struct SourcePortKeyInfo : public llvm::DenseMapInfo<SourcePortKey> {
+  static SourcePortKey getEmptyKey() {
+    return {-1, -1, ~0u, ~0u};
+  }
+  static SourcePortKey getTombstoneKey() {
+    return {-2, -2, ~0u - 1, ~0u - 1};
+  }
+  static unsigned getHashValue(const SourcePortKey &k) {
+    return llvm::hash_combine(k.col, k.row, k.bundle, k.channel);
+  }
+  static bool isEqual(const SourcePortKey &a, const SourcePortKey &b) {
+    return a == b;
+  }
+};
+
+// Entry recorded per packet_flow: the flow ID and the destination tile coord.
+struct FlowEntry {
+  int8_t flowId;
+  TileCoord dstTile;
+  AIE::PacketFlowOp flowOp; // for diagnostic location
+};
+
+// Check all aie.packet_flow ops in the module for convergence hazards.
+// Returns true if any warnings were emitted.
+static bool checkConvergenceHazards(mlir::ModuleOp module) {
+  // Map: source port → list of (flowId, dstTile, flowOp) entries.
+  llvm::DenseMap<SourcePortKey, llvm::SmallVector<FlowEntry, 2>,
+                 SourcePortKeyInfo> portMap;
+
+  module.walk([&](AIE::PacketFlowOp flowOp) {
+    int8_t flowId = flowOp.getID();
+
+    // Extract source port from the packet_source op in the flow's region.
+    AIE::PacketSourceOp srcOp;
+    flowOp.getPorts().walk([&](AIE::PacketSourceOp s) {
+      if (!srcOp)
+        srcOp = s;
+    });
+
+    // Extract all destination tiles from packet_dest ops.
+    flowOp.getPorts().walk([&](AIE::PacketDestOp dstOp) {
+      if (!srcOp)
+        return;
+
+      // Get source tile coordinates.
+      mlir::Value srcTileVal = srcOp.getTile();
+      auto srcTileOp = srcTileVal.getDefiningOp<AIE::TileOp>();
+      if (!srcTileOp)
+        return;
+
+      // Get destination tile coordinates.
+      mlir::Value dstTileVal = dstOp.getTile();
+      auto dstTileOp = dstTileVal.getDefiningOp<AIE::TileOp>();
+      if (!dstTileOp)
+        return;
+
+      SourcePortKey key{srcTileOp.getCol(), srcTileOp.getRow(),
+                        static_cast<uint32_t>(srcOp.getBundle()),
+                        static_cast<uint32_t>(srcOp.getChannel())};
+      TileCoord dst{dstTileOp.getCol(), dstTileOp.getRow()};
+      portMap[key].push_back({flowId, dst, flowOp});
+    });
+  });
+
+  bool anyWarning = false;
+
+  // For each source port, check if two flows with different IDs share the same
+  // destination tile.
+  for (auto &[port, entries] : portMap) {
+    if (entries.size() < 2)
+      continue;
+
+    // Check all pairs.
+    for (size_t i = 0; i < entries.size(); ++i) {
+      for (size_t j = i + 1; j < entries.size(); ++j) {
+        const FlowEntry &a = entries[i];
+        FlowEntry b = entries[j]; // non-const copy so emitWarning() is callable
+        // Same destination tile but different packet IDs → ordering hazard.
+        if (a.dstTile == b.dstTile && a.flowId != b.flowId) {
+          b.flowOp.emitWarning()
+              << "packet flows with different IDs ("
+              << static_cast<int>(a.flowId) << " and "
+              << static_cast<int>(b.flowId)
+              << ") route to the same consumer tile ("
+              << b.dstTile.first << ", " << b.dstTile.second
+              << ") through the same switchbox source port on tile ("
+              << port.col << ", " << port.row
+              << "); ordering is not guaranteed under sustained load";
+          anyWarning = true;
+        }
+      }
+    }
+  }
+
+  return anyWarning;
+}
 
 struct ConduitCheckChannelsPass
     : public impl::ConduitCheckChannelsBase<ConduitCheckChannelsPass> {
@@ -175,6 +307,14 @@ struct ConduitCheckChannelsPass
 
     if (anyFailure)
       signalPassFailure();
+
+    // -----------------------------------------------------------------------
+    // P2-E: Convergence hazard check (post-Pass-C analysis).
+    // Walk aie.packet_flow ops in the lowered IR and warn when two flows
+    // with different IDs share the same source port and destination tile.
+    // This is a warning-only check; it never signals pass failure.
+    // -----------------------------------------------------------------------
+    checkConvergenceHazards(module);
   }
 };
 

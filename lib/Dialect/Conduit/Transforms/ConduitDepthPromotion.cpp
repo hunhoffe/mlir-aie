@@ -15,6 +15,8 @@
 // compute-DMA overlap.  Runs after Pass A/B and before Pass C.
 //
 // Exclusion criteria (any one disqualifies):
+//   0. Cascade conduit (routing_mode = "cascade") — depth is architecturally
+//      fixed at 1; hardware has no FIFO, only a blocking register.
 //   1. CSDF / cyclostatic access pattern present
 //   2. Linked conduit (appears in conduit.link srcs or dsts)
 //   3. No surrounding loop (no overlap benefit without iteration)
@@ -195,6 +197,11 @@ struct ConduitDepthPromotePass
 
     // Pre-populate from existing conduit.create ops.
     module.walk([&](Create op) {
+      // Cascade conduits use no buffers, locks, or BDs — skip resource counting.
+      if (auto rm = op->getAttrOfType<mlir::StringAttr>("routing_mode"))
+        if (rm.getValue() == "cascade")
+          return;
+
       auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
       int64_t depth = depthAttr ? depthAttr.getInt() : 1;
       auto consTiles = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
@@ -245,6 +252,16 @@ struct ConduitDepthPromotePass
       if (!nameAttr)
         continue;
       llvm::StringRef name = nameAttr.getValue();
+
+      // Criterion 0: cascade conduits — depth is architecturally fixed at 1.
+      // The cascade stream is a hardware register (rendezvous channel), not a FIFO.
+      // Promoting to depth-2 would emit an incorrect depth attribute that Pass C
+      // cannot implement. Skip silently; do not emit a remark (this is expected).
+      if (auto routingMode =
+              createOp->getAttrOfType<mlir::StringAttr>("routing_mode")) {
+        if (routingMode.getValue() == "cascade")
+          continue;
+      }
 
       // Criterion 1: CSDF / cyclostatic access pattern.
       if (createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(

@@ -37,10 +37,84 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
 #include <set>
 #include <string>
 
 namespace xilinx::conduit {
+
+// ---------------------------------------------------------------------------
+// PacketIDAllocator: compile-time packet flow ID counter with exhaustion check.
+//
+// AIE hardware has a finite number of distinct packet flow IDs. AIE1 supports
+// up to 32 IDs (5-bit field); AIE2 also supports up to 32 IDs. If more than
+// `limit` packet flows are emitted, data corruption occurs silently at runtime
+// because the hardware reuses IDs. This allocator enforces the limit at
+// compile time, emitting a hard error when the budget is exceeded.
+//
+// Instantiated in ConduitToDMAPass.cpp with the architecture-specific limit
+// (queried from AIETargetModel if available; defaults to 32).
+// ---------------------------------------------------------------------------
+struct PacketIDAllocator {
+  mlir::ModuleOp module;
+  uint8_t next = 0;
+  uint8_t limit; // from AIETargetModel or default 32
+
+  explicit PacketIDAllocator(mlir::ModuleOp mod, uint8_t lim = 32)
+      : module(mod), limit(lim) {}
+
+  std::optional<uint8_t> allocate() {
+    if (next >= limit) {
+      module.emitError("packet flow ID exhausted: design requires more than ")
+          << (unsigned)limit << " distinct packet flows";
+      return std::nullopt;
+    }
+    return next++;
+  }
+
+  uint8_t remaining() const { return limit - next; }
+};
+
+// ---------------------------------------------------------------------------
+// PacketChannelState: module-level state for Step 3.5 packet DMA fallback.
+//
+// Tracks two pieces of information needed for safe packet-mode selection
+// when circuit DMA channels are exhausted (mode=any fallback):
+//
+//   isPacketChannel: for each (tile_op_ptr, mm2s_channel_index) pair, whether
+//     that physical MM2S channel has been designated for packet use.  Once
+//     designated, the channel is shared by multiple logical packet flows (each
+//     with a distinct flow ID); circuit-mode flows may not use it.
+//
+//   portOccupancy: for each packet-mode MM2S channel (identified by an
+//     int64_t key combining tile ptr and channel index), the list of
+//     (flow_id, dst_tile_op*) pairs already routed through it.  Used for the
+//     convergence hazard check (Step 3.5d): two packet flows on the same
+//     physical channel that route to the same consumer tile D create an
+//     ordering hazard under sustained load.
+//
+// Initialized in ConduitToDMAPass.cpp at Pass C entry.
+// Maintained across all conduits during Phase 4.5a flow emission.
+// ---------------------------------------------------------------------------
+struct PacketChannelState {
+  // Per (tile_op_ptr, channel_index): is this MM2S channel packet-mode?
+  llvm::DenseMap<std::pair<mlir::Operation *, int>, bool> isPacketChannel;
+
+  // Per packet-mode MM2S port: (flow_id, dst_tile_op*) pairs routing through.
+  // Key: portKey(tileOp, channel).
+  llvm::DenseMap<int64_t,
+                 llvm::SmallVector<std::pair<uint8_t, mlir::Operation *>>>
+      portOccupancy;
+
+  // Build a stable int64_t key for portOccupancy from a (tile, channel) pair.
+  // Uses the lower 56 bits of the tile pointer + 8 bits of channel index.
+  // Collision probability is negligible for designs with <256^7 tiles.
+  static int64_t portKey(mlir::Operation *tileOp, int channel) {
+    auto addr = reinterpret_cast<uintptr_t>(tileOp);
+    return static_cast<int64_t>((addr & 0x00FFFFFFFFFFFFFFULL) << 8)
+           | static_cast<int64_t>(channel & 0xFF);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Helper: parse "tile(col,row)" → (col, row).  Returns {-1,-1} on failure.
@@ -106,6 +180,18 @@ struct ConduitInfo {
   // Shared memory flag: set when producer and consumer are adjacent tiles.
   // When true, buffers/locks go on the producer (or alloc) tile; no DMA.
   bool sharedMemory = false;
+
+  // External buffers (from conduit.register_external_buffers).
+  // When non-empty, the shim DMA BD chain uses these instead of allocated
+  // buffers, and internal buffer allocation for the shim tile is skipped.
+  llvm::SmallVector<mlir::Value> externalBuffers;
+  // Tile coordinate of the shim endpoint associated with externalBuffers.
+  std::pair<int64_t, int64_t> externalBufferTileCoord = {-1, -1};
+
+  // Shim-tile locks for shim producer conduits (Phase 4a → Phase 5.5).
+  // Populated by Phase 4a when the producer tile is a shim.
+  AIE::LockOp shimProdLock;
+  AIE::LockOp shimConsLock;
 
   // Hardware SSA values:
   llvm::SmallVector<AIE::BufferOp> buffers; // depth-many on consumer_tile[0]
@@ -289,8 +375,20 @@ struct ConduitToDMAState {
   // Shim conduit names for Phase 4.5 symbol rewriting.
   llvm::StringSet<> shimConduitNames;
 
-  // Packet flow ID counter.
-  int packetFlowID = 0;
+  // Packet flow ID allocator (replaces raw counter; initialized in Pass shell).
+  // Use std::optional so the state struct can be default-constructed before
+  // the module and architecture limit are known.
+  std::optional<PacketIDAllocator> packetIDAllocator;
+
+  // Packet channel state for Step 3.5 mode=any fallback.
+  // Tracks which MM2S channels have been designated for packet use, and which
+  // (flow_id, dst_tile) pairs are routed through each packet-mode channel.
+  PacketChannelState pktChannelState;
+
+  // Per-tile BD budget used (number of BD slots consumed so far).
+  // Incremented by `depth` whenever a conduit allocates BD chains on a tile.
+  // Used by Step 3.5b to check whether the BD budget allows a new flow.
+  llvm::DenseMap<mlir::Value, int32_t> tileBDUsed;
 
   // Fuse group tracking for Phase 4.5a and Phase 5.5.
   llvm::StringMap<int32_t> fuseGroupMM2SChannel;
@@ -329,14 +427,29 @@ struct ConduitToDMAState {
   }
 
   // Emit a circuit or packet flow between two tiles.
+  // For packet flows, the packet ID is allocated from packetIDAllocator.
+  // If the ID budget is exhausted, passFailed is set and the flow is not
+  // emitted (the error is reported by the allocator on the module op).
   void emitFlow(llvm::StringRef routingMode, mlir::Value srcTile,
                 AIE::WireBundle srcBundle, int32_t srcChan,
                 mlir::Value dstTile, AIE::WireBundle dstBundle,
                 int32_t dstChan) {
     if (routingMode == "packet") {
+      // Allocate a packet flow ID; fail gracefully if budget is exhausted.
+      if (!packetIDAllocator) {
+        module.emitError(
+            "internal error: packetIDAllocator not initialized before emitFlow");
+        passFailed = true;
+        return;
+      }
+      std::optional<uint8_t> pktID = packetIDAllocator->allocate();
+      if (!pktID) {
+        passFailed = true;
+        return;
+      }
       auto pktFlow = builder->create<AIE::PacketFlowOp>(
           deviceOp.getLoc(),
-          static_cast<int8_t>(packetFlowID++ & 0x7F),
+          static_cast<int8_t>(*pktID),
           /*keep_pkt_header=*/mlir::BoolAttr{},
           /*priority_route=*/mlir::BoolAttr{});
       mlir::Region &region = pktFlow.getPorts();

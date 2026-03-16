@@ -138,6 +138,17 @@ void collectPhase(ConduitToDMAState &state) {
       }
     }
 
+    // Cascade depth assertion: cascade conduits must have depth = 1.
+    // The hardware cascade stream is a blocking register (rendezvous channel),
+    // not a FIFO. depth = 2 cannot be implemented; emitting it would produce
+    // a silently incorrect program.
+    if (info.routingMode == "cascade" && info.depth != 1) {
+      op.emitError("cascade conduit must have depth = 1; hardware has no FIFO "
+                   "on the cascade stream");
+      state.passFailed = true;
+      return;
+    }
+
     state.conduitMap[op.getName().str()] = std::move(info);
   });
 
@@ -206,6 +217,13 @@ void collectPhase(ConduitToDMAState &state) {
       for (auto s : linkOp.getSrcs())
         state.linkJoinSrcNames.insert(
             mlir::cast<mlir::StringAttr>(s).getValue());
+      // Join destination conduits: Phase 3 must skip buffer/lock allocation
+      // because Phase 5 (join) allocates per-source lock pairs and uses
+      // the join destination's buffers for the intermediate join buffer.
+      // Over-allocating in Phase 3 produces duplicate buffers + extra locks.
+      for (auto d : linkOp.getDsts())
+        state.linkDstNames.insert(
+            mlir::cast<mlir::StringAttr>(d).getValue());
     }
   });
 
@@ -248,6 +266,31 @@ void collectPhase(ConduitToDMAState &state) {
       }
     }
   }
+
+  // -----------------------------------------------------------------------
+  // Phase 1.5: Collect conduit.register_external_buffers.
+  //
+  // Records the external buffer SSA values and tile coordinates into
+  // ConduitInfo so that Phase 3 can skip internal buffer allocation and
+  // Phase 5.5 can build the shim_dma BD chain using the external buffers.
+  // -----------------------------------------------------------------------
+  module.walk([&](RegisterExternalBuffers regOp) {
+    llvm::StringRef conduitName = regOp.getName();
+    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    if (!cinfo) {
+      regOp.emitWarning(
+          "conduit-to-dma: register_external_buffers references unknown "
+          "conduit '" + conduitName.str() + "'; ignoring");
+      return;
+    }
+    // Record external buffer SSA values.
+    for (mlir::Value extBuf : regOp.getExternalBuffers())
+      cinfo->externalBuffers.push_back(extBuf);
+    // Record the tile coordinate.
+    auto tc = regOp.getTileCoord();
+    if (tc.size() >= 2)
+      cinfo->externalBufferTileCoord = {tc[0], tc[1]};
+  });
 }
 
 } // namespace xilinx::conduit

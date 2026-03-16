@@ -55,6 +55,17 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     collectPhase(state);
     if (state.passFailed) { signalPassFailure(); return; }
 
+    // Initialize the packet flow ID allocator after collectPhase has resolved
+    // the architecture (AIETargetModel).  AIE1 and AIE2 both support up to 32
+    // distinct packet flow IDs (5-bit hardware field, values 0–31).  If the
+    // target model ever exposes a different limit, query it here.
+    //
+    // NOTE: We query the model after collectPhase because collectPhase is where
+    // state.targetModel and state.aieArch are populated.
+    uint8_t pktIDLimit = 32; // default for AIE1 and AIE2
+    // Future: if targetModel exposes getNumPacketFlowIDs(), use it here.
+    state.packetIDAllocator.emplace(module, pktIDLimit);
+
     // Phase 3: Allocate buffers and locks for each conduit.
     allocPhase(state);
     if (state.passFailed) { signalPassFailure(); return; }

@@ -47,9 +47,16 @@ void allocPhase(ConduitToDMAState &state) {
     // -------------------------------------------------------------------
     // Phase 3b: Shim consumer(s) but no compute consumer.
     // Buffer and locks live on the PRODUCER tile (compute).
+    //
+    // EXCEPTION: join destination conduits (in linkDstNames) are skipped
+    // here. Phase 5 (join) reuses the existing destination buffers for
+    // the join intermediate buffer and allocates per-source lock pairs
+    // directly. Over-allocating buffers and a lock pair here produces
+    // duplicate resources (+2 buffers, +2 locks per join destination).
     // -------------------------------------------------------------------
     if (info.consumerTileCoords.empty() &&
-        !info.shimConsumerTileCoords.empty()) {
+        !info.shimConsumerTileCoords.empty() &&
+        !state.linkDstNames.count(name)) {
       auto [prodCol, prodRow] = info.producerTileCoord;
       if (prodCol < 0 || prodRow == 0) {
         state.deviceOp.emitWarning(
@@ -114,6 +121,43 @@ void allocPhase(ConduitToDMAState &state) {
         bool leftShared = targetModel.isLegalMemAffinity(
             consCol, consRow, prodCol, prodRow);
         if (rightShared || leftShared) {
+          // Defensive adjacency guard: assert the tiles that established
+          // shared-memory eligibility are still adjacent.  This should
+          // always hold here (the condition above guarantees it), but
+          // if alloc_tile is provided we additionally verify that the
+          // alloc tile is adjacent to both producer and consumer tiles
+          // so that the physical buffer is reachable from both cores.
+          if (info.hasAllocTile) {
+            int64_t aCol = info.allocTileCoord.first;
+            int64_t aRow = info.allocTileCoord.second;
+            bool allocAdjToProd = targetModel.isLegalMemAffinity(
+                aCol, aRow, prodCol, prodRow) ||
+                                  targetModel.isLegalMemAffinity(
+                                      prodCol, prodRow, aCol, aRow);
+            bool allocAdjToCons = targetModel.isLegalMemAffinity(
+                aCol, aRow, consCol, consRow) ||
+                                  targetModel.isLegalMemAffinity(
+                                      consCol, consRow, aCol, aRow);
+            if (!allocAdjToProd || !allocAdjToCons) {
+              // Find an existing conduit.create op to emit the error on.
+              state.module.walk([&](Create createOp) {
+                if (createOp.getName() == name) {
+                  createOp.emitError(
+                      "shared-memory conduit requires adjacent tiles; "
+                      "alloc_tile (" + std::to_string(aCol) + "," +
+                      std::to_string(aRow) + ") is not adjacent to both "
+                      "producer (" + std::to_string(prodCol) + "," +
+                      std::to_string(prodRow) + ") and consumer (" +
+                      std::to_string(consCol) + "," +
+                      std::to_string(consRow) + ")");
+                  state.passFailed = true;
+                }
+              });
+              if (state.passFailed)
+                return;
+            }
+          }
+
           info.sharedMemory = true;
 
           int64_t allocCol = prodCol, allocRow = prodRow;

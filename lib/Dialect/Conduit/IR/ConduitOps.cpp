@@ -190,7 +190,8 @@ void ConduitDialect::initialize() {
 //===----------------------------------------------------------------------===//
 
 // M4: warn when element_type has dynamic dimensions (capacity is approximate).
-// M5: validate routing_mode when present; must be "circuit" or "packet".
+// M5: validate routing_mode when present; must be "circuit", "packet",
+//     "cascade", or "any" (mode=any triggers Step 3.5 in Pass C).
 // M6: CSDF balance check — if producer_rates and/or consumer_rates are present,
 //     verify both are present and the CSDF consistency equation holds:
 //
@@ -225,8 +226,10 @@ void ConduitDialect::initialize() {
   }
   if (auto rmOpt = getRoutingMode()) {
     llvm::StringRef rm = *rmOpt;
-    if (rm != "circuit" && rm != "packet" && rm != "cascade")
-      return emitOpError("routing_mode must be \"circuit\", \"packet\", or \"cascade\", got \"")
+    if (rm != "circuit" && rm != "packet" && rm != "cascade" && rm != "any")
+      return emitOpError(
+                 "routing_mode must be \"circuit\", \"packet\", \"cascade\", "
+                 "or \"any\", got \"")
              << rm << "\"";
   }
 
