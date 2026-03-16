@@ -232,6 +232,8 @@ void collectPhase(ConduitToDMAState &state) {
   module.walk([&](Acquire acqOp) {
     if (acqOp.getPort() == Port::Consume)
       state.conduitNamesWithConsumerAcquire.insert(acqOp.getName());
+    else if (acqOp.getPort() == Port::Produce)
+      state.conduitNamesWithProducerAcquire.insert(acqOp.getName());
   });
   module.walk([&](AcquireAsync acqOp) {
     // AcquireAsync is always consumer-side.

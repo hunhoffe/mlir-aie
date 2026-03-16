@@ -68,7 +68,12 @@ void lowerPhase(ConduitToDMAState &state) {
           // Resolve per-tile buffers and rotation counter.
           auto resolved = cinfo->resolveForTile(op);
           llvm::SmallVector<AIE::BufferOp> *tileBuffers = resolved.buffers;
-          AIE::BufferOp tileRotationBuf = resolved.rotationBuf;
+          // Use the port-appropriate rotation counter:
+          // - Consume port uses consumerTileRotationBufs (rotationBuf)
+          // - Produce port uses producerTileRotationBufs (producerRotationBuf)
+          AIE::BufferOp tileRotationBuf = (acquirePort == Port::Produce)
+              ? resolved.producerRotationBuf
+              : resolved.rotationBuf;
 
           {
             int64_t bufIdx = static_cast<int64_t>(tileBuffers->size()) > 1
@@ -76,7 +81,7 @@ void lowerPhase(ConduitToDMAState &state) {
                                  : 0;
             int64_t numBufs = static_cast<int64_t>(tileBuffers->size());
             bool useStaticSelection =
-                (numBufs <= 1 || !tileRotationBuf || acquirePort == Port::Produce);
+                (numBufs <= 1 || !tileRotationBuf);
             if (useStaticSelection) {
               mlir::Value bufVal = (*tileBuffers)[bufIdx].getResult();
               if (bufVal.getType() == op.getResult().getType()) {
@@ -175,11 +180,12 @@ void lowerPhase(ConduitToDMAState &state) {
     int64_t count = static_cast<int64_t>(op.getCount());
     Port port = op.getPort();
 
-    // Resolve per-tile lock pair and rotation counter.
+    // Resolve per-tile lock pair and rotation counters.
     auto resolved = cinfo->resolveForTile(op);
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
     AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
+    AIE::BufferOp resolvedProducerRotationBuf = resolved.producerRotationBuf;
 
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
@@ -211,6 +217,24 @@ void lowerPhase(ConduitToDMAState &state) {
       builder.create<mlir::memref::StoreOp>(
           loc, result, resolvedRotationBuf.getResult(), mlir::ValueRange{c0});
     }
+    // Counter increment for depth>1 Produce port (producer buffer rotation).
+    if (resolvedProducerRotationBuf && port == Port::Produce && cinfo->depth > 1) {
+      mlir::Location loc = op.getLoc();
+      mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+      mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+      mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
+          loc, resolvedProducerRotationBuf.getResult(), mlir::ValueRange{c0});
+      mlir::Value incI32 = mlir::arith::ConstantIntOp::create(
+          builder, loc, i32Ty, count);
+      mlir::Value newVal =
+          builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
+      mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
+          builder, loc, i32Ty, cinfo->depth);
+      mlir::Value result =
+          builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
+      builder.create<mlir::memref::StoreOp>(
+          loc, result, resolvedProducerRotationBuf.getResult(), mlir::ValueRange{c0});
+    }
     releasesToErase.push_back(op);
   });
 
@@ -240,6 +264,7 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
     AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
+    AIE::BufferOp resolvedProducerRotationBuf = resolved.producerRotationBuf;
     mlir::Operation *acquireCoreOp = resolved.coreOp;
 
     AIE::LockOp lock =
@@ -267,6 +292,33 @@ void lowerPhase(ConduitToDMAState &state) {
             initBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
         initBuilder.create<mlir::memref::StoreOp>(
             loc, zero, resolvedRotationBuf.getResult(),
+            mlir::ValueRange{c0});
+      }
+    }
+
+    // Counter init for depth>1 Produce acquires (producer buffer rotation).
+    if (resolvedProducerRotationBuf && port == Port::Produce && cinfo->depth > 1 &&
+        acquireCoreOp) {
+      mlir::Value coreTileVal =
+          mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
+      auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
+      auto tileCoord = std::make_pair(
+          static_cast<int64_t>(coreTileOp.getCol()),
+          static_cast<int64_t>(coreTileOp.getRow()));
+      // Use a separate key with "_prod" suffix to avoid collision with consumer counter.
+      auto key = std::make_pair(op.getName().str() + "_prod", tileCoord);
+      if (!counterInitialized.count(key)) {
+        counterInitialized.insert(key);
+        mlir::Block *entryBlock = &acquireCoreOp->getRegion(0).front();
+        mlir::OpBuilder initBuilder(entryBlock, entryBlock->begin());
+        mlir::Location loc = op.getLoc();
+        mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+        mlir::Value zero = mlir::arith::ConstantIntOp::create(
+            initBuilder, loc, i32Ty, 0);
+        mlir::Value c0 =
+            initBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+        initBuilder.create<mlir::memref::StoreOp>(
+            loc, zero, resolvedProducerRotationBuf.getResult(),
             mlir::ValueRange{c0});
       }
     }

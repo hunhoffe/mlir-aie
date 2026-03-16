@@ -94,6 +94,18 @@ void allocPhase(ConduitToDMAState &state) {
         info.consLock = locks.consLock;
         info.aie1Locks = std::move(locks.aie1Locks);
       }
+      // Producer rotation counter for depth>1 produce-mode acquires.
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
+        auto counterTy = mlir::MemRefType::get(
+            {1}, mlir::IntegerType::get(ctx, 32));
+        AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
+            state.deviceOp.getLoc(), counterTy, prodTileVal,
+            /*sym_name=*/mlir::StringAttr{},
+            /*address=*/mlir::IntegerAttr{},
+            /*initial_value=*/mlir::ElementsAttr{},
+            /*mem_bank=*/mlir::IntegerAttr{});
+        info.producerTileRotationBufs[prodTileVal] = rotBuf;
+      }
       continue;
     }
 
@@ -237,6 +249,19 @@ void allocPhase(ConduitToDMAState &state) {
               info.consumerTileRotationBufs[consTileVal] = info.rotationBuf;
             }
 
+            // Producer rotation counter for depth>1 produce-mode acquires.
+            if (depth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
+              auto counterTy = mlir::MemRefType::get(
+                  {1}, mlir::IntegerType::get(ctx, 32));
+              AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
+                  state.deviceOp.getLoc(), counterTy, prodTileVal,
+                  /*sym_name=*/mlir::StringAttr{},
+                  /*address=*/mlir::IntegerAttr{},
+                  /*initial_value=*/mlir::ElementsAttr{},
+                  /*mem_bank=*/mlir::IntegerAttr{});
+              info.producerTileRotationBufs[prodTileVal] = rotBuf;
+            }
+
             continue; // skip normal DMA consumer loop
           }
         }
@@ -278,6 +303,18 @@ void allocPhase(ConduitToDMAState &state) {
         info.prodLock = locks.prodLock;
         info.consLock = locks.consLock;
         info.aie1Locks = std::move(locks.aie1Locks);
+      }
+      // Producer rotation counter for depth>1 produce-mode acquires.
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
+        auto counterTy = mlir::MemRefType::get(
+            {1}, mlir::IntegerType::get(ctx, 32));
+        AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
+            state.deviceOp.getLoc(), counterTy, prodTileVal,
+            /*sym_name=*/mlir::StringAttr{},
+            /*address=*/mlir::IntegerAttr{},
+            /*initial_value=*/mlir::ElementsAttr{},
+            /*mem_bank=*/mlir::IntegerAttr{});
+        info.producerTileRotationBufs[prodTileVal] = rotBuf;
       }
       continue;
     }
@@ -358,7 +395,8 @@ void allocPhase(ConduitToDMAState &state) {
                 info.consumerTileLocks[pTileVal] = {pLocks.prodLock,
                                                     pLocks.consLock};
 
-                if (prodDepth > 1) {
+                if (prodDepth > 1 &&
+                    state.conduitNamesWithProducerAcquire.count(name)) {
                   auto counterTy = mlir::MemRefType::get(
                       {1}, mlir::IntegerType::get(ctx, 32));
                   AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
@@ -367,7 +405,7 @@ void allocPhase(ConduitToDMAState &state) {
                       /*address=*/mlir::IntegerAttr{},
                       /*initial_value=*/mlir::ElementsAttr{},
                       /*mem_bank=*/mlir::IntegerAttr{});
-                  info.consumerTileRotationBufs[pTileVal] = rotBuf;
+                  info.producerTileRotationBufs[pTileVal] = rotBuf;
                 }
               }
             }
@@ -498,6 +536,18 @@ void allocPhase(ConduitToDMAState &state) {
           /*initial_value=*/mlir::ElementsAttr{},
           /*mem_bank=*/mlir::IntegerAttr{});
       info.consumerTileRotationBufs[prodTileVal] = rotBuf;
+    }
+    // Producer rotation counter for depth>1 produce-mode acquires.
+    if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name)) {
+      auto counterTy =
+          mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
+      AIE::BufferOp rotBuf = builder.create<AIE::BufferOp>(
+          state.deviceOp.getLoc(), counterTy, prodTileVal,
+          /*sym_name=*/mlir::StringAttr{},
+          /*address=*/mlir::IntegerAttr{},
+          /*initial_value=*/mlir::ElementsAttr{},
+          /*mem_bank=*/mlir::IntegerAttr{});
+      info.producerTileRotationBufs[prodTileVal] = rotBuf;
     }
   }
 }

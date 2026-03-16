@@ -222,7 +222,13 @@ struct ConduitInfo {
   // For depth>1: rotation counter buffer on the consumer tile.
   AIE::BufferOp rotationBuf;
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
-      consumerTileRotationBufs; // tile → rotation counter buffer
+      consumerTileRotationBufs; // tile → consumer rotation counter buffer
+
+  // For depth>1 produce-mode: rotation counter buffer on the producer tile.
+  // Separate from consumerTileRotationBufs so a tile that both produces and
+  // consumes keeps independent counters for each direction.
+  llvm::DenseMap<mlir::Value, AIE::BufferOp>
+      producerTileRotationBufs; // tile → producer rotation counter buffer
 
   // --- New feature flags (populated by Phase 1 from conduit.create attrs) ---
 
@@ -248,11 +254,12 @@ struct ConduitInfo {
     AIE::LockOp prodLock;
     AIE::LockOp consLock;
     llvm::SmallVector<AIE::BufferOp> *buffers = nullptr;
-    AIE::BufferOp rotationBuf;
+    AIE::BufferOp rotationBuf;         // consumer-side rotation counter
+    AIE::BufferOp producerRotationBuf; // producer-side rotation counter
     mlir::Operation *coreOp = nullptr;
   };
 
-  // Resolve per-tile locks, buffers, and rotation counter for an op
+  // Resolve per-tile locks, buffers, and rotation counters for an op
   // inside a CoreOp.  Walks the parent chain to find the enclosing CoreOp,
   // then looks up per-tile overrides in consumerTileLocks/Buffers/RotationBufs.
   ResolvedTileResources resolveForTile(mlir::Operation *op) {
@@ -280,6 +287,9 @@ struct ConduitInfo {
     auto rotIt = consumerTileRotationBufs.find(coreTile);
     if (rotIt != consumerTileRotationBufs.end())
       res.rotationBuf = rotIt->second;
+    auto prodRotIt = producerTileRotationBufs.find(coreTile);
+    if (prodRotIt != producerTileRotationBufs.end())
+      res.producerRotationBuf = prodRotIt->second;
     return res;
   }
 };
@@ -371,6 +381,9 @@ struct ConduitToDMAState {
 
   // Conduit names with at least one Consume-port acquire op.
   llvm::StringSet<> conduitNamesWithConsumerAcquire;
+  // Conduit names with at least one Produce-port acquire op (for producer
+  // rotation counter allocation when depth > 1).
+  llvm::StringSet<> conduitNamesWithProducerAcquire;
 
   // Shim conduit names for Phase 4.5 symbol rewriting.
   llvm::StringSet<> shimConduitNames;
