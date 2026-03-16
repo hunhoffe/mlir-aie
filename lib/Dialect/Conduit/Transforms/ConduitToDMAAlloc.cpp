@@ -55,8 +55,12 @@ void allocPhase(ConduitToDMAState &state) {
     // duplicate resources (+2 buffers, +2 locks per join destination).
     // -------------------------------------------------------------------
     if (info.consumerTileCoords.empty() &&
-        !info.shimConsumerTileCoords.empty() &&
-        !state.linkDstNames.count(name)) {
+        !info.shimConsumerTileCoords.empty()) {
+      // Join/distribute destination conduits get their MemTile buffers from
+      // linkPhase() intermediate buffer allocation — skip here to avoid
+      // duplicate buffers and locks on the MemTile.
+      if (state.linkDstNames.count(name))
+        continue;
       auto [prodCol, prodRow] = info.producerTileCoord;
       if (prodCol < 0 || prodRow == 0) {
         state.deviceOp.emitWarning(
@@ -463,6 +467,11 @@ void allocPhase(ConduitToDMAState &state) {
     if (info.sharedMemory)
       continue;
     if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))
+      continue;
+    // Link destination conduits (distribute dsts or join dst) share the
+    // MemTile buffer set owned by the source conduit — skip producer-side
+    // allocation here to avoid over-allocating duplicate buffers and locks.
+    if (state.linkDstNames.count(name))
       continue;
     auto [prodCol, prodRow] = info.producerTileCoord;
     if (prodCol < 0 || prodRow == 0)

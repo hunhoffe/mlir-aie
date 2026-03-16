@@ -13,10 +13,8 @@
 
 // CHECK-LABEL: module @linkDistRepeat
 // CHECK:   aie.device(npu1) {
-// MemTile producer locks: init = repeat_count * depth = 2 * 2 = 4
-// CHECK:     aie.lock({{.*}}) {init = 4 : i32, sym_name = "of2_prod_lock_0"}
-// CHECK:     aie.lock({{.*}}) {init = 4 : i32, sym_name = "of1_prod_lock_0"}
-// Consumer tile locks also init = 4
+// Consumer tile locks: init = repeat_count * depth = 2 * 2 = 4
+// (Phase 3 normal consumer loop applies repeat_count to link-dst consumer locks)
 // CHECK:     aie.lock({{.*}}) {init = 4 : i32, sym_name = "of2_cons_prod_lock_0"}
 // CHECK:     aie.lock({{.*}}) {init = 4 : i32, sym_name = "of1_cons_prod_lock_0"}
 // Flows from shim and memtile

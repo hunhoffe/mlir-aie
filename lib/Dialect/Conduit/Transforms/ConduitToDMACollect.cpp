@@ -225,6 +225,10 @@ void collectPhase(ConduitToDMAState &state) {
         state.linkDstNames.insert(
             mlir::cast<mlir::StringAttr>(d).getValue());
     }
+    // Populate linkDstNames early so allocPhase/routePhase can skip
+    // destination conduits that share the MemTile buffer set.
+    for (auto d : linkOp.getDsts())
+      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
   });
 
   // Conduit names with at least one Consume-port acquire op (for rotation

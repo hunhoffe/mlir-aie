@@ -384,10 +384,13 @@ void routePhase(ConduitToDMAState &state) {
             /*plio=*/false,
             /*packet=*/nullptr);
 
-      state.emitFlow(info.routingMode, prodTile.getResult(),
-                     AIE::WireBundle::DMA, static_cast<int32_t>(0),
-                     shimTile.getResult(), AIE::WireBundle::DMA,
-                     static_cast<int32_t>(0));
+      // Link destination conduits: flow is emitted by linkPhase() — skip
+      // duplicate emission here.
+      if (!state.linkDstNames.count(name))
+        state.emitFlow(info.routingMode, prodTile.getResult(),
+                       AIE::WireBundle::DMA, static_cast<int32_t>(0),
+                       shimTile.getResult(), AIE::WireBundle::DMA,
+                       static_cast<int32_t>(0));
     }
   }
 
@@ -455,6 +458,10 @@ void routePhase(ConduitToDMAState &state) {
     if (info.sharedMemory)
       continue;
     if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))
+      continue;
+    // Link destinations: flows are emitted by linkPhase() — skip here to
+    // avoid duplicate flows.
+    if (state.linkDstNames.count(name))
       continue;
     auto [prodCol, prodRow] = info.producerTileCoord;
     if (prodCol < 0 || prodRow == 0)
