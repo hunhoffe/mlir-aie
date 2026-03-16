@@ -1,33 +1,23 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// P1-G regression test: shim producer lock init value must equal depth.
+// Regression test: shim producer lock init value must be 0 (oracle match).
 //
-// Background (Fix 1a):
-//   Before Fix 1a, shim-side producer locks were initialized with init=0.
-//   This is correct for depth-1 (trivially: 1 slot, init=1 would also work
-//   but the stateful transform uses init=0 for shim depth-1), but for depth>1
-//   it causes a silent hardware deadlock:
+// Background:
+//   Shim-side locks (prod_lock and cons_lock on the shim tile) are programmed
+//   by the host runtime via aiex.npu.dma_memcpy_nd token signaling.  The AIE
+//   runtime handles lock initialization as part of DMA configuration, so both
+//   shim locks must start at 0 to match the oracle
+//   (--aie-objectFifo-stateful-transform) output.
 //
-//     - The shim DMA producer needs to acquire a "free slot" lock before it
-//       can write data into a buffer slot.
-//     - On AIE2 (semaphore model), the producer lock counts free buffer slots.
-//       init=0 means "no slots free" → the DMA engine immediately stalls,
-//       waiting for a slot that the consumer has never filled (because the
-//       consumer is also waiting for data).
-//     - Result: mutual deadlock — neither side can make progress.
-//
-//   Fix 1a changed the shim producer lock to init=depth (all slots initially
-//   free, matching the consumer-tile prod_lock convention).
-//
-// This test guards against regression: if anyone changes the init value back
-// to 0, this test will fail.
+//   Pre-signaling depth free slots to a shim DMA that has not yet been
+//   configured causes over-commitment and mismatches the oracle.
 //
 // Topology: depth-2 shim-to-compute (shim tile [0,0] → compute tile [0,2]).
 // Target: npu1_1col (AIE2).
 //
 // Expected locks:
 //   Shim tile [0,0]:
-//     prod_lock init=2  (depth=2 → 2 free slots, Fix 1a)
+//     prod_lock init=0  (host runtime programs shim locks via npu.dma_memcpy_nd)
 //     cons_lock init=0  (no filled slots initially)
 //   Compute tile [0,2]:
 //     cons_prod_lock init=2  (depth=2 → 2 free slots)
@@ -47,9 +37,9 @@
 // --- Shim DMA allocation ---
 // CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc
 
-// --- Shim-tile producer lock: init=2 (Fix 1a: must equal depth, NOT 0) ---
+// --- Shim-tile producer lock: init=0 (oracle match: host programs shim locks) ---
 // CHECK:     aie.lock(%{{.*}}tile_0_0
-// CHECK-SAME:   init = 2
+// CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "shim_fifo_prod_lock_0"
 
 // --- Shim-tile consumer lock: init=0 ---
@@ -73,7 +63,7 @@ module @shim_lock_init_test {
 
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
-    // depth=2: double-buffering; shim producer lock must be init=depth=2
+    // depth=2: double-buffering; shim producer lock must be init=0 (oracle match)
     aie.objectfifo @shim_fifo(%tile_0_0, {%tile_0_2}, 2 : i32) : !aie.objectfifo<memref<8xi32>>
 
     %core_0_2 = aie.core(%tile_0_2) {

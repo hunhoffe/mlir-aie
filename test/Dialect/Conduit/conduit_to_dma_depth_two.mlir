@@ -54,6 +54,13 @@
 // CHECK:     }
 // --- Shim DMA and flow ---
 // CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc
+// --- Shim-side locks: both init=0 (host runtime programs these) ---
+// CHECK:     aie.lock(%{{.*}}tile_0_0
+// CHECK-SAME:   init = 0
+// CHECK-SAME:   sym_name = "input_fifo_prod_lock_0"
+// CHECK:     aie.lock(%{{.*}}tile_0_0
+// CHECK-SAME:   init = 0
+// CHECK-SAME:   sym_name = "input_fifo_cons_lock_0"
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
 // --- Tile DMA: depth-2 BD ring (aie.mem, not aie.memtile_dma) ---
 // CHECK:     aie.mem(%{{.*}}tile_0_2) {

@@ -279,10 +279,12 @@ void routePhase(ConduitToDMAState &state) {
       if (isAIE2) {
         int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
         std::string symName = name + "_prod_lock_0";
-        // prod_lock init=depth: all slots initially free (host can write).
+        // prod_lock init=0: shim locks are programmed by the host runtime
+        // via aiex.npu.dma_memcpy_nd token signaling; pre-signaling free
+        // slots causes over-commitment before the shim DMA is configured.
         AIE::LockOp lk = builder.create<AIE::LockOp>(
             state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
-            static_cast<int>(shimDepth));
+            static_cast<int>(0));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         info.shimProdLock = lk;
       }
