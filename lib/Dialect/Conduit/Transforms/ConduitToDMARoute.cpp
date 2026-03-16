@@ -275,6 +275,9 @@ void routePhase(ConduitToDMAState &state) {
       // Shim-side prod/cons locks (AIE2 only).
       // For external-buffer conduits (AIE1), also emit a single shim lock
       // for the aie.shim_dma BD chain.
+      // Note: shim-producer conduits (Phase 4a) cannot be link destinations
+      // (link dsts are always MemTile/compute tile consumers, not shim
+      // producers), so no linkDstNames guard is needed in 4a.
       int64_t shimDepth = info.depth > 0 ? info.depth : 1;
       if (isAIE2) {
         int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
@@ -323,8 +326,8 @@ void routePhase(ConduitToDMAState &state) {
             /*packet=*/nullptr);
 
       // One flow per consumer tile (broadcast).
-      for (unsigned consIdx = 0;
-           consIdx < info.consumerTileCoords.size(); ++consIdx) {
+      for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
+           ++consIdx) {
         auto [consCol, consRow] = info.consumerTileCoords[consIdx];
         AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
         if (!consTile)
@@ -357,24 +360,33 @@ void routePhase(ConduitToDMAState &state) {
       // shim S2MM DMA BDs; without them, the runtime has no locks
       // for flow control on the receive path.
       if (isAIE2) {
-        int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
-        std::string symName = name + "_cons_prod_lock_0";
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
-            static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-      }
-      if (isAIE2) {
-        int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
-        std::string symName = name + "_cons_cons_lock_0";
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
-            static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+        {
+          int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
+          // Naming convention: <conduit>_<endpoint-role>_<lock-role>_<idx>
+          // "cons" = shim consumer endpoint; "prod" = this lock controls free
+          // receive slots (DMA can write when >0).
+          std::string symName = name + "_cons_prod_lock_0";
+          AIE::LockOp lk = builder.create<AIE::LockOp>(
+              state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
+              static_cast<int>(0));
+          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+        }
+        {
+          int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
+          std::string symName = name + "_cons_cons_lock_0";
+          AIE::LockOp lk = builder.create<AIE::LockOp>(
+              state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
+              static_cast<int>(0));
+          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+        }
       }
 
       std::string allocSym = name + "_shim_alloc";
       state.shimConduitNames.insert(name);
+      // Link-dst conduits: this allocation is intentionally kept —
+      // linkPhase() emits the flow (memtile MM2S → shim S2MM) but does NOT
+      // create a ShimDMAAllocationOp. routePhase owns the allocation for all
+      // conduits with a shim consumer, including link-dst conduits.
       if (!mlir::SymbolTable::lookupSymbolIn(
               state.deviceOp, mlir::StringAttr::get(ctx, allocSym)))
         builder.create<AIE::ShimDMAAllocationOp>(
@@ -406,9 +418,8 @@ void routePhase(ConduitToDMAState &state) {
                 op->getAttrOfType<mlir::FlatSymbolRefAttr>("symbol")) {
           llvm::StringRef ref = symAttr.getValue();
           if (state.shimConduitNames.count(ref)) {
-            op->setAttr("symbol",
-                        mlir::FlatSymbolRefAttr::get(
-                            ctx, (ref + "_shim_alloc").str()));
+            op->setAttr("symbol", mlir::FlatSymbolRefAttr::get(
+                                      ctx, (ref + "_shim_alloc").str()));
           }
         }
         return;
@@ -419,20 +430,18 @@ void routePhase(ConduitToDMAState &state) {
                 op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")) {
           llvm::StringRef ref = symAttr.getValue();
           if (state.shimConduitNames.count(ref)) {
-            op->setAttr("metadata",
-                        mlir::FlatSymbolRefAttr::get(
-                            ctx, (ref + "_shim_alloc").str()));
+            op->setAttr("metadata", mlir::FlatSymbolRefAttr::get(
+                                        ctx, (ref + "_shim_alloc").str()));
           }
         } else if (auto symAttr =
                        op->getAttrOfType<mlir::SymbolRefAttr>("metadata")) {
           llvm::StringRef ref = symAttr.getRootReference().getValue();
           if (!state.shimConduitNames.count(ref))
             return;
-          op->setAttr("metadata",
-                      mlir::SymbolRefAttr::get(
-                          mlir::StringAttr::get(
-                              ctx, (ref + "_shim_alloc").str()),
-                          symAttr.getNestedReferences()));
+          op->setAttr("metadata", mlir::SymbolRefAttr::get(
+                                      mlir::StringAttr::get(
+                                          ctx, (ref + "_shim_alloc").str()),
+                                      symAttr.getNestedReferences()));
         }
         return;
       }
@@ -457,7 +466,8 @@ void routePhase(ConduitToDMAState &state) {
       continue;
     if (info.sharedMemory)
       continue;
-    if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))
+    if (state.linkSrcNamesEarly.count(name) ||
+        state.linkJoinSrcNames.count(name))
       continue;
     // Link destinations: flows are emitted by linkPhase() — skip here to
     // avoid duplicate flows.
@@ -538,10 +548,10 @@ void routePhase(ConduitToDMAState &state) {
       // for every consumer regardless of adjacency.
       // Exception: via_DMA=true forces DMA even for adjacent tiles.
       if (!info.viaDMA && info.consumerTileCoords.size() == 1) {
-        bool rightAdj = state.targetModel->isLegalMemAffinity(
-            prodCol, prodRow, consCol, consRow);
-        bool leftAdj = state.targetModel->isLegalMemAffinity(
-            consCol, consRow, prodCol, prodRow);
+        bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
+                                                              consCol, consRow);
+        bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
+                                                             prodCol, prodRow);
         if (rightAdj || leftAdj)
           continue;
       }
@@ -577,9 +587,9 @@ void routePhase(ConduitToDMAState &state) {
       int32_t s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
       state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
 
-      state.emitFlow(info.routingMode, prodTileVal,
-                     AIE::WireBundle::DMA, mm2sChannel,
-                     consTileVal, AIE::WireBundle::DMA, s2mmChannel);
+      state.emitFlow(info.routingMode, prodTileVal, AIE::WireBundle::DMA,
+                     mm2sChannel, consTileVal, AIE::WireBundle::DMA,
+                     s2mmChannel);
     }
   }
 
