@@ -10,9 +10,9 @@
 //
 // Phase 6: Lower conduit.acquire/release → aie.use_lock.
 //   Step 1: SubviewAccess → buffer replacement (static or dynamic rotation).
-//   Step 2: Release → use_lock + counter increment (collect for deferred erase).
-//   Step 3: Erase Release ops.
-//   Step 4: Acquire → use_lock + counter init; erase.
+//   Step 2: Release → use_lock + counter increment (collect for deferred
+//   erase). Step 3: Erase Release ops. Step 4: Acquire → use_lock + counter
+//   init; erase.
 //
 // Phase 7: Erase remaining Conduit ops (create, wait, wait_all_async).
 //
@@ -49,8 +49,8 @@ void lowerPhase(ConduitToDMAState &state) {
     module.walk([&](SubviewAccess op) {
       llvm::StringRef conduitName;
       Port acquirePort = Port::Consume;
-      if (auto acqOp = mlir::dyn_cast_or_null<Acquire>(
-              op.getWindow().getDefiningOp())) {
+      if (auto acqOp =
+              mlir::dyn_cast_or_null<Acquire>(op.getWindow().getDefiningOp())) {
         conduitName = acqOp.getName();
         acquirePort = acqOp.getPort();
       } else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
@@ -72,16 +72,16 @@ void lowerPhase(ConduitToDMAState &state) {
           // - Consume port uses consumerTileRotationBufs (rotationBuf)
           // - Produce port uses producerTileRotationBufs (producerRotationBuf)
           AIE::BufferOp tileRotationBuf = (acquirePort == Port::Produce)
-              ? resolved.producerRotationBuf
-              : resolved.rotationBuf;
+                                              ? resolved.producerRotationBuf
+                                              : resolved.rotationBuf;
 
           {
-            int64_t bufIdx = static_cast<int64_t>(tileBuffers->size()) > 1
-                                 ? idx % static_cast<int64_t>(tileBuffers->size())
-                                 : 0;
+            int64_t bufIdx =
+                static_cast<int64_t>(tileBuffers->size()) > 1
+                    ? idx % static_cast<int64_t>(tileBuffers->size())
+                    : 0;
             int64_t numBufs = static_cast<int64_t>(tileBuffers->size());
-            bool useStaticSelection =
-                (numBufs <= 1 || !tileRotationBuf);
+            bool useStaticSelection = (numBufs <= 1 || !tileRotationBuf);
             if (useStaticSelection) {
               mlir::Value bufVal = (*tileBuffers)[bufIdx].getResult();
               if (bufVal.getType() == op.getResult().getType()) {
@@ -93,10 +93,13 @@ void lowerPhase(ConduitToDMAState &state) {
               builder.setInsertionPoint(op);
               mlir::Location loc = op.getLoc();
 
-              int64_t tileRotationBufSlot = (acquirePort == Port::Produce)
-                  ? resolved.producerRotationBufSlot
-                  : resolved.rotationBufSlot;
-              mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(loc, tileRotationBufSlot);
+              int64_t tileRotationBufSlot =
+                  (acquirePort == Port::Produce)
+                      ? resolved.producerRotationBufSlot
+                      : resolved.rotationBufSlot;
+              mlir::Value slotIdx =
+                  builder.create<mlir::arith::ConstantIndexOp>(
+                      loc, tileRotationBufSlot);
               mlir::Value ctrI32 = builder.create<mlir::memref::LoadOp>(
                   loc, tileRotationBuf.getResult(), mlir::ValueRange{slotIdx});
               mlir::Value ctrIdx = builder.create<mlir::arith::IndexCastOp>(
@@ -106,11 +109,12 @@ void lowerPhase(ConduitToDMAState &state) {
               if (idx > 0) {
                 mlir::Value idxConst =
                     builder.create<mlir::arith::ConstantIndexOp>(loc, idx);
-                mlir::Value sum = builder.create<mlir::arith::AddIOp>(
-                    loc, ctrIdx, idxConst);
+                mlir::Value sum =
+                    builder.create<mlir::arith::AddIOp>(loc, ctrIdx, idxConst);
                 mlir::Value depthConst =
                     builder.create<mlir::arith::ConstantIndexOp>(loc, numBufs);
-                absIdx = builder.create<mlir::arith::RemUIOp>(loc, sum, depthConst);
+                absIdx =
+                    builder.create<mlir::arith::RemUIOp>(loc, sum, depthConst);
               }
 
               mlir::Type bufTy = op.getResult().getType();
@@ -125,16 +129,16 @@ void lowerPhase(ConduitToDMAState &state) {
               for (int64_t i = 0; i < numBufs; ++i) {
                 mlir::Block *caseBlock =
                     &switchOp.getCaseRegions()[i].emplaceBlock();
-                mlir::OpBuilder caseBuilder(ctx);
-                caseBuilder.setInsertionPointToEnd(caseBlock);
+                mlir::OpBuilder caseBuilder =
+                    mlir::OpBuilder::atBlockEnd(caseBlock);
                 caseBuilder.create<mlir::scf::YieldOp>(
                     loc, (*tileBuffers)[i].getResult());
               }
               {
                 mlir::Block *defBlock =
                     &switchOp.getDefaultRegion().emplaceBlock();
-                mlir::OpBuilder defBuilder(ctx);
-                defBuilder.setInsertionPointToEnd(defBlock);
+                mlir::OpBuilder defBuilder =
+                    mlir::OpBuilder::atBlockEnd(defBlock);
                 defBuilder.create<mlir::scf::YieldOp>(
                     loc, (*tileBuffers)[0].getResult());
               }
@@ -156,15 +160,16 @@ void lowerPhase(ConduitToDMAState &state) {
     });
     for (auto op : subviewsToErase)
       op.erase();
-    if (state.passFailed) return;
+    if (state.passFailed)
+      return;
   }
 
   // Step 2: Release → use_lock; collect for deferred erase.
   llvm::SmallVector<Release> releasesToErase;
   module.walk([&](Release op) {
     llvm::StringRef conduitName;
-    if (auto acqOp = mlir::dyn_cast_or_null<Acquire>(
-            op.getWindow().getDefiningOp()))
+    if (auto acqOp =
+            mlir::dyn_cast_or_null<Acquire>(op.getWindow().getDefiningOp()))
       conduitName = acqOp.getName();
     else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
                  op.getWindow().getDefiningOp()))
@@ -198,7 +203,8 @@ void lowerPhase(ConduitToDMAState &state) {
       int64_t effectiveCount = count;
       if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
         effectiveCount *= cinfo->bdChainRepeatCount;
-      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
+      int32_t relVal =
+          state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }
@@ -207,38 +213,47 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t resolvedRotationBufSlot = resolved.rotationBufSlot;
-      mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(loc, resolvedRotationBufSlot);
+      mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(
+          loc, resolvedRotationBufSlot);
       mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
           loc, resolvedRotationBuf.getResult(), mlir::ValueRange{slotIdx});
-      mlir::Value incI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, count);
+      mlir::Value incI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, cinfo->depth);
+      mlir::Value depthI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, cinfo->depth);
       mlir::Value result =
           builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
-      builder.create<mlir::memref::StoreOp>(
-          loc, result, resolvedRotationBuf.getResult(), mlir::ValueRange{slotIdx});
+      builder.create<mlir::memref::StoreOp>(loc, result,
+                                            resolvedRotationBuf.getResult(),
+                                            mlir::ValueRange{slotIdx});
     }
     // Counter increment for depth>1 Produce port (producer buffer rotation).
-    if (resolvedProducerRotationBuf && port == Port::Produce && cinfo->depth > 1) {
+    if (resolvedProducerRotationBuf && port == Port::Produce &&
+        cinfo->depth > 1) {
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
-      int64_t resolvedProducerRotationBufSlot = resolved.producerRotationBufSlot;
-      mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(loc, resolvedProducerRotationBufSlot);
+      int64_t prodModulus =
+          (cinfo->effectiveDepth > 0) ? cinfo->effectiveDepth : cinfo->depth;
+      int64_t resolvedProducerRotationBufSlot =
+          resolved.producerRotationBufSlot;
+      mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(
+          loc, resolvedProducerRotationBufSlot);
       mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
-          loc, resolvedProducerRotationBuf.getResult(), mlir::ValueRange{slotIdx});
-      mlir::Value incI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, count);
+          loc, resolvedProducerRotationBuf.getResult(),
+          mlir::ValueRange{slotIdx});
+      mlir::Value incI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, cinfo->depth);
+      mlir::Value depthI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, prodModulus);
       mlir::Value result =
           builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
       builder.create<mlir::memref::StoreOp>(
-          loc, result, resolvedProducerRotationBuf.getResult(), mlir::ValueRange{slotIdx});
+          loc, result, resolvedProducerRotationBuf.getResult(),
+          mlir::ValueRange{slotIdx});
     }
     releasesToErase.push_back(op);
   });
@@ -251,8 +266,7 @@ void lowerPhase(ConduitToDMAState &state) {
   // Track (conduitName, tileCoord) pairs to avoid double-initializing
   // rotation counters.  Uses tile coordinates instead of Operation* to
   // ensure deterministic behavior across runs.
-  std::set<std::pair<std::string, std::pair<int64_t, int64_t>>>
-      counterInitialized;
+  std::set<std::tuple<std::string, int64_t, int64_t, bool>> counterInitialized;
 
   llvm::SmallVector<Acquire> acquiresToErase;
   module.walk([&](Acquire op) {
@@ -281,21 +295,20 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Value coreTileVal =
           mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
       auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
-      auto tileCoord = std::make_pair(
-          static_cast<int64_t>(coreTileOp.getCol()),
-          static_cast<int64_t>(coreTileOp.getRow()));
-      auto key = std::make_pair(op.getName().str(), tileCoord);
+      int64_t col = static_cast<int64_t>(coreTileOp.getCol());
+      int64_t row = static_cast<int64_t>(coreTileOp.getRow());
+      auto key = std::make_tuple(op.getName().str(), col, row, false);
       if (!counterInitialized.count(key)) {
         counterInitialized.insert(key);
         mlir::Block *entryBlock = &acquireCoreOp->getRegion(0).front();
         mlir::OpBuilder initBuilder(entryBlock, entryBlock->begin());
         mlir::Location loc = op.getLoc();
         mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
-        mlir::Value zero = mlir::arith::ConstantIntOp::create(
-            initBuilder, loc, i32Ty, 0);
+        mlir::Value zero =
+            mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
         int64_t rotationBufSlot = resolved.rotationBufSlot;
-        mlir::Value slotIdx =
-            initBuilder.create<mlir::arith::ConstantIndexOp>(loc, rotationBufSlot);
+        mlir::Value slotIdx = initBuilder.create<mlir::arith::ConstantIndexOp>(
+            loc, rotationBufSlot);
         initBuilder.create<mlir::memref::StoreOp>(
             loc, zero, resolvedRotationBuf.getResult(),
             mlir::ValueRange{slotIdx});
@@ -303,27 +316,25 @@ void lowerPhase(ConduitToDMAState &state) {
     }
 
     // Counter init for depth>1 Produce acquires (producer buffer rotation).
-    if (resolvedProducerRotationBuf && port == Port::Produce && cinfo->depth > 1 &&
-        acquireCoreOp) {
+    if (resolvedProducerRotationBuf && port == Port::Produce &&
+        cinfo->depth > 1 && acquireCoreOp) {
       mlir::Value coreTileVal =
           mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
       auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
-      auto tileCoord = std::make_pair(
-          static_cast<int64_t>(coreTileOp.getCol()),
-          static_cast<int64_t>(coreTileOp.getRow()));
-      // Use a separate key with "_prod" suffix to avoid collision with consumer counter.
-      auto key = std::make_pair(op.getName().str() + "_prod", tileCoord);
+      int64_t col = static_cast<int64_t>(coreTileOp.getCol());
+      int64_t row = static_cast<int64_t>(coreTileOp.getRow());
+      auto key = std::make_tuple(op.getName().str(), col, row, true);
       if (!counterInitialized.count(key)) {
         counterInitialized.insert(key);
         mlir::Block *entryBlock = &acquireCoreOp->getRegion(0).front();
         mlir::OpBuilder initBuilder(entryBlock, entryBlock->begin());
         mlir::Location loc = op.getLoc();
         mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
-        mlir::Value zero = mlir::arith::ConstantIntOp::create(
-            initBuilder, loc, i32Ty, 0);
+        mlir::Value zero =
+            mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
         int64_t producerRotationBufSlot = resolved.producerRotationBufSlot;
-        mlir::Value slotIdx =
-            initBuilder.create<mlir::arith::ConstantIndexOp>(loc, producerRotationBufSlot);
+        mlir::Value slotIdx = initBuilder.create<mlir::arith::ConstantIndexOp>(
+            loc, producerRotationBufSlot);
         initBuilder.create<mlir::memref::StoreOp>(
             loc, zero, resolvedProducerRotationBuf.getResult(),
             mlir::ValueRange{slotIdx});
@@ -336,9 +347,10 @@ void lowerPhase(ConduitToDMAState &state) {
       int64_t effectiveCount = count;
       if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
         effectiveCount *= cinfo->bdChainRepeatCount;
-      int32_t acqVal = state.lockAcqValue(port, static_cast<int32_t>(effectiveCount));
-      builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
-                                     acqAction, acqVal);
+      int32_t acqVal =
+          state.lockAcqValue(port, static_cast<int32_t>(effectiveCount));
+      builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(), acqAction,
+                                     acqVal);
     }
     acquiresToErase.push_back(op);
   });
@@ -411,9 +423,7 @@ void lowerPhase(ConduitToDMAState &state) {
   // WaitAllAsync: collect-then-reverse-erase (defs before uses).
   {
     llvm::SmallVector<WaitAllAsync> waitAllAsyncsToErase;
-    module.walk([&](WaitAllAsync op) {
-      waitAllAsyncsToErase.push_back(op);
-    });
+    module.walk([&](WaitAllAsync op) { waitAllAsyncsToErase.push_back(op); });
     for (auto op : llvm::reverse(waitAllAsyncsToErase))
       op.erase();
   }
@@ -461,16 +471,18 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp resolvedConsLock = resolved.consLock;
 
     builder.setInsertionPoint(op);
-    AIE::LockOp lock = (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
+    AIE::LockOp lock =
+        (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
       int32_t acqVal = state.lockAcqValue(port, static_cast<int32_t>(count));
-      builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
-                                     acqAction, acqVal);
+      builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(), acqAction,
+                                     acqVal);
     }
 
     if (!op.getResult().use_empty()) {
-      op.emitError("conduit-to-dma: wait_window result has surviving users after "
-                   "Phase 6 SubviewAccess replacement — type mismatch or missed op");
+      op.emitError(
+          "conduit-to-dma: wait_window result has surviving users after "
+          "Phase 6 SubviewAccess replacement — type mismatch or missed op");
       state.passFailed = true;
       return;
     }
@@ -480,7 +492,8 @@ void lowerPhase(ConduitToDMAState &state) {
   for (auto op : waitWindowsToErase)
     op.erase();
 
-  if (state.passFailed) return;
+  if (state.passFailed)
+    return;
 
   // Step 8c: Lower wait_all.
   llvm::SmallVector<WaitAll> waitAllToErase;
@@ -503,9 +516,10 @@ void lowerPhase(ConduitToDMAState &state) {
       AIE::LockOp lock =
           (ainfo.port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
       if (lock) {
-        int32_t acqVal = state.lockAcqValue(ainfo.port, static_cast<int32_t>(ainfo.count));
-        builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
-                                       acqAction, acqVal);
+        int32_t acqVal =
+            state.lockAcqValue(ainfo.port, static_cast<int32_t>(ainfo.count));
+        builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(), acqAction,
+                                       acqVal);
       }
     }
     waitAllToErase.push_back(op);
@@ -532,6 +546,7 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
     AIE::BufferOp resolvedRotationBuf = resolved.rotationBuf;
+    AIE::BufferOp resolvedProducerRotationBuf = resolved.producerRotationBuf;
 
     builder.setInsertionPoint(op);
     int64_t count = static_cast<int64_t>(op.getCount());
@@ -542,7 +557,8 @@ void lowerPhase(ConduitToDMAState &state) {
       int64_t effectiveCount = count;
       if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
         effectiveCount *= cinfo->bdChainRepeatCount;
-      int32_t relVal = state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
+      int32_t relVal =
+          state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }
@@ -551,19 +567,47 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t resolvedRotationBufSlot = resolved.rotationBufSlot;
-      mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(loc, resolvedRotationBufSlot);
+      mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(
+          loc, resolvedRotationBufSlot);
       mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
           loc, resolvedRotationBuf.getResult(), mlir::ValueRange{slotIdx});
-      mlir::Value incI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, count);
+      mlir::Value incI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value depthI32 = mlir::arith::ConstantIntOp::create(
-          builder, loc, i32Ty, cinfo->depth);
+      mlir::Value depthI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, cinfo->depth);
+      mlir::Value result =
+          builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
+      builder.create<mlir::memref::StoreOp>(loc, result,
+                                            resolvedRotationBuf.getResult(),
+                                            mlir::ValueRange{slotIdx});
+    }
+    // Counter increment for depth>1 Produce port (producer buffer rotation).
+    if (resolvedProducerRotationBuf && port == Port::Produce &&
+        cinfo->depth > 1) {
+      mlir::Location loc = op.getLoc();
+      mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+      int64_t prodModulus =
+          (cinfo->effectiveDepth > 0) ? cinfo->effectiveDepth : cinfo->depth;
+      int64_t resolvedProducerRotationBufSlot =
+          resolved.producerRotationBufSlot;
+      mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(
+          loc, resolvedProducerRotationBufSlot);
+      mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
+          loc, resolvedProducerRotationBuf.getResult(),
+          mlir::ValueRange{slotIdx});
+      mlir::Value incI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
+      mlir::Value newVal =
+          builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
+      mlir::Value depthI32 =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, prodModulus);
       mlir::Value result =
           builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
       builder.create<mlir::memref::StoreOp>(
-          loc, result, resolvedRotationBuf.getResult(), mlir::ValueRange{slotIdx});
+          loc, result, resolvedProducerRotationBuf.getResult(),
+          mlir::ValueRange{slotIdx});
     }
     releaseAsyncsToErase.push_back(op);
   });
