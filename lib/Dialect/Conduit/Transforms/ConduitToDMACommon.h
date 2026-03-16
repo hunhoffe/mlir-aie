@@ -208,7 +208,8 @@ struct ConduitInfo {
       consumerTileBuffers; // tile → [buff_0, ..., buff_{depth-1}]
 
   // Convenience accessors for single-consumer and link phase.
-  AIE::LockOp prodLock; // prod lock (init=depth)
+  AIE::LockOp prodLock; // prod lock (init=depth*repeatN for compute tiles;
+                        // init=0 for shim tiles — managed by host runtime)
   AIE::LockOp consLock; // cons lock (init=0)
 
   // AIE1 per-slot locks: one lock per buffer slot (depth-many).
@@ -222,18 +223,18 @@ struct ConduitInfo {
   // For depth>1: rotation counter — shared per-tile buffer + slot index.
   // Multiple conduits on the same tile share one memref<N xi32> buffer;
   // each conduit is assigned a unique slot index within that buffer.
-  AIE::BufferOp rotationBuf;       // shared tile buffer (consumer direction)
-  int64_t rotationBufSlot = 0;     // slot index within that buffer
+  AIE::BufferOp rotationBuf;   // shared tile buffer (consumer direction)
+  int64_t rotationBufSlot = 0; // slot index within that buffer
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
-      consumerTileRotationBufs;  // tile → shared rotation buffer
+      consumerTileRotationBufs; // tile → shared rotation buffer
   llvm::DenseMap<mlir::Value, int64_t>
       consumerTileRotationBufSlots; // tile → slot index for this conduit
 
   // For depth>1 produce-mode: rotation counter on the producer tile.
-  AIE::BufferOp producerRotationBuf;   // shared tile buffer (producer direction)
+  AIE::BufferOp producerRotationBuf; // shared tile buffer (producer direction)
   int64_t producerRotationBufSlot = 0; // slot index within that buffer
   llvm::DenseMap<mlir::Value, AIE::BufferOp>
-      producerTileRotationBufs;  // tile → shared rotation buffer
+      producerTileRotationBufs; // tile → shared rotation buffer
   llvm::DenseMap<mlir::Value, int64_t>
       producerTileRotationBufSlots; // tile → slot index for this conduit
 
@@ -350,7 +351,8 @@ struct ConduitToDMAState {
   /// Port::Consume (MM2S / core-consumes): AIE1 acquires full slot (1).
   /// AIE2+: always returns count (AcquireGreaterEqual semantics).
   int32_t lockAcqValue(Port port, int32_t count) const {
-    if (isAIE2Plus()) return count;
+    if (isAIE2Plus())
+      return count;
     return (port == Port::Consume) ? 1 : 0;
   }
 
@@ -359,7 +361,8 @@ struct ConduitToDMAState {
   /// Port::Consume (MM2S / core-consumes): AIE1 releases empty slot (0).
   /// AIE2+: always returns count.
   int32_t lockRelValue(Port port, int32_t count = 1) const {
-    if (isAIE2Plus()) return count;
+    if (isAIE2Plus())
+      return count;
     return (port == Port::Consume) ? 0 : 1;
   }
 
@@ -368,8 +371,8 @@ struct ConduitToDMAState {
   // Key: conduit name (std::string — owning, safe across op erasure).
   // Uses StringMap<unsigned> for the index (DenseMap<std::string, ...> lacks
   // DenseMapInfo specialization in LLVM).
-  llvm::MapVector<std::string, ConduitInfo,
-                  llvm::StringMap<unsigned>> conduitMap;
+  llvm::MapVector<std::string, ConduitInfo, llvm::StringMap<unsigned>>
+      conduitMap;
 
   // Tile cache: (col, row) → TileOp SSA value.
   llvm::DenseMap<std::pair<int64_t, int64_t>, AIE::TileOp> tileCache;
@@ -392,10 +395,10 @@ struct ConduitToDMAState {
   std::map<std::pair<std::string, unsigned>, int32_t> conduitConsS2MMChannel;
 
   // Link source names for skip logic.
-  llvm::StringSet<> linkSrcNamesEarly;  // distribute sources only
-  llvm::StringSet<> linkJoinSrcNames;   // join sources
-  llvm::StringSet<> linkSrcNames;       // all link sources (both)
-  llvm::StringSet<> linkDstNames;       // all link destinations (both)
+  llvm::StringSet<> linkSrcNamesEarly; // distribute sources only
+  llvm::StringSet<> linkJoinSrcNames;  // join sources
+  llvm::StringSet<> linkSrcNames;      // all link sources (both)
+  llvm::StringSet<> linkDstNames;      // all link destinations (both)
 
   // Conduit names with at least one Consume-port acquire op.
   llvm::StringSet<> conduitNamesWithConsumerAcquire;
@@ -468,9 +471,8 @@ struct ConduitToDMAState {
   // If the ID budget is exhausted, passFailed is set and the flow is not
   // emitted (the error is reported by the allocator on the module op).
   void emitFlow(llvm::StringRef routingMode, mlir::Value srcTile,
-                AIE::WireBundle srcBundle, int32_t srcChan,
-                mlir::Value dstTile, AIE::WireBundle dstBundle,
-                int32_t dstChan) {
+                AIE::WireBundle srcBundle, int32_t srcChan, mlir::Value dstTile,
+                AIE::WireBundle dstBundle, int32_t dstChan) {
     if (routingMode == "packet") {
       // Allocate a packet flow ID; fail gracefully if budget is exhausted.
       if (!packetIDAllocator) {
@@ -492,11 +494,9 @@ struct ConduitToDMAState {
       mlir::Region &region = pktFlow.getPorts();
       mlir::Block *block = builder->createBlock(&region);
       builder->setInsertionPointToStart(block);
-      builder->create<AIE::PacketSourceOp>(deviceOp.getLoc(), srcTile,
-                                           srcBundle,
-                                           static_cast<int32_t>(srcChan));
-      builder->create<AIE::PacketDestOp>(deviceOp.getLoc(), dstTile,
-                                         dstBundle,
+      builder->create<AIE::PacketSourceOp>(
+          deviceOp.getLoc(), srcTile, srcBundle, static_cast<int32_t>(srcChan));
+      builder->create<AIE::PacketDestOp>(deviceOp.getLoc(), dstTile, dstBundle,
                                          static_cast<int32_t>(dstChan));
       builder->create<AIE::EndOp>(deviceOp.getLoc());
       builder->setInsertionPointAfter(pktFlow);
@@ -515,12 +515,13 @@ struct ConduitToDMAState {
 
   // Allocate a producer/consumer lock pair on the given tile.
   // AIE2: emits prod_lock (init=prodInit) + cons_lock (init=0).
-  //   prodInit defaults to depth; pass a different value for repeat_count scaling.
+  //   prodInit defaults to depth; pass a different value for repeat_count
+  //   scaling.
   // AIE1: emits depth-many per-slot locks (init=0); prod=cons=locks[0].
-  AllocatedLocks allocateLockPair(mlir::Value tileVal,
-                                  llvm::StringRef prefix, int64_t depth,
-                                  int64_t prodInit = -1) {
-    if (prodInit < 0) prodInit = depth;
+  AllocatedLocks allocateLockPair(mlir::Value tileVal, llvm::StringRef prefix,
+                                  int64_t depth, int64_t prodInit = -1) {
+    if (prodInit < 0)
+      prodInit = depth;
     AllocatedLocks locks;
     if (isAIE2Plus()) {
       {
@@ -542,8 +543,7 @@ struct ConduitToDMAState {
     } else {
       for (int64_t i = 0; i < depth; ++i) {
         int lockIdx = lockIdCounter[tileVal]++;
-        std::string symName =
-            (prefix + "_lock_" + llvm::Twine(i)).str();
+        std::string symName = (prefix + "_lock_" + llvm::Twine(i)).str();
         AIE::LockOp lk = builder->create<AIE::LockOp>(
             deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(0));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
@@ -568,47 +568,46 @@ struct ConduitToDMAState {
 
   /// Emit DMA BD block content into an existing block:
   ///   1. UseLockOp (acquire) — skipped if acqLock is null
-  ///   2. DMABDOp — skipped if buffer is null; emits BDDimLayout if dims non-empty
+  ///   2. DMABDOp — skipped if buffer is null; emits BDDimLayout if dims
+  ///   non-empty
   ///   3. UseLockOp (release) — skipped if relLock is null
   /// Sets the builder insertion point to the end of the block.
   /// NextBDOp is NOT emitted; the caller controls ring linkage.
-  void emitBDBlock(mlir::Location loc, mlir::Block *block,
-                   mlir::Value acqLock, int32_t acqVal,
-                   mlir::Value buffer, int64_t offset, int64_t len,
-                   mlir::Value relLock, int32_t relVal,
+  void emitBDBlock(mlir::Location loc, mlir::Block *block, mlir::Value acqLock,
+                   int32_t acqVal, mlir::Value buffer, int64_t offset,
+                   int64_t len, mlir::Value relLock, int32_t relVal,
                    AIE::BDDimLayoutArrayAttr dims = {}) {
+    assert(buffer && "emitBDBlock: buffer must be non-null");
     builder->setInsertionPointToEnd(block);
     if (acqLock)
       builder->create<AIE::UseLockOp>(loc, acqLock, acqAction, acqVal);
     if (buffer) {
       if (dims && !dims.getValue().empty())
-        builder->create<AIE::DMABDOp>(loc, buffer,
-                                      static_cast<int>(offset),
+        builder->create<AIE::DMABDOp>(loc, buffer, static_cast<int>(offset),
                                       static_cast<int>(len), dims);
       else
-        builder->create<AIE::DMABDOp>(loc, buffer,
-                                      static_cast<int>(offset),
+        builder->create<AIE::DMABDOp>(loc, buffer, static_cast<int>(offset),
                                       static_cast<int>(len));
     }
     if (relLock)
-      builder->create<AIE::UseLockOp>(loc, relLock,
-                                      AIE::LockAction::Release, relVal);
+      builder->create<AIE::UseLockOp>(loc, relLock, AIE::LockAction::Release,
+                                      relVal);
   }
 
   // Allocate `count` buffers of type `bufTy` on the given tile.
-  llvm::SmallVector<AIE::BufferOp> allocateBuffers(
-      mlir::Value tileVal, llvm::StringRef prefix,
-      mlir::Type bufTy, int64_t count) {
+  llvm::SmallVector<AIE::BufferOp> allocateBuffers(mlir::Value tileVal,
+                                                   llvm::StringRef prefix,
+                                                   mlir::Type bufTy,
+                                                   int64_t count) {
     llvm::SmallVector<AIE::BufferOp> bufs;
     for (int64_t i = 0; i < count; ++i) {
-      std::string symName =
-          (prefix + "_buff_" + llvm::Twine(i)).str();
-      auto buf = builder->create<AIE::BufferOp>(
-          deviceOp.getLoc(), bufTy, tileVal,
-          mlir::StringAttr::get(ctx, symName),
-          /*address=*/mlir::IntegerAttr{},
-          /*initial_value=*/mlir::ElementsAttr{},
-          /*mem_bank=*/mlir::IntegerAttr{});
+      std::string symName = (prefix + "_buff_" + llvm::Twine(i)).str();
+      auto buf =
+          builder->create<AIE::BufferOp>(deviceOp.getLoc(), bufTy, tileVal,
+                                         mlir::StringAttr::get(ctx, symName),
+                                         /*address=*/mlir::IntegerAttr{},
+                                         /*initial_value=*/mlir::ElementsAttr{},
+                                         /*mem_bank=*/mlir::IntegerAttr{});
       bufs.push_back(buf);
     }
     return bufs;

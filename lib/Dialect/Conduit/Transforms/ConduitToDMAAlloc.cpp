@@ -47,6 +47,24 @@ static int64_t assignRotationSlot(ConduitToDMAState &state,
 //
 // This mirrors exactly the conditions checked during the main allocation pass
 // so that the shared buffer has exactly the right size.
+//
+// Overcount-safe invariant:
+//   (1) conduitMap is iterated in insertion order; both this prescan and the
+//       main allocPhase loop MUST traverse it in the same order so that
+//       assignRotationSlot() calls happen in the same sequence and slot
+//       indices remain consistent.
+//   (2) info.sharedMemory is always false during prescan (it is set during
+//       the main Phase 3c pass which runs after prescan).  The Phase 3d loop
+//       therefore may overcount slots for conduits that will ultimately take
+//       the shared-memory path.  This is safe — the buffer will be slightly
+//       too large but never too small, so no slot index is out of bounds.
+//   (3) info.consumerTileBuffers is always empty during prescan, so the
+//       `info.consumerTileBuffers.count(...)` guards in the normal consumer
+//       loop and Phase 3d loop are vacuously false and every eligible conduit
+//       is counted.  This is also an overcount-safe case for the same reason.
+//   (4) assignRotationSlot must NEVER be called more times than this prescan
+//       counted for a given tile.  Violating this would exhaust the pre-sized
+//       buffer and produce out-of-bounds slot indices.
 // ---------------------------------------------------------------------------
 static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   mlir::OpBuilder &builder = *state.builder;
@@ -54,18 +72,16 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   const AIE::AIETargetModel &targetModel = *state.targetModel;
 
   // Per-tile slot counts (consumer + producer counters).
-  llvm::DenseMap<mlir::Value, int64_t> tileSlotCount;
+  // MapVector preserves insertion order for deterministic IR output.
+  llvm::MapVector<mlir::Value, int64_t> tileSlotCount;
 
-  auto addConsumerSlot = [&](mlir::Value tileVal) {
-    tileSlotCount[tileVal]++;
-  };
-  auto addProducerSlot = [&](mlir::Value tileVal) {
-    tileSlotCount[tileVal]++;
-  };
+  // Consumer and producer counters share the same per-tile pool; two names
+  // for call-site clarity only.
+  auto addConsumerSlot = [&](mlir::Value tileVal) { tileSlotCount[tileVal]++; };
+  auto addProducerSlot = [&](mlir::Value tileVal) { tileSlotCount[tileVal]++; };
 
   for (auto &[name, info] : state.conduitMap) {
-    if (info.consumerTileCoords.empty() &&
-        info.shimConsumerTileCoords.empty())
+    if (info.consumerTileCoords.empty() && info.shimConsumerTileCoords.empty())
       continue;
 
     // Phase 3b path.
@@ -87,8 +103,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     }
 
     // Phase 3c path (shared memory, adjacent tiles).
-    if (!info.viaDMA &&
-        info.consumerTileCoords.size() == 1 &&
+    if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
         info.shimConsumerTileCoords.empty() &&
         !state.linkSrcNamesEarly.count(name) &&
         !state.linkJoinSrcNames.count(name)) {
@@ -99,14 +114,14 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       bool prodIsMemtile = targetModel.isMemTile(prodCol, prodRow);
       bool consIsMemtile = targetModel.isMemTile(consCol, consRow);
       if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile) {
-        bool rightShared = targetModel.isLegalMemAffinity(
-            prodCol, prodRow, consCol, consRow);
-        bool leftShared = targetModel.isLegalMemAffinity(
-            consCol, consRow, prodCol, prodRow);
+        bool rightShared =
+            targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
+        bool leftShared =
+            targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         if (rightShared || leftShared) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
-          AIE::TileOp consTile  = state.lookupTileByCoord(consCol, consRow);
-          AIE::TileOp prodTile  = state.lookupTileByCoord(prodCol, prodRow);
+          AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
+          AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
           if (info.hasAllocTile) {
             allocTile = state.lookupTileByCoord(info.allocTileCoord.first,
                                                 info.allocTileCoord.second);
@@ -154,8 +169,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
         if (pCol >= 0 && pRow >= 2) {
           AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
           if (pTile && !info.consumerTileBuffers.count(pTile.getResult())) {
-            int64_t prodDepth = info.effectiveDepth > 0
-                                    ? info.effectiveDepth : depth;
+            int64_t prodDepth =
+                info.effectiveDepth > 0 ? info.effectiveDepth : depth;
             if (prodDepth > 1 &&
                 state.conduitNamesWithProducerAcquire.count(name))
               addProducerSlot(pTile.getResult());
@@ -174,7 +189,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   for (auto &[name, info] : state.conduitMap) {
     if (info.sharedMemory)
       continue;
-    if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))
+    if (state.linkSrcNamesEarly.count(name) ||
+        state.linkJoinSrcNames.count(name))
       continue;
     if (state.linkDstNames.count(name))
       continue;
@@ -196,10 +212,10 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     } else {
       auto [consCol, consRow] = info.consumerTileCoords[0];
       if (consRow >= 1) {
-        bool rightAdj = state.targetModel->isLegalMemAffinity(
-            prodCol, prodRow, consCol, consRow);
-        bool leftAdj = state.targetModel->isLegalMemAffinity(
-            consCol, consRow, prodCol, prodRow);
+        bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
+                                                              consCol, consRow);
+        bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
+                                                             prodCol, prodRow);
         if (!rightAdj && !leftAdj)
           needsProdSide = true;
       }
@@ -224,11 +240,21 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   for (auto &[tileVal, count] : tileSlotCount) {
     if (count <= 0)
       continue;
-    auto counterTy = mlir::MemRefType::get({count},
-                                           mlir::IntegerType::get(ctx, 32));
+    auto counterTy =
+        mlir::MemRefType::get({count}, mlir::IntegerType::get(ctx, 32));
+    // Assign a deterministic sym_name so the buffer is identifiable in IR
+    // dumps and FileCheck patterns are stable across recompilations.
+    std::string symName;
+    if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>()) {
+      int64_t col = tileOp.getCol();
+      int64_t row = tileOp.getRow();
+      symName = "_conduit_rot_ctr_tile_" + std::to_string(col) + "_" +
+                std::to_string(row);
+    }
     AIE::BufferOp sharedBuf = builder.create<AIE::BufferOp>(
         state.deviceOp.getLoc(), counterTy, tileVal,
-        /*sym_name=*/mlir::StringAttr{},
+        symName.empty() ? mlir::StringAttr{}
+                        : mlir::StringAttr::get(ctx, symName),
         /*address=*/mlir::IntegerAttr{},
         /*initial_value=*/mlir::ElementsAttr{},
         /*mem_bank=*/mlir::IntegerAttr{});
@@ -243,8 +269,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
 // prescanAndCreateRotationBufs).
 // ---------------------------------------------------------------------------
 static void assignConsumerRotationSlot(ConduitToDMAState &state,
-                                       ConduitInfo &info,
-                                       mlir::Value tileVal,
+                                       ConduitInfo &info, mlir::Value tileVal,
                                        bool isPrimary) {
   auto bufIt = state.tileRotationBuf.find(tileVal);
   if (bufIt == state.tileRotationBuf.end())
@@ -260,8 +285,7 @@ static void assignConsumerRotationSlot(ConduitToDMAState &state,
 }
 
 static void assignProducerRotationSlot(ConduitToDMAState &state,
-                                       ConduitInfo &info,
-                                       mlir::Value tileVal) {
+                                       ConduitInfo &info, mlir::Value tileVal) {
   auto bufIt = state.tileRotationBuf.find(tileVal);
   if (bufIt == state.tileRotationBuf.end())
     return;
@@ -330,7 +354,8 @@ void allocPhase(ConduitToDMAState &state) {
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
         int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
-        bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
+        bufTy =
+            mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
 
       if (state.insertAfterTile)
@@ -343,9 +368,11 @@ void allocPhase(ConduitToDMAState &state) {
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
       if (!info.disableSynchronization) {
         // repeat_count > 1 scales prod lock init: each buffer is DMA'd N times.
-        int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+        int64_t repeatN =
+            info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
         int64_t prodInit = prodDepth * repeatN;
-        auto locks = state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
+        auto locks =
+            state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
         info.prodLock = locks.prodLock;
         info.consLock = locks.consLock;
         info.aie1Locks = std::move(locks.aie1Locks);
@@ -363,8 +390,7 @@ void allocPhase(ConduitToDMAState &state) {
     // go on the producer (or alloc_tile delegate) — no DMA needed.
     // Skip when via_DMA=true: force DMA path even for adjacent tiles.
     // -------------------------------------------------------------------
-    if (!info.viaDMA &&
-        info.consumerTileCoords.size() == 1 &&
+    if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
         info.shimConsumerTileCoords.empty() &&
         !state.linkSrcNamesEarly.count(name) &&
         !state.linkJoinSrcNames.count(name)) {
@@ -375,10 +401,10 @@ void allocPhase(ConduitToDMAState &state) {
       bool prodIsMemtile = targetModel.isMemTile(prodCol, prodRow);
       bool consIsMemtile = targetModel.isMemTile(consCol, consRow);
       if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile) {
-        bool rightShared = targetModel.isLegalMemAffinity(
-            prodCol, prodRow, consCol, consRow);
-        bool leftShared = targetModel.isLegalMemAffinity(
-            consCol, consRow, prodCol, prodRow);
+        bool rightShared =
+            targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
+        bool leftShared =
+            targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         if (rightShared || leftShared) {
           // Defensive adjacency guard: assert the tiles that established
           // shared-memory eligibility are still adjacent.  This should
@@ -457,12 +483,15 @@ void allocPhase(ConduitToDMAState &state) {
                 state.allocateBuffers(allocTileVal, name, bufTy, depth);
             info.buffers = sharedBuffers;
 
-            // Allocate lock(s) on the allocation tile (skip if disable_synchronization).
+            // Allocate lock(s) on the allocation tile (skip if
+            // disable_synchronization).
             AIE::LockOp sharedProdLock, sharedConsLock;
             if (!info.disableSynchronization) {
-              int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+              int64_t repeatN =
+                  info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
               int64_t prodInit = depth * repeatN;
-              auto locks = state.allocateLockPair(allocTileVal, name, depth, prodInit);
+              auto locks =
+                  state.allocateLockPair(allocTileVal, name, depth, prodInit);
               sharedProdLock = locks.prodLock;
               sharedConsLock = locks.consLock;
               info.prodLock = locks.prodLock;
@@ -486,7 +515,7 @@ void allocPhase(ConduitToDMAState &state) {
             // Consumer rotation counter slot (shared buffer, pre-created).
             if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
               assignConsumerRotationSlot(state, info, consTileVal,
-                                        /*isPrimary=*/true);
+                                         /*isPrimary=*/true);
 
             // Producer rotation counter slot.
             if (depth > 1 && state.conduitNamesWithProducerAcquire.count(name))
@@ -515,7 +544,8 @@ void allocPhase(ConduitToDMAState &state) {
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
         int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
-        bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
+        bufTy =
+            mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
 
       if (state.insertAfterTile)
@@ -527,9 +557,11 @@ void allocPhase(ConduitToDMAState &state) {
 
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
       if (!info.disableSynchronization) {
-        int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+        int64_t repeatN =
+            info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
         int64_t prodInit = prodDepth * repeatN;
-        auto locks = state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
+        auto locks =
+            state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
         info.prodLock = locks.prodLock;
         info.consLock = locks.consLock;
         info.aie1Locks = std::move(locks.aie1Locks);
@@ -555,10 +587,10 @@ void allocPhase(ConduitToDMAState &state) {
       auto [consCol, consRow] = info.consumerTileCoords[consIdx];
       AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
       if (!consTile) {
-        state.module.emitWarning(
-            "conduit-to-dma: consumer tile (" + std::to_string(consCol) +
-            "," + std::to_string(consRow) +
-            ") for conduit '" + name + "' not found in device");
+        state.module.emitWarning("conduit-to-dma: consumer tile (" +
+                                 std::to_string(consCol) + "," +
+                                 std::to_string(consRow) + ") for conduit '" +
+                                 name + "' not found in device");
         continue;
       }
 
@@ -569,14 +601,15 @@ void allocPhase(ConduitToDMAState &state) {
 
       mlir::Value consTileVal = consTile.getResult();
 
-      std::string bufSuffix =
-          info.consumerTileCoords.size() > 1
-              ? "_cons_" + std::to_string(consIdx)
-              : "_cons";
+      std::string bufSuffix = info.consumerTileCoords.size() > 1
+                                  ? "_cons_" + std::to_string(consIdx)
+                                  : "_cons";
 
       std::string consPrefix = name + bufSuffix;
       llvm::SmallVector<AIE::BufferOp> consBuffers =
           state.allocateBuffers(consTileVal, consPrefix, bufTy, depth);
+      // Intentionally assigned before the linkSrcNamesEarly branch so the
+      // branch's continue does not skip it.
       if (consIdx == 0)
         info.buffers = consBuffers;
 
@@ -584,11 +617,6 @@ void allocPhase(ConduitToDMAState &state) {
       // MemTile-side lock allocation (Phase 5 handles those for distribute).
       // Also allocate producer-side buffers+locks for compute producers.
       if (state.linkSrcNamesEarly.count(name)) {
-        // Populate info.buffers for consIdx==0 so lowerPhase() SubviewAccess
-        // resolution can find the first consumer's buffer set even when lock
-        // allocation is skipped (fixes broadcast conduit crash).
-        if (consIdx == 0)
-          info.buffers = consBuffers;
         info.consumerTileBuffers[consTileVal] = consBuffers;
 
         // Distribute sources with a compute producer: allocate producer-side
@@ -600,13 +628,11 @@ void allocPhase(ConduitToDMAState &state) {
             if (pTile) {
               mlir::Value pTileVal = pTile.getResult();
               if (!info.consumerTileBuffers.count(pTileVal)) {
-                int64_t prodDepth = info.effectiveDepth > 0
-                                        ? info.effectiveDepth
-                                        : depth;
-                auto pBufs = state.allocateBuffers(
-                    pTileVal, name, bufTy, prodDepth);
-                auto pLocks = state.allocateLockPair(
-                    pTileVal, name, prodDepth);
+                int64_t prodDepth =
+                    info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+                auto pBufs =
+                    state.allocateBuffers(pTileVal, name, bufTy, prodDepth);
+                auto pLocks = state.allocateLockPair(pTileVal, name, prodDepth);
 
                 if (!isAIE2)
                   info.consumerTileAIE1Locks[pTileVal] =
@@ -627,12 +653,15 @@ void allocPhase(ConduitToDMAState &state) {
         continue; // advance to next consIdx
       }
 
-      // Allocate lock(s) on the consumer tile (skip if disable_synchronization).
+      // Allocate lock(s) on the consumer tile (skip if
+      // disable_synchronization).
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.disableSynchronization) {
-        int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+        int64_t repeatN =
+            info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
         int64_t prodInit = depth * repeatN;
-        auto consLocks = state.allocateLockPair(consTileVal, consPrefix, depth, prodInit);
+        auto consLocks =
+            state.allocateLockPair(consTileVal, consPrefix, depth, prodInit);
         thisProdLock = consLocks.prodLock;
         thisConsLock = consLocks.consLock;
         if (consIdx == 0) {
@@ -664,7 +693,8 @@ void allocPhase(ConduitToDMAState &state) {
       continue;
     if (info.sharedMemory)
       continue;
-    if (state.linkSrcNamesEarly.count(name) || state.linkJoinSrcNames.count(name))
+    if (state.linkSrcNamesEarly.count(name) ||
+        state.linkJoinSrcNames.count(name))
       continue;
     // Link destination conduits (distribute dsts or join dst) share the
     // MemTile buffer set owned by the source conduit — skip producer-side
@@ -691,10 +721,10 @@ void allocPhase(ConduitToDMAState &state) {
     } else {
       auto [consCol, consRow] = info.consumerTileCoords[0];
       if (consRow >= 1) {
-        bool rightAdj = state.targetModel->isLegalMemAffinity(
-            prodCol, prodRow, consCol, consRow);
-        bool leftAdj = state.targetModel->isLegalMemAffinity(
-            consCol, consRow, prodCol, prodRow);
+        bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
+                                                              consCol, consRow);
+        bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
+                                                             prodCol, prodRow);
         if (!rightAdj && !leftAdj)
           needsProdSide = true;
       }
@@ -708,8 +738,7 @@ void allocPhase(ConduitToDMAState &state) {
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
       int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
-      bufTy = mlir::MemRefType::get({bufSize},
-                                     mlir::IntegerType::get(ctx, 32));
+      bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
     }
 
     if (state.insertAfterTile)
@@ -717,30 +746,49 @@ void allocPhase(ConduitToDMAState &state) {
     else
       builder.setInsertionPointToStart(state.deviceBody);
 
-    auto prodBuffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
+    auto prodBuffers =
+        state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
 
     AIE::LockOp prodLockProd, prodLockCons;
     if (!info.disableSynchronization) {
-      int64_t repeatN = info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+      int64_t repeatN =
+          info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
       int64_t prodInit = prodDepth * repeatN;
-      auto prodLocks = state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
+      auto prodLocks =
+          state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
       prodLockProd = prodLocks.prodLock;
       prodLockCons = prodLocks.consLock;
       if (!isAIE2)
-        info.consumerTileAIE1Locks[prodTileVal] = std::move(prodLocks.aie1Locks);
+        info.consumerTileAIE1Locks[prodTileVal] =
+            std::move(prodLocks.aie1Locks);
     }
 
     info.consumerTileLocks[prodTileVal] = {prodLockProd, prodLockCons};
     info.consumerTileBuffers[prodTileVal] = prodBuffers;
 
-    // Consumer rotation counter slot (for conduits where producer tile is
-    // also the "consumer" of the lock — e.g., shared-memory fallback).
+    // Consumer rotation counter: the producer core acquires this conduit in
+    // Consume mode before forwarding data via DMA (Phase 3d non-adjacent path).
     if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
       assignConsumerRotationSlot(state, info, prodTileVal,
                                  /*isPrimary=*/true);
     // Producer rotation counter slot.
     if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
       assignProducerRotationSlot(state, info, prodTileVal);
+  }
+
+  // Debug assertion: every tile's next-slot cursor must not exceed the size
+  // of the shared buffer that was pre-allocated by
+  // prescanAndCreateRotationBufs. A violation means assignRotationSlot was
+  // called more times than prescan counted, which would produce out-of-bounds
+  // slot indices.
+  for (auto &[tileVal, sharedBuf] : state.tileRotationBuf) {
+    auto bufType = mlir::cast<mlir::MemRefType>(sharedBuf.getType());
+    int64_t bufSize = bufType.getShape()[0];
+    int64_t nextSlot = state.tileRotationBufNextSlot[tileVal];
+    assert(nextSlot <= bufSize &&
+           "allocPhase: rotation slot overrun — prescan count was too low");
+    (void)bufSize;
+    (void)nextSlot;
   }
 }
 
