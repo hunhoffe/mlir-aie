@@ -40,8 +40,19 @@
 // CHECK:     aie.lock(%{{.*}}shim{{.*}}2_0
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "link4_cons_cons_lock_0"
-// --- Four flows: 3 compute tiles to memtile (S2MM channels 0,1,2),
-//     and memtile MM2S channel 0 to shim ---
+// --- memtile→shim flow emitted by Phase 4b immediately after shim locks ---
+// CHECK:     aie.flow(%{{.*}}mem_tile_2_1, DMA : 0, %{{.*}}shim{{.*}}2_0, DMA : 0)
+// --- Join destination buffers (2 buffers on memtile) ---
+// CHECK:     aie.buffer(%{{.*}}mem_tile_2_1) {{.*}} memref<48xi32>
+// CHECK:     aie.buffer(%{{.*}}mem_tile_2_1) {{.*}} memref<48xi32>
+// --- 6 per-source lock pairs on memtile (3 sources × 2 locks) ---
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 0) {init = 2
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 1) {init = 0
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 2) {init = 2
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 3) {init = 0
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 4) {init = 2
+// CHECK:     aie.lock(%{{.*}}mem_tile_2_1, 5) {init = 0
+// --- 3 per-source flows: compute tiles → memtile S2MM channels 0,1,2 ---
 // CHECK:     aie.flow(%{{.*}}tile_2_2, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 0)
 // CHECK:     aie.flow(%{{.*}}tile_2_3, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 1)
 // CHECK:     aie.flow(%{{.*}}tile_3_3, DMA : 0, %{{.*}}mem_tile_2_1, DMA : 2)

@@ -396,13 +396,13 @@ void routePhase(ConduitToDMAState &state) {
             /*plio=*/false,
             /*packet=*/nullptr);
 
-      // Link destination conduits: flow is emitted by linkPhase() — skip
-      // duplicate emission here.
-      if (!state.linkDstNames.count(name))
-        state.emitFlow(info.routingMode, prodTile.getResult(),
-                       AIE::WireBundle::DMA, static_cast<int32_t>(0),
-                       shimTile.getResult(), AIE::WireBundle::DMA,
-                       static_cast<int32_t>(0));
+      // Emit the memtile→shim flow. For join-destination conduits the
+      // producer tile is the MemTile; linkPhase() explicitly skips this
+      // flow (see ConduitToDMALink.cpp) and expects routePhase to own it.
+      state.emitFlow(info.routingMode, prodTile.getResult(),
+                     AIE::WireBundle::DMA, static_cast<int32_t>(0),
+                     shimTile.getResult(), AIE::WireBundle::DMA,
+                     static_cast<int32_t>(0));
     }
   }
 
