@@ -9,14 +9,16 @@
 // - MemTile MM2S per destination: 4 BD blocks (of0.depth=2 × of1.repeat_count=2),
 //   each source buffer repeated twice consecutively
 // - Per-slice MemTile lock init = linkDepth * repeat_count = 2 * 2 = 4
-// - Consumer tile lock init = depth * repeat_count = 2 * 2 = 4
+// - Consumer tile lock init = depth = 2 (repeat_count does NOT multiply here;
+//   the consumer FIFO has only depth slots, independent of repeat_count)
 
 // CHECK-LABEL: module @linkDistRepeat
 // CHECK:   aie.device(npu1) {
-// Consumer tile locks: init = repeat_count * depth = 2 * 2 = 4
-// (Phase 3 normal consumer loop applies repeat_count to link-dst consumer locks)
-// CHECK:     aie.lock({{.*}}) {init = 4 : i32, sym_name = "of2_cons_prod_lock_0"}
-// CHECK:     aie.lock({{.*}}) {init = 4 : i32, sym_name = "of1_cons_prod_lock_0"}
+// Consumer tile locks: init = depth = 2 (NOT repeat_count * depth)
+// The consumer FIFO has exactly depth=2 slots; repeat_count only affects
+// how many times the MemTile MM2S fires per buffer, not the FIFO size.
+// CHECK:     aie.lock({{.*}}) {init = 2 : i32, sym_name = "of2_cons_prod_lock_0"}
+// CHECK:     aie.lock({{.*}}) {init = 2 : i32, sym_name = "of1_cons_prod_lock_0"}
 // Flows from shim and memtile
 // CHECK:     aie.flow(%{{.*}}, DMA : 0, %{{.*}}, DMA : 0)
 // MemTile S2MM: 4 BD blocks (2 buffers x 2 distribute legs)

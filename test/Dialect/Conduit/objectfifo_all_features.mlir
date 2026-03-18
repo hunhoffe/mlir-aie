@@ -11,10 +11,11 @@
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(xcve2302) {
-// Producer lock init = 1 * 2 = 2
+// Producer (MemTile) lock init = depth * repeat_count = 1 * 2 = 2
 // CHECK:     aie.lock({{.*}}) {init = 2 : i32
-// Consumer lock init = 2
-// CHECK:     aie.lock({{.*}}) {init = 2 : i32
+// Consumer tile lock init = depth = 1 (repeat_count does not multiply here;
+// the consumer FIFO has only depth slots, independent of repeat_count)
+// CHECK:     aie.lock({{.*}}) {init = 1 : i32
 // CHECK:     aie.flow
 // Producer MemTile DMA: repeat_count = iter_count - 1 = 2
 // CHECK:     aie.memtile_dma

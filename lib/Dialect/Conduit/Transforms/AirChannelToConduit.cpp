@@ -470,6 +470,27 @@ struct AirChannelToConduitPass
     // SSA threading:
     //   The original air.channel.put result is !air.async.token (opaque in
     //   aie-opt).  We replace all uses with the new !conduit.dma.token.
+    //
+    // PASSB-DEP-001 fix: air.wait_all fan-in tokens as deps.
+    //   When a dep token is still !air.async.token but its defining op is
+    //   air.wait_all, Phase 4 has not yet run and the wait_all result is not
+    //   yet a DMATokenType.  However, the wait_all's OWN operands ARE already
+    //   conduit tokens (the put/get ops that fed them have already been
+    //   processed and replaceAllUsesWith was called).
+    //
+    //   Fix: when we encounter an !air.async.token dep whose defining op is
+    //   air.wait_all, we pre-emit a conduit.wait_all_async over the resolved
+    //   sub-tokens right here in Phase 3.  The result is used as the dep.
+    //   We record the pre-emitted op in preEmittedWaitAll so Phase 4 skips
+    //   re-emitting it (Phase 4 uses the pre-emitted result for replaceAllUsesWith).
+    //
+    //   This is recursive up to one level: if the wait_all's operands are
+    //   themselves !air.async.token (e.g., from air.execute), those are still
+    //   dropped (same as before).  Only DMATokenType operands are threaded.
+
+    // Map: air.wait_all op → the conduit.wait_all_async value pre-emitted for it.
+    // Phase 4 uses this to skip re-emitting and to replace uses correctly.
+    llvm::DenseMap<mlir::Operation *, mlir::Value> preEmittedWaitAll;
 
     llvm::SmallVector<mlir::Operation *> putGetToErase;
 
@@ -505,12 +526,52 @@ struct AirChannelToConduitPass
       // conduit DMA token types.  Only DMATokenType (and the AIR async token,
       // if present) are valid DMA dependency operands — WindowTokenType is
       // a window-slot token and must not appear in DMA dep chains.
-      // Unconverted or incompatible tokens are dropped.
+      //
+      // PASSB-DEP-001: also handle air.wait_all results (still !air.async.token
+      // at this point).  Recursively resolve their operands into DMATokenType
+      // and pre-emit a conduit.wait_all_async in-place.
       llvm::SmallVector<mlir::Value> depTokens;
       for (int32_t i = 0; i < ndeps; ++i) {
         mlir::Value dep = allOps[base + i];
-        if (mlir::isa<DMATokenType>(dep.getType()))
+        if (mlir::isa<DMATokenType>(dep.getType())) {
+          // Already a conduit token (prior put/get was rewritten in program order).
           depTokens.push_back(dep);
+        } else if (mlir::Operation *defOp = dep.getDefiningOp();
+                   defOp && isAirWaitAll(defOp)) {
+          // PASSB-DEP-001: dep comes from an air.wait_all that Phase 4 hasn't
+          // rewritten yet.  Resolve the wait_all's operands (which are already
+          // conduit tokens via earlier replaceAllUsesWith calls) and pre-emit
+          // a conduit.wait_all_async to represent the fan-in fence.
+          //
+          // Check if we already pre-emitted a wait_all_async for this op.
+          auto preIt = preEmittedWaitAll.find(defOp);
+          if (preIt != preEmittedWaitAll.end()) {
+            // Reuse previously pre-emitted result.
+            depTokens.push_back(preIt->second);
+          } else {
+            // Collect sub-tokens: only DMATokenType operands of the wait_all
+            // are forwarded; non-DMA tokens (e.g., air.execute results) are
+            // still dropped (same policy as the primary filter above).
+            llvm::SmallVector<mlir::Value> subTokens;
+            for (mlir::Value subDep : defOp->getOperands()) {
+              if (mlir::isa<DMATokenType>(subDep.getType()))
+                subTokens.push_back(subDep);
+            }
+            if (!subTokens.empty()) {
+              // Pre-emit conduit.wait_all_async immediately before the current
+              // put/get op so the SSA value dominates it.
+              auto preWait = builder.create<WaitAllAsync>(
+                  defOp->getLoc(), conduitTokenTy, subTokens);
+              mlir::Value preWaitVal = preWait.getResult();
+              preEmittedWaitAll[defOp] = preWaitVal;
+              depTokens.push_back(preWaitVal);
+            }
+            // If subTokens is empty (all operands were non-DMA), nothing to
+            // thread — the dep is dropped (same as non-wait_all !air.async.token).
+          }
+        }
+        // else: non-DMA token (air.execute, etc.) — silently dropped per
+        // documented limitation.
       }
       base += ndeps;
       // indices (ignored — only [1,1] channels supported)
@@ -749,10 +810,28 @@ struct AirChannelToConduitPass
     // Mapping:
     //   result present → conduit.wait_all_async %deps : (...) -> !conduit.dma.token
     //   no result      → conduit.wait_all %deps
+    //
+    // PASSB-DEP-001: if an air.wait_all was already pre-emitted in Phase 3
+    // (because it appeared as a dep of an air.channel.put/get), skip re-emitting
+    // it.  Instead, call replaceAllUsesWith to forward any remaining uses of the
+    // original !air.async.token result to the pre-emitted conduit token.
 
     llvm::SmallVector<mlir::Operation *> waitAllToErase;
 
     for (mlir::Operation *op : waitAllToRewrite) {
+      // PASSB-DEP-001: skip air.wait_all ops that were already pre-emitted in
+      // Phase 3 as part of dep resolution for a put/get op.  Their result was
+      // already replaced via the pre-emitted WaitAllAsync; we only need to
+      // update any remaining uses of the original air.async.token result.
+      auto preIt = preEmittedWaitAll.find(op);
+      if (preIt != preEmittedWaitAll.end()) {
+        // Forward any remaining !air.async.token uses to the pre-emitted token.
+        if (op->getNumResults() >= 1)
+          op->getResult(0).replaceAllUsesWith(preIt->second);
+        waitAllToErase.push_back(op);
+        continue;
+      }
+
       builder.setInsertionPoint(op);
       mlir::Location loc = op->getLoc();
 

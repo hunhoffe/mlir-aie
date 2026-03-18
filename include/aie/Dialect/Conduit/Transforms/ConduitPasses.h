@@ -57,6 +57,8 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITFUSECHANNELS
 #define GEN_PASS_DECL_CONDUITCHECKCHANNELS
 #define GEN_PASS_DECL_CONDUITINFERMODES
+#define GEN_PASS_DECL_CONDUITCHECKDEPS
+#define GEN_PASS_DECL_CONDUITINFERRATES
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -99,6 +101,18 @@ createConduitCheckChannelsPass();
 /// using the R3 + Step 3.5 decision procedure.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitInferModesPass();
+
+/// M12 dep-token DAG check: error when the $deps token DAG contains a cycle
+/// (static deadlock — circular completion dependency between DMA ops).
+/// Requires PASSB-DEP-001 fix (Task #24) for complete coverage.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitCheckDepsPass();
+
+/// Rate inference: infer CSDF producer_rates/consumer_rates from num_elems
+/// attributes on conduit.put_memref_async / conduit.get_memref_async ops.
+/// After attachment, M6/M7 verifiers fire automatically on next verify step.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitInferRatesPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

@@ -403,4 +403,86 @@ def ConduitInferModes : Pass<"conduit-infer-modes", "::mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Dep-Token DAG Check — conduit-check-deps (M12 analysis)
+//===----------------------------------------------------------------------===//
+
+def ConduitCheckDeps : Pass<"conduit-check-deps", "::mlir::ModuleOp"> {
+  let summary = "M12: error when the dep-token DAG contains a cycle (static deadlock)";
+  let description = [{
+    Analysis pass that checks the !conduit.dma.token dependency DAG for cycles.
+
+    The $deps operand on conduit.put_memref_async, conduit.get_memref_async, and
+    conduit.wait_all_async carries completion tokens that form a dependency DAG:
+    an op with %tok in its $deps cannot begin until the op that produced %tok
+    has completed.  A cycle in this DAG is a static deadlock — no scheduling
+    can resolve a circular completion dependency.
+
+    Algorithm:
+      1. Walk all token-producing ops; build adjacency list: dep → successor.
+      2. DFS with gray/black coloring over all nodes.
+      3. Any back edge (reaching a gray node) → emit hard error and continue
+         to report all cycles (not just the first).
+
+    Nodes: every !conduit.dma.token SSA value.
+    Edges: $deps operand of put_memref_async / get_memref_async / wait_all_async.
+
+    IMPORTANT — PASSB-DEP-001 coverage gap:
+      This pass requires Task #24 (PASSB-DEP-001 fix) for complete coverage.
+      Until that fix lands, cycles routed through conduit.wait_all_async may
+      not be detected because the $deps operand list may be incomplete.
+
+    This pass emits hard errors and signals pass failure on violation.
+    It is OPT-IN and NOT part of the default pipeline.
+
+    Run AFTER Pass B (which emits the dep tokens) and BEFORE Pass C.
+    Run with:  aie-opt --conduit-check-deps <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitCheckDepsPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Rate Inference — conduit-infer-rates
+//===----------------------------------------------------------------------===//
+
+def ConduitInferRates : Pass<"conduit-infer-rates", "::mlir::ModuleOp"> {
+  let summary = "Infer CSDF producer_rates/consumer_rates from put/get num_elems";
+  let description = [{
+    Walks conduit.create ops that have no producer_rates or consumer_rates
+    attribute and infers them from the num_elems attributes of all
+    conduit.put_memref_async and conduit.get_memref_async ops that reference
+    the same channel name.
+
+    After attachment, the M6 (CSDF balance) and M7 (hyper-period simulation)
+    verifiers in Create::verify() fire automatically on the next mlir verify
+    step, catching rate imbalances and buffer capacity violations at
+    compile time.
+
+    For uniform channels (all puts move P elements, all gets move C elements),
+    producer_rates = [P] and consumer_rates = [C] (period-1 SDF).
+    For true CSDF, the full phase sequence is attached.
+
+    Skips conduits where:
+      - rates are already explicitly set
+      - any num_elems is non-constant (remark emitted, no error)
+      - only put ops or only get ops are present (asymmetric coverage)
+
+    This pass runs AFTER Pass B (--air-channel-to-conduit) and BEFORE Pass C.
+    It is OPT-IN and NOT part of the default pipeline.
+
+    Run with:  aie-opt --conduit-infer-rates <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitInferRatesPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES

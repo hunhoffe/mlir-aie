@@ -9,11 +9,12 @@
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
-// Producer lock init = 1 * 2 = 2
+// Producer lock init = depth * repeat_count = 1 * 2 = 2
 // CHECK:     %[[PROD_LOCK:.*]] = aie.lock({{.*}}) {init = 2 : i32
 // CHECK:     %[[CONS_LOCK:.*]] = aie.lock({{.*}}) {init = 0 : i32
-// Consumer lock init = 2
-// CHECK:     aie.lock({{.*}}) {init = 2 : i32
+// Consumer tile lock init = depth = 1 (repeat_count does not multiply here;
+// the consumer FIFO has only depth slots, independent of how many times the DMA fires)
+// CHECK:     aie.lock({{.*}}) {init = 1 : i32
 // Core acquires repeat_count=2 units
 // CHECK:     aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 2)
 // Core releases repeat_count=2 units

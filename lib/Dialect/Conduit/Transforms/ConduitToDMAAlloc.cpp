@@ -621,6 +621,8 @@ void allocPhase(ConduitToDMAState &state) {
 
         // Distribute sources with a compute producer: allocate producer-side
         // buffers+locks on the compute tile for the aie.mem MM2S.
+        // Lock allocation is skipped when disable_synchronization is set:
+        // oracle emits no locks on the compute tile for these conduits.
         {
           auto [pCol, pRow] = info.producerTileCoord;
           if (pCol >= 0 && pRow >= 2) {
@@ -632,15 +634,19 @@ void allocPhase(ConduitToDMAState &state) {
                     info.effectiveDepth > 0 ? info.effectiveDepth : depth;
                 auto pBufs =
                     state.allocateBuffers(pTileVal, name, bufTy, prodDepth);
-                auto pLocks = state.allocateLockPair(pTileVal, name, prodDepth);
 
-                if (!isAIE2)
-                  info.consumerTileAIE1Locks[pTileVal] =
-                      std::move(pLocks.aie1Locks);
+                AIE::LockOp pProdLock, pConsLock;
+                if (!info.disableSynchronization) {
+                  auto pLocks = state.allocateLockPair(pTileVal, name, prodDepth);
+                  pProdLock = pLocks.prodLock;
+                  pConsLock = pLocks.consLock;
+                  if (!isAIE2)
+                    info.consumerTileAIE1Locks[pTileVal] =
+                        std::move(pLocks.aie1Locks);
+                }
 
                 info.consumerTileBuffers[pTileVal] = pBufs;
-                info.consumerTileLocks[pTileVal] = {pLocks.prodLock,
-                                                    pLocks.consLock};
+                info.consumerTileLocks[pTileVal] = {pProdLock, pConsLock};
 
                 if (prodDepth > 1 &&
                     state.conduitNamesWithProducerAcquire.count(name))
@@ -655,11 +661,15 @@ void allocPhase(ConduitToDMAState &state) {
 
       // Allocate lock(s) on the consumer tile (skip if
       // disable_synchronization).
+      //
+      // Consumer-tile lock init = depth (the number of buffer slots at the
+      // receiving tile). repeat_count does NOT multiply here: the DMA BD
+      // chain fires repeat_count times per buffer slot, but the consumer FIFO
+      // always has exactly depth slots. The repeat_count scaling belongs only
+      // on the producer-side lock (allocated in Phase 3d below).
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.disableSynchronization) {
-        int64_t repeatN =
-            info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
-        int64_t prodInit = depth * repeatN;
+        int64_t prodInit = depth;
         auto consLocks =
             state.allocateLockPair(consTileVal, consPrefix, depth, prodInit);
         thisProdLock = consLocks.prodLock;

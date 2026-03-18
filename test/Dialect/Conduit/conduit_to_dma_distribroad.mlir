@@ -72,7 +72,7 @@
 // CHECK:     aie.lock(%[[TILE_2_0]]
 // CHECK-SAME:   sym_name = "shared_weights_cons_lock_0"
 // CHECK:     aie.shim_dma_allocation @shared_weights_shim_alloc
-// CHECK:     aie.flow(%[[TILE_2_0]], DMA : 0, %[[TILE_2_2]], DMA : 0)
+// CHECK:     aie.flow(%[[TILE_2_0]], DMA : 1, %[[TILE_2_2]], DMA : 1)
 //
 // --- Tile DMA region (Phase 5.5): single aie.mem with S2MM per conduit ---
 // CHECK:     aie.mem(%[[TILE_2_2]]) {

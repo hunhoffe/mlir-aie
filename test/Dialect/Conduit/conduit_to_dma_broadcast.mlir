@@ -10,8 +10,8 @@
 //   aie.buffer:  3  (one per consumer tile, depth=1)
 //   aie.lock:    8  (prod_lock + cons_lock per consumer tile × 3 consumers;
 //                    plus prod_lock + cons_lock on shim tile)
-//   aie.flow:    3  (shim DMA:0 → tile_0_2, shim DMA:1 → tile_0_3,
-//                    shim DMA:2 → tile_0_4)
+//   aie.flow:    3  (shim DMA:0 → tile_0_2, shim DMA:0 → tile_0_3,
+//                    shim DMA:0 → tile_0_4; one MM2S fans out to all consumers)
 //   aie.mem:     3  (S2MM for each of the 3 consumer tiles)
 
 // CHECK-LABEL: module @broadcast_3_consumers
@@ -54,9 +54,10 @@
 // CHECK:       func.call @consume_data(%{{.*}}bcast_fifo_cons_2_buff_0
 // CHECK:       aie.use_lock(%{{.*}}bcast_fifo_cons_2_prod{{.*}}, Release, 1)
 // --- Three flows: one per consumer tile (Fix NF6) ---
+// All three share MM2S channel 0; the switchbox fans out to each consumer.
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
-// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 1, %{{.*}}tile_0_3, DMA : 0)
-// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 2, %{{.*}}tile_0_4, DMA : 0)
+// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_3, DMA : 0)
+// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_4, DMA : 0)
 // --- Three aie.mem blocks: one S2MM for each consumer tile ---
 // CHECK:     aie.mem(%{{.*}}tile_0_2) {
 // CHECK:       aie.dma_start(S2MM

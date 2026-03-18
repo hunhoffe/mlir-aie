@@ -278,31 +278,35 @@ void routePhase(ConduitToDMAState &state) {
       // Note: shim-producer conduits (Phase 4a) cannot be link destinations
       // (link dsts are always MemTile/compute tile consumers, not shim
       // producers), so no linkDstNames guard is needed in 4a.
-      int64_t shimDepth = info.depth > 0 ? info.depth : 1;
-      if (isAIE2) {
-        int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
-        std::string symName = name + "_prod_lock_0";
-        // prod_lock init=0: shim locks are programmed by the host runtime
-        // via aiex.npu.dma_memcpy_nd token signaling; pre-signaling free
-        // slots causes over-commitment before the shim DMA is configured.
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
-            static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        info.shimProdLock = lk;
-      }
-      if (isAIE2) {
-        int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
-        std::string symName = name + "_cons_lock_0";
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
-            static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        info.shimConsLock = lk;
+      // Skip lock allocation when disable_synchronization is set: the oracle
+      // emits no locks or use_lock for these conduits.
+      if (isAIE2 && !info.disableSynchronization) {
+        {
+          int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
+          std::string symName = name + "_prod_lock_0";
+          // prod_lock init=0: shim locks are programmed by the host runtime
+          // via aiex.npu.dma_memcpy_nd token signaling; pre-signaling free
+          // slots causes over-commitment before the shim DMA is configured.
+          AIE::LockOp lk = builder.create<AIE::LockOp>(
+              state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
+              static_cast<int>(0));
+          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+          info.shimProdLock = lk;
+        }
+        {
+          int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
+          std::string symName = name + "_cons_lock_0";
+          AIE::LockOp lk = builder.create<AIE::LockOp>(
+              state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
+              static_cast<int>(0));
+          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+          info.shimConsLock = lk;
+        }
       }
       // For external-buffer conduits on AIE1: allocate a shim lock for the
       // aie.shim_dma BD chain (acquire before DMA, release after).
-      if (!isAIE2 && !info.externalBuffers.empty()) {
+      if (!isAIE2 && !info.externalBuffers.empty() &&
+          !info.disableSynchronization) {
         int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
         std::string symName = name + "_lock_0";
         AIE::LockOp lk = builder.create<AIE::LockOp>(
@@ -313,7 +317,13 @@ void routePhase(ConduitToDMAState &state) {
         info.shimConsLock = lk;
       }
 
-      // aie.shim_dma_allocation (MM2S, channel 0).
+      // aie.shim_dma_allocation: assign next available MM2S channel on this
+      // shim tile.  Multiple shim-producer conduits on the same shim tile
+      // must each use a distinct MM2S channel (0, 1, ...).
+      int32_t shimMM2SCh =
+          state.tileNextMM2SChannel[shimTile.getResult()]++;
+      state.conduitMM2SChannel[name] = shimMM2SCh;
+
       std::string allocSym = name + "_shim_alloc";
       state.shimConduitNames.insert(name);
       if (!mlir::SymbolTable::lookupSymbolIn(
@@ -321,21 +331,26 @@ void routePhase(ConduitToDMAState &state) {
         builder.create<AIE::ShimDMAAllocationOp>(
             state.deviceOp.getLoc(), allocSym, shimTile.getResult(),
             AIE::DMAChannelDir::MM2S,
-            /*channel_index=*/static_cast<int64_t>(0),
+            /*channel_index=*/static_cast<int64_t>(shimMM2SCh),
             /*plio=*/false,
             /*packet=*/nullptr);
 
-      // One flow per consumer tile (broadcast).
+      // One flow per consumer tile.  The shim-side DMA port uses shimMM2SCh
+      // so that each conduit routes through its own hardware MM2S channel.
+      // The consumer-side port is allocated from tileNextS2MMChannel.
       for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
            ++consIdx) {
         auto [consCol, consRow] = info.consumerTileCoords[consIdx];
         AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
         if (!consTile)
           continue;
+        int32_t s2mmCh =
+            state.tileNextS2MMChannel[consTile.getResult()]++;
+        state.conduitConsS2MMChannel[{name, consIdx}] = s2mmCh;
         state.emitFlow(info.routingMode, shimTile.getResult(),
-                       AIE::WireBundle::DMA, static_cast<int32_t>(consIdx),
+                       AIE::WireBundle::DMA, shimMM2SCh,
                        consTile.getResult(), AIE::WireBundle::DMA,
-                       static_cast<int32_t>(0));
+                       s2mmCh);
       }
     }
 
@@ -359,7 +374,8 @@ void routePhase(ConduitToDMAState &state) {
       // These are referenced by the host runtime when programming
       // shim S2MM DMA BDs; without them, the runtime has no locks
       // for flow control on the receive path.
-      if (isAIE2) {
+      // Skip when disable_synchronization: oracle emits no locks for these.
+      if (isAIE2 && !info.disableSynchronization) {
         {
           int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
           // Naming convention: <conduit>_<endpoint-role>_<lock-role>_<idx>

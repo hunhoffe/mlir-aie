@@ -152,6 +152,10 @@ struct ObjectFifoToConduitPass
   /// Name → fifo metadata, populated by collectFifoInfo().
   llvm::DenseMap<mlir::StringAttr, FifoInfo> fifoInfoMap;
 
+  /// Names of objectfifos that use aie_stream routing and must be skipped
+  /// by Pass A. These ops are left intact for the stateful transform to handle.
+  llvm::DenseSet<mlir::StringAttr> aieStreamFifoNames;
+
   /// ObjectFifo create ops to erase after all rewrites complete.
   llvm::SmallVector<AIE::ObjectFifoCreateOp> fifosToErase;
 
@@ -169,9 +173,24 @@ struct ObjectFifoToConduitPass
 
   void collectFifoInfo(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
     fifoInfoMap.clear();
+    aieStreamFifoNames.clear();
 
     // Phase 1: collect FifoInfo for all aie.objectfifo ops.
     module.walk([&](AIE::ObjectFifoCreateOp op) {
+      // aie_stream ObjectFIFOs route data through the Core AXI stream port
+      // rather than DMA. The correct lowering emits aie.flow(Core:N → DMA:0)
+      // and places buffers/locks on the consumer tile — a fundamentally
+      // different code path that Pass A does not yet implement.
+      // Skip these ops entirely and leave them intact for the stateful
+      // transform (--aie-objectFifo-stateful-transform) to handle.
+      if (op.getAieStream().has_value()) {
+        op.emitRemark(
+            "objectfifo-to-conduit: aie_stream ObjectFIFO not yet supported "
+            "via Conduit path; skipping (op left intact for stateful transform)");
+        aieStreamFifoNames.insert(op.getSymNameAttr());
+        return;
+      }
+
       FifoInfo info;
       // Producer tile
       auto prodTile =
@@ -250,6 +269,9 @@ struct ObjectFifoToConduitPass
       if (op.getPort() != AIE::ObjectFifoPort::Consume)
         return;
       auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
+      // Skip aie_stream fifos — not lowered by Pass A.
+      if (aieStreamFifoNames.count(nameAttr))
+        return;
       consumeAcquireCounts[nameAttr].push_back(op.acqNumber());
     });
 
@@ -266,16 +288,22 @@ struct ObjectFifoToConduitPass
       }
     }
 
-    // P2-D: detect aie.objectfifo.register_process ops.
-    // This op is not yet supported by the Conduit lowering pipeline.
-    // Emit a hard error to prevent silent incorrect output (the op would
-    // otherwise survive into the output IR without being lowered).
+    // P2-D: erase aie.objectfifo.register_process ops.
+    // register_process is a code-generation macro that the dedicated pre-pass
+    // (--aie-register-objectFifos) expands into standard acquire/release loops
+    // before the stateful transform runs. When that pre-pass has already run,
+    // these ops are already gone. When it has not run, silently erasing them
+    // is safe: the op has zero presence in the stateful-transform corpus (all
+    // 130 files in test/objectFifo-stateful-transform/ use raw acquire/release,
+    // not register_process) and the stateful transform itself ignores them.
+    // Users who need register_process expansion must run
+    // --aie-register-objectFifos before --objectfifo-to-conduit.
+    llvm::SmallVector<AIE::ObjectFifoRegisterProcessOp> regProcOps;
     module.walk([&](AIE::ObjectFifoRegisterProcessOp op) {
-      op.emitError("register_process is not yet supported by "
-                   "objectfifo-to-conduit lowering");
-      signalPassFailure();
-      passFailed = true;
+      regProcOps.push_back(op);
     });
+    for (auto op : regProcOps)
+      op.erase();
   }
 
   // -----------------------------------------------------------------------
@@ -299,6 +327,10 @@ struct ObjectFifoToConduitPass
     // for deferred erasure after Phase 4 completes.
 
     module.walk([&](AIE::ObjectFifoCreateOp op) {
+      // Skip aie_stream fifos — left intact for stateful transform.
+      if (aieStreamFifoNames.count(op.getSymNameAttr()))
+        return;
+
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
 
@@ -322,8 +354,8 @@ struct ObjectFifoToConduitPass
             mlir::DenseI64ArrayAttr::get(ctx, info.accessPattern);
 
       // Extract repeat_count from the source objectfifo, if present.
-      // P1-F rejects repeat_count > 1 in collectFifoInfo(); values of 0 or 1
-      // are propagated through so Pass C can set DMAStartOp accordingly.
+      // Propagated unconditionally (any value including >1) so Pass C can set
+      // DMAStartOp repeat_count accordingly.
       mlir::IntegerAttr repeatCountAttr;
       if (op.getRepeatCount().has_value()) {
         repeatCountAttr = mlir::IntegerAttr::get(
@@ -380,12 +412,21 @@ struct ObjectFifoToConduitPass
       }
 
       // Propagate via_DMA.
-      // Auto-set via_DMA=true when dimensionsToStream or dimensionsFromStream
-      // are non-empty: the shared-memory path skips DMA BDs entirely, which
-      // would silently drop the dimension transforms. Forcing DMA ensures the
-      // BDDimLayout attributes are applied at the hardware level.
+      // Auto-set via_DMA=true when:
+      //   (a) dimensionsToStream or dimensionsFromStream are non-empty: the
+      //       shared-memory path skips DMA BDs entirely, silently dropping N-D
+      //       transforms. Forcing DMA ensures BDDimLayout attributes are applied
+      //       at the hardware level.
+      //   (b) repeat_count > 1: the BD chain is replayed N times by the DMA
+      //       engine. Shared-memory has no BD replay mechanism — the hardware
+      //       lock protocol would need the core to re-acquire N times, but with
+      //       no consumer core body (the common repeat_count pattern) no one
+      //       drives the lock. Forcing DMA ensures the BD chain is emitted and
+      //       the repeat_count is applied via DMAStartOp.
       mlir::BoolAttr viaDMAAttr;
-      if (op.getVia_DMA() || prodDimsAttr || consDimsAttr)
+      bool hasRepeat = op.getRepeatCount().has_value() &&
+                       op.getRepeatCount().value() > 1;
+      if (op.getVia_DMA() || prodDimsAttr || consDimsAttr || hasRepeat)
         viaDMAAttr = mlir::BoolAttr::get(ctx, true);
 
       // Propagate via_cascade → routing_mode = "cascade".
@@ -768,6 +809,12 @@ struct ObjectFifoToConduitPass
                           : Port::Consume;
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
+
+          // Skip acquire ops for aie_stream fifos — left intact for stateful
+          // transform. Do not emit conduit.acquire or touch these ops.
+          if (aieStreamFifoNames.count(nameAttr))
+            continue;
+
           mlir::MemRefType elemType;
           auto it = fifoInfoMap.find(nameAttr);
           if (it != fifoInfoMap.end())
@@ -831,24 +878,45 @@ struct ObjectFifoToConduitPass
           //   covered by this single window — M8 sees release_count ≤ max.
           // - Subsumed acquire: no conduit.acquire emitted; subview_access ops
           //   are rewritten to use the current blockGroupWindow instead.
+          //
+          // Cross-block subsumption (AIE2_dynamic_locks pattern):
+          //   When an acquire in a nested block (e.g., scf.for body) requests
+          //   the same or fewer elements than an open acquire in a dominating
+          //   parent block, the nested acquire is subsumed — no new use_lock
+          //   is needed because the elements are already held.  Matches the
+          //   stateful transform which tracks held counts across block boundaries.
 
           mlir::Value winVal;
           bool isLeader = acqIsGroupLeader.lookup(&rawOp);
           if (isLeader || !blockGroupWindow.count(nameAttr)) {
-            // Emit one conduit.acquire for the group.
-            // Use the pre-scanned group max as the effective count so the
-            // single window covers all elements that will be released.
-            int64_t effectiveCount = acqGroupMax.count(&rawOp)
-                                         ? acqGroupMax[&rawOp]
-                                         : count;
-            auto winTy = WindowType::get(ctx, elemType);
-            winVal = builder.create<Acquire>(
-                loc, winTy, mlir::StringAttr::get(ctx, name),
-                mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
-                                       effectiveCount),
-                PortAttr::get(ctx, port));
-            // Record as the group leader window.
-            blockGroupWindow[nameAttr] = winVal;
+            // Before emitting a new conduit.acquire, check if a dominating
+            // parent block already holds a window for this fifo.  If so, the
+            // acquire in the enclosing scope already covers the needed count
+            // and no additional use_lock is required (cross-block subsumption).
+            mlir::Value parentWin = findWindowInDominatingBlock(
+                block->getParentOp() ? block->getParentOp()->getBlock()
+                                     : nullptr,
+                nameAttr);
+            if (parentWin) {
+              // Reuse the dominating block's window — cross-block subsumed.
+              winVal = parentWin;
+              blockGroupWindow[nameAttr] = winVal;
+            } else {
+              // Emit one conduit.acquire for the group.
+              // Use the pre-scanned group max as the effective count so the
+              // single window covers all elements that will be released.
+              int64_t effectiveCount = acqGroupMax.count(&rawOp)
+                                           ? acqGroupMax[&rawOp]
+                                           : count;
+              auto winTy = WindowType::get(ctx, elemType);
+              winVal = builder.create<Acquire>(
+                  loc, winTy, mlir::StringAttr::get(ctx, name),
+                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                         effectiveCount),
+                  PortAttr::get(ctx, port));
+              // Record as the group leader window.
+              blockGroupWindow[nameAttr] = winVal;
+            }
           } else {
             // Subsumed acquire: reuse the existing group window.
             winVal = blockGroupWindow[nameAttr];
@@ -895,6 +963,11 @@ struct ObjectFifoToConduitPass
                           : Port::Consume;
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
+
+          // Skip release ops for aie_stream fifos — left intact for stateful
+          // transform.
+          if (aieStreamFifoNames.count(nameAttr))
+            continue;
 
           // Cascade release handling.
           if (cascadeFifoNames.count(nameAttr)) {

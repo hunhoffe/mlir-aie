@@ -119,7 +119,12 @@ void linkPhase(ConduitToDMAState &state) {
 
     mlir::Value memtileVal = memtile.getResult();
 
-    if (isDistribute && numDsts > 0) {
+    // Distribute MemTile per-destination lock pairs.
+    // Skipped when the source conduit has disable_synchronization: the oracle
+    // emits no locks and no use_lock for synchronization-disabled conduits on
+    // the MemTile side. The BD chains are still emitted (lock values remain
+    // null and emitBDBlock skips the use_lock emission).
+    if (isDistribute && numDsts > 0 && !srcInfo.disableSynchronization) {
       builder.setInsertionPoint(state.deviceBody->getTerminator());
       for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx) {
         // Scale per-slice lock init by the destination fifo's repeat_count.
@@ -215,28 +220,32 @@ void linkPhase(ConduitToDMAState &state) {
         // Allocate per-source lock pairs on the memtile.
         // Each S2MM channel i acquires joinSrcProdLocks[i] and releases
         // joinSrcConsLocks[i]; the MM2S chain acquires cons and releases prod.
-        for (unsigned srcIdx = 0; srcIdx < numJoinSrcs; ++srcIdx) {
-          if (isAIE2) {
-            { int lockIdx = state.lockIdCounter[memtileVal]++;
-              std::string symName = jDstName + "_prod_lock_" + std::to_string(srcIdx);
-              AIE::LockOp lk = builder.create<AIE::LockOp>(
-                  state.deviceOp.getLoc(), memtileVal, lockIdx, static_cast<int>(jDstDepth));
-              lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-              joinSrcProdLocks.push_back(lk); }
-            { int lockIdx = state.lockIdCounter[memtileVal]++;
-              std::string symName = jDstName + "_cons_lock_" + std::to_string(srcIdx);
+        // Skipped when the join destination has disable_synchronization: oracle
+        // emits no locks on the MemTile for synchronization-disabled fifos.
+        if (!jDstInfo->disableSynchronization) {
+          for (unsigned srcIdx = 0; srcIdx < numJoinSrcs; ++srcIdx) {
+            if (isAIE2) {
+              { int lockIdx = state.lockIdCounter[memtileVal]++;
+                std::string symName = jDstName + "_prod_lock_" + std::to_string(srcIdx);
+                AIE::LockOp lk = builder.create<AIE::LockOp>(
+                    state.deviceOp.getLoc(), memtileVal, lockIdx, static_cast<int>(jDstDepth));
+                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+                joinSrcProdLocks.push_back(lk); }
+              { int lockIdx = state.lockIdCounter[memtileVal]++;
+                std::string symName = jDstName + "_cons_lock_" + std::to_string(srcIdx);
+                AIE::LockOp lk = builder.create<AIE::LockOp>(
+                    state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
+                lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+                joinSrcConsLocks.push_back(lk); }
+            } else {
+              int lockIdx = state.lockIdCounter[memtileVal]++;
+              std::string symName = jDstName + "_lock_" + std::to_string(srcIdx);
               AIE::LockOp lk = builder.create<AIE::LockOp>(
                   state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
               lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-              joinSrcConsLocks.push_back(lk); }
-          } else {
-            int lockIdx = state.lockIdCounter[memtileVal]++;
-            std::string symName = jDstName + "_lock_" + std::to_string(srcIdx);
-            AIE::LockOp lk = builder.create<AIE::LockOp>(
-                state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
-            lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-            joinSrcProdLocks.push_back(lk);
-            joinSrcConsLocks.push_back(lk);
+              joinSrcProdLocks.push_back(lk);
+              joinSrcConsLocks.push_back(lk);
+            }
           }
         }
       }
@@ -254,16 +263,31 @@ void linkPhase(ConduitToDMAState &state) {
         if (!dstInfo || dstInfo->consumerTileCoords.empty())
           continue;
 
-        auto [dstConsCol, dstConsRow] = dstInfo->consumerTileCoords[0];
-        AIE::TileOp dstConsTile =
-            state.lookupTileByCoord(dstConsCol, dstConsRow);
-        if (!dstConsTile)
-          continue;
+        // Emit one flow per consumer tile of this dst conduit.
+        // For simple distribute (1 consumer per dst), this is one flow.
+        // For broadcast distribute (N consumers per dst), this emits N flows
+        // from the same MemTile MM2S channel to each consumer — matching the
+        // stateful transform which emits one aie.flow per consumer tile.
+        for (unsigned consIdx = 0;
+             consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
+          auto [dstConsCol, dstConsRow] =
+              dstInfo->consumerTileCoords[consIdx];
+          AIE::TileOp dstConsTile =
+              state.lookupTileByCoord(dstConsCol, dstConsRow);
+          if (!dstConsTile)
+            continue;
 
-        builder.create<AIE::FlowOp>(
-            state.deviceOp.getLoc(), memtileVal, AIE::WireBundle::DMA,
-            static_cast<int32_t>(dstIdx), dstConsTile.getResult(),
-            AIE::WireBundle::DMA, static_cast<int32_t>(0));
+          // S2MM channel on the consumer tile: assigned independently per
+          // consumer tile (broadcast consumers each use their own S2MM).
+          mlir::Value consTileVal = dstConsTile.getResult();
+          int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
+          state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+
+          builder.create<AIE::FlowOp>(
+              state.deviceOp.getLoc(), memtileVal, AIE::WireBundle::DMA,
+              static_cast<int32_t>(dstIdx), dstConsTile.getResult(),
+              AIE::WireBundle::DMA, static_cast<int32_t>(s2mmCh));
+        }
       }
 
       // Source→MemTile flow for compute-tile producers.
@@ -374,12 +398,20 @@ void linkPhase(ConduitToDMAState &state) {
             dstLen = perBufLen - dstOffset;
         }
 
+        mlir::Value ingestAcqLock =
+            (sliceIdx < sliceProdLocks.size())
+                ? sliceProdLocks[sliceIdx].getResult()
+                : mlir::Value{};
+        mlir::Value ingestRelLock =
+            (sliceIdx < sliceConsLocks.size())
+                ? sliceConsLocks[sliceIdx].getResult()
+                : mlir::Value{};
         state.emitBDBlock(
             loc, ingestBlocks[blkIdx],
-            sliceProdLocks[sliceIdx].getResult(),
+            ingestAcqLock,
             state.lockAcqValue(Port::Produce, 1),
             linkBufs[bufIdx].getResult(), dstOffset, dstLen,
-            sliceConsLocks[sliceIdx].getResult(),
+            ingestRelLock,
             state.lockRelValue(Port::Produce));
         builder.create<AIE::NextBDOp>(loc,
             ingestBlocks[(blkIdx + 1) % totalIngest]);
