@@ -105,48 +105,34 @@ void ConduitDialect::initialize() {
            << " does not match window element type "
            << winTy.getElementType();
 
-  // M2: index bounds check against depth from the defining conduit.create.
-  // Walk the def-use chain: subview_access takes a !conduit.window<T> produced
-  // by conduit.acquire or conduit.wait_window.  Extract the conduit name, then
-  // search the enclosing module for the matching conduit.create.
+  // M2: index bounds check against acquire count from the defining
+  // conduit.acquire op.  The valid range for subview_access is [0, count)
+  // where count is the number of slots acquired by the parent acquire op.
+  // Using conduit.create depth as the bound was incorrect: a depth=2 conduit
+  // can be acquired with count=3 (sliding-window pattern) making index=2 valid.
   //
-  // The module-level walk handles the common case where conduit.create is at
-  // the module/device level while subview_access is nested inside aie.core.
-  // Uses walk([&](Create)) which visits only Create ops — O(k) where k is the
-  // number of conduit.create ops, not O(n) in total ops.
+  // If the defining op is conduit.acquire, use its count attribute directly.
+  // If the defining op is conduit.wait_window, trace back to the
+  // conduit.acquire_async to get the count.
+  // If the bound cannot be determined statically, skip the check.
   uint64_t idx = getIndex();
   mlir::Value win = getWindow();
   if (auto *defOp = win.getDefiningOp()) {
-    llvm::StringRef conduitName;
-    if (auto acqOp = mlir::dyn_cast<Acquire>(defOp))
-      conduitName = acqOp.getName();
-    else if (auto waitOp = mlir::dyn_cast<WaitWindow>(defOp))
-      conduitName = waitOp.getName();
-
-    if (!conduitName.empty()) {
-      // Walk up to the enclosing ModuleOp and search for conduit.create.
-      mlir::Operation *ancestor = getOperation()->getParentOp();
-      while (ancestor && !mlir::isa<mlir::ModuleOp>(ancestor))
-        ancestor = ancestor->getParentOp();
-      if (ancestor) {
-        bool outOfBounds = false;
-        uint64_t foundDepth = 0;
-        ancestor->walk([&](Create createOp) -> mlir::WalkResult {
-          if (createOp.getName() == conduitName) {
-            if (auto depthOpt = createOp.getDepth()) {
-              foundDepth = *depthOpt;
-              if (idx >= foundDepth)
-                outOfBounds = true;
-            }
-            return mlir::WalkResult::interrupt();
-          }
-          return mlir::WalkResult::advance();
-        });
-        if (outOfBounds)
-          return emitOpError("index ")
-                 << idx << " out of bounds for conduit of depth " << foundDepth;
+    uint64_t acquireCount = 0;
+    bool haveCount = false;
+    if (auto acqOp = mlir::dyn_cast<Acquire>(defOp)) {
+      acquireCount = acqOp.getCount();
+      haveCount = true;
+    } else if (auto waitOp = mlir::dyn_cast<WaitWindow>(defOp)) {
+      if (auto acqAsyncOp =
+              waitOp.getToken().getDefiningOp<AcquireAsync>()) {
+        acquireCount = acqAsyncOp.getCount();
+        haveCount = true;
       }
     }
+    if (haveCount && idx >= acquireCount)
+      return emitOpError("index ")
+             << idx << " out of bounds for acquire count " << acquireCount;
   }
 
   return ::mlir::success();
@@ -658,20 +644,25 @@ checkTokenDoesNotEscape(mlir::Operation *producerOp, mlir::Value tokenVal) {
 
 static ::mlir::LogicalResult
 checkWindowReleaseCumulativeCount(mlir::Operation *producerOp, mlir::Value windowVal) {
-  // M8a limitation: loop-carried over-release is not detected. Two conduit.acquire
-  // ops in a loop body produce independent SSA values; releasing each twice in the
-  // same iteration would not be caught. Detecting loop-carried over-release requires
-  // M9 liveness analysis — deferred.
+  // M8a: True double-release detection — cumulative released count at the same
+  // nesting level must not exceed the acquired count.  Multiple conduit.release
+  // ops on the same window value are valid for sliding-window partial-release
+  // patterns (e.g., acquire(3) followed by three release(1) calls).
   //
-  // M8a: True double-release detection — cumulative released count must not
-  // exceed the acquired count.  Multiple conduit.release ops on the same
-  // window value are valid for sliding-window partial-release patterns
-  // (e.g., acquire(3) followed by three release(1) calls).
+  // Only releases in the SAME parent block as the acquire op are counted.
+  // Releases inside nested regions (e.g., loop bodies) execute once per loop
+  // iteration; their relationship to the acquire count is enforced at runtime
+  // and depends on the loop trip count — static counting would yield false
+  // positives.  M9 liveness analysis (separate pass) handles loop-carried cases.
   //
-  // Limitation: loop-carried releases are only checked once per static path.
-  // A release inside scf.for runs N times per acquired window; if N > 1 and
-  // the loop runs multiple times, runtime total may exceed acquired_count.
-  // Detecting loop-carried over-release requires M9 liveness analysis.
+  // Example valid pattern (cross-block):
+  //   %win = conduit.acquire {count=1}    // in block B0
+  //   conduit.release %win {count=1}      // in block B0 — counted
+  //   scf.for ... {
+  //     conduit.release %win {count=1}    // in nested block B1 — NOT counted
+  //   }
+  // The loop body's release fires once per iteration; Pass A emits this pattern
+  // when the producer releases before re-acquiring each iteration.
 
   int64_t acquiredCount = 0;
   if (auto acqOp = mlir::dyn_cast<Acquire>(producerOp)) {
@@ -687,10 +678,14 @@ checkWindowReleaseCumulativeCount(mlir::Operation *producerOp, mlir::Value windo
     return ::mlir::success();
   }
 
+  // Count only releases at the same nesting level (same parent block).
+  mlir::Block *producerBlock = producerOp->getBlock();
   int64_t totalReleased = 0;
   for (mlir::OpOperand &use : windowVal.getUses()) {
-    if (auto relOp = mlir::dyn_cast<Release>(use.getOwner()))
-      totalReleased += static_cast<int64_t>(relOp.getCount());
+    if (auto relOp = mlir::dyn_cast<Release>(use.getOwner())) {
+      if (relOp->getBlock() == producerBlock)
+        totalReleased += static_cast<int64_t>(relOp.getCount());
+    }
   }
 
   if (totalReleased == 0)

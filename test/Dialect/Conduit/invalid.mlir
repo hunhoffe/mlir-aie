@@ -22,7 +22,7 @@ func.func @bad_join_offsets() {
 
 // -----
 
-// M2: subview_access index out of bounds for conduit depth
+// M2: subview_access index out of bounds for acquire count
 func.func @bad_subview_index() {
   conduit.create {name = "fifo", capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
@@ -31,7 +31,7 @@ func.func @bad_subview_index() {
                   depth = 2 : i64}
   %win = conduit.acquire {name = "fifo", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
-  // expected-error@+1 {{'conduit.subview_access' op index 2 out of bounds for conduit of depth 2}}
+  // expected-error@+1 {{'conduit.subview_access' op index 2 out of bounds for acquire count 1}}
   %elem = conduit.subview_access %win {index = 2 : i64}
              : !conduit.window<memref<8xi32>> -> memref<8xi32>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
@@ -41,8 +41,8 @@ func.func @bad_subview_index() {
 
 // -----
 
-// M2: subview_access cross-block — conduit.create at module level, acquire in
-// nested func body (the common case for real programs).
+// M2: subview_access index out of bounds for acquire count — conduit.create at
+// module level, acquire in nested func body (the common case for real programs).
 conduit.create {name = "xblock", capacity = 16 : i64,
                 producer_tile = array<i64: 1, 2>,
                 consumer_tiles = array<i64: 1, 3>,
@@ -51,7 +51,7 @@ conduit.create {name = "xblock", capacity = 16 : i64,
 func.func @bad_subview_cross_block() {
   %win = conduit.acquire {name = "xblock", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<16xi32>>
-  // expected-error@+1 {{'conduit.subview_access' op index 3 out of bounds for conduit of depth 2}}
+  // expected-error@+1 {{'conduit.subview_access' op index 3 out of bounds for acquire count 1}}
   %elem = conduit.subview_access %win {index = 3 : i64}
              : !conduit.window<memref<16xi32>> -> memref<16xi32>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
