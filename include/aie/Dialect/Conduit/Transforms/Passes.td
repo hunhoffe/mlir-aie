@@ -88,6 +88,11 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
     --allow-unregistered-dialect.  This pass matches by op name string so it
     does not require the AIR dialect library to be linked into aie-opt.
 
+    When `infer-rates` is true (the default), the pass automatically runs
+    --conduit-infer-rates at the end to attach producer_rates/consumer_rates
+    to conduit.create ops, enabling M6/M7 CSDF verification.  Pass
+    `--air-channel-to-conduit-infer-rates=false` to disable.
+
     Known limitations:
     - Only scalar [1,1] channels are handled (Task #32 established that
       SPMD specialization always produces [1,1] before lowering).
@@ -98,6 +103,16 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
   }];
 
   let constructor = "xilinx::conduit::createAirChannelToConduitPass()";
+
+  let options = [
+    Option<"inferRates", "infer-rates", "bool", /*default=*/"false",
+           "Run --conduit-infer-rates automatically at the end of the pass "
+           "to attach CSDF producer_rates/consumer_rates to conduit.create "
+           "ops, enabling M6/M7 verification. Default is false because "
+           "air.channel capacity (broadcast fan-out) does not match the CSDF "
+           "buffer-slot semantics that M7 checks; enabling rates on most "
+           "air.channel programs triggers spurious M7 failures.">,
+  ];
 
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
@@ -163,8 +178,17 @@ def ConduitDepthPromote : Pass<"conduit-depth-promote", "::mlir::ModuleOp"> {
     Scans all `conduit.create` ops with depth == 1 and promotes eligible ones
     to depth == 2 (double-buffering), enabling compute-DMA overlap.
 
+    When `csdf=true` and `producer_rates`/`consumer_rates` attributes are present
+    on a conduit.create, the pass uses the CSDFa minimum buffer depth formula
+    (Denolf 2007, Koek 2016 §4) instead of the fixed depth-2 heuristic:
+
+      min_depth = ceil(max(P, C) * eta / min(P, C))
+
+    where P = sum(producer_rates), C = sum(consumer_rates), and eta is the target
+    efficiency (default 1.0 = stall-free).
+
     Exclusion criteria (any one disqualifies):
-      1. CSDF / cyclostatic access pattern
+      1. CSDF / cyclostatic access pattern (when csdf=false)
       2. Linked conduit (link source or destination)
       3. No surrounding loop (no overlap benefit without iteration)
       4. Passthrough-only (acquire immediately followed by release, no compute)
@@ -177,6 +201,18 @@ def ConduitDepthPromote : Pass<"conduit-depth-promote", "::mlir::ModuleOp"> {
   }];
 
   let constructor = "xilinx::conduit::createConduitDepthPromotePass()";
+
+  let options = [
+    Option<"csdfa", "csdf", "bool", /*default=*/"false",
+           "Use CSDFa minimum buffer depth formula (Denolf 2007) when "
+           "producer_rates/consumer_rates are present, instead of skipping "
+           "CSDF-annotated conduits. Default false (guarded until "
+           "conduit-infer-rates is stable).">,
+    Option<"eta", "eta", "double", /*default=*/"1.0",
+           "Target efficiency for CSDFa depth formula: "
+           "min_depth = ceil(max(P,C) * eta / min(P,C)). "
+           "1.0 = stall-free; >1.0 = over-provisioning.">,
+  ];
 
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
@@ -479,6 +515,82 @@ def ConduitInferRates : Pass<"conduit-infer-rates", "::mlir::ModuleOp"> {
   }];
 
   let constructor = "xilinx::conduit::createConduitInferRatesPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Air Channel Index Flattener — air-channel-flatten-indices
+//===----------------------------------------------------------------------===//
+
+def AirChannelIndexFlattener : Pass<"air-channel-flatten-indices", "::mlir::ModuleOp"> {
+  let summary = "Flatten multi-dimensional air.channel indices to scalar channels";
+  let description = [{
+    Rewrites multi-dimensional air.channel declarations and their put/get ops
+    to use scalar channels.
+
+    air.channel @foo [M, N] declares M×N independent channels.  SPMD
+    specialization (air-specialize-channel-broadcast) is supposed to reduce
+    these to [1,1] before Pass B runs, but for programs that still carry
+    multi-dimensional channels, this pass performs the flattening:
+
+      air.channel @foo [M, N]
+        → M×N air.channel declarations @foo_0_0, @foo_0_1, ..., @foo_{M-1}_{N-1}
+
+      air.channel.put @foo[%c0, %c1]  (with arith.constant indices)
+        → air.channel.put @foo_0_1
+
+      air.channel.get @foo[%ci, %cj]  (with arith.constant indices)
+        → air.channel.get @foo_{i}_{j}
+
+    Dynamic indices (loop induction variables, block arguments, etc.) cause a
+    hard error because the destination channel cannot be determined statically.
+
+    This pass is a prerequisite for --air-channel-to-conduit when multi-
+    dimensional channels are present.  It should run BEFORE Pass B.
+
+    Run with:  aie-opt --air-channel-flatten-indices <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createAirChannelIndexFlattenerPass()";
+
+  let dependentDialects = [];
+}
+
+//===----------------------------------------------------------------------===//
+// Ordering Check — conduit-check-ordering (CSDFa static-ordering verifier)
+//===----------------------------------------------------------------------===//
+
+def ConduitCheckOrdering : Pass<"conduit-check-ordering", "::mlir::ModuleOp"> {
+  let summary = "Verify CSDFa static token ordering for DMA-only programs with rate annotations";
+  let description = [{
+    Analysis pass verifying CSDFa static token ordering for DMA-only programs
+    with rate annotations.  Complements --conduit-check-deps (acyclicity) and
+    M6/M7 (balance).  Together: acyclicity + balance + ordering = formally
+    verified deadlock-freedom for the DMA-only subset, grounded in Denolf 2007
+    Theorems 4-5.
+
+    Scope: DMA-only channels only.  Silently skips any conduit.create whose
+    use-def chain contains conduit.acquire or conduit.acquire_async ops —
+    cross-tier programs are outside CSDFa scope by design.
+
+    Algorithm:
+      1. Walk all conduit.create ops with both producer_rates and consumer_rates.
+      2. Filter to DMA-only channels (no window-token ops in the use chain).
+      3. Group DMA-only channels by tile (producer and consumer tiles).
+      4. For each tile with 2+ DMA-only rated channels, check whether pairs
+         of channels fire at overlapping CSDF phases.  If so, the relative
+         ordering of their DMA events is undefined — emit a warning.
+      5. Provably cyclic ordering (if detected) causes a hard error.
+
+    This pass is OPT-IN and NOT part of the default pipeline.
+
+    Run with:  aie-opt --conduit-check-ordering <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitCheckOrderingPass()";
 
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",

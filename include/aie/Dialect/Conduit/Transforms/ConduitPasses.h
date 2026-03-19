@@ -51,6 +51,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_OBJECTFIFOTOCONDUIT
 #define GEN_PASS_DECL_CONDUITTODMA
 #define GEN_PASS_DECL_AIRCHANNELTOCONDUIT
+#define GEN_PASS_DECL_AIRCHANNELINDEXFLATTENER
 #define GEN_PASS_DECL_CONDUITDEPTHPROMOTE
 #define GEN_PASS_DECL_CONDUITPAIRINGCHECK
 #define GEN_PASS_DECL_CONDUITLIVENESSCHECK
@@ -59,6 +60,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITINFERMODES
 #define GEN_PASS_DECL_CONDUITCHECKDEPS
 #define GEN_PASS_DECL_CONDUITINFERRATES
+#define GEN_PASS_DECL_CONDUITCHECKORDERING
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -72,6 +74,11 @@ createObjectFifoToConduitPass();
 /// Pass B: lift air.channel.put/get ops into Conduit Tier 3 memref-DMA ops.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAirChannelToConduitPass();
+
+/// Air channel index flattener: flatten multi-dimensional air.channel
+/// declarations and their put/get ops to scalar channels.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createAirChannelIndexFlattenerPass();
 
 /// Pass C: lower Conduit IR to aie.dma_bd / aie.lock / aie.buffer / aie.flow.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createConduitToDMAPass();
@@ -113,6 +120,11 @@ createConduitCheckDepsPass();
 /// After attachment, M6/M7 verifiers fire automatically on next verify step.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitInferRatesPass();
+
+/// CSDFa static-ordering verifier: warn when DMA-only channels on the same
+/// tile fire at overlapping CSDF phases (ambiguous ordering).
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitCheckOrderingPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

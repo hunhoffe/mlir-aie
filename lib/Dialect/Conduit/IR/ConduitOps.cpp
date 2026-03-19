@@ -24,17 +24,15 @@
 //   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token types
 //
 // Denolf 2007 channel type mapping (DOI: 10.1155/2007/84078):
-//   conduit.link mode="distribute" (1:N) — Denolf multi-consumer / nondestructive-read
-//     pattern.  Current implementation: Bilsen 1:1 equation applied per-edge (src → each dst).
-//   conduit.link mode="join" (N:1) — Denolf multi-producer / shared-buffer pattern.
-//     Current implementation: Bilsen 1:1 equation applied per-edge (each src → dst).
-//     NOTE: Denolf 2007 reports that the N:1 join channel cannot be reformulated as an
-//     equivalent standard CSDF pattern, implying the exact balance/buffer analysis requires
-//     a formulation beyond per-edge 1:1 checks.  The exact Denolf formula for N:1 join
-//     has not been implemented because the paper is not currently accessible (access
-//     blocked at all known URLs).  The current per-edge check is conservative for
-//     common cases but may not be exact for all N:1 configurations.
-//     TODO: implement Denolf's exact N:1 join theorem once paper access is obtained.
+//   conduit.link mode="distribute" (1:N) — Denolf §3.3.3 multi-consumer / nondestructive-read.
+//     Level 1: Bilsen 1:1 equation applied per-edge (Eq. 45).
+//     Level 2: Composed consume buffer capacity (Eq. 46/48) — cross-conduit check on the
+//     source buffer, accounting for the slowest consumer gating buffer reuse.
+//   conduit.link mode="join" (N:1) — Denolf §3.3.4 multi-producer / shared-buffer pattern.
+//     Per-edge Bilsen 1:1 check (conservative structural approximation).
+//     NOTE: Denolf §3.3.4 proves that N:1 join has NO equivalent standard CSDF channel
+//     because token arrival order depends on runtime response time.  No exact
+//     composed-produce formula exists; the per-edge check is a conservative bound.
 //
 //===----------------------------------------------------------------------===//
 
@@ -175,16 +173,12 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
 // single channel:  sum(P) * len(C) == sum(C) * len(P)
 //
 // Application to link topologies: this function applies the 1:1 equation
-// per-edge to each conduit in a join or distribute link.  This is a
-// sufficient check for balance on each individual conduit, but is NOT
-// guaranteed to be the exact necessary-and-sufficient condition for all
-// N:1 join topologies.  Denolf et al. 2007 (DOI: 10.1155/2007/84078)
-// derives the exact buffer sizing for multi-producer join channels;
-// the paper is not currently accessible to verify which cases require
-// analysis beyond the per-edge 1:1 check.  The current implementation
-// is a conservative per-edge approximation that catches the most common
-// imbalance cases.  TODO: replace with Denolf's exact theorem once the
-// paper is accessible.
+// per-edge to each conduit in a join or distribute link.  For distribute,
+// this is supplemented by checkDistributeComposedConsume (Denolf Eq. 46/48)
+// which performs the cross-conduit composed consume analysis.  For join,
+// Denolf §3.3.4 proves no exact CSDF equivalent exists (token arrival
+// order depends on runtime response time); the per-edge check is a
+// conservative structural approximation.
 //
 // This function implements the per-edge check.
 //
@@ -271,6 +265,122 @@ static ::mlir::LogicalResult checkCSDF1x1(mlir::Operation *diagnosticOp,
   return ::mlir::success();
 }
 
+// ---------------------------------------------------------------------------
+// Denolf Eq. 46/48: composed consume + buffer capacity for 1:N distribute.
+//
+// Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.3 Equations 45-48.
+//
+// In a 1:N distribute (multi-consumer / nondestructive-read), N consumers
+// share a single source buffer on the MemTile relay.  A buffer container
+// can only be freed once ALL consumers have consumed from it.
+//
+// Eq. 46 — composed consume: cc(j) = min_{1<=y<=N} cumCons_y(t)
+//   The composed (aggregate) consumption at step t is the minimum of
+//   the cumulative consumption across all N consumers.  This reflects the
+//   hardware constraint that the slowest consumer gates buffer reuse.
+//
+// Eq. 48 — buffer capacity:
+//   d >= max over hyper-period of (cumProd(t) - min_{y} cumCons_y(t))
+//   The source buffer depth must be at least the peak occupancy computed
+//   using the composed consume, not just the per-edge consume.
+//
+// This check is CROSS-CONDUIT: it combines the source conduit's
+// producer_rates with each destination conduit's consumer_rates.
+// The per-edge checkCSDF1x1 checks each conduit independently and
+// cannot detect bottlenecks caused by a slow consumer in the distribute.
+//
+// Parameters:
+//   diagnosticOp — the conduit.link op for error attachment
+//   srcProdRates — the source conduit's producer_rates (P)
+//   srcCapacity  — the source conduit's declared buffer capacity
+//   dstConsRates — each destination conduit's consumer_rates (C_y)
+//   dstNames     — destination conduit names (for error messages)
+//
+// Returns failure() if the source buffer is undersized; success() otherwise.
+// ---------------------------------------------------------------------------
+static ::mlir::LogicalResult checkDistributeComposedConsume(
+    mlir::Operation *diagnosticOp,
+    llvm::ArrayRef<int64_t> srcProdRates,
+    int64_t srcCapacity,
+    llvm::SmallVectorImpl<llvm::SmallVector<int64_t>> &dstConsRates,
+    llvm::SmallVectorImpl<std::string> &dstNames) {
+  if (dstConsRates.size() < 2)
+    return ::mlir::success(); // single consumer: per-edge check suffices
+
+  // Compute hyper-period H = lcm of all periods.
+  auto gcd = [](int64_t a, int64_t b) -> int64_t {
+    while (b) { int64_t tmp = b; b = a % b; a = tmp; }
+    return a;
+  };
+  auto lcm = [&gcd](int64_t a, int64_t b) -> int64_t {
+    if (a == 0 || b == 0) return 0;
+    return (a / gcd(a, b)) * b;
+  };
+
+  int64_t H = static_cast<int64_t>(srcProdRates.size());
+  for (auto &cRates : dstConsRates)
+    H = lcm(H, static_cast<int64_t>(cRates.size()));
+
+  constexpr int64_t kMaxSimSteps = 1024;
+  if (H <= 0 || H > kMaxSimSteps) {
+    diagnosticOp->emitWarning(
+        "M7-dist composed-consume: hyper-period exceeds simulation cap (")
+        << kMaxSimSteps
+        << " steps); Denolf Eq. 48 buffer capacity check skipped";
+    return ::mlir::success();
+  }
+
+  // Simulate the hyper-period.
+  int64_t plen = static_cast<int64_t>(srcProdRates.size());
+  unsigned N = dstConsRates.size();
+  int64_t cumProd = 0;
+  llvm::SmallVector<int64_t> cumCons(N, 0);
+  int64_t peakOccupancy = 0;
+
+  for (int64_t t = 0; t < H; ++t) {
+    // Producer fires: add tokens to source buffer.
+    cumProd += srcProdRates[static_cast<size_t>(t % plen)];
+
+    // Each consumer fires: track cumulative consumption.
+    for (unsigned y = 0; y < N; ++y) {
+      int64_t clen = static_cast<int64_t>(dstConsRates[y].size());
+      cumCons[y] += dstConsRates[y][static_cast<size_t>(t % clen)];
+    }
+
+    // Composed consume (Eq. 46): min over all consumers.
+    int64_t composedConsume = cumCons[0];
+    for (unsigned y = 1; y < N; ++y) {
+      if (cumCons[y] < composedConsume)
+        composedConsume = cumCons[y];
+    }
+
+    // Occupied containers = produced - composed consume.
+    int64_t occupied = cumProd - composedConsume;
+    if (occupied > peakOccupancy)
+      peakOccupancy = occupied;
+  }
+
+  if (peakOccupancy > srcCapacity) {
+    // Identify the bottleneck consumer (min cumulative at end).
+    unsigned bottleneck = 0;
+    for (unsigned y = 1; y < N; ++y) {
+      if (cumCons[y] < cumCons[bottleneck])
+        bottleneck = y;
+    }
+    return diagnosticOp->emitOpError(
+               "M7-dist composed-consume (Denolf Eq. 48): "
+               "source buffer capacity insufficient for multi-consumer "
+               "distribute: peak occupancy=")
+           << peakOccupancy << " exceeds source capacity=" << srcCapacity
+           << " (bottleneck consumer: '" << dstNames[bottleneck]
+           << "', hyper-period=" << H << " steps"
+           << "; a container can only be freed after ALL "
+           << N << " consumers have consumed it)";
+  }
+
+  return ::mlir::success();
+}
+
 ::mlir::LogicalResult Link::verify() {
   auto modeStr = getMode();
   auto srcs = getSrcs();
@@ -316,14 +426,24 @@ static ::mlir::LogicalResult checkCSDF1x1(mlir::Operation *diagnosticOp,
   // -------------------------------------------------------------------------
   // M6-join / M7-join: CSDF balance and buffer capacity for N:1 join.
   //
-  // Theory: Denolf et al. 2007 (DOI: 10.1155/2007/84078) defines the N:1
-  // multi-producer pattern as a special channel type that reduces to standard
-  // CSDF via per-edge Bilsen balance.  For each source conduit i feeding the
-  // join destination:
-  //   - The source conduit's producer_rates (P_i) and consumer_rates (C_i)
-  //     must satisfy the 1:1 balance equation independently.
-  //   - The destination conduit's producer_rates and consumer_rates must also
-  //     be 1:1 balanced (the relay fills it after all sources contribute).
+  // Theory: Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.4 shows
+  // that the N:1 multi-producer (join) pattern CANNOT be reformulated as
+  // an equivalent standard CSDF channel.  The paper states:
+  //   "there does not exist an equivalent standard channel for a channel
+  //    with multiple producers.  The reason is that token order depends on
+  //    runtime response time."
+  //
+  // Consequence: there is no exact Denolf-style composed-produce formula
+  // for join.  The per-edge Bilsen 1:1 check applied to each source and
+  // the destination is a CONSERVATIVE STRUCTURAL APPROXIMATION: it verifies
+  // that each individual conduit is internally balanced, but cannot verify
+  // the cross-conduit token arrival ordering that is inherently runtime-
+  // dependent.
+  //
+  // Implementation: for each source conduit and the destination conduit,
+  // apply the Bilsen 1:1 balance equation and M7 buffer capacity simulation
+  // independently.  This catches rate imbalances and undersized buffers on
+  // individual conduits but does not attempt cross-conduit analysis.
   //
   // If any conduit lacks rate annotations, the check is skipped for that edge
   // (not an error: rates are optional; M6 only fires when explicitly provided
@@ -365,17 +485,27 @@ static ::mlir::LogicalResult checkCSDF1x1(mlir::Operation *diagnosticOp,
   // -------------------------------------------------------------------------
   // M6-dist / M7-dist: CSDF balance and buffer capacity for 1:N distribute.
   //
-  // Theory: Denolf et al. 2007 defines the 1:N multi-consumer pattern
-  // (nondestructive read / broadcast) as reducing to standard CSDF via
-  // per-edge balance.  For the source conduit feeding N destinations:
-  //   - The source conduit's rates are checked independently (its relay
-  //     consumer must balance its producer).
-  //   - Each destination conduit's rates are checked independently.
+  // Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.3 Equations 45-48.
   //
-  // The same per-edge 1:1 balance applies; the source sends a copy to each
-  // destination via the MemTile DMA engine.
+  // Two levels of verification:
+  //
+  // Level 1 — Per-edge balance (Eq. 45): each conduit's own producer_rates
+  //   and consumer_rates must satisfy the Bilsen 1:1 balance equation.
+  //   This is the same check applied to individual conduit.create ops and
+  //   catches imbalanced rate sequences per edge.
+  //
+  // Level 2 — Composed consume buffer capacity (Eq. 46/48): the source
+  //   conduit's buffer is shared by all N destination consumers.  A buffer
+  //   container can only be freed after ALL consumers have consumed from it
+  //   (Eq. 46: composed consume = min over all consumers).  The source
+  //   buffer capacity must be >= the peak occupancy under this constraint
+  //   (Eq. 48).  This is a cross-conduit check that per-edge analysis
+  //   cannot detect: the source's own M7 check passes (its relay consumer
+  //   drains at the declared rate), but a slow destination consumer gates
+  //   buffer reuse and can cause overflow.
   // -------------------------------------------------------------------------
   if (modeStr == "distribute") {
+    // Level 1: Per-edge balance checks (Eq. 45).
     // Check source conduit.
     llvm::StringRef srcName =
         mlir::cast<mlir::StringAttr>(srcs[0]).getValue();
@@ -405,6 +535,36 @@ static ::mlir::LogicalResult checkCSDF1x1(mlir::Operation *diagnosticOp,
       std::string label = "distribute destination '" + dstName.str() + "'";
       if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
         return ::mlir::failure();
+    }
+
+    // Level 2: Composed consume buffer capacity (Denolf Eq. 46/48).
+    // Collect destination consumer_rates and check the source buffer
+    // capacity against the multi-consumer composed consume.
+    if (srcCreate && srcCreate.getProducerRates().has_value()) {
+      llvm::SmallVector<llvm::SmallVector<int64_t>> allDstConsRates;
+      llvm::SmallVector<std::string> allDstNames;
+      bool allDstsHaveRates = true;
+      for (auto dstAttr : dsts) {
+        llvm::StringRef dstName =
+            mlir::cast<mlir::StringAttr>(dstAttr).getValue();
+        Create dstCreate = findConduitCreateByName(getOperation(), dstName);
+        if (!dstCreate || !dstCreate.getConsumerRates().has_value()) {
+          allDstsHaveRates = false;
+          break;
+        }
+        auto cRates = *dstCreate.getConsumerRates();
+        llvm::SmallVector<int64_t> rates(cRates.begin(), cRates.end());
+        allDstConsRates.push_back(std::move(rates));
+        allDstNames.push_back(dstName.str());
+      }
+      if (allDstsHaveRates && allDstConsRates.size() >= 2) {
+        auto srcPRates = *srcCreate.getProducerRates();
+        llvm::SmallVector<int64_t> srcPR(srcPRates.begin(), srcPRates.end());
+        if (failed(checkDistributeComposedConsume(
+                getOperation(), srcPR, srcCreate.getCapacity(),
+                allDstConsRates, allDstNames)))
+          return ::mlir::failure();
+      }
     }
   }
 

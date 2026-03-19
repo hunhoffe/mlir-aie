@@ -658,21 +658,41 @@ struct ObjectFifoToConduitPass
     // false positives.
     auto findWindowInDominatingBlock =
         [&](mlir::Block *startBlock,
+            mlir::Operation *beforeOp,
             mlir::StringAttr nameAttr) -> mlir::Value {
       mlir::Block *cursor = startBlock;
+      // fence tracks the op in `cursor` that the window must precede
+      // for SSA dominance.  Initially it is the parent op of the
+      // requesting block; as we walk up the chain it becomes the
+      // parent op of each intermediate block.
+      mlir::Operation *fence = beforeOp;
       while (cursor) {
         // Check if this block's window map has an entry for the conduit.
         auto mapIt = allBlockWindowMaps.find(cursor);
         if (mapIt != allBlockWindowMaps.end()) {
           mlir::Value v = mapIt->second.lookup(nameAttr);
-          if (v)
-            return v;
+          if (v) {
+            // SSA dominance check: if the window was defined in this
+            // block, its defining op must appear before `fence` (the
+            // child op leading to the requesting block).  Without this,
+            // a window defined AFTER a nested scf.for/scf.if in the
+            // same block would be reused inside the nested region,
+            // violating "operand #0 does not dominate this use".
+            mlir::Operation *defOp = v.getDefiningOp();
+            bool dominates = true;
+            if (fence && defOp && defOp->getBlock() == cursor)
+              dominates = defOp->isBeforeInBlock(fence);
+            if (dominates)
+              return v;
+            // Window doesn't dominate — skip and continue up.
+          }
         }
         // Walk up: the enclosing block is the block that contains
         // cursor's parent region's parent op.
         mlir::Operation *parentOp = cursor->getParentOp();
         if (!parentOp)
           break;
+        fence = parentOp;
         cursor = parentOp->getBlock();
       }
       return {};
@@ -896,6 +916,7 @@ struct ObjectFifoToConduitPass
             mlir::Value parentWin = findWindowInDominatingBlock(
                 block->getParentOp() ? block->getParentOp()->getBlock()
                                      : nullptr,
+                block->getParentOp(),
                 nameAttr);
             if (parentWin) {
               // Reuse the dominating block's window — cross-block subsumed.
@@ -1075,6 +1096,7 @@ struct ObjectFifoToConduitPass
             winVal = findWindowInDominatingBlock(
                 block->getParentOp() ? block->getParentOp()->getBlock()
                                      : nullptr,
+                block->getParentOp(),
                 nameAttr);
           }
 

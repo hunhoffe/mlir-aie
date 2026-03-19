@@ -107,6 +107,7 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -261,6 +262,26 @@ static llvm::SmallVector<int32_t> getOperandSegments(mlir::Operation *op) {
 }
 
 // ---------------------------------------------------------------------------
+// Broadcast Step 2 helpers
+// ---------------------------------------------------------------------------
+
+/// Try to find the enclosing aie.core op for an op, and return its tile
+/// [col, row] coordinates.  Returns std::nullopt if the op is not inside
+/// an aie.core region (e.g., it lives in a plain function or air.herd).
+static std::optional<std::pair<int64_t, int64_t>>
+tryGetEnclosingCoreTile(mlir::Operation *op) {
+  mlir::Operation *parent = op->getParentOp();
+  while (parent) {
+    if (auto coreOp = mlir::dyn_cast<AIE::CoreOp>(parent)) {
+      AIE::TileOp tile = coreOp.getTileOp();
+      return std::make_pair((int64_t)tile.getCol(), (int64_t)tile.getRow());
+    }
+    parent = parent->getParentOp();
+  }
+  return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
 // Main pass struct
 // ---------------------------------------------------------------------------
 
@@ -296,13 +317,29 @@ struct AirChannelToConduitPass
     llvm::SmallVector<mlir::Operation *> putGetToRewrite;
     llvm::SmallVector<mlir::Operation *> waitAllToRewrite;
 
+    // Broadcast Step 2: for broadcast channels, collect the consumer tile
+    // coordinates of all air.channel.get ops (when those ops are enclosed
+    // in aie.core regions).  Map: channel name → list of [col, row] pairs.
+    // Only populated when aie.core enclosure is found.
+    llvm::StringMap<llvm::SmallVector<std::pair<int64_t, int64_t>>>
+        broadcastConsumerTiles;
+
     // Walk and collect all ops of interest.
     module.walk([&](mlir::Operation *op) {
       if (isAirChannelDecl(op))
         channelDeclsToErase.push_back(op);
-      else if (isAirChannelPut(op) || isAirChannelGet(op))
+      else if (isAirChannelPut(op) || isAirChannelGet(op)) {
         putGetToRewrite.push_back(op);
-      else if (isAirWaitAll(op))
+        // Collect consumer tile coords for broadcast channels (get ops only).
+        if (isAirChannelGet(op)) {
+          std::string chanName = getChanName(op);
+          if (!chanName.empty()) {
+            if (auto tileCoord = tryGetEnclosingCoreTile(op)) {
+              broadcastConsumerTiles[chanName].push_back(*tileCoord);
+            }
+          }
+        }
+      } else if (isAirWaitAll(op))
         waitAllToRewrite.push_back(op);
     });
 
@@ -358,28 +395,43 @@ struct AirChannelToConduitPass
       // broadcast_shape = [d0, d1, ...] describes the fan-out topology:
       //   capacity = product(broadcast_shape)  (total number of consumers)
       //
-      // Consumer tile coordinates are NOT available at this stage — tile
-      // placement is performed by a separate AIR pass. We set capacity so
-      // that Pass C (--conduit-to-dma) knows the fan-out count, and emit a
-      // diagnostic note (not a warning) so the user knows partial topology
-      // information has been propagated.
-      //
-      // Full topology lowering (consumer_tiles, conduit.link) requires a
-      // tile-placement pre-pass to map each broadcast consumer to a tile.
+      // Step 2 (broadcast topology):
+      //   If consumer tile coordinates are available (i.e., air.channel.get
+      //   ops were found inside aie.core regions), emit:
+      //     - Per-consumer conduit.create aliases: @name_c0, @name_c1, ...
+      //     - conduit.link{mode="distribute", srcs=[@name], dsts=[@name_c0,...]}
+      //   If consumer tile coords are not available (usual case — tile
+      //   placement runs before or separately), emit a remark and leave
+      //   consumer_tiles empty.
       int64_t broadcastCapacity = 1;
+      bool isBroadcast = false;
       if (auto bsAttr = op->getAttr("broadcast_shape")) {
         if (auto denseAttr = mlir::dyn_cast<mlir::DenseI64ArrayAttr>(bsAttr)) {
           for (int64_t dim : denseAttr.asArrayRef())
             broadcastCapacity *= dim;
-          // Emit a note (not warning) that capacity was propagated.
-          // Consumer tile wiring requires a placement pre-pass.
-          op->emitRemark()
-              << "air-channel-to-conduit: channel @" << name
-              << " broadcast_shape=" << bsAttr
-              << " → conduit capacity=" << broadcastCapacity
-              << "; consumer tile coordinates not available (requires "
-                 "tile-placement pre-pass). conduit.create emitted with "
-                 "correct capacity; consumer_tiles left empty.";
+          isBroadcast = true;
+          // Check if we have consumer tile coordinates from aie.core enclosure.
+          auto tileIt = broadcastConsumerTiles.find(name);
+          bool hasTileCoords = (tileIt != broadcastConsumerTiles.end() &&
+                                !tileIt->second.empty());
+          if (hasTileCoords) {
+            op->emitRemark()
+                << "air-channel-to-conduit: channel @" << name
+                << " broadcast_shape=" << bsAttr
+                << " → conduit capacity=" << broadcastCapacity
+                << "; found " << tileIt->second.size()
+                << " consumer tiles from aie.core enclosure; "
+                   "emitting conduit.link{mode=\"distribute\"}.";
+          } else {
+            // No tile coords available — usual case (AIR before AIE lowering).
+            op->emitRemark()
+                << "air-channel-to-conduit: channel @" << name
+                << " broadcast_shape=" << bsAttr
+                << " → conduit capacity=" << broadcastCapacity
+                << "; consumer tile coordinates not available (requires "
+                   "tile-placement pre-pass). conduit.create emitted with "
+                   "correct capacity; consumer_tiles left empty.";
+          }
         } else {
           // Non-dense broadcast_shape: fall back to warning.
           op->emitWarning()
@@ -389,7 +441,7 @@ struct AirChannelToConduitPass
         }
       }
 
-      // Emit conduit.create with broadcast capacity (or 1 for non-broadcast).
+      // Emit conduit.create for the source (producer) side.
       // element_type will be patched after put/get scan below.
       mlir::Operation *createOp = builder.create<Create>(
           loc,
@@ -415,6 +467,78 @@ struct AirChannelToConduitPass
           /*consumer_dimensions=*/mlir::Attribute{});
 
       channelCreateOps[name] = createOp;
+
+      // Broadcast Step 2: if consumer tile coordinates are known, emit
+      // per-consumer conduit.create aliases and a conduit.link{distribute}.
+      //
+      // This is only possible when air.channel.get ops appear inside aie.core
+      // regions (i.e., after the air-to-aie lowering pass).  In the common
+      // case (air dialect before placement), broadcastConsumerTiles is empty
+      // and this block is skipped.
+      if (isBroadcast) {
+        auto tileIt = broadcastConsumerTiles.find(name);
+        if (tileIt != broadcastConsumerTiles.end() &&
+            !tileIt->second.empty()) {
+          auto &consumerCoords = tileIt->second;
+
+          // Build per-consumer conduit names and conduit.create aliases.
+          llvm::SmallVector<std::string> dstNames;
+          // Emit consumer creates immediately after the source create.
+          mlir::OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPointAfter(createOp);
+
+          for (size_t i = 0; i < consumerCoords.size(); ++i) {
+            std::string dstName = name + "_c" + std::to_string(i);
+            dstNames.push_back(dstName);
+
+            // Per-consumer conduit.create with capacity=1 (each consumer
+            // gets its own independent BD chain).
+            auto consCreate = builder.create<Create>(
+                loc,
+                mlir::StringAttr::get(ctx, dstName),
+                mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
+                /*producer_tile=*/mlir::DenseI64ArrayAttr{},
+                /*consumer_tiles=*/mlir::DenseI64ArrayAttr::get(
+                    ctx, {consumerCoords[i].first, consumerCoords[i].second}),
+                /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
+                /*element_type=*/mlir::TypeAttr{},
+                mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
+                /*link_mode=*/mlir::StringAttr{},
+                /*access_pattern=*/mlir::DenseI64ArrayAttr{},
+                /*routing_mode=*/routingMode,
+                /*producer_rates=*/mlir::DenseI64ArrayAttr{},
+                /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
+                /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
+                /*repeat_count=*/mlir::IntegerAttr{},
+                /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
+                /*disable_synchronization=*/mlir::BoolAttr{},
+                /*viaDMA=*/mlir::BoolAttr{},
+                /*iter_count=*/mlir::IntegerAttr{},
+                /*producer_dimensions=*/mlir::Attribute{},
+                /*consumer_dimensions=*/mlir::Attribute{});
+            channelCreateOps[dstName] = consCreate.getOperation();
+          }
+
+          // Build srcs and dsts string arrays for conduit.link.
+          llvm::SmallVector<mlir::Attribute> srcsAttrs = {
+              mlir::StringAttr::get(ctx, name)};
+          llvm::SmallVector<mlir::Attribute> dstsAttrs;
+          for (auto &dst : dstNames)
+            dstsAttrs.push_back(mlir::StringAttr::get(ctx, dst));
+
+          // Emit conduit.link{mode="distribute"}.
+          // memtile is left empty — Pass C will resolve the MemTile from
+          // the conduit.create consumer_tiles if needed.
+          builder.create<Link>(
+              loc,
+              mlir::ArrayAttr::get(ctx, srcsAttrs),
+              mlir::ArrayAttr::get(ctx, dstsAttrs),
+              mlir::StringAttr::get(ctx, "distribute"),
+              /*memtile=*/mlir::StringAttr::get(ctx, ""),
+              /*offsets=*/mlir::DenseI64ArrayAttr{},
+              /*lock_id=*/mlir::IntegerAttr{});
+        }
+      }
     }
 
     // Phase 2b: scan put/get ops to extract element_type for conduit.create.
@@ -868,6 +992,61 @@ struct AirChannelToConduitPass
         }
       }
       op->erase();
+    }
+
+    // Phase 6: optionally run conduit-infer-rates inline.
+    //
+    // When inferRates is true (the default), walk the module and attach
+    // producer_rates / consumer_rates to conduit.create ops that have no
+    // explicit rates, by collecting num_elems from put_memref_async /
+    // get_memref_async ops in program order.  This mirrors what the
+    // standalone --conduit-infer-rates pass does, but avoids requiring the
+    // user to add an extra pass flag.
+    //
+    // Set --air-channel-to-conduit-infer-rates=false to opt out.
+    if (inferRates) {
+      // Collect num_elems sequences for each channel name.
+      llvm::StringMap<llvm::SmallVector<int64_t>> putElemsMap;
+      llvm::StringMap<llvm::SmallVector<int64_t>> getElemsMap;
+      llvm::StringMap<bool> hasDynElems;
+
+      module.walk([&](PutMemrefAsync op) {
+        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        if (!nameAttr) return;
+        llvm::StringRef name = nameAttr.getValue();
+        if (hasDynElems.count(name)) return;
+        auto ne = op->getAttrOfType<mlir::IntegerAttr>("num_elems");
+        if (!ne) { hasDynElems[name] = true; return; }
+        putElemsMap[name].push_back(ne.getInt());
+      });
+
+      module.walk([&](GetMemrefAsync op) {
+        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        if (!nameAttr) return;
+        llvm::StringRef name = nameAttr.getValue();
+        if (hasDynElems.count(name)) return;
+        auto ne = op->getAttrOfType<mlir::IntegerAttr>("num_elems");
+        if (!ne) { hasDynElems[name] = true; return; }
+        getElemsMap[name].push_back(ne.getInt());
+      });
+
+      module.walk([&](Create op) {
+        if (op.getProducerRates().has_value() || op.getConsumerRates().has_value())
+          return;
+        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        if (!nameAttr) return;
+        llvm::StringRef name = nameAttr.getValue();
+        if (hasDynElems.count(name)) return;
+        auto pIt = putElemsMap.find(name);
+        auto gIt = getElemsMap.find(name);
+        bool hasPuts = (pIt != putElemsMap.end() && !pIt->second.empty());
+        bool hasGets = (gIt != getElemsMap.end() && !gIt->second.empty());
+        if (!hasPuts || !hasGets) return;
+        op->setAttr("producer_rates",
+                    mlir::DenseI64ArrayAttr::get(ctx, pIt->second));
+        op->setAttr("consumer_rates",
+                    mlir::DenseI64ArrayAttr::get(ctx, gIt->second));
+      });
     }
   }
 };

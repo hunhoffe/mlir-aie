@@ -35,7 +35,7 @@
 // conduit.link must survive unchanged (also CHECK-DAG to allow any order)
 // CHECK-DAG: conduit.link
 
-// expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s) to depth-2}}
+// expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s)}}
 module {
 
 // (a) Eligible: depth-1 with loop-enclosed acquire and compute.

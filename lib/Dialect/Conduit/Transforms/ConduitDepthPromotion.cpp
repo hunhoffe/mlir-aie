@@ -44,6 +44,9 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace xilinx::conduit {
 
 #define GEN_PASS_DEF_CONDUITDEPTHPROMOTE
@@ -270,13 +273,49 @@ struct ConduitDepthPromotePass
             << name << "' -- CSDF access pattern";
         continue;
       }
-      if (createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
-              "producer_rates") ||
-          createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
-              "consumer_rates")) {
-        createOp->emitRemark("conduit-depth-promote: skipping '")
-            << name << "' -- CSDF rates present";
-        continue;
+
+      // Determine target depth.  Default: fixed depth-2 heuristic.
+      // When --conduit-depth-promote{csdf=true} is set and both
+      // producer_rates/consumer_rates are present, use the CSDFa minimum
+      // buffer depth formula (Denolf 2007, Koek 2016 §4):
+      //
+      //   min_depth = ceil(max(P, C) * η / min(P, C))
+      //
+      // where P = sum(producer_rates), C = sum(consumer_rates),
+      // η = target efficiency (default 1.0 = stall-free).
+      int64_t targetDepth = 2;
+      auto prodRatesAttr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
+          "producer_rates");
+      auto consRatesAttr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
+          "consumer_rates");
+      if (prodRatesAttr || consRatesAttr) {
+        if (!csdfa || !prodRatesAttr || !consRatesAttr) {
+          // Flag disabled or incomplete rate annotation — skip as before.
+          createOp->emitRemark("conduit-depth-promote: skipping '")
+              << name << "' -- CSDF rates present";
+          continue;
+        }
+        // Compute P = sum(producer_rates), C = sum(consumer_rates).
+        int64_t P = 0, C = 0;
+        for (int64_t r : prodRatesAttr.asArrayRef())
+          P += r;
+        for (int64_t r : consRatesAttr.asArrayRef())
+          C += r;
+        if (P <= 0 || C <= 0) {
+          createOp->emitRemark("conduit-depth-promote: skipping '")
+              << name << "' -- zero or negative rate sum";
+          continue;
+        }
+        // CSDFa minimum buffer depth formula.
+        int64_t maxPC = std::max(P, C);
+        int64_t minPC = std::min(P, C);
+        double numerator = static_cast<double>(maxPC) * eta;
+        targetDepth = static_cast<int64_t>(
+            std::ceil(numerator / static_cast<double>(minPC)));
+        if (targetDepth <= 1) {
+          // Rates are balanced and η ≤ 1 — no promotion needed.
+          continue;
+        }
       }
 
       // Criterion 2: linked conduit.
@@ -343,11 +382,10 @@ struct ConduitDepthPromotePass
       bool memOverBudget = false;
       if (consTiles && capAttr && elemTypeAttr) {
         int64_t bufBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
-        int64_t newDepth = 2;
         auto tiles = consTiles.asArrayRef();
         for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
           int64_t key = tileKey(tiles[i], tiles[i + 1]);
-          if (tileMemUsed[key] + bufBytes * newDepth > kDefaultTileMemoryBytes) {
+          if (tileMemUsed[key] + bufBytes * targetDepth > kDefaultTileMemoryBytes) {
             memOverBudget = true;
             break;
           }
@@ -383,7 +421,7 @@ struct ConduitDepthPromotePass
         auto tiles = consTiles.asArrayRef();
         for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
           int64_t key = tileKey(tiles[i], tiles[i + 1]);
-          if (tileBDCount[key] + 1 > kMaxBDSlotsPerTile) {
+          if (tileBDCount[key] + (targetDepth - 1) > kMaxBDSlotsPerTile) {
             bdOverBudget = true;
             break;
           }
@@ -395,14 +433,14 @@ struct ConduitDepthPromotePass
         }
       }
 
-      // All checks passed -- promote to depth 2.
+      // All checks passed — promote to targetDepth.
       createOp->setAttr("depth",
-          builder.getI64IntegerAttr(2));
+          builder.getI64IntegerAttr(targetDepth));
 
-      // Double the capacity (capacity = depth * elemCount, so 2x).
+      // Scale capacity proportionally (capacity = depth * elemCount).
       if (capAttr) {
         createOp->setAttr("capacity",
-            builder.getI64IntegerAttr(capAttr.getInt() * 2));
+            builder.getI64IntegerAttr(capAttr.getInt() * targetDepth));
       }
 
       // Update per-tile resource counters.
@@ -411,24 +449,23 @@ struct ConduitDepthPromotePass
         for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
           int64_t key = tileKey(tiles[i], tiles[i + 1]);
           tileLockCount[key] += 1;
-          tileBDCount[key] += 1;
+          tileBDCount[key] += (targetDepth - 1);
           if (capAttr && elemTypeAttr) {
-            // Fix 3a: use perSlotBytes * newDepth (2), not capAttr / 2.
             int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
-            tileMemUsed[key] += perSlotBytes * 2; // newDepth == 2
+            tileMemUsed[key] += perSlotBytes * targetDepth;
           }
         }
       }
 
       ++promoted;
       createOp->emitRemark("conduit-depth-promote: promoted '")
-          << name << "' from depth-1 to depth-2";
+          << name << "' from depth-1 to depth-" << targetDepth;
     }
 
     if (promoted > 0) {
       // Summary remark on the module op for test visibility.
       module.emitRemark("conduit-depth-promote: promoted ")
-          << promoted << " conduit(s) to depth-2";
+          << promoted << " conduit(s)";
     }
   }
 };
