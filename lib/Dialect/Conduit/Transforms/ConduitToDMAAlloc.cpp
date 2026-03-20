@@ -20,9 +20,9 @@
 //
 // Rotation counter packing:
 //   Multiple conduits on the same tile share a single memref<N xi32> counter
-//   buffer (matching the oracle's allocation). A pre-scan pass counts how many
-//   counter slots each tile needs; one shared buffer is created per tile and
-//   each conduit is assigned a slot index within it.
+//   allocated via memref.alloc inside the core body (not aie.buffer).  A
+//   pre-scan pass counts how many counter slots each tile needs; one shared
+//   alloc is created per core body and each conduit is assigned a slot index.
 //
 //===----------------------------------------------------------------------===//
 
@@ -67,7 +67,6 @@ static int64_t assignRotationSlot(ConduitToDMAState &state,
 //       buffer and produce out-of-bounds slot indices.
 // ---------------------------------------------------------------------------
 static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
-  mlir::OpBuilder &builder = *state.builder;
   mlir::MLIRContext *ctx = state.ctx;
   const AIE::AIETargetModel &targetModel = *state.targetModel;
 
@@ -165,15 +164,18 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
 
       if (state.linkSrcNamesEarly.count(name)) {
         // linkSrcNamesEarly: producer-side counter on compute producer tile.
-        auto [pCol, pRow] = info.producerTileCoord;
-        if (pCol >= 0 && pRow >= 2) {
-          AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
-          if (pTile && !info.consumerTileBuffers.count(pTile.getResult())) {
-            int64_t prodDepth =
-                info.effectiveDepth > 0 ? info.effectiveDepth : depth;
-            if (prodDepth > 1 &&
-                state.conduitNamesWithProducerAcquire.count(name))
-              addProducerSlot(pTile.getResult());
+        // Stream conduits: no producer-side allocation, skip counter.
+        if (info.routingMode != "stream") {
+          auto [pCol, pRow] = info.producerTileCoord;
+          if (pCol >= 0 && pRow >= 2) {
+            AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
+            if (pTile && !info.consumerTileBuffers.count(pTile.getResult())) {
+              int64_t prodDepth =
+                  info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+              if (prodDepth > 1 &&
+                  state.conduitNamesWithProducerAcquire.count(name))
+                addProducerSlot(pTile.getResult());
+            }
           }
         }
         continue;
@@ -188,6 +190,9 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   // Phase 3d: producer-side counters for non-adjacent compute→compute.
   for (auto &[name, info] : state.conduitMap) {
     if (info.sharedMemory)
+      continue;
+    // Stream conduits: no producer-side DMA — skip producer-side counter.
+    if (info.routingMode == "stream")
       continue;
     if (state.linkSrcNamesEarly.count(name) ||
         state.linkJoinSrcNames.count(name))
@@ -220,6 +225,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
           needsProdSide = true;
       }
     }
+    if (!info.shimConsumerTileCoords.empty())
+      needsProdSide = true;
     if (!needsProdSide && !info.viaDMA)
       continue;
 
@@ -231,34 +238,29 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       addProducerSlot(prodTileVal);
   }
 
-  // Create one shared memref<N xi32> buffer per tile that needs N > 0 slots.
-  if (state.insertAfterTile)
-    builder.setInsertionPointAfter(state.insertAfterTile);
-  else
-    builder.setInsertionPointToStart(state.deviceBody);
-
+  // Create one shared memref<N xi32> alloc per core body that needs N > 0
+  // slots.  Using memref.alloc (core-body-local) instead of aie.buffer avoids
+  // inflating the device-level buffer count — the rotation counter is a
+  // core-local bookkeeping variable, not a hardware DMA buffer.
   for (auto &[tileVal, count] : tileSlotCount) {
     if (count <= 0)
       continue;
     auto counterTy =
         mlir::MemRefType::get({count}, mlir::IntegerType::get(ctx, 32));
-    // Assign a deterministic sym_name so the buffer is identifiable in IR
-    // dumps and FileCheck patterns are stable across recompilations.
-    std::string symName;
-    if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>()) {
-      int64_t col = tileOp.getCol();
-      int64_t row = tileOp.getRow();
-      symName = "_conduit_rot_ctr_tile_" + std::to_string(col) + "_" +
-                std::to_string(row);
-    }
-    AIE::BufferOp sharedBuf = builder.create<AIE::BufferOp>(
-        state.deviceOp.getLoc(), counterTy, tileVal,
-        symName.empty() ? mlir::StringAttr{}
-                        : mlir::StringAttr::get(ctx, symName),
-        /*address=*/mlir::IntegerAttr{},
-        /*initial_value=*/mlir::ElementsAttr{},
-        /*mem_bank=*/mlir::IntegerAttr{});
-    state.tileRotationBuf[tileVal] = sharedBuf;
+    // Find the core op that owns this tile.
+    AIE::CoreOp coreOp = nullptr;
+    state.deviceBody->walk([&](AIE::CoreOp core) {
+      if (core.getTile() == tileVal)
+        coreOp = core;
+    });
+    if (!coreOp)
+      continue; // shim or memory tile without core — no alloc needed
+    // Insert alloc at the very start of the core body.
+    mlir::Block *entryBlock = &coreOp.getBody().front();
+    mlir::OpBuilder allocBuilder(entryBlock, entryBlock->begin());
+    auto allocOp = allocBuilder.create<mlir::memref::AllocOp>(
+        state.deviceOp.getLoc(), counterTy);
+    state.tileRotationBuf[tileVal] = allocOp.getResult();
     state.tileRotationBufNextSlot[tileVal] = 0;
   }
 }
@@ -274,7 +276,7 @@ static void assignConsumerRotationSlot(ConduitToDMAState &state,
   auto bufIt = state.tileRotationBuf.find(tileVal);
   if (bufIt == state.tileRotationBuf.end())
     return; // no counter needed for this tile
-  AIE::BufferOp sharedBuf = bufIt->second;
+  mlir::Value sharedBuf = bufIt->second;
   int64_t slot = assignRotationSlot(state, tileVal);
   info.consumerTileRotationBufs[tileVal] = sharedBuf;
   info.consumerTileRotationBufSlots[tileVal] = slot;
@@ -289,7 +291,7 @@ static void assignProducerRotationSlot(ConduitToDMAState &state,
   auto bufIt = state.tileRotationBuf.find(tileVal);
   if (bufIt == state.tileRotationBuf.end())
     return;
-  AIE::BufferOp sharedBuf = bufIt->second;
+  mlir::Value sharedBuf = bufIt->second;
   int64_t slot = assignRotationSlot(state, tileVal);
   info.producerTileRotationBufs[tileVal] = sharedBuf;
   info.producerTileRotationBufSlots[tileVal] = slot;
@@ -601,7 +603,12 @@ void allocPhase(ConduitToDMAState &state) {
 
       mlir::Value consTileVal = consTile.getResult();
 
-      std::string bufSuffix = info.consumerTileCoords.size() > 1
+      // Use indexed naming when total consumers (compute + shim) > 1 to avoid
+      // symbol collisions between Phase 3 (compute consumer) and Phase 4b
+      // (shim consumer) lock names.
+      bool multiConsumer = (info.consumerTileCoords.size() +
+                            info.shimConsumerTileCoords.size()) > 1;
+      std::string bufSuffix = multiConsumer
                                   ? "_cons_" + std::to_string(consIdx)
                                   : "_cons";
 
@@ -623,7 +630,12 @@ void allocPhase(ConduitToDMAState &state) {
         // buffers+locks on the compute tile for the aie.mem MM2S.
         // Lock allocation is skipped when disable_synchronization is set:
         // oracle emits no locks on the compute tile for these conduits.
-        {
+        //
+        // Stream conduits (routing_mode="stream"): skip producer-side
+        // allocation entirely. The producer core outputs data directly
+        // through the Core AXI stream port — no DMA, buffers, or locks
+        // on the producer tile.
+        if (info.routingMode != "stream") {
           auto [pCol, pRow] = info.producerTileCoord;
           if (pCol >= 0 && pRow >= 2) {
             AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
@@ -701,6 +713,9 @@ void allocPhase(ConduitToDMAState &state) {
   for (auto &[name, info] : state.conduitMap) {
     if (info.routingMode == "cascade")
       continue;
+    // Stream conduits: no producer-side DMA — skip producer-side allocation.
+    if (info.routingMode == "stream")
+      continue;
     if (info.sharedMemory)
       continue;
     if (state.linkSrcNamesEarly.count(name) ||
@@ -739,6 +754,10 @@ void allocPhase(ConduitToDMAState &state) {
           needsProdSide = true;
       }
     }
+    // Shim consumers always need producer-side DMA allocation: data must
+    // reach the shim tile via the switchbox network, not shared memory.
+    if (!info.shimConsumerTileCoords.empty())
+      needsProdSide = true;
     // via_DMA forces DMA even for adjacent tiles.
     if (!needsProdSide && !info.viaDMA)
       continue;
@@ -791,8 +810,8 @@ void allocPhase(ConduitToDMAState &state) {
   // prescanAndCreateRotationBufs. A violation means assignRotationSlot was
   // called more times than prescan counted, which would produce out-of-bounds
   // slot indices.
-  for (auto &[tileVal, sharedBuf] : state.tileRotationBuf) {
-    auto bufType = mlir::cast<mlir::MemRefType>(sharedBuf.getType());
+  for (auto &[tileVal, sharedBufVal] : state.tileRotationBuf) {
+    auto bufType = mlir::cast<mlir::MemRefType>(sharedBufVal.getType());
     int64_t bufSize = bufType.getShape()[0];
     int64_t nextSlot = state.tileRotationBufNextSlot[tileVal];
     assert(nextSlot <= bufSize &&

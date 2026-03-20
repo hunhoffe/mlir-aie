@@ -49,6 +49,11 @@ void linkPhase(ConduitToDMAState &state) {
   // Collect link ops to erase after processing (avoid erase-inside-walk).
   llvm::SmallVector<Link> linkOpsToErase;
 
+  // Map from memtile tile value → existing MemTileDMAOp for merging.
+  // When multiple link groups reference the same memtile, we merge them
+  // into a single MemTileDMAOp with non-overlapping DMA channel numbers.
+  llvm::DenseMap<mlir::Value, AIE::MemTileDMAOp> memtileDMAMap;
+
   state.module.walk([&](Link linkOp) {
     builder.setInsertionPoint(state.deviceBody->getTerminator());
     mlir::Location loc = linkOp.getLoc();
@@ -119,13 +124,24 @@ void linkPhase(ConduitToDMAState &state) {
 
     mlir::Value memtileVal = memtile.getResult();
 
+    // Determine the correct insertion point for locks and buffers.
+    // If a memtile_dma already exists for this memtile (from a previous link
+    // group), we must insert locks/buffers BEFORE it so they dominate the
+    // use_lock ops inside the merged memtile_dma region.
+    mlir::Operation *lockInsertionPoint = state.deviceBody->getTerminator();
+    {
+      auto mtExisting = memtileDMAMap.find(memtileVal);
+      if (mtExisting != memtileDMAMap.end())
+        lockInsertionPoint = mtExisting->second.getOperation();
+    }
+
     // Distribute MemTile per-destination lock pairs.
     // Skipped when the source conduit has disable_synchronization: the oracle
     // emits no locks and no use_lock for synchronization-disabled conduits on
     // the MemTile side. The BD chains are still emitted (lock values remain
     // null and emitBDBlock skips the use_lock emission).
     if (isDistribute && numDsts > 0 && !srcInfo.disableSynchronization) {
-      builder.setInsertionPoint(state.deviceBody->getTerminator());
+      builder.setInsertionPoint(lockInsertionPoint);
       for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx) {
         // Scale per-slice lock init by the destination fifo's repeat_count.
         // The MemTile MM2S fires linkDepth×repeat times before releasing.
@@ -202,7 +218,7 @@ void linkPhase(ConduitToDMAState &state) {
         if (!intBufTy)
           intBufTy = mlir::MemRefType::get({joinDstPerBufForLen}, mlir::IntegerType::get(ctx, 32));
 
-        builder.setInsertionPoint(state.deviceBody->getTerminator());
+        builder.setInsertionPoint(lockInsertionPoint);
         unsigned numJoinSrcs = static_cast<unsigned>(srcs.size());
 
         // Allocate join intermediate buffers on the memtile (depth-many).
@@ -252,6 +268,62 @@ void linkPhase(ConduitToDMAState &state) {
     }
 
     // -----------------------------------------------------------------------
+    // Pre-compute DMA channel assignments for this link group.
+    //
+    // Phase 4 (routePhase) may have already assigned channels for the shim
+    // endpoints of the link source/destination conduits.  We reuse those
+    // channel numbers and allocate new ones from tileNextS2MMChannel /
+    // tileNextMM2SChannel for the internal memtile↔compute flows.
+    // This avoids channel conflicts when multiple link groups share a
+    // memtile (e.g., A-distribute + C-join on the same memtile).
+    // -----------------------------------------------------------------------
+
+    // Distribute: S2MM ingest channel on the memtile (matches the flow that
+    // delivers data to the memtile from shim or compute producer).
+    int32_t ingestS2MMCh = -1;
+    if (isDistribute) {
+      // If Phase 4 assigned a S2MM channel for the link source's memtile
+      // consumer, reuse it.  Otherwise allocate one now (compute producer).
+      auto it = state.conduitConsS2MMChannel.find({srcName, 0u});
+      if (it != state.conduitConsS2MMChannel.end()) {
+        ingestS2MMCh = it->second;
+      } else {
+        ingestS2MMCh = state.tileNextS2MMChannel[memtileVal]++;
+      }
+    }
+
+    // Distribute: per-destination MM2S channels on the memtile.
+    llvm::SmallVector<int32_t> distMM2SChannels;
+    if (isDistribute) {
+      for (unsigned i = 0; i < numDsts; ++i)
+        distMM2SChannels.push_back(
+            state.tileNextMM2SChannel[memtileVal]++);
+    }
+
+    // Join: per-source S2MM channels on the memtile.
+    llvm::SmallVector<int32_t> joinS2MMChannels;
+    if (!isDistribute) {
+      for (unsigned i = 0; i < static_cast<unsigned>(srcs.size()); ++i)
+        joinS2MMChannels.push_back(
+            state.tileNextS2MMChannel[memtileVal]++);
+    }
+
+    // Join: MM2S output channel on the memtile for the join destination.
+    // If Phase 4b assigned a channel (for memtile→shim egress), reuse it.
+    // Otherwise allocate one now (for memtile→compute consumer).
+    int32_t joinMM2SCh = -1;
+    if (!isDistribute && !dsts.empty()) {
+      std::string dstName0 =
+          mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
+      auto it = state.conduitMM2SChannel.find(dstName0);
+      if (it != state.conduitMM2SChannel.end()) {
+        joinMM2SCh = it->second;
+      } else {
+        joinMM2SCh = state.tileNextMM2SChannel[memtileVal]++;
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // Emit aie.flow ops for distribute/join.
     // -----------------------------------------------------------------------
     if (isDistribute) {
@@ -268,6 +340,8 @@ void linkPhase(ConduitToDMAState &state) {
         // For broadcast distribute (N consumers per dst), this emits N flows
         // from the same MemTile MM2S channel to each consumer — matching the
         // stateful transform which emits one aie.flow per consumer tile.
+        int32_t mm2sCh = dstIdx < distMM2SChannels.size()
+                             ? distMM2SChannels[dstIdx] : 0;
         for (unsigned consIdx = 0;
              consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
           auto [dstConsCol, dstConsRow] =
@@ -285,23 +359,32 @@ void linkPhase(ConduitToDMAState &state) {
 
           builder.create<AIE::FlowOp>(
               state.deviceOp.getLoc(), memtileVal, AIE::WireBundle::DMA,
-              static_cast<int32_t>(dstIdx), dstConsTile.getResult(),
+              mm2sCh, dstConsTile.getResult(),
               AIE::WireBundle::DMA, static_cast<int32_t>(s2mmCh));
         }
       }
 
       // Source→MemTile flow for compute-tile producers.
+      // Stream conduits: use Core:N wire bundle on the producer side.
+      // The producer core outputs data directly through its AXI stream port
+      // (no DMA engine). The MemTile S2MM DMA receives the stream data.
       {
         auto [srcProdCol, srcProdRow] = srcInfo.producerTileCoord;
         if (srcProdCol >= 0 && srcProdRow >= 2) {
           AIE::TileOp srcProdTile =
               state.lookupTileByCoord(srcProdCol, srcProdRow);
           if (srcProdTile) {
+            AIE::WireBundle srcBundle = AIE::WireBundle::DMA;
+            int32_t srcPort = 0;
+            if (srcInfo.routingMode == "stream") {
+              srcBundle = AIE::WireBundle::Core;
+              srcPort = srcInfo.aieStreamPort >= 0 ? srcInfo.aieStreamPort : 0;
+            }
             builder.create<AIE::FlowOp>(
                 state.deviceOp.getLoc(), srcProdTile.getResult(),
-                AIE::WireBundle::DMA, static_cast<int32_t>(0),
+                srcBundle, srcPort,
                 memtileVal, AIE::WireBundle::DMA,
-                static_cast<int32_t>(0));
+                static_cast<int32_t>(ingestS2MMCh));
           }
         }
       }
@@ -321,14 +404,15 @@ void linkPhase(ConduitToDMAState &state) {
         AIE::TileOp srcProdTile = state.lookupTileByCoord(srcProdCol, srcProdRow);
         if (!srcProdTile)
           continue;
+        int32_t s2mmCh = srcIdx < joinS2MMChannels.size()
+                             ? joinS2MMChannels[srcIdx] : 0;
         builder.create<AIE::FlowOp>(
             state.deviceOp.getLoc(), srcProdTile.getResult(),
             AIE::WireBundle::DMA, static_cast<int32_t>(0),
-            memtileVal, AIE::WireBundle::DMA,
-            static_cast<int32_t>(srcIdx));
+            memtileVal, AIE::WireBundle::DMA, s2mmCh);
       }
 
-      // Destination flow: memtile MM2S 0 → dst compute consumer.
+      // Destination flow: memtile MM2S → dst compute consumer.
       // NOTE: shim consumer flows are handled by Phase 4b (routePhase) which
       // iterates all conduits with shimConsumerTileCoords. We must NOT emit
       // the shim flow here to avoid duplicating Phase 4b's emission.
@@ -338,10 +422,13 @@ void linkPhase(ConduitToDMAState &state) {
           for (unsigned ci = 0; ci < dstFlowInfo->consumerTileCoords.size(); ++ci) {
             auto [consCol, consRow] = dstFlowInfo->consumerTileCoords[ci];
             AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
-            if (consTile)
+            if (consTile) {
+              int32_t consS2MM =
+                  state.tileNextS2MMChannel[consTile.getResult()]++;
               builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
-                  AIE::WireBundle::DMA, 0, consTile.getResult(),
-                  AIE::WireBundle::DMA, 0);
+                  AIE::WireBundle::DMA, joinMM2SCh, consTile.getResult(),
+                  AIE::WireBundle::DMA, consS2MM);
+            }
           }
           // Shim consumer flows are NOT emitted here. Phase 4b emits
           // prodTile→shimTile for join destination conduits that have
@@ -351,12 +438,38 @@ void linkPhase(ConduitToDMAState &state) {
     }
 
     // -----------------------------------------------------------------------
-    // Create memtile_dma DMA block.
+    // Create or reuse memtile_dma DMA block.
+    //
+    // When multiple link groups share the same memtile, we merge their
+    // DMA chains into a single aie.memtile_dma op.  The previous group's
+    // aie.end terminator is replaced with a DMAStartOp that chains to
+    // the new group's channels.
     // -----------------------------------------------------------------------
-    builder.setInsertionPoint(state.deviceBody->getTerminator());
-    auto memtileDMA =
-        builder.create<AIE::MemTileDMAOp>(loc, memtileVal);
-    mlir::Region &dmaRegion = memtileDMA.getBody();
+    mlir::Region *dmaRegionPtr = nullptr;
+    mlir::Block *mergeChainBlock = nullptr;
+
+    auto mtIt = memtileDMAMap.find(memtileVal);
+    if (mtIt != memtileDMAMap.end()) {
+      // Reuse existing MemTileDMAOp — find and remove the aie.end block.
+      dmaRegionPtr = &mtIt->second.getBody();
+      for (mlir::Block &block : *dmaRegionPtr) {
+        if (auto *term = block.getTerminator()) {
+          if (mlir::isa<AIE::EndOp>(term)) {
+            mergeChainBlock = &block;
+            term->erase();
+            break;
+          }
+        }
+      }
+    } else {
+      builder.setInsertionPoint(state.deviceBody->getTerminator());
+      auto memtileDMA =
+          builder.create<AIE::MemTileDMAOp>(loc, memtileVal);
+      dmaRegionPtr = &memtileDMA.getBody();
+      memtileDMAMap[memtileVal] = memtileDMA;
+    }
+
+    mlir::Region &dmaRegion = *dmaRegionPtr;
 
     auto addBlock = [&]() -> mlir::Block * {
       return builder.createBlock(&dmaRegion);
@@ -367,7 +480,9 @@ void linkPhase(ConduitToDMAState &state) {
 
     if (isDistribute) {
       // Single S2MM entry, depth*numDsts BD ring.
-      mlir::Block *entryBlock = addBlock();
+      // If merging, chain from the previous group's EndOp block.
+      mlir::Block *entryBlock = mergeChainBlock ? mergeChainBlock
+                                                : addBlock();
 
       llvm::SmallVector<mlir::Block *> ingestBlocks;
       for (int64_t bufIdx = 0; bufIdx < linkDepth; ++bufIdx)
@@ -379,7 +494,7 @@ void linkPhase(ConduitToDMAState &state) {
       builder.setInsertionPointToEnd(entryBlock);
       builder.create<AIE::DMAStartOp>(
           loc, AIE::DMAChannelDir::S2MM,
-          static_cast<int32_t>(0), static_cast<int32_t>(0),
+          ingestS2MMCh, static_cast<int32_t>(0),
           ingestBlocks[0], mm2sChainStartBlock);
 
       unsigned totalIngest = static_cast<unsigned>(linkDepth) * numDsts;
@@ -440,7 +555,13 @@ void linkPhase(ConduitToDMAState &state) {
 
       llvm::SmallVector<mlir::Block *> s2mmEntries(numSrcs);
       llvm::SmallVector<llvm::SmallVector<mlir::Block *>> srcIngestBlocks(numSrcs);
-      for (unsigned srcIdx = 0; srcIdx < numSrcs; ++srcIdx) {
+      // If merging, the first entry reuses the previous EndOp block.
+      if (mergeChainBlock) {
+        s2mmEntries[0] = mergeChainBlock;
+        for (int64_t i = 0; i < jDepth; ++i)
+          srcIngestBlocks[0].push_back(addBlock());
+      }
+      for (unsigned srcIdx = (mergeChainBlock ? 1u : 0u); srcIdx < numSrcs; ++srcIdx) {
         s2mmEntries[srcIdx] = addBlock();
         for (int64_t i = 0; i < jDepth; ++i)
           srcIngestBlocks[srcIdx].push_back(addBlock());
@@ -453,9 +574,11 @@ void linkPhase(ConduitToDMAState &state) {
         mlir::Block *nextBlock = (srcIdx + 1 < numSrcs) ?
             s2mmEntries[srcIdx + 1] : mm2sChainStartBlock;
 
+        int32_t s2mmCh = srcIdx < joinS2MMChannels.size()
+                             ? joinS2MMChannels[srcIdx] : 0;
         builder.setInsertionPointToEnd(s2mmEntries[srcIdx]);
         builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::S2MM,
-            static_cast<int32_t>(srcIdx), 0,
+            s2mmCh, 0,
             srcIngestBlocks[srcIdx][0], nextBlock);
 
         mlir::Value jAcqLock = (srcIdx < joinSrcProdLocks.size())
@@ -507,7 +630,7 @@ void linkPhase(ConduitToDMAState &state) {
 
       builder.setInsertionPointToEnd(prevChainBlock);
       builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S,
-          0, 0, sendBDBlocks[0], endBlock);
+          joinMM2SCh, 0, sendBDBlocks[0], endBlock);
 
       for (unsigned bdIdx = 0; bdIdx < totalBDs; ++bdIdx) {
         unsigned bufIdx = bdIdx / numJoinSrcs;
@@ -574,9 +697,11 @@ void linkPhase(ConduitToDMAState &state) {
           nextChainBlock = addBlock();
         }
 
+        int32_t mm2sCh = dstIdx < distMM2SChannels.size()
+                             ? distMM2SChannels[dstIdx] : 0;
         builder.setInsertionPointToEnd(prevChainBlock);
         builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S,
-            static_cast<int32_t>(dstIdx), 0, sendBDBlocks[0], nextChainBlock);
+            mm2sCh, 0, sendBDBlocks[0], nextChainBlock);
 
         for (int64_t i = 0; i < thisDstEffective; ++i) {
           // Each source buffer (linkBufs[j]) is repeated mm2sDstRepeat times.
@@ -727,8 +852,11 @@ void linkPhase(ConduitToDMAState &state) {
       continue;
 
     // Handle link source conduits: emit aie.mem MM2S on producer compute tile.
+    // Stream conduits: skip entirely — the producer uses a Core stream port,
+    // not a DMA engine. No aie.mem or BD chain on the producer tile.
     if (state.linkSrcNames.count(name)) {
-      if (state.linkSrcNamesEarly.count(name)) {
+      if (state.linkSrcNamesEarly.count(name) &&
+          info.routingMode != "stream") {
         // Distribute source with compute producer.
         auto [prodCol, prodRow] = info.producerTileCoord;
         if (prodRow < 2)

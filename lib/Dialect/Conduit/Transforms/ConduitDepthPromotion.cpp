@@ -155,15 +155,25 @@ struct ConduitDepthPromotePass
     if (candidates.empty())
       return;
 
-    // Step 3: Collect acquire/release ops per conduit name for
-    // uniformity checks (exclusion criteria #4, #5).
-    // name -> list of acquire counts
+    // Step 3: Collect acquire/release ops (Tier 2) and put/get_memref ops
+    // (Tier 3) per conduit name for uniformity checks (exclusion criteria
+    // #3, #4, #5).
+    //
+    // Tier 2 (ObjectFIFO-originated): conduit.acquire/release
+    // Tier 3 (air.channel-originated): conduit.put_memref[_async]/get_memref[_async]
+    //
+    // Separate maps for Tier 3 num_elems to avoid cross-tier confusion
+    // (a cross-tier channel can have both acquire{count=1} and
+    // put_memref{num_elems=64} — mixing them would break uniformity checks).
     llvm::StringMap<llvm::SmallVector<int64_t>> acquireCounts;
     llvm::StringMap<llvm::SmallVector<int64_t>> releaseCounts;
+    llvm::StringMap<llvm::SmallVector<int64_t>> putMemrefNumElems;
+    llvm::StringMap<llvm::SmallVector<int64_t>> getMemrefNumElems;
     llvm::StringMap<bool> nameHasLoopAcquire;
     llvm::StringMap<bool> nameAllPassthrough;
 
     module.walk([&](mlir::Operation *op) {
+      // --- Tier 2: acquire/release ---
       if (mlir::isa<Acquire, AcquireAsync>(op)) {
         auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
         auto countAttr = op->getAttrOfType<mlir::IntegerAttr>("count");
@@ -186,6 +196,33 @@ struct ConduitDepthPromotePass
         if (!nameAttr || !countAttr)
           return;
         releaseCounts[nameAttr.getValue()].push_back(countAttr.getInt());
+      }
+
+      // --- Tier 3: put_memref[_async] / get_memref[_async] ---
+      if (mlir::isa<PutMemref, PutMemrefAsync>(op)) {
+        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        if (!nameAttr)
+          return;
+        llvm::StringRef name = nameAttr.getValue();
+        if (auto numElemsAttr =
+                op->getAttrOfType<mlir::IntegerAttr>("num_elems"))
+          putMemrefNumElems[name].push_back(numElemsAttr.getInt());
+        if (isInsideLoop(op))
+          nameHasLoopAcquire[name] = true;
+        // Tier 3 ops always perform real DMA work — never passthrough.
+        nameAllPassthrough[name] = false;
+      }
+      if (mlir::isa<GetMemref, GetMemrefAsync>(op)) {
+        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        if (!nameAttr)
+          return;
+        llvm::StringRef name = nameAttr.getValue();
+        if (auto numElemsAttr =
+                op->getAttrOfType<mlir::IntegerAttr>("num_elems"))
+          getMemrefNumElems[name].push_back(numElemsAttr.getInt());
+        if (isInsideLoop(op))
+          nameHasLoopAcquire[name] = true;
+        nameAllPassthrough[name] = false;
       }
     });
 
@@ -361,6 +398,31 @@ struct ConduitDepthPromotePass
           int64_t first = counts[0];
           for (int64_t c : counts) {
             if (c != first) {
+              uniform = false;
+              break;
+            }
+          }
+        }
+      }
+      // Also check Tier 3 num_elems uniformity.
+      if (uniform && putMemrefNumElems.count(name)) {
+        auto &nums = putMemrefNumElems[name];
+        if (!nums.empty()) {
+          int64_t first = nums[0];
+          for (int64_t n : nums) {
+            if (n != first) {
+              uniform = false;
+              break;
+            }
+          }
+        }
+      }
+      if (uniform && getMemrefNumElems.count(name)) {
+        auto &nums = getMemrefNumElems[name];
+        if (!nums.empty()) {
+          int64_t first = nums[0];
+          for (int64_t n : nums) {
+            if (n != first) {
               uniform = false;
               break;
             }

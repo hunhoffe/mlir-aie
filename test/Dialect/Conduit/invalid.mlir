@@ -160,7 +160,7 @@ func.func @bad_csdf_missing_producer_rates() {
 
 // M5: bad routing_mode value
 func.func @bad_routing_mode() {
-  // expected-error@+1 {{'conduit.create' op routing_mode must be "circuit", "packet", "cascade", or "any", got "broadcast"}}
+  // expected-error@+1 {{'conduit.create' op routing_mode must be "circuit", "packet", "cascade", "stream", or "any", got "broadcast"}}
   conduit.create {name = "bad_mode_ch", capacity = 4 : i64,
                   routing_mode = "broadcast"}
   return

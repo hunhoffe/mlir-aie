@@ -1,31 +1,29 @@
 // RUN: aie-opt --objectfifo-to-conduit %s 2>&1 | FileCheck %s
 //
-// Pass A test: objectfifo with aie_stream attribute must be skipped entirely.
-// aie_stream routes data through the Core AXI stream port (Core:N → DMA:0),
-// not DMA, which requires a fundamentally different lowering than Pass A provides.
+// Pass A test: objectfifo with aie_stream attribute is converted to
+// conduit.create with routing_mode="stream" and aie_stream_port attribute.
+// The producer core outputs data directly through the Core AXI stream port
+// (Core:N), bypassing DMA. Pass C emits aie.flow(Core:N, ...) and skips
+// producer-side buffer/lock allocation.
 //
 // Expected behavior:
-//   - A remark is emitted naming the skipped fifo.
-//   - The aie.objectfifo op is left intact in the output IR (NOT erased).
-//   - No conduit.create is emitted for the aie_stream fifo.
-//   - No buffers or locks are placed on the wrong tile.
+//   - A conduit.create is emitted with routing_mode = "stream".
+//   - The aie_stream_port generic attribute is set.
+//   - The aie.objectfifo op is erased.
 //
 // Source: based on test/objectFifo-stateful-transform/aie_stream/producer_stream_AIE2.mlir
 
-// CHECK: remark: objectfifo-to-conduit: aie_stream ObjectFIFO not yet supported
-// CHECK-SAME: skipping
-
-// CHECK-LABEL: module @aie_stream_skip
+// CHECK-LABEL: module @aie_stream_convert
 // CHECK:   aie.device(xcve2302) {
-// CHECK-NOT:   conduit.create
-// CHECK-NOT:   aie.buffer
-// CHECK-NOT:   aie.lock
-// CHECK:     aie.objectfifo @of_stream
-// CHECK-SAME:   aie_stream
+// CHECK:     conduit.create {
+// CHECK-SAME:   aie_stream_port = 0
+// CHECK-SAME:   name = "of_stream"
+// CHECK-SAME:   routing_mode = "stream"
+// CHECK-NOT:   aie.objectfifo
 // CHECK:   }
 // CHECK: }
 
-module @aie_stream_skip {
+module @aie_stream_convert {
   aie.device(xcve2302) {
     %tile12 = aie.tile(1, 2)
     %tile13 = aie.tile(1, 3)

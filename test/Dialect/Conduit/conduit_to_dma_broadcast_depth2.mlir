@@ -36,10 +36,9 @@
 // CHECK:     aie.buffer({{.*}}){{.*}}sym_name = "bcast_d2_cons_0_buff_1"
 // CHECK:     aie.lock({{.*}}){{.*}}sym_name = "bcast_d2_cons_0_prod_lock_0"
 // CHECK:     aie.lock({{.*}}){{.*}}sym_name = "bcast_d2_cons_0_cons_lock_0"
-// --- Shared rotation counter for producer tile (memref<2xi32>): slot 1 for producer ---
-// CHECK:     %[[ROT:.*]] = aie.buffer({{.*}}tile_0_2{{.*}}){{.*}}sym_name = "_conduit_rot_ctr_tile_0_2"{{.*}}memref<2xi32>
-// --- Producer core: counter init at slot 1, increment after Release op ---
+// --- Producer core: rotation counter allocated as memref.alloc inside core ---
 // CHECK:     aie.core({{.*}}tile_0_2{{.*}}) {
+// CHECK:       %[[ROT:.*]] = memref.alloc() : memref<2xi32>
 // CHECK:       memref.store {{.*}}, %[[ROT]][{{.*}}] : memref<2xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
@@ -55,10 +54,12 @@
 // CHECK:         arith.remui {{.*}}, %[[ROTMOD]] : i32
 // CHECK:         memref.store {{.*}}, %[[ROT]]
 // CHECK:     }
-// --- Cores: each uses its own tile's locks and buffers ---
+// --- Consumer cores: each gets its own memref.alloc rotation counter ---
 // CHECK:     aie.core({{.*}}) {
+// CHECK:       memref.alloc() : memref<1xi32>
 // CHECK:       aie.use_lock({{.*}}bcast_d2_cons_0_cons{{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.core({{.*}}) {
+// CHECK:       memref.alloc() : memref<1xi32>
 // CHECK:       aie.use_lock({{.*}}bcast_d2_cons_1_cons{{.*}}, AcquireGreaterEqual, 1)
 // --- P0-B fix: flows emitted for ALL consumers, including adjacent tile(0,3) ---
 // CHECK:     aie.flow({{.*}}, DMA : {{[0-9]+}}, {{.*}}, DMA : {{[0-9]+}})

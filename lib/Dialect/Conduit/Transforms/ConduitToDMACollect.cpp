@@ -84,6 +84,11 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto rm = op.getRoutingMode())
       info.routingMode = rm->str();
 
+    // Core stream port for routing_mode="stream".
+    if (auto aspAttr =
+            op->getAttrOfType<mlir::IntegerAttr>("aie_stream_port"))
+      info.aieStreamPort = static_cast<int32_t>(aspAttr.getInt());
+
     // Alloc tile delegate coordinates.
     if (auto at = op.getAllocTile()) {
       if (at->size() >= 2) {
@@ -123,6 +128,8 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto attr = op.getViaDMA())
       if (*attr)
         info.viaDMA = true;
+    if (auto plioAttr = op->getAttrOfType<mlir::BoolAttr>("plio"))
+      info.plio = plioAttr.getValue();
     if (auto attr = op.getIterCount())
       info.iterCount = static_cast<int64_t>(*attr);
     if (auto attr = op.getRepeatCount())

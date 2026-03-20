@@ -158,8 +158,10 @@ struct ConduitInfo {
   // Cyclostatic (CSDF) access pattern from conduit.create access_pattern attr.
   // Empty = uniform SDF; non-empty = CSDF per-iteration acquire counts.
   llvm::SmallVector<int64_t> accessPattern;
-  // Routing mode: "circuit" (default) or "packet".
+  // Routing mode: "circuit" (default), "packet", "cascade", or "stream".
   std::string routingMode = "circuit";
+  // Core stream port index for routing_mode="stream" (-1 if not stream).
+  int32_t aieStreamPort = -1;
   // Alloc tile override from objectfifo.allocate delegate tile.
   bool hasAllocTile = false;
   std::pair<int64_t, int64_t> allocTileCoord = {-1, -1};
@@ -220,23 +222,25 @@ struct ConduitInfo {
   llvm::DenseMap<mlir::Value, llvm::SmallVector<AIE::LockOp>>
       consumerTileAIE1Locks; // tile → [lock_0, ..., lock_{depth-1}]
 
-  // For depth>1: rotation counter — shared per-tile buffer + slot index.
-  // Multiple conduits on the same tile share one memref<N xi32> buffer;
-  // each conduit is assigned a unique slot index within that buffer.
-  AIE::BufferOp rotationBuf;   // shared tile buffer (consumer direction)
-  int64_t rotationBufSlot = 0; // slot index within that buffer
-  llvm::DenseMap<mlir::Value, AIE::BufferOp>
-      consumerTileRotationBufs; // tile → shared rotation buffer
+  // For depth>1: rotation counter — shared per-tile alloca + slot index.
+  // Multiple conduits on the same tile share one memref<N xi32> alloca
+  // (stack-allocated inside the core body); each conduit is assigned a
+  // unique slot index within it.  Using alloca instead of aie.buffer
+  // eliminates spurious buffer entries in the device-level IR.
+  mlir::Value rotationBuf;           // shared tile alloca (consumer direction)
+  int64_t rotationBufSlot = 0;       // slot index within that alloca
+  llvm::DenseMap<mlir::Value, mlir::Value>
+      consumerTileRotationBufs;      // tile → shared rotation alloca
   llvm::DenseMap<mlir::Value, int64_t>
-      consumerTileRotationBufSlots; // tile → slot index for this conduit
+      consumerTileRotationBufSlots;  // tile → slot index for this conduit
 
   // For depth>1 produce-mode: rotation counter on the producer tile.
-  AIE::BufferOp producerRotationBuf; // shared tile buffer (producer direction)
-  int64_t producerRotationBufSlot = 0; // slot index within that buffer
-  llvm::DenseMap<mlir::Value, AIE::BufferOp>
-      producerTileRotationBufs; // tile → shared rotation buffer
+  mlir::Value producerRotationBuf;   // shared tile alloca (producer direction)
+  int64_t producerRotationBufSlot = 0; // slot index within that alloca
+  llvm::DenseMap<mlir::Value, mlir::Value>
+      producerTileRotationBufs;      // tile → shared rotation alloca
   llvm::DenseMap<mlir::Value, int64_t>
-      producerTileRotationBufSlots; // tile → slot index for this conduit
+      producerTileRotationBufSlots;  // tile → slot index for this conduit
 
   // --- New feature flags (populated by Phase 1 from conduit.create attrs) ---
 
@@ -244,6 +248,9 @@ struct ConduitInfo {
   bool disableSynchronization = false;
   // via_DMA: force DMA routing even for adjacent tiles (skip shared-mem path).
   bool viaDMA = false;
+  // plio: when true, the shim endpoint uses Platform I/O instead of DMA.
+  // Flows use WireBundle::PLIO and shim_dma_allocation carries {plio = true}.
+  bool plio = false;
   // iter_count: number of DMA iterations (> 0 → DMAStartOp repeat_count = K-1,
   // non-circular BD chain with terminal aie.end).
   int64_t iterCount = 0;
@@ -262,10 +269,10 @@ struct ConduitInfo {
     AIE::LockOp prodLock;
     AIE::LockOp consLock;
     llvm::SmallVector<AIE::BufferOp> *buffers = nullptr;
-    AIE::BufferOp rotationBuf;           // shared tile buffer (consumer dir)
-    int64_t rotationBufSlot = 0;         // slot index within that buffer
-    AIE::BufferOp producerRotationBuf;   // shared tile buffer (producer dir)
-    int64_t producerRotationBufSlot = 0; // slot index within that buffer
+    mlir::Value rotationBuf;             // shared tile alloca (consumer dir)
+    int64_t rotationBufSlot = 0;         // slot index within that alloca
+    mlir::Value producerRotationBuf;     // shared tile alloca (producer dir)
+    int64_t producerRotationBufSlot = 0; // slot index within that alloca
     mlir::Operation *coreOp = nullptr;
   };
 
@@ -406,10 +413,11 @@ struct ConduitToDMAState {
   // rotation counter allocation when depth > 1).
   llvm::StringSet<> conduitNamesWithProducerAcquire;
 
-  // Per-tile shared rotation counter buffer pool.
+  // Per-tile shared rotation counter alloca pool.
   // Populated by allocPhase() pre-scan; each tile that needs N rotation
-  // counters gets one memref<N xi32> buffer shared across all conduits.
-  llvm::DenseMap<mlir::Value, AIE::BufferOp> tileRotationBuf;
+  // counters gets one memref<N xi32> alloca (inside the core body) shared
+  // across all conduits on that tile.
+  llvm::DenseMap<mlir::Value, mlir::Value> tileRotationBuf;
   llvm::DenseMap<mlir::Value, int64_t> tileRotationBufNextSlot;
 
   // Shim conduit names for Phase 4.5 symbol rewriting.

@@ -11,7 +11,8 @@
 //   - Shim-side locks and flow
 //
 // Resource counts:
-//   aie.buffer:  3  (input_fifo_cons_buff_0, input_fifo_cons_buff_1, rotation counter)
+//   aie.buffer:  2  (input_fifo_cons_buff_0, input_fifo_cons_buff_1)
+//   memref.alloc: 1  (rotation counter inside core body)
 //   aie.lock:    4  (tile_0_2: cons_prod_lock init=2, cons_cons_lock init=0;
 //                    shim: prod_lock init=0, cons_lock init=0)
 //   aie.flow:    1
@@ -34,14 +35,13 @@
 // CHECK:     %[[CONS_CONS:.*]] = aie.lock(%{{.*}}tile_0_2
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "input_fifo_cons_cons_lock_0"
-// --- Rotation counter buffer (shared per-tile buffer, deterministic sym_name) ---
-// CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "_conduit_rot_ctr_tile_0_2"} : memref<1xi32>
-// --- Core body: counter init, scf.index_switch, and counter increment ---
+// --- Core body: rotation counter allocated as memref.alloc, counter init, scf.index_switch, and counter increment ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:       memref.store {{.*}} : memref<1xi32>
+// CHECK:       %[[ALLOC:.*]] = memref.alloc() : memref<1xi32>
+// CHECK:       memref.store {{.*}} %[[ALLOC]]{{.*}} : memref<1xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
-// CHECK:         memref.load {{.*}} : memref<1xi32>
+// CHECK:         memref.load %[[ALLOC]]{{.*}} : memref<1xi32>
 // CHECK:         arith.index_cast
 // CHECK:         scf.index_switch
 // CHECK:           scf.yield %[[BUFF0]]
@@ -49,8 +49,8 @@
 // CHECK:           scf.yield %[[BUFF0]]
 // CHECK:         func.call @process_10_i32
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
-// CHECK:         memref.load {{.*}} : memref<1xi32>
-// CHECK:         memref.store {{.*}} : memref<1xi32>
+// CHECK:         memref.load %[[ALLOC]]{{.*}} : memref<1xi32>
+// CHECK:         memref.store {{.*}} %[[ALLOC]]{{.*}} : memref<1xi32>
 // CHECK:     }
 // --- Shim DMA and flow ---
 // CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc

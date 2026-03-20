@@ -28,39 +28,38 @@
 // CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "fifo_a_cons_buff_0"} : memref<8xi32>
 // CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "fifo_a_cons_buff_1"} : memref<8xi32>
 
-// --- ONE shared rotation counter buffer of size 2 (one slot per conduit) ---
-// CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "_conduit_rot_ctr_tile_0_2"} : memref<2xi32>
-// CHECK-NOT: aie.buffer(%{{.*}}tile_0_2) {{.*}} : memref<1xi32>
-// CHECK-NOT: aie.buffer(%{{.*}}tile_0_2) {{.*}} : memref<3xi32>
-
-// --- Core init: slot 0 for fifo_a, slot 1 for fifo_b (or reverse) ---
+// --- ONE shared rotation counter allocated inside core body (memref<2xi32>) ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:       memref.store %c0_i32, %{{.*}}_conduit_rot_ctr_tile_0_2[%c{{[01]}}{{.*}}] : memref<2xi32>
-// CHECK:       memref.store %c0_i32{{.*}}, %{{.*}}_conduit_rot_ctr_tile_0_2[%c{{[01]}}{{.*}}] : memref<2xi32>
+// CHECK:       %[[ALLOC:.*]] = memref.alloc() : memref<2xi32>
+// CHECK-NOT:   memref.alloc() : memref<1xi32>
+
+// --- Core init: slot 1 for fifo_b, slot 0 for fifo_a (or reverse) ---
+// CHECK:       memref.store %c0_i32{{.*}}, %[[ALLOC]][%c{{[01]}}{{.*}}] : memref<2xi32>
+// CHECK:       memref.store %c0_i32{{.*}}, %[[ALLOC]][%c{{[01]}}{{.*}}] : memref<2xi32>
 
 // --- fifo_a acquire: loads from slot 0 ---
 // CHECK:       aie.use_lock(%{{.*}}fifo_a_cons_cons_lock_0, AcquireGreaterEqual, 1)
 // CHECK:       %c0{{.*}} = arith.constant 0 : index
-// CHECK:       memref.load %{{.*}}_conduit_rot_ctr_tile_0_2[%c0{{.*}}] : memref<2xi32>
+// CHECK:       memref.load %[[ALLOC]][%c0{{.*}}] : memref<2xi32>
 // CHECK:       scf.index_switch
 // CHECK:         scf.yield %{{.*}}fifo_a_cons_buff_0
 // CHECK:         scf.yield %{{.*}}fifo_a_cons_buff_1
 // CHECK:       func.call @process_a
 // CHECK:       aie.use_lock(%{{.*}}fifo_a_cons_prod_lock_0, Release, 1)
 // CHECK:       arith.remui {{.*}} %c2_i32{{.*}} : i32
-// CHECK:       memref.store {{.*}} %{{.*}}_conduit_rot_ctr_tile_0_2[%c0{{.*}}] : memref<2xi32>
+// CHECK:       memref.store {{.*}} %[[ALLOC]][%c0{{.*}}] : memref<2xi32>
 
 // --- fifo_b acquire: loads from slot 1 ---
 // CHECK:       aie.use_lock(%{{.*}}fifo_b_cons_cons_lock_0, AcquireGreaterEqual, 1)
 // CHECK:       %c1{{.*}} = arith.constant 1 : index
-// CHECK:       memref.load %{{.*}}_conduit_rot_ctr_tile_0_2[%c1{{.*}}] : memref<2xi32>
+// CHECK:       memref.load %[[ALLOC]][%c1{{.*}}] : memref<2xi32>
 // CHECK:       scf.index_switch
 // CHECK:         scf.yield %{{.*}}fifo_b_cons_buff_0
 // CHECK:         scf.yield %{{.*}}fifo_b_cons_buff_1
 // CHECK:       func.call @process_b
 // CHECK:       aie.use_lock(%{{.*}}fifo_b_cons_prod_lock_0, Release, 1)
 // CHECK:       arith.remui {{.*}} %c2_i32{{.*}} : i32
-// CHECK:       memref.store {{.*}} %{{.*}}_conduit_rot_ctr_tile_0_2[%c1{{.*}}] : memref<2xi32>
+// CHECK:       memref.store {{.*}} %[[ALLOC]][%c1{{.*}}] : memref<2xi32>
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.release

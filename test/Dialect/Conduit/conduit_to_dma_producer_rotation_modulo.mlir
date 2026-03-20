@@ -51,30 +51,30 @@
 // CHECK:     aie.buffer(%{{.*}}tile_0_4) {sym_name = "fifo_cons_buff_3"} : memref<8xi32>
 // CHECK:     aie.lock(%{{.*}}tile_0_4{{.*}}) {init = 4 : i32, sym_name = "fifo_cons_prod_lock_0"}
 
-// --- Rotation counter: consumer tile gets memref<1xi32>, producer tile gets memref<2xi32> ---
-// (tile_0_2 buffer has 2 slots: slot 0 unused here, slot 1 = producer counter)
-// CHECK:     aie.buffer(%{{.*}}tile_0_4) {sym_name = "_conduit_rot_ctr_tile_0_4"} : memref<1xi32>
-// CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "_conduit_rot_ctr_tile_0_2"} : memref<2xi32>
-
-// --- Producer core: counter uses remui with divisor 2 (effectiveDepth), NOT 4 (depth) ---
+// --- Producer core: rotation counter allocated as memref.alloc inside core ---
+// --- Counter uses remui with divisor 2 (effectiveDepth), NOT 4 (depth) ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:       memref.store %c0_i32, %{{.*}}_conduit_rot_ctr_tile_0_2[%c1{{.*}}] : memref<2xi32>
+// CHECK:       %[[PALLOC:.*]] = memref.alloc() : memref<2xi32>
+// CHECK:       memref.store %c0_i32, %[[PALLOC]][%c1{{.*}}] : memref<2xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%{{.*}}fifo_prod_lock_0, AcquireGreaterEqual, 1)
-// CHECK:         memref.load %{{.*}}_conduit_rot_ctr_tile_0_2[%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.load %[[PALLOC]][%c1{{.*}}] : memref<2xi32>
 // CHECK:         scf.index_switch
 // CHECK:           scf.yield %{{.*}}fifo_buff_0
 // CHECK:           scf.yield %{{.*}}fifo_buff_1
 // CHECK:         func.call @generate
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_lock_0, Release, 1)
-// CHECK:         memref.load %{{.*}}_conduit_rot_ctr_tile_0_2[%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.load %[[PALLOC]][%c1{{.*}}] : memref<2xi32>
 // CHECK:         arith.addi
 // CHECK:         %c2_i32 = arith.constant 2 : i32
 // CHECK:         arith.remui {{.*}} %c2_i32 : i32
-// CHECK:         memref.store {{.*}} %{{.*}}_conduit_rot_ctr_tile_0_2[%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.store {{.*}} %[[PALLOC]][%c1{{.*}}] : memref<2xi32>
 
-// --- Consumer core: counter uses remui with divisor 4 (full depth) ---
+// --- Consumer core: rotation counter allocated as memref.alloc inside core ---
+// --- Counter uses remui with divisor 4 (full depth) ---
 // CHECK:     aie.core(%{{.*}}tile_0_4) {
+// CHECK:       %[[CALLOC:.*]] = memref.alloc() : memref<1xi32>
+// CHECK:       memref.store
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_cons_lock_0, AcquireGreaterEqual, 1)
 // CHECK:         scf.index_switch

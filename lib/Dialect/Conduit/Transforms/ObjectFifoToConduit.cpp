@@ -152,9 +152,9 @@ struct ObjectFifoToConduitPass
   /// Name → fifo metadata, populated by collectFifoInfo().
   llvm::DenseMap<mlir::StringAttr, FifoInfo> fifoInfoMap;
 
-  /// Names of objectfifos that use aie_stream routing and must be skipped
-  /// by Pass A. These ops are left intact for the stateful transform to handle.
-  llvm::DenseSet<mlir::StringAttr> aieStreamFifoNames;
+  /// Names of objectfifos that use aie_stream routing.
+  /// Mapped to the Core stream port index (from aie_stream_port attribute).
+  llvm::DenseMap<mlir::StringAttr, int32_t> aieStreamFifoPort;
 
   /// ObjectFifo create ops to erase after all rewrites complete.
   llvm::SmallVector<AIE::ObjectFifoCreateOp> fifosToErase;
@@ -173,22 +173,19 @@ struct ObjectFifoToConduitPass
 
   void collectFifoInfo(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
     fifoInfoMap.clear();
-    aieStreamFifoNames.clear();
+    aieStreamFifoPort.clear();
 
     // Phase 1: collect FifoInfo for all aie.objectfifo ops.
     module.walk([&](AIE::ObjectFifoCreateOp op) {
       // aie_stream ObjectFIFOs route data through the Core AXI stream port
-      // rather than DMA. The correct lowering emits aie.flow(Core:N → DMA:0)
-      // and places buffers/locks on the consumer tile — a fundamentally
-      // different code path that Pass A does not yet implement.
-      // Skip these ops entirely and leave them intact for the stateful
-      // transform (--aie-objectFifo-stateful-transform) to handle.
+      // rather than DMA. Record the stream port for conduit.create emission;
+      // Pass C uses routing_mode="stream" to emit aie.flow(Core:N, ...).
       if (op.getAieStream().has_value()) {
-        op.emitRemark(
-            "objectfifo-to-conduit: aie_stream ObjectFIFO not yet supported "
-            "via Conduit path; skipping (op left intact for stateful transform)");
-        aieStreamFifoNames.insert(op.getSymNameAttr());
-        return;
+        int32_t streamPort = 0;
+        if (op.getAieStreamPort().has_value())
+          streamPort = static_cast<int32_t>(op.getAieStreamPort().value());
+        aieStreamFifoPort[op.getSymNameAttr()] = streamPort;
+        // Fall through to collect FifoInfo normally.
       }
 
       FifoInfo info;
@@ -269,9 +266,6 @@ struct ObjectFifoToConduitPass
       if (op.getPort() != AIE::ObjectFifoPort::Consume)
         return;
       auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
-      // Skip aie_stream fifos — not lowered by Pass A.
-      if (aieStreamFifoNames.count(nameAttr))
-        return;
       consumeAcquireCounts[nameAttr].push_back(op.acqNumber());
     });
 
@@ -327,10 +321,6 @@ struct ObjectFifoToConduitPass
     // for deferred erasure after Phase 4 completes.
 
     module.walk([&](AIE::ObjectFifoCreateOp op) {
-      // Skip aie_stream fifos — left intact for stateful transform.
-      if (aieStreamFifoNames.count(op.getSymNameAttr()))
-        return;
-
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
 
@@ -458,7 +448,16 @@ struct ObjectFifoToConduitPass
         routingModeAttr = mlir::StringAttr::get(ctx, "cascade");
       }
 
-      builder.create<Create>(
+      // Propagate aie_stream → routing_mode = "stream".
+      // aie_stream ObjectFIFOs route data from the producer core's AXI
+      // stream port directly into the consumer tile's DMA — no DMA engine
+      // or buffers on the producer side. Pass C emits aie.flow(Core:N, ...)
+      // instead of aie.flow(DMA:N, ...) and skips producer-side allocation.
+      auto streamPortIt = aieStreamFifoPort.find(op.getSymNameAttr());
+      if (streamPortIt != aieStreamFifoPort.end())
+        routingModeAttr = mlir::StringAttr::get(ctx, "stream");
+
+      auto createOp = builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), capacity),
@@ -480,6 +479,20 @@ struct ObjectFifoToConduitPass
           iterCountAttr,
           prodDimsAttr,
           consDimsAttr);
+
+      // Set aie_stream_port as a generic attribute for stream conduits.
+      if (streamPortIt != aieStreamFifoPort.end()) {
+        createOp->setAttr(
+            "aie_stream_port",
+            mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                   streamPortIt->second));
+      }
+
+      // Propagate plio flag as a generic attribute on conduit.create.
+      // Pass C reads this to use WireBundle::PLIO in flows and set plio
+      // on shim_dma_allocation ops.
+      if (op.getPlio())
+        createOp->setAttr("plio", mlir::BoolAttr::get(ctx, true));
 
       fifosToErase.push_back(op);
     });
@@ -830,11 +843,6 @@ struct ObjectFifoToConduitPass
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
 
-          // Skip acquire ops for aie_stream fifos — left intact for stateful
-          // transform. Do not emit conduit.acquire or touch these ops.
-          if (aieStreamFifoNames.count(nameAttr))
-            continue;
-
           mlir::MemRefType elemType;
           auto it = fifoInfoMap.find(nameAttr);
           if (it != fifoInfoMap.end())
@@ -908,6 +916,13 @@ struct ObjectFifoToConduitPass
 
           mlir::Value winVal;
           bool isLeader = acqIsGroupLeader.lookup(&rawOp);
+
+          // Compute effective count up-front (needed for both parent-window
+          // count comparison and for the conduit.acquire emission below).
+          int64_t effectiveCount = acqGroupMax.count(&rawOp)
+                                       ? acqGroupMax[&rawOp]
+                                       : count;
+
           if (isLeader || !blockGroupWindow.count(nameAttr)) {
             // Before emitting a new conduit.acquire, check if a dominating
             // parent block already holds a window for this fifo.  If so, the
@@ -918,6 +933,31 @@ struct ObjectFifoToConduitPass
                                      : nullptr,
                 block->getParentOp(),
                 nameAttr);
+
+            // Non-uniform acquire count fix: if the dominating window was
+            // acquired with a count less than the requested effective count,
+            // do not reuse it.  The inner block needs more elements than the
+            // parent acquired (e.g., preamble acquire(2) followed by loop
+            // body acquire(3)), so a new conduit.acquire must be emitted with
+            // the correct count to satisfy M2 bounds and ensure subview_access
+            // indices [0, effectiveCount) are valid.
+            //
+            // When the parent count is insufficient, we record it so the new
+            // acquire can carry a "prior_count" annotation.  Pass C uses this
+            // to compute the lock delta (count - prior_count) and avoid
+            // double-acquiring lock units already held by the parent.
+            int64_t parentDominatingCount = 0;
+            if (parentWin) {
+              if (auto parentAcq = parentWin.getDefiningOp<Acquire>()) {
+                int64_t parentCount =
+                    static_cast<int64_t>(parentAcq.getCount());
+                if (parentCount < effectiveCount) {
+                  parentDominatingCount = parentCount;
+                  parentWin = {};  // insufficient count — don't reuse
+                }
+              }
+            }
+
             if (parentWin) {
               // Reuse the dominating block's window — cross-block subsumed.
               winVal = parentWin;
@@ -926,15 +966,22 @@ struct ObjectFifoToConduitPass
               // Emit one conduit.acquire for the group.
               // Use the pre-scanned group max as the effective count so the
               // single window covers all elements that will be released.
-              int64_t effectiveCount = acqGroupMax.count(&rawOp)
-                                           ? acqGroupMax[&rawOp]
-                                           : count;
               auto winTy = WindowType::get(ctx, elemType);
+              // When the new acquire was emitted because a dominating parent
+              // had insufficient count, pass prior_count so Pass C can compute
+              // the lock delta (effectiveCount - prior_count).
+              mlir::IntegerAttr priorCountAttr;
+              if (parentDominatingCount > 0) {
+                priorCountAttr = mlir::IntegerAttr::get(
+                    mlir::IntegerType::get(ctx, 64),
+                    parentDominatingCount);
+              }
               winVal = builder.create<Acquire>(
                   loc, winTy, mlir::StringAttr::get(ctx, name),
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
                                          effectiveCount),
-                  PortAttr::get(ctx, port));
+                  PortAttr::get(ctx, port),
+                  priorCountAttr);
               // Record as the group leader window.
               blockGroupWindow[nameAttr] = winVal;
             }
@@ -984,11 +1031,6 @@ struct ObjectFifoToConduitPass
                           : Port::Consume;
 
           auto nameAttr = mlir::StringAttr::get(ctx, name);
-
-          // Skip release ops for aie_stream fifos — left intact for stateful
-          // transform.
-          if (aieStreamFifoNames.count(nameAttr))
-            continue;
 
           // Cascade release handling.
           if (cascadeFifoNames.count(nameAttr)) {
@@ -1123,7 +1165,8 @@ struct ObjectFifoToConduitPass
             winVal = builder.create<Acquire>(
                 loc, winTy, mlir::StringAttr::get(ctx, name),
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-                PortAttr::get(ctx, port));
+                PortAttr::get(ctx, port),
+                /*prior_count=*/mlir::IntegerAttr{});
             blockWindowMap[nameAttr] = winVal;
           }
 
@@ -1199,6 +1242,11 @@ struct ObjectFifoToConduitPass
     // without providing a replacement symbol causes the verifier to fail.
     // Fix: emit aie.shim_dma_allocation @<name>_shim_alloc and rewrite all
     // symbol uses before erasing the objectfifo.
+    //
+    // Per-shim-tile channel counters: when multiple objectfifos use the same
+    // shim tile in the same direction, each needs a distinct channel index.
+    llvm::DenseMap<mlir::Value, int> shimMM2SCounter;
+    llvm::DenseMap<mlir::Value, int> shimS2MMCounter;
     for (AIE::ObjectFifoCreateOp op : fifosToErase) {
       auto prodTile =
           mlir::cast<AIE::TileOp>(op.getProducerTile().getDefiningOp());
@@ -1230,12 +1278,19 @@ struct ObjectFifoToConduitPass
 
       std::string allocSym = op.getSymName().str() + "_shim_alloc";
 
+      // Allocate per-shim-tile per-direction channel index.
+      int channelIdx;
+      if (channelDir == AIE::DMAChannelDir::MM2S)
+        channelIdx = shimMM2SCounter[shimTile.getResult()]++;
+      else
+        channelIdx = shimS2MMCounter[shimTile.getResult()]++;
+
       builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
       builder.create<AIE::ShimDMAAllocationOp>(
           op.getLoc(), allocSym, shimTile.getResult(),
           channelDir,
-          /*channel_index=*/static_cast<int64_t>(0),
-          /*plio=*/false,
+          /*channel_index=*/static_cast<int64_t>(channelIdx),
+          /*plio=*/op.getPlio(),
           /*packet=*/nullptr);
 
       if (mlir::failed(mlir::SymbolTable::replaceAllSymbolUses(

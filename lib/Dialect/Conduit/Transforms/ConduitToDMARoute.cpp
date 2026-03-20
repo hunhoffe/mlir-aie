@@ -332,7 +332,7 @@ void routePhase(ConduitToDMAState &state) {
             state.deviceOp.getLoc(), allocSym, shimTile.getResult(),
             AIE::DMAChannelDir::MM2S,
             /*channel_index=*/static_cast<int64_t>(shimMM2SCh),
-            /*plio=*/false,
+            /*plio=*/info.plio,
             /*packet=*/nullptr);
 
       // One flow per consumer tile.  The shim-side DMA port uses shimMM2SCh
@@ -347,15 +347,19 @@ void routePhase(ConduitToDMAState &state) {
         int32_t s2mmCh =
             state.tileNextS2MMChannel[consTile.getResult()]++;
         state.conduitConsS2MMChannel[{name, consIdx}] = s2mmCh;
+        auto shimBundle = info.plio ? AIE::WireBundle::PLIO
+                                    : AIE::WireBundle::DMA;
         state.emitFlow(info.routingMode, shimTile.getResult(),
-                       AIE::WireBundle::DMA, shimMM2SCh,
+                       shimBundle, shimMM2SCh,
                        consTile.getResult(), AIE::WireBundle::DMA,
                        s2mmCh);
       }
     }
 
     // --- Sub-case 4b: consumer is a shim tile (row==0) ---
-    for (auto [shimCol, shimRow] : info.shimConsumerTileCoords) {
+    for (unsigned shimConsIdx = 0;
+         shimConsIdx < info.shimConsumerTileCoords.size(); ++shimConsIdx) {
+      auto [shimCol, shimRow] = info.shimConsumerTileCoords[shimConsIdx];
       if (shimRow != 0)
         continue;
 
@@ -369,6 +373,15 @@ void routePhase(ConduitToDMAState &state) {
 
       builder.setInsertionPoint(state.deviceBody->getTerminator());
 
+      // Determine indexed naming for multi-consumer conduits (compute + shim).
+      bool multiConsumer = (info.consumerTileCoords.size() +
+                            info.shimConsumerTileCoords.size()) > 1;
+      unsigned globalConsIdx =
+          static_cast<unsigned>(info.consumerTileCoords.size()) + shimConsIdx;
+      std::string consSuffix = multiConsumer
+                                   ? "_cons_" + std::to_string(globalConsIdx)
+                                   : "_cons";
+
       // Shim-side consumer locks (AIE2: prod_lock + cons_lock;
       // AIE1: not needed — shim locks managed differently).
       // These are referenced by the host runtime when programming
@@ -378,10 +391,9 @@ void routePhase(ConduitToDMAState &state) {
       if (isAIE2 && !info.disableSynchronization) {
         {
           int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
-          // Naming convention: <conduit>_<endpoint-role>_<lock-role>_<idx>
-          // "cons" = shim consumer endpoint; "prod" = this lock controls free
-          // receive slots (DMA can write when >0).
-          std::string symName = name + "_cons_prod_lock_0";
+          // Naming convention: <conduit>_<suffix>_<lock-role>_<idx>
+          // consSuffix = "_cons" (single consumer) or "_cons_N" (multi).
+          std::string symName = name + consSuffix + "_prod_lock_0";
           AIE::LockOp lk = builder.create<AIE::LockOp>(
               state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
               static_cast<int>(0));
@@ -389,13 +401,17 @@ void routePhase(ConduitToDMAState &state) {
         }
         {
           int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
-          std::string symName = name + "_cons_cons_lock_0";
+          std::string symName = name + consSuffix + "_cons_lock_0";
           AIE::LockOp lk = builder.create<AIE::LockOp>(
               state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
               static_cast<int>(0));
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         }
       }
+
+      // Allocate the next available S2MM channel on the shim tile.
+      int32_t shimS2MMCh =
+          state.tileNextS2MMChannel[shimTile.getResult()]++;
 
       std::string allocSym = name + "_shim_alloc";
       state.shimConduitNames.insert(name);
@@ -408,17 +424,24 @@ void routePhase(ConduitToDMAState &state) {
         builder.create<AIE::ShimDMAAllocationOp>(
             state.deviceOp.getLoc(), allocSym, shimTile.getResult(),
             AIE::DMAChannelDir::S2MM,
-            /*channel_index=*/static_cast<int64_t>(0),
-            /*plio=*/false,
+            /*channel_index=*/static_cast<int64_t>(shimS2MMCh),
+            /*plio=*/info.plio,
             /*packet=*/nullptr);
 
-      // Emit the memtile→shim flow. For join-destination conduits the
+      // Emit the producer→shim flow. For join-destination conduits the
       // producer tile is the MemTile; linkPhase() explicitly skips this
       // flow (see ConduitToDMALink.cpp) and expects routePhase to own it.
+      // Allocate the next available MM2S channel on the producer tile
+      // (typically a MemTile) so that linkPhase() can look up the assigned
+      // channel via conduitMM2SChannel and create a matching DMAStartOp.
+      int32_t mm2sChForShimCons =
+          state.tileNextMM2SChannel[prodTile.getResult()]++;
+      state.conduitMM2SChannel[name] = mm2sChForShimCons;
+      auto shimBundle = info.plio ? AIE::WireBundle::PLIO
+                                  : AIE::WireBundle::DMA;
       state.emitFlow(info.routingMode, prodTile.getResult(),
-                     AIE::WireBundle::DMA, static_cast<int32_t>(0),
-                     shimTile.getResult(), AIE::WireBundle::DMA,
-                     static_cast<int32_t>(0));
+                     AIE::WireBundle::DMA, mm2sChForShimCons,
+                     shimTile.getResult(), shimBundle, shimS2MMCh);
     }
   }
 
@@ -514,10 +537,22 @@ void routePhase(ConduitToDMAState &state) {
           AIE::WireBundle::DMA);
 
     // ---- Assign MM2S channel (fused groups share a channel). ----
+    // Check if Phase 4b already assigned an MM2S channel for this conduit
+    // (happens when the conduit has both compute and shim consumers — the
+    // shim consumer flow and the compute consumer flow share the same
+    // producer-side MM2S channel as a hardware broadcast).
     int32_t mm2sChannel = -1;
     bool usedPacketFallback = false;
+    {
+      auto existingIt = state.conduitMM2SChannel.find(name);
+      if (existingIt != state.conduitMM2SChannel.end()) {
+        mm2sChannel = existingIt->second;
+      }
+    }
 
-    if (!info.fuseGroup.empty()) {
+    if (mm2sChannel >= 0) {
+      // Already assigned by Phase 4b — reuse (broadcast from same MM2S port).
+    } else if (!info.fuseGroup.empty()) {
       auto it = state.fuseGroupMM2SChannel.find(info.fuseGroup);
       if (it != state.fuseGroupMM2SChannel.end()) {
         mm2sChannel = it->second;
@@ -563,7 +598,11 @@ void routePhase(ConduitToDMAState &state) {
       // Phase 3c is skipped; all consumers use DMA, so flows are needed
       // for every consumer regardless of adjacency.
       // Exception: via_DMA=true forces DMA even for adjacent tiles.
-      if (!info.viaDMA && info.consumerTileCoords.size() == 1) {
+      // Also: when shim consumers exist, the producer needs DMA MM2S
+      // regardless (to reach the shim tile via the switchbox network),
+      // so the compute consumer flow must also be emitted.
+      if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
+          info.shimConsumerTileCoords.empty()) {
         bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
                                                               consCol, consRow);
         bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,

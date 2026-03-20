@@ -36,22 +36,21 @@
 // CHECK-LABEL: module @rotation_modulo_test
 // CHECK:   aie.device(npu1_1col) {
 
-// --- Rotation counter buffer (shared per-tile, deterministic sym_name) ---
-// CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "_conduit_rot_ctr_tile_0_2"} : memref<1xi32>
-
-// --- Core body: counter init, loop, and rotation counter update ---
+// --- Core body: rotation counter allocated as memref.alloc inside core ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
+// --- Rotation counter allocated inside core body (not aie.buffer at device level) ---
+// CHECK:       %[[ALLOC:.*]] = memref.alloc() : memref<1xi32>
 // --- Counter initialized to 0 ---
-// CHECK:       memref.store {{.*}} : memref<1xi32>
+// CHECK:       memref.store {{.*}} %[[ALLOC]]{{.*}} : memref<1xi32>
 // CHECK:       scf.for
 // --- Counter loaded, used for index_switch, then incremented with remui ---
-// CHECK:         memref.load {{.*}} : memref<1xi32>
+// CHECK:         memref.load %[[ALLOC]]{{.*}} : memref<1xi32>
 // CHECK:         scf.index_switch
 // --- Fix 1b: rotation counter update uses arith.remui (NOT conditional subtract) ---
-// CHECK:         memref.load {{.*}} : memref<1xi32>
+// CHECK:         memref.load %[[ALLOC]]{{.*}} : memref<1xi32>
 // CHECK:         arith.addi
 // CHECK:         arith.remui
-// CHECK:         memref.store {{.*}} : memref<1xi32>
+// CHECK:         memref.store {{.*}} %[[ALLOC]]{{.*}} : memref<1xi32>
 
 // --- No residual Conduit ops ---
 // CHECK-NOT: conduit.create

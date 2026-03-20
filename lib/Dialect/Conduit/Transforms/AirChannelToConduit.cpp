@@ -317,12 +317,22 @@ struct AirChannelToConduitPass
     llvm::SmallVector<mlir::Operation *> putGetToRewrite;
     llvm::SmallVector<mlir::Operation *> waitAllToRewrite;
 
-    // Broadcast Step 2: for broadcast channels, collect the consumer tile
-    // coordinates of all air.channel.get ops (when those ops are enclosed
-    // in aie.core regions).  Map: channel name → list of [col, row] pairs.
-    // Only populated when aie.core enclosure is found.
+    // Tile coordinate collection: when air.channel.put/get ops are enclosed
+    // in aie.core regions (i.e., after --air-hierarchy-to-aie), collect tile
+    // coordinates so conduit.create can carry producer_tile / consumer_tiles.
+    // Without these, Pass C cannot allocate buffers/locks/flows.
+    //
+    // broadcastConsumerTiles: channel name → list of consumer [col, row] pairs
+    //   (also used for broadcast Step 2 per-consumer conduit.create aliases).
+    // channelProducerTile: channel name → producer [col, row]
+    //   (first put op's enclosing core tile wins).
+    // channelConsumerTiles: channel name → list of consumer [col, row] pairs
+    //   (all get ops, regardless of broadcast).
     llvm::StringMap<llvm::SmallVector<std::pair<int64_t, int64_t>>>
         broadcastConsumerTiles;
+    llvm::StringMap<std::pair<int64_t, int64_t>> channelProducerTile;
+    llvm::StringMap<llvm::SmallVector<std::pair<int64_t, int64_t>>>
+        channelConsumerTiles;
 
     // Walk and collect all ops of interest.
     module.walk([&](mlir::Operation *op) {
@@ -330,11 +340,16 @@ struct AirChannelToConduitPass
         channelDeclsToErase.push_back(op);
       else if (isAirChannelPut(op) || isAirChannelGet(op)) {
         putGetToRewrite.push_back(op);
-        // Collect consumer tile coords for broadcast channels (get ops only).
-        if (isAirChannelGet(op)) {
-          std::string chanName = getChanName(op);
-          if (!chanName.empty()) {
-            if (auto tileCoord = tryGetEnclosingCoreTile(op)) {
+        std::string chanName = getChanName(op);
+        if (!chanName.empty()) {
+          if (auto tileCoord = tryGetEnclosingCoreTile(op)) {
+            if (isAirChannelPut(op)) {
+              // Record producer tile (first put wins).
+              if (!channelProducerTile.count(chanName))
+                channelProducerTile[chanName] = *tileCoord;
+            } else {
+              // Record consumer tile.
+              channelConsumerTiles[chanName].push_back(*tileCoord);
               broadcastConsumerTiles[chanName].push_back(*tileCoord);
             }
           }
@@ -467,6 +482,28 @@ struct AirChannelToConduitPass
           /*consumer_dimensions=*/mlir::Attribute{});
 
       channelCreateOps[name] = createOp;
+
+      // Patch producer_tile and consumer_tiles when tile coordinates are
+      // available from aie.core enclosure (hierarchy-produced IR).
+      if (auto createTypedOp = mlir::dyn_cast<Create>(createOp)) {
+        auto prodIt = channelProducerTile.find(name);
+        if (prodIt != channelProducerTile.end()) {
+          auto [col, row] = prodIt->second;
+          createTypedOp.setProducerTileAttr(
+              mlir::DenseI64ArrayAttr::get(ctx, {col, row}));
+        }
+        auto consIt = channelConsumerTiles.find(name);
+        if (consIt != channelConsumerTiles.end() &&
+            !consIt->second.empty()) {
+          llvm::SmallVector<int64_t> flat;
+          for (auto &[col, row] : consIt->second) {
+            flat.push_back(col);
+            flat.push_back(row);
+          }
+          createTypedOp.setConsumerTilesAttr(
+              mlir::DenseI64ArrayAttr::get(ctx, flat));
+        }
+      }
 
       // Broadcast Step 2: if consumer tile coordinates are known, emit
       // per-consumer conduit.create aliases and a conduit.link{distribute}.
