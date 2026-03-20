@@ -1080,6 +1080,17 @@ void linkPhase(ConduitToDMAState &state) {
                   llvm::SmallVector<mlir::Block *> bdBlocks;
                   for (int64_t i = 0; i < effectiveBDs; ++i)
                     bdBlocks.push_back(addBlock());
+
+                  // For finite chains (iter_count > 0), create a dedicated BD
+                  // terminal block BEFORE newEndBlock.  The scan for the next
+                  // channel's "endBlock" iterates blocks in insertion order and
+                  // returns the LAST block with aie.end; since bdTermBlock is
+                  // inserted first, newEndBlock (last) is selected by the next
+                  // channel and its aie.end is replaced.  bdTermBlock keeps its
+                  // aie.end permanently, satisfying the AIEAssignBufferDescriptorIDs
+                  // assertion: "bb that's not in blockMap can only have aie.end".
+                  mlir::Block *bdTermBlock =
+                      (info.iterCount > 0) ? addBlock() : nullptr;
                   mlir::Block *newEndBlock = addBlock();
 
                   if (isFusedNonFirst) {
@@ -1114,14 +1125,18 @@ void linkPhase(ConduitToDMAState &state) {
                         0, perBufLen,
                         blockRel, state.lockRelValue(Port::Consume),
                         info.producerDimensions);
-                    // Non-circular when iter_count > 0.
+                    // Non-circular when iter_count > 0: last BD → bdTermBlock (aie.end).
                     bool isLast = (i == effectiveBDs - 1) && (info.iterCount > 0);
                     if (isLast)
                       builder.create<AIE::NextBDOp>(
-                          state.deviceOp.getLoc(), newEndBlock);
+                          state.deviceOp.getLoc(), bdTermBlock);
                     else
                       builder.create<AIE::NextBDOp>(
                           state.deviceOp.getLoc(), bdBlocks[(i + 1) % effectiveBDs]);
+                  }
+                  if (bdTermBlock) {
+                    builder.setInsertionPointToEnd(bdTermBlock);
+                    builder.create<AIE::EndOp>(state.deviceOp.getLoc());
                   }
                   builder.setInsertionPointToEnd(newEndBlock);
                   builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -1451,6 +1466,11 @@ void linkPhase(ConduitToDMAState &state) {
         llvm::SmallVector<mlir::Block *> bdBlocks;
         for (int64_t i = 0; i < depth; ++i)
           bdBlocks.push_back(addMemBlock());
+        // For finite chains: dedicated BD terminal block placed BEFORE endMemBlock
+        // so the next-channel scan picks endMemBlock (the later one) as end block.
+        // See ConduitToDMALink.cpp producer path for the same pattern + rationale.
+        mlir::Block *bdTermMemBlock =
+            (info.iterCount > 0) ? addMemBlock() : nullptr;
         mlir::Block *endMemBlock = addMemBlock();
 
         // Compute DMAStartOp repeat_count from iter_count.
@@ -1499,13 +1519,17 @@ void linkPhase(ConduitToDMAState &state) {
               blockLockAcq, state.lockAcqValue(Port::Produce, 1),
               (*tileBuffers)[i % tileBuffers->size()].getResult(), 0, perBufLen,
               blockLockRel, state.lockRelValue(Port::Produce), consDims);
-          // Non-circular chain when iter_count > 0: last BD → terminal end block.
+          // Non-circular chain: last BD → bdTermMemBlock (aie.end, permanent).
           bool isLast = (i == depth - 1) && (info.iterCount > 0);
           if (isLast)
-            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), endMemBlock);
+            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), bdTermMemBlock);
           else
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdBlocks[(i + 1) % depth]);
+        }
+        if (bdTermMemBlock) {
+          builder.setInsertionPointToEnd(bdTermMemBlock);
+          builder.create<AIE::EndOp>(state.deviceOp.getLoc());
         }
         builder.setInsertionPointToEnd(endMemBlock);
         builder.create<AIE::EndOp>(state.deviceOp.getLoc());
