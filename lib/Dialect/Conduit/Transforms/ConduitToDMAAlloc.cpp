@@ -238,10 +238,12 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       addProducerSlot(prodTileVal);
   }
 
-  // Create one shared memref<N xi32> alloc per core body that needs N > 0
-  // slots.  Using memref.alloc (core-body-local) instead of aie.buffer avoids
+  // Create one shared memref<N xi32> alloca per core body that needs N > 0
+  // slots.  Using memref.alloca (stack allocation) instead of aie.buffer avoids
   // inflating the device-level buffer count — the rotation counter is a
   // core-local bookkeeping variable, not a hardware DMA buffer.
+  // NOTE: must be alloca (stack), not alloc (heap/malloc): AIE2 bare-metal
+  // cores do not have a heap allocator, so malloc calls fail to link.
   for (auto &[tileVal, count] : tileSlotCount) {
     if (count <= 0)
       continue;
@@ -255,10 +257,10 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     });
     if (!coreOp)
       continue; // shim or memory tile without core — no alloc needed
-    // Insert alloc at the very start of the core body.
+    // Insert alloca at the very start of the core body.
     mlir::Block *entryBlock = &coreOp.getBody().front();
     mlir::OpBuilder allocBuilder(entryBlock, entryBlock->begin());
-    auto allocOp = allocBuilder.create<mlir::memref::AllocOp>(
+    auto allocOp = allocBuilder.create<mlir::memref::AllocaOp>(
         state.deviceOp.getLoc(), counterTy);
     state.tileRotationBuf[tileVal] = allocOp.getResult();
     state.tileRotationBufNextSlot[tileVal] = 0;
