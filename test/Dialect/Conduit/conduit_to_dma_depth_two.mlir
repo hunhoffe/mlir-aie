@@ -37,11 +37,11 @@
 // CHECK-SAME:   sym_name = "input_fifo_cons_cons_lock_0"
 // --- Core body: rotation counter allocated as memref.alloc, counter init, scf.index_switch, and counter increment ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:       %[[ALLOC:.*]] = memref.alloc() : memref<1xi32>
-// CHECK:       memref.store {{.*}} %[[ALLOC]]{{.*}} : memref<1xi32>
+// CHECK:       %[[ALLOCA:.*]] = memref.alloca() : memref<1xi32>
+// CHECK:       memref.store {{.*}} %[[ALLOCA]]{{.*}} : memref<1xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
-// CHECK:         memref.load %[[ALLOC]]{{.*}} : memref<1xi32>
+// CHECK:         memref.load %[[ALLOCA]]{{.*}} : memref<1xi32>
 // CHECK:         arith.index_cast
 // CHECK:         scf.index_switch
 // CHECK:           scf.yield %[[BUFF0]]
@@ -49,8 +49,8 @@
 // CHECK:           scf.yield %[[BUFF0]]
 // CHECK:         func.call @process_10_i32
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
-// CHECK:         memref.load %[[ALLOC]]{{.*}} : memref<1xi32>
-// CHECK:         memref.store {{.*}} %[[ALLOC]]{{.*}} : memref<1xi32>
+// CHECK:         memref.load %[[ALLOCA]]{{.*}} : memref<1xi32>
+// CHECK:         memref.store {{.*}} %[[ALLOCA]]{{.*}} : memref<1xi32>
 // CHECK:     }
 // --- Shim DMA and flow ---
 // CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc

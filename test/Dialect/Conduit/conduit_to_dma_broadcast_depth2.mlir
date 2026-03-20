@@ -38,7 +38,7 @@
 // CHECK:     aie.lock({{.*}}){{.*}}sym_name = "bcast_d2_cons_0_cons_lock_0"
 // --- Producer core: rotation counter allocated as memref.alloc inside core ---
 // CHECK:     aie.core({{.*}}tile_0_2{{.*}}) {
-// CHECK:       %[[ROT:.*]] = memref.alloc() : memref<2xi32>
+// CHECK:       %[[ROT:.*]] = memref.alloca() : memref<2xi32>
 // CHECK:       memref.store {{.*}}, %[[ROT]][{{.*}}] : memref<2xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
@@ -56,10 +56,10 @@
 // CHECK:     }
 // --- Consumer cores: each gets its own memref.alloc rotation counter ---
 // CHECK:     aie.core({{.*}}) {
-// CHECK:       memref.alloc() : memref<1xi32>
+// CHECK:       memref.alloca() : memref<1xi32>
 // CHECK:       aie.use_lock({{.*}}bcast_d2_cons_0_cons{{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.core({{.*}}) {
-// CHECK:       memref.alloc() : memref<1xi32>
+// CHECK:       memref.alloca() : memref<1xi32>
 // CHECK:       aie.use_lock({{.*}}bcast_d2_cons_1_cons{{.*}}, AcquireGreaterEqual, 1)
 // --- P0-B fix: flows emitted for ALL consumers, including adjacent tile(0,3) ---
 // CHECK:     aie.flow({{.*}}, DMA : {{[0-9]+}}, {{.*}}, DMA : {{[0-9]+}})

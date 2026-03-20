@@ -21,7 +21,7 @@
 
 // --- Core body: rotation counter allocated as memref.alloc, init, scf.index_switch, arith.remui (fix 1b) ---
 // CHECK: aie.core(
-// CHECK: memref.alloc() : memref<1xi32>
+// CHECK: memref.alloca() : memref<1xi32>
 // CHECK: memref.store
 // CHECK: scf.for
 // CHECK: aie.use_lock(%{{.*}}, Acquire, 1)

@@ -43,7 +43,7 @@
 // --- Producer core ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // --- Rotation counter allocated as memref.alloc inside core body ---
-// CHECK:       %[[ROT:.*]] = memref.alloc() : memref<1xi32>
+// CHECK:       %[[ROT:.*]] = memref.alloca() : memref<1xi32>
 // --- Counter init to 0 at core entry ---
 // CHECK:       memref.store {{.*}}, %[[ROT]][{{.*}}] : memref<1xi32>
 // CHECK:       scf.for

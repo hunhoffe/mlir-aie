@@ -392,7 +392,8 @@ def AIE_ShimDMAOp: AIE_Op<"shim_dma", [
 
 def AIE_CoreOp: AIE_Op<"core", [
     IsFlowEndPoint, IsCoreTile, TileElement,
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
+    DeclareOpInterfaceMethods<InferTypeOpInterface>,
+    AutomaticAllocationScope  // core body is a function region; alloca is valid
   ]>, Results<(outs Index)> {
   let arguments = (
     ins Index:$tile,
