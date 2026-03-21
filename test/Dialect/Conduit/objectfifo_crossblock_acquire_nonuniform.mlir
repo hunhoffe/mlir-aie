@@ -9,15 +9,15 @@
 // Bug 1 (FIXED): blockWindowMap["fifo"] was overwritten by the tail window,
 // causing the loop body's cross-block lookup to find the tail (which does not
 // dominate the scf.for), fail the SSA check, and emit conduit.acquire{count=3}
-// with NO prior_count → AcquireGreaterEqual(3) → hardware deadlock.
+// causing the loop body to emit AcquireGreaterEqual(3) → hardware deadlock.
 // Fix: blockWindowMap stores a vector; lookup picks the latest dominating one.
-// Result: conduit.acquire{count=3, prior_count=2} → AcquireGreaterEqual(1).
+// Result: Pass C infers delta=1 for the loop body (lastAcquireCount=2).
 //
 // Bug 2 (FIXED): the tail acquire(2) after the scf.for generated
-// AcquireGreaterEqual(2), but only 1 new row is available (the other is still
-// held from the last middle window). Pass A now tracks blockHeldCount across
-// release boundaries; the tail sees held=1 and emits prior_count=1 →
-// AcquireGreaterEqual(1).
+// AcquireGreaterEqual(2), but only 1 new row is needed (the other is still
+// in the buffer from the last middle window). Pass C now infers delta from
+// same-block heldCount: after preamble release(1), heldCount=1, so
+// tail delta = 2-1 = 1 → AcquireGreaterEqual(1).
 //
 // Lock budget per pass: preamble(2) + N×middle(1) + tail(1) = 2+N+1 = N+3.
 // For this test: N=5 middle iters, total rows = 5+3 = 8. ✓
@@ -30,13 +30,13 @@
 // CHECK: aie.core(%tile_0_2)
 // CHECK: use_lock(%{{.*}}_cons_lock_0, AcquireGreaterEqual, 2)
 
-// Loop body: acquire only 1 (delta = 3 - prior_count(2) = 1).
-// Regression check for Bug 1 — the original bug emitted AcquireGreaterEqual(3).
+// Loop body: acquire only 1 (delta = 3 - lastAcquireCount(2) = 1).
+// Regression: the original bug emitted AcquireGreaterEqual(3) here.
 // CHECK: scf.for
 // CHECK-NEXT: use_lock(%{{.*}}_cons_lock_0, AcquireGreaterEqual, 1)
 
-// Tail: acquire only 1 (delta = 2 - prior_count(1) = 1; 1 row still held).
-// Regression check for Bug 2 — the original bug emitted AcquireGreaterEqual(2).
+// Tail: acquire only 1 (delta = 2 - heldCount(1) = 1; 1 row still held).
+// Regression: the original bug emitted AcquireGreaterEqual(2) here.
 // CHECK: use_lock(%{{.*}}_cons_lock_0, AcquireGreaterEqual, 1)
 
 // Neither the middle nor the tail must ever acquire 2 or 3 in full.

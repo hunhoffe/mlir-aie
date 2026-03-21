@@ -1,25 +1,14 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// BUG: Sliding window tail acquire generates wrong AcquireGreaterEqual delta.
+// Verifies Pass C correctly infers the lock delta for the sliding-window
+// tail acquire using same-block held-count tracking.
 //
 // In a preamble(2)/middle(3,release 1)/tail(2) sliding window with depth=4:
-//   - After 6 middle iterations, the core holds 2 rows (rows N and N+1).
-//   - The tail needs rows N and N+1 — i.e., 1 new row from DMA, not 2.
-//   - Pass A emits conduit.acquire{count=2} with NO prior_count on the tail
-//     (it sees the tail after the scf.for but doesn't track that 1 row is
-//     still held from the last middle window's unreleased element).
-//   - Pass C sees prior_count=0, emits AcquireGreaterEqual(2 - 0) = 2.
-//   - But only 1 new row is available from the DMA; the core stalls.
+//   - After N middle iterations each releasing 1, heldCount = 1 at the tail.
+//   - Pass C infers delta = count(2) - heldCount(1) = 1.
+//   - AcquireGreaterEqual(1) is emitted — correct.
 //
-// Expected (after fix):
-//   Pass A emits conduit.acquire{count=2, prior_count=1} on the tail.
-//   Pass C emits AcquireGreaterEqual(2 - 1) = AcquireGreaterEqual(1).
-//
-// Current (buggy) output:
-//   Pass C emits AcquireGreaterEqual(2) for the tail → hardware deadlock.
-//
-// This test XFAIL until Pass A correctly tracks held-row count at the tail.
-//
+// Regression guard: neither the middle nor the tail acquires 2.
 //
 // Topology: shim(0,0) → compute(0,2), depth=4, 7 input rows → 6 output rows.
 // Simplified from the bottleneck benchmark (fewer rows for test brevity).
@@ -90,9 +79,8 @@ module @sliding_window_tail_delta {
         aie.objectfifo.release @out(Produce, 1)
       }
 
-      // Tail: acquire(2), bottom border (duplicate last row).
-      // After 4 middle iters: 1 row still held from last middle window.
-      // Correct delta: AcquireGreaterEqual(1). Bug: emits AcquireGreaterEqual(2).
+      // Tail: acquire(2), bottom border.
+      // heldCount=1 after partial preamble release → delta=1 → AcquireGreaterEqual(1).
       %sv_tail = aie.objectfifo.acquire @fifo(Consume, 2)
                      : !aie.objectfifosubview<memref<128xi32>>
       %tail0 = aie.objectfifo.subview.access %sv_tail[0]

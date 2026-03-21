@@ -1,27 +1,15 @@
 // RUN: aie-opt --conduit-check-channels --conduit-to-dma %s | FileCheck %s
 //
-// BUG: Hand-authored Conduit IR for a sliding window pattern generates wrong
-// AcquireGreaterEqual values when prior_count is omitted on middle and tail
-// acquires.
+// Verifies Pass C correctly infers lock deltas for a hand-authored Conduit IR
+// sliding-window pattern without any annotations:
+//   - Preamble: acquire(2) → delta=2 (fresh, heldCount=0)
+//   - Middle:   acquire(3) in loop body → delta=1 (cross-block: inherits
+//               parent lastAcquireCount=2, so delta = 3-2 = 1)
+//   - Tail:     acquire(2) after loop → delta=1 (same-block: heldCount=1
+//               after preamble release(1), so delta = 2-1 = 1)
 //
-// In the preamble/middle/tail sliding window:
-//   - Preamble: conduit.acquire{count=2}        → AcquireGreaterEqual(2) ✓
-//   - Middle:   conduit.acquire{count=3}        → AcquireGreaterEqual(3) ✗ (bug)
-//               correct: conduit.acquire{count=3, prior_count=2}
-//                        → AcquireGreaterEqual(1) ✓
-//   - Tail:     conduit.acquire{count=2}        → AcquireGreaterEqual(2) ✗ (bug)
-//               correct: conduit.acquire{count=2, prior_count=1}
-//                        → AcquireGreaterEqual(1) ✓
-//
-// Without prior_count, Pass C treats each acquire as starting from zero held
-// elements, so it emits the full count as the AcquireGreaterEqual value.
-// The middle then asks for 3 new rows when only 1 is actually available
-// (2 are already in the buffer from the preamble), stalling immediately.
-//
-// This test XFAIL until either:
-//   (a) Pass C infers prior_count from SSA dominance, or
-//   (b) The conduit_direct source is updated with explicit prior_count attrs.
-//
+// No annotations needed. conduit.acquire{count=N} means "I need N elements
+// total." Pass C infers the AcquireGreaterEqual delta from live-window state.
 //
 // CHECK-LABEL: module @conduit_direct_sliding_window_prior_count
 
@@ -85,9 +73,7 @@ module @conduit_direct_sliding_window_prior_count {
       conduit.release %win_pre {count = 1 : i64, port = #conduit.port<Consume>}
           : !conduit.window<memref<128xi32>>
 
-      // Middle: acquire(3) — BUG: missing prior_count=2.
-      // Should be: conduit.acquire {count=3, prior_count=2} → AcquireGreaterEqual(1).
-      // Currently:  conduit.acquire {count=3}                → AcquireGreaterEqual(3).
+      // Middle: acquire(3). Pass C infers delta=1 via cross-block lastAcquireCount=2.
       scf.for %i = %c0 to %c4 step %c1 {
         %win_mid = conduit.acquire {name = "fifo", count = 3 : i64,
                                      port = #conduit.port<Consume>}
@@ -109,9 +95,7 @@ module @conduit_direct_sliding_window_prior_count {
             : !conduit.window<memref<64xi32>>
       }
 
-      // Tail: acquire(2) — BUG: missing prior_count=1.
-      // Should be: conduit.acquire {count=2, prior_count=1} → AcquireGreaterEqual(1).
-      // Currently:  conduit.acquire {count=2}                → AcquireGreaterEqual(2).
+      // Tail: acquire(2). Pass C infers delta=1 via same-block heldCount=1.
       %win_tail = conduit.acquire {name = "fifo", count = 2 : i64,
                                     port = #conduit.port<Consume>}
                       : !conduit.window<memref<128xi32>>
