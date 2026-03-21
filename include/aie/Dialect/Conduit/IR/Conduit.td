@@ -534,18 +534,10 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
     (Tier 3, shim DMA fill) and the consumer endpoint uses conduit.acquire
     (Tier 2, compute core window) is valid and common.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port,
-                       // prior_count: optional count held by a dominating
-                       // parent acquire.  When present, Pass C uses the
-                       // delta (count - prior_count) for the lock
-                       // AcquireGreaterEqual instead of the full count,
-                       // avoiding double-acquiring lock units already held.
-                       // Pass A sets this when a non-uniform cross-block
-                       // acquire is emitted (e.g., preamble acquire(2)
-                       // followed by loop body acquire(3) → prior_count=2,
-                       // lock delta=1).
-                       // Invariant: 0 < prior_count < count.
-                       OptionalAttr<I64Attr>:$prior_count);
+  // Pass C infers the AcquireGreaterEqual lock delta automatically from
+  // the live-window state it tracks during lowering.  count=N means
+  // "I need a window of N elements total" — no compiler annotation needed.
+  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "attr-dict `:` type($window)";
   let hasVerifier = 1;

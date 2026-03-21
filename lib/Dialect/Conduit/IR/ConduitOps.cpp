@@ -891,19 +891,6 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 }
 
 ::mlir::LogicalResult Acquire::verify() {
-  // Verify prior_count invariant: 0 < prior_count < count.
-  // prior_count records how many lock units a dominating parent acquire
-  // already holds.  Pass C uses the delta (count - prior_count) for the
-  // AcquireGreaterEqual lock operation.
-  if (auto pc = getPriorCount()) {
-    int64_t priorVal = *pc;
-    int64_t countVal = static_cast<int64_t>(getCount());
-    if (priorVal <= 0)
-      return emitOpError("prior_count must be positive, got ") << priorVal;
-    if (priorVal >= countVal)
-      return emitOpError("prior_count (")
-             << priorVal << ") must be less than count (" << countVal << ")";
-  }
 
   if (failed(checkWindowReleaseCumulativeCount(getOperation(), getWindow())))
     return ::mlir::failure();

@@ -259,119 +259,225 @@ void lowerPhase(ConduitToDMAState &state) {
     releasesToErase.push_back(op);
   });
 
-  // Step 3: Erase Release ops before erasing Acquire.
-  for (auto op : releasesToErase)
-    op.erase();
-
   // Step 4: Acquire → use_lock + counter init; erase (collect-then-erase).
+  // NOTE: The delta inference walkBlock runs BEFORE Step 3's Release erasure
+  // because it needs to see Release ops to track heldCount correctly.
+  // The walkBlock is defined and seeded here; Release erasure follows.
+  //
+  // Delta inference: conduit.acquire{count=N} means "I need a window of N
+  // elements total."  The hardware AcquireGreaterEqual value is a DELTA —
+  // how many new DMA-delivered elements to wait for beyond those already
+  // available from a prior acquire in a dominating scope.
+  //
+  // State tracked per channel (StringAttr key) during the walk:
+  //   lastAcquireCount: count of the most recent acquire for this channel.
+  //                     Set on acquire.  NOT decremented by release.
+  //   heldCount:        count currently held.  Set on acquire to count.
+  //                     Decremented by release.  May be < lastAcquireCount
+  //                     if a partial release occurred.
+  //
+  // Delta rules:
+  //   Same-block acquire (no live parent scope for this channel):
+  //     delta = count - heldCount
+  //     (accounts for elements that were partially released in this block)
+  //
+  //   Cross-block acquire (in a nested scf.for/scf.if body, parent block
+  //   has an open acquire for this channel):
+  //     delta = count - parent.lastAcquireCount
+  //     (uses lastAcquireCount, NOT heldCount — partial releases in the
+  //     parent do NOT reduce the number of DMA slots already claimed; the
+  //     DMA eagerly pre-fills those slots, so they are already in the buffer
+  //     by the time the child acquire runs)
+  //
+  // When entering a nested block: child inherits parent.lastAcquireCount
+  // as its starting heldCount (and lastAcquireCount), so cross-block acquires
+  // compute the correct delta without additional annotation.
+  //
+  // delta == 0 → no AcquireGreaterEqual emitted (window already large enough).
+  // delta > 0  → emit AcquireGreaterEqual(delta).
+
   // Track (conduitName, tileCoord) pairs to avoid double-initializing
   // rotation counters.  Uses tile coordinates instead of Operation* to
   // ensure deterministic behavior across runs.
   std::set<std::tuple<std::string, int64_t, int64_t, bool>> counterInitialized;
 
+  // Per-channel live-window state, keyed by (channel name, port).
+  // Propagated through nested blocks via the recursive walk below.
+  struct ChannelState {
+    int64_t lastAcquireCount = 0; // count of most recent acquire (not reduced by release)
+    int64_t heldCount = 0;        // currently held (lastAcquireCount - sum releases)
+  };
+  using StateMap = llvm::DenseMap<std::pair<mlir::StringAttr, int>, ChannelState>;
+
   llvm::SmallVector<Acquire> acquiresToErase;
-  module.walk([&](Acquire op) {
-    ConduitInfo *cinfo = state.lookupConduit(op.getName());
-    if (!cinfo) {
-      acquiresToErase.push_back(op);
-      return;
-    }
-    builder.setInsertionPoint(op);
-    int64_t count = static_cast<int64_t>(op.getCount());
 
-    // Cross-block delta computation: when Pass A emitted this acquire
-    // because a dominating parent had insufficient count, the prior_count
-    // attribute records the parent's held count.  The lock operation uses
-    // only the delta (count - prior_count) to avoid double-acquiring lock
-    // units already held by the parent acquire.
-    // The full count is preserved for M2 subview_access bounds checking.
-    if (auto priorOpt = op.getPriorCount()) {
-      int64_t prior = *priorOpt;
-      if (count > prior)
-        count = count - prior;
-      else
-        count = 0;  // parent already holds enough — no incremental acquire
-    }
+  // Recursive per-block walker.  `parentState` is the state map inherited
+  // from the enclosing scope; entries not present default to zero.
+  // The function processes the given block's ops in program order and
+  // recurses into nested regions, passing `lastAcquireCount` (not heldCount)
+  // as the inherited state for child blocks.
+  std::function<void(mlir::Block *, StateMap)> walkBlock;
+  walkBlock = [&](mlir::Block *block, StateMap liveState) {
+    for (mlir::Operation &rawOp : *block) {
+      if (auto op = mlir::dyn_cast<Acquire>(rawOp)) {
+        ConduitInfo *cinfo = state.lookupConduit(op.getName());
+        if (!cinfo) {
+          acquiresToErase.push_back(op);
+          continue;
+        }
+        builder.setInsertionPoint(op);
+        int64_t count = static_cast<int64_t>(op.getCount());
 
-    Port port = op.getPort();
+        // Compute delta from live-window state.
+        Port port = op.getPort();
+        auto key = std::make_pair(op.getNameAttr(),
+                                  static_cast<int>(port));
+        int64_t held = 0;
+        if (auto it = liveState.find(key); it != liveState.end())
+          held = it->second.heldCount;
+        int64_t delta = (count > held) ? count - held : 0;
 
-    auto resolved = cinfo->resolveForTile(op);
-    AIE::LockOp resolvedProdLock = resolved.prodLock;
-    AIE::LockOp resolvedConsLock = resolved.consLock;
-    mlir::Value resolvedRotationBuf = resolved.rotationBuf;
-    mlir::Value resolvedProducerRotationBuf = resolved.producerRotationBuf;
-    mlir::Operation *acquireCoreOp = resolved.coreOp;
+        // Update liveState: this acquire now owns `count` elements.
+        liveState[key].lastAcquireCount = count;
+        liveState[key].heldCount = count;
 
-    AIE::LockOp lock =
-        (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
+        auto resolved = cinfo->resolveForTile(op);
+        AIE::LockOp resolvedProdLock = resolved.prodLock;
+        AIE::LockOp resolvedConsLock = resolved.consLock;
+        mlir::Value resolvedRotationBuf = resolved.rotationBuf;
+        mlir::Value resolvedProducerRotationBuf = resolved.producerRotationBuf;
+        mlir::Operation *acquireCoreOp = resolved.coreOp;
 
-    // Counter init for depth>1 Consume acquires.
-    // Insert after the rotation buffer's defining op (memref.alloc inside the
-    // core body) to maintain SSA dominance.
-    if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1 &&
-        acquireCoreOp) {
-      mlir::Value coreTileVal =
-          mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
-      auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
-      int64_t col = static_cast<int64_t>(coreTileOp.getCol());
-      int64_t row = static_cast<int64_t>(coreTileOp.getRow());
-      auto key = std::make_tuple(op.getName().str(), col, row, false);
-      if (!counterInitialized.count(key)) {
-        counterInitialized.insert(key);
-        mlir::OpBuilder initBuilder(ctx);
-        initBuilder.setInsertionPointAfterValue(resolvedRotationBuf);
-        mlir::Location loc = op.getLoc();
-        mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
-        mlir::Value zero =
-            mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
-        int64_t rotationBufSlot = resolved.rotationBufSlot;
-        mlir::Value slotIdx = initBuilder.create<mlir::arith::ConstantIndexOp>(
-            loc, rotationBufSlot);
-        initBuilder.create<mlir::memref::StoreOp>(
-            loc, zero, resolvedRotationBuf,
-            mlir::ValueRange{slotIdx});
+        AIE::LockOp lock =
+            (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
+
+        // Counter init for depth>1 Consume acquires.
+        if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1 &&
+            acquireCoreOp) {
+          mlir::Value coreTileVal =
+              mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
+          auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
+          int64_t col = static_cast<int64_t>(coreTileOp.getCol());
+          int64_t row = static_cast<int64_t>(coreTileOp.getRow());
+          auto ctrKey = std::make_tuple(op.getName().str(), col, row, false);
+          if (!counterInitialized.count(ctrKey)) {
+            counterInitialized.insert(ctrKey);
+            mlir::OpBuilder initBuilder(ctx);
+            initBuilder.setInsertionPointAfterValue(resolvedRotationBuf);
+            mlir::Location loc = op.getLoc();
+            mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+            mlir::Value zero =
+                mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
+            int64_t rotationBufSlot = resolved.rotationBufSlot;
+            mlir::Value slotIdx =
+                initBuilder.create<mlir::arith::ConstantIndexOp>(
+                    loc, rotationBufSlot);
+            initBuilder.create<mlir::memref::StoreOp>(
+                loc, zero, resolvedRotationBuf, mlir::ValueRange{slotIdx});
+          }
+        }
+
+        // Counter init for depth>1 Produce acquires (producer buffer rotation).
+        if (resolvedProducerRotationBuf && port == Port::Produce &&
+            cinfo->depth > 1 && acquireCoreOp) {
+          mlir::Value coreTileVal =
+              mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
+          auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
+          int64_t col = static_cast<int64_t>(coreTileOp.getCol());
+          int64_t row = static_cast<int64_t>(coreTileOp.getRow());
+          auto ctrKey = std::make_tuple(op.getName().str(), col, row, true);
+          if (!counterInitialized.count(ctrKey)) {
+            counterInitialized.insert(ctrKey);
+            mlir::OpBuilder initBuilder(ctx);
+            initBuilder.setInsertionPointAfterValue(resolvedProducerRotationBuf);
+            mlir::Location loc = op.getLoc();
+            mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+            mlir::Value zero =
+                mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
+            int64_t producerRotationBufSlot = resolved.producerRotationBufSlot;
+            mlir::Value slotIdx =
+                initBuilder.create<mlir::arith::ConstantIndexOp>(
+                    loc, producerRotationBufSlot);
+            initBuilder.create<mlir::memref::StoreOp>(
+                loc, zero, resolvedProducerRotationBuf,
+                mlir::ValueRange{slotIdx});
+          }
+        }
+
+        // Emit AcquireGreaterEqual only when delta > 0.
+        // delta == 0 means the window is already satisfied by a dominating
+        // acquire — no additional lock grant needed.
+        if (lock && delta > 0) {
+          // Scale delta by repeat_count for Produce acquires.
+          int64_t effectiveDelta = delta;
+          if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
+            effectiveDelta *= cinfo->bdChainRepeatCount;
+          int32_t acqVal =
+              state.lockAcqValue(port, static_cast<int32_t>(effectiveDelta));
+          builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
+                                         acqAction, acqVal);
+        }
+        acquiresToErase.push_back(op);
+        continue;
+      }
+
+      if (auto op = mlir::dyn_cast<Release>(rawOp)) {
+        // Update heldCount for this channel: partial or full release.
+        // lastAcquireCount is NOT changed — it reflects the number of DMA
+        // slots claimed, which persists even when the core logically releases
+        // a slot back to the producer lock.
+        // The channel name comes from the window's defining acquire op.
+        mlir::StringAttr nameAttr;
+        if (auto acqOp =
+                mlir::dyn_cast_or_null<Acquire>(op.getWindow().getDefiningOp()))
+          nameAttr = acqOp.getNameAttr();
+        else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
+                     op.getWindow().getDefiningOp()))
+          nameAttr = mlir::StringAttr::get(ctx, waitOp.getName());
+        if (!nameAttr)
+          continue;
+        Port port = op.getPort();
+        auto key = std::make_pair(nameAttr, static_cast<int>(port));
+        int64_t relCount = static_cast<int64_t>(op.getCount());
+        if (auto it = liveState.find(key); it != liveState.end()) {
+          it->second.heldCount -= relCount;
+          if (it->second.heldCount < 0)
+            it->second.heldCount = 0;
+        }
+        // Release has its own lowering in Step 2; we only update
+        // liveState here for delta inference.
+        continue;
+      }
+
+      // For ops with nested regions (scf.for, scf.if, etc.), recurse into
+      // each region's blocks, propagating lastAcquireCount as the inherited
+      // heldCount.  This implements the cross-block rule: child blocks see
+      // the parent's lastAcquireCount (not heldCount), so partial releases
+      // in the parent don't reduce the delta for the first child acquire.
+      // Rationale: the DMA eagerly pre-fills slots up to lastAcquireCount,
+      // so those slots are already in the buffer when the child block runs.
+      for (mlir::Region &region : rawOp.getRegions()) {
+        StateMap childState = liveState;
+        for (auto &[k, cs] : childState)
+          cs.heldCount = cs.lastAcquireCount;
+
+        for (mlir::Block &childBlock : region)
+          walkBlock(&childBlock, childState);
       }
     }
+  };
 
-    // Counter init for depth>1 Produce acquires (producer buffer rotation).
-    if (resolvedProducerRotationBuf && port == Port::Produce &&
-        cinfo->depth > 1 && acquireCoreOp) {
-      mlir::Value coreTileVal =
-          mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
-      auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
-      int64_t col = static_cast<int64_t>(coreTileOp.getCol());
-      int64_t row = static_cast<int64_t>(coreTileOp.getRow());
-      auto key = std::make_tuple(op.getName().str(), col, row, true);
-      if (!counterInitialized.count(key)) {
-        counterInitialized.insert(key);
-        mlir::OpBuilder initBuilder(ctx);
-        initBuilder.setInsertionPointAfterValue(resolvedProducerRotationBuf);
-        mlir::Location loc = op.getLoc();
-        mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
-        mlir::Value zero =
-            mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
-        int64_t producerRotationBufSlot = resolved.producerRotationBufSlot;
-        mlir::Value slotIdx = initBuilder.create<mlir::arith::ConstantIndexOp>(
-            loc, producerRotationBufSlot);
-        initBuilder.create<mlir::memref::StoreOp>(
-            loc, zero, resolvedProducerRotationBuf,
-            mlir::ValueRange{slotIdx});
-      }
-    }
-
-    if (lock) {
-      // Scale acquire count by repeat_count: the core must wait for all N
-      // DMA repetitions before accessing the buffer.
-      int64_t effectiveCount = count;
-      if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
-        effectiveCount *= cinfo->bdChainRepeatCount;
-      int32_t acqVal =
-          state.lockAcqValue(port, static_cast<int32_t>(effectiveCount));
-      builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(), acqAction,
-                                     acqVal);
-    }
-    acquiresToErase.push_back(op);
+  // Seed the walk from each aie.core region with empty initial state.
+  module.walk([&](AIE::CoreOp coreOp) {
+    StateMap initialState;
+    for (mlir::Block &block : coreOp.getBody())
+      walkBlock(&block, initialState);
   });
+
+  // Step 3: Erase Release ops (after walkBlock has seen them for delta inference).
+  for (auto op : releasesToErase)
+    op.erase();
+
   for (auto op : acquiresToErase)
     op.erase();
 

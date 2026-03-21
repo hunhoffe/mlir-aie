@@ -656,7 +656,20 @@ struct ObjectFifoToConduitPass
     //   If found, we reuse that dominating window SSA value directly — no
     //   phantom, no warning.  If not found (truly unreachable acquire), we
     //   fall back to the phantom + C1 warning as before.
-    llvm::DenseMap<mlir::Block *, llvm::DenseMap<mlir::StringAttr, mlir::Value>>
+    // Per-block window maps: block → (fifo name → list of conduit.acquire SSA
+    // values emitted in that block, in program order).
+    //
+    // A SmallVector is used instead of a single Value so that
+    // findWindowInDominatingBlock can find the earliest window that precedes
+    // a given fence op.  The bug this fixes: when a block has multiple
+    // acquire groups for the same fifo separated by a nested scf.for/scf.if
+    // (e.g., preamble acquire(2) before scf.for, tail acquire(2) after scf.for),
+    // a single-entry map stores only the tail window.  Queries from inside the
+    // scf.for body fail the SSA dominance check against the tail window and
+    // find nothing, causing the scf.for body to emit a full acquire instead of a delta.
+    llvm::DenseMap<mlir::Block *,
+                   llvm::DenseMap<mlir::StringAttr,
+                                  llvm::SmallVector<mlir::Value, 4>>>
         allBlockWindowMaps;
 
     // Helper: walk the region/block parent chain from `startBlock` upward,
@@ -683,21 +696,29 @@ struct ObjectFifoToConduitPass
         // Check if this block's window map has an entry for the conduit.
         auto mapIt = allBlockWindowMaps.find(cursor);
         if (mapIt != allBlockWindowMaps.end()) {
-          mlir::Value v = mapIt->second.lookup(nameAttr);
-          if (v) {
-            // SSA dominance check: if the window was defined in this
-            // block, its defining op must appear before `fence` (the
-            // child op leading to the requesting block).  Without this,
-            // a window defined AFTER a nested scf.for/scf.if in the
-            // same block would be reused inside the nested region,
-            // violating "operand #0 does not dominate this use".
-            mlir::Operation *defOp = v.getDefiningOp();
-            bool dominates = true;
-            if (fence && defOp && defOp->getBlock() == cursor)
-              dominates = defOp->isBeforeInBlock(fence);
-            if (dominates)
-              return v;
-            // Window doesn't dominate — skip and continue up.
+          auto vecIt = mapIt->second.find(nameAttr);
+          if (vecIt != mapIt->second.end()) {
+            // Iterate all windows emitted in this block for `nameAttr`,
+            // in reverse program order (last inserted = latest in block),
+            // returning the latest one that still dominates the fence.
+            // Reverse order ensures we pick the closest dominating acquire.
+            const auto &wins = vecIt->second;
+            for (auto it = wins.rbegin(); it != wins.rend(); ++it) {
+              mlir::Value v = *it;
+              if (!v)
+                continue;
+              // SSA dominance check: the window's defining op must appear
+              // before `fence` in the block (or be in a different block,
+              // in which case it trivially dominates via region nesting).
+              mlir::Operation *defOp = v.getDefiningOp();
+              bool dominates = true;
+              if (fence && defOp && defOp->getBlock() == cursor)
+                dominates = defOp->isBeforeInBlock(fence);
+              if (dominates)
+                return v;
+              // This window doesn't dominate the fence — try the next earlier one.
+            }
+            // No window in this block dominates the fence — continue up.
           }
         }
         // Walk up: the enclosing block is the block that contains
@@ -716,10 +737,13 @@ struct ObjectFifoToConduitPass
     // core entry block's window map is already populated — enabling the
     // parent-block walk in findWindowInDominatingBlock to succeed.
     module.walk<mlir::WalkOrder::PreOrder>([&](mlir::Block *block) {
-      // Per-block window map: fifo name → window SSA value emitted by the
-      // most recently processed acquire in this block.
-      llvm::DenseMap<mlir::StringAttr, mlir::Value> &blockWindowMap =
-          allBlockWindowMaps[block];
+      // Per-block window map: fifo name → all conduit.acquire SSA values
+      // emitted in this block, in program order.  Multiple entries arise when
+      // the same fifo has separate acquire groups (e.g., preamble before a
+      // scf.for and tail after it).  findWindowInDominatingBlock searches the
+      // vector in reverse to find the latest dominating window.
+      llvm::DenseMap<mlir::StringAttr, llvm::SmallVector<mlir::Value, 4>>
+          &blockWindowMap = allBlockWindowMaps[block];
 
       // Sequential acquire pattern (P2-D: AIE2_delayed_release):
       //
@@ -826,10 +850,6 @@ struct ObjectFifoToConduitPass
       // conduit.acquire SSA value.  Used to reuse the group window for
       // suppressed (sub-max) acquires and for releases.
       llvm::DenseMap<mlir::StringAttr, mlir::Value> blockGroupWindow;
-      // Per-block held count: tracks how many elements are currently held
-      // so we know when to update the group window after an extending acquire.
-      llvm::DenseMap<mlir::StringAttr, int64_t> blockHeldCount;
-
       for (mlir::Operation &rawOp : llvm::make_early_inc_range(*block)) {
         if (auto op = mlir::dyn_cast<AIE::ObjectFifoAcquireOp>(rawOp)) {
           builder.setInsertionPoint(op);
@@ -941,18 +961,11 @@ struct ObjectFifoToConduitPass
             // body acquire(3)), so a new conduit.acquire must be emitted with
             // the correct count to satisfy M2 bounds and ensure subview_access
             // indices [0, effectiveCount) are valid.
-            //
-            // When the parent count is insufficient, we record it so the new
-            // acquire can carry a "prior_count" annotation.  Pass C uses this
-            // to compute the lock delta (count - prior_count) and avoid
-            // double-acquiring lock units already held by the parent.
-            int64_t parentDominatingCount = 0;
             if (parentWin) {
               if (auto parentAcq = parentWin.getDefiningOp<Acquire>()) {
                 int64_t parentCount =
                     static_cast<int64_t>(parentAcq.getCount());
                 if (parentCount < effectiveCount) {
-                  parentDominatingCount = parentCount;
                   parentWin = {};  // insufficient count — don't reuse
                 }
               }
@@ -967,21 +980,11 @@ struct ObjectFifoToConduitPass
               // Use the pre-scanned group max as the effective count so the
               // single window covers all elements that will be released.
               auto winTy = WindowType::get(ctx, elemType);
-              // When the new acquire was emitted because a dominating parent
-              // had insufficient count, pass prior_count so Pass C can compute
-              // the lock delta (effectiveCount - prior_count).
-              mlir::IntegerAttr priorCountAttr;
-              if (parentDominatingCount > 0) {
-                priorCountAttr = mlir::IntegerAttr::get(
-                    mlir::IntegerType::get(ctx, 64),
-                    parentDominatingCount);
-              }
               winVal = builder.create<Acquire>(
                   loc, winTy, mlir::StringAttr::get(ctx, name),
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
                                          effectiveCount),
-                  PortAttr::get(ctx, port),
-                  priorCountAttr);
+                  PortAttr::get(ctx, port));
               // Record as the group leader window.
               blockGroupWindow[nameAttr] = winVal;
             }
@@ -992,7 +995,11 @@ struct ObjectFifoToConduitPass
 
           // Record the window for subsequent releases in this block and for
           // cross-block lookups in dominated nested blocks.
-          blockWindowMap[nameAttr] = winVal;
+          // Use push_back (not assignment) so that multiple windows for the
+          // same fifo in one block (e.g., preamble and tail groups separated
+          // by a scf.for) are all stored.  findWindowInDominatingBlock iterates
+          // the vector and picks the latest one that dominates the fence.
+          blockWindowMap[nameAttr].push_back(winVal);
 
           // Rewrite subview.access users immediately.
           mlir::Value subviewResult = op.getResult();
@@ -1125,10 +1132,12 @@ struct ObjectFifoToConduitPass
           if (winVal) {
             // Same-block sequential acquire group: use group leader window.
             blockGroupWindow.erase(nameAttr);
-            blockHeldCount.erase(nameAttr);
           } else {
             // No group window in this block — try blockWindowMap (same block).
-            winVal = blockWindowMap.lookup(nameAttr);
+            // Use the last (most recently emitted) window for this fifo.
+            const auto &vec = blockWindowMap[nameAttr];
+            if (!vec.empty())
+              winVal = vec.back();
           }
 
           if (!winVal) {
@@ -1165,9 +1174,8 @@ struct ObjectFifoToConduitPass
             winVal = builder.create<Acquire>(
                 loc, winTy, mlir::StringAttr::get(ctx, name),
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-                PortAttr::get(ctx, port),
-                /*prior_count=*/mlir::IntegerAttr{});
-            blockWindowMap[nameAttr] = winVal;
+                PortAttr::get(ctx, port));
+            blockWindowMap[nameAttr].push_back(winVal);
           }
 
           builder.create<Release>(

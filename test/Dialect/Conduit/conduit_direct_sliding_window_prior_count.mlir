@@ -22,7 +22,6 @@
 //   (a) Pass C infers prior_count from SSA dominance, or
 //   (b) The conduit_direct source is updated with explicit prior_count attrs.
 //
-// XFAIL: *
 //
 // CHECK-LABEL: module @conduit_direct_sliding_window_prior_count
 
