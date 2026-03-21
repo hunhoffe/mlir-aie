@@ -12,7 +12,6 @@
 //   release(1):  heldCount=2-1=1.  lastAcquireCount unchanged (still 2).
 //   acquire(2):  heldCount=1 → delta=2-1=1 → AGE(1).
 //
-//
 // Topology: shim(0,0) → compute(0,2), depth=4, element=memref<128xi32>.
 //
 // CHECK-LABEL: module @passC_delta_same_block_partial_release

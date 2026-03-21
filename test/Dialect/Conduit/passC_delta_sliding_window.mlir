@@ -23,7 +23,6 @@
 // Expected: AGE(2), AGE(1) inside loop, AGE(1) for tail.
 // No AGE(3) anywhere.  No AGE(2) after the first one.
 //
-//
 // Topology: shim(0,0) → compute(0,2), depth=4, element=memref<128xi32>.
 //
 // CHECK-LABEL: module @passC_delta_sliding_window

@@ -1463,19 +1463,25 @@ void linkPhase(ConduitToDMAState &state) {
                 existingEndBlock = &block;
         }
 
-        llvm::SmallVector<mlir::Block *> bdBlocks;
-        for (int64_t i = 0; i < depth; ++i)
-          bdBlocks.push_back(addMemBlock());
-        // For finite chains: dedicated BD terminal block placed BEFORE endMemBlock
-        // so the next-channel scan picks endMemBlock (the later one) as end block.
-        // See ConduitToDMALink.cpp producer path for the same pattern + rationale.
-        mlir::Block *bdTermMemBlock =
-            (info.iterCount > 0) ? addMemBlock() : nullptr;
-        mlir::Block *endMemBlock = addMemBlock();
-
         // Compute DMAStartOp repeat_count from iter_count.
         int32_t dmaRepeatCount = (info.iterCount > 0) ?
             static_cast<int32_t>(info.iterCount - 1) : 0;
+
+        llvm::SmallVector<mlir::Block *> bdBlocks;
+        for (int64_t i = 0; i < depth; ++i)
+          bdBlocks.push_back(addMemBlock());
+
+        // bdTermBlock strategy: when adding a channel to an existing DMA region
+        // (existingEndBlock != null), the "next-channel" scan finds the LAST
+        // aie.end block and replaces it with a DMAStartOp.  For finite chains
+        // (iter_count > 0), we need a dedicated bdTermBlock (placed BEFORE
+        // endMemBlock) whose aie.end stays permanent so the scan correctly
+        // targets only endMemBlock.  When creating a fresh DMA region (no
+        // existing channels), no scan occurs, so the last BD can point directly
+        // to endMemBlock — no extra terminal block needed.
+        mlir::Block *bdTermBlock =
+            (info.iterCount > 0 && existingEndBlock) ? addMemBlock() : nullptr;
+        mlir::Block *endMemBlock = addMemBlock();
 
         if (existingEndBlock) {
           mlir::Operation *oldEnd = existingEndBlock->getTerminator();
@@ -1519,16 +1525,18 @@ void linkPhase(ConduitToDMAState &state) {
               blockLockAcq, state.lockAcqValue(Port::Produce, 1),
               (*tileBuffers)[i % tileBuffers->size()].getResult(), 0, perBufLen,
               blockLockRel, state.lockRelValue(Port::Produce), consDims);
-          // Non-circular chain: last BD → bdTermMemBlock (aie.end, permanent).
+          // Non-circular chain when iter_count > 0: last BD → bdTermBlock (if
+          // existingEndBlock) or endMemBlock (fresh region, no extra block needed).
           bool isLast = (i == depth - 1) && (info.iterCount > 0);
           if (isLast)
-            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), bdTermMemBlock);
+            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                          bdTermBlock ? bdTermBlock : endMemBlock);
           else
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdBlocks[(i + 1) % depth]);
         }
-        if (bdTermMemBlock) {
-          builder.setInsertionPointToEnd(bdTermMemBlock);
+        if (bdTermBlock) {
+          builder.setInsertionPointToEnd(bdTermBlock);
           builder.create<AIE::EndOp>(state.deviceOp.getLoc());
         }
         builder.setInsertionPointToEnd(endMemBlock);

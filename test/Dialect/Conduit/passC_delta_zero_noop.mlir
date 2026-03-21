@@ -15,7 +15,6 @@
 //   Enter scf.for: childState.heldCount = lastAcquireCount = 3.
 //   Child acquire(3): heldCount=3 → delta=3-3=0 → no AGE emitted.
 //
-//
 // Topology: shim(0,0) → compute(0,2), depth=4, element=memref<128xi32>.
 //
 // CHECK-LABEL: module @passC_delta_zero_noop

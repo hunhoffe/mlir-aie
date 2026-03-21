@@ -15,8 +15,6 @@
 // be 3-1=2, which would cause a stall (waiting for 2 new elements when only 1
 // DMA slot is available beyond the pre-fill).
 //
-// XFAIL: *
-//
 // Topology: shim(0,0) → compute(0,2), depth=4, element=memref<128xi32>.
 //
 // CHECK-LABEL: module @passC_delta_cross_block_inherits
