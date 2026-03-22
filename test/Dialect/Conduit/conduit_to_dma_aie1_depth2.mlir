@@ -8,6 +8,7 @@
 //   BD block 0 uses lock_0; BD block 1 uses lock_1.
 //   Core uses rotation counter (arith.remui) to advance through slots.
 //   Fix 1b verified: rotation counter uses arith.remui (true modulo, not single subtract).
+//   Rotation counter is allocated as memref.alloca() inside core body (stack allocation).
 
 // CHECK: aie.device(xcvc1902)
 
@@ -19,13 +20,15 @@
 // CHECK: aie.lock({{.*}}) {init = 0 : i32, sym_name = "data_fifo{{.*}}lock_0"
 // CHECK: aie.lock({{.*}}) {init = 0 : i32, sym_name = "data_fifo{{.*}}lock_1"
 
-// --- Core body: rotation counter allocated as memref.alloc, init, scf.index_switch, arith.remui (fix 1b) ---
+// --- Rotation counter allocated as memref.alloca() inside core body ---
 // CHECK: aie.core(
-// CHECK: memref.alloca() : memref<1xi32>
-// CHECK: memref.store
+// CHECK:   %alloca = memref.alloca() : memref<1xi32>
+// CHECK:   memref.store
 // CHECK: scf.for
 // CHECK: aie.use_lock(%{{.*}}, Acquire, 1)
-// CHECK: scf.index_switch
+// CHECK: arith.index_cast
+// CHECK: arith.cmpi eq
+// CHECK: scf.if
 // CHECK: aie.use_lock(%{{.*}}, Release, 0)
 // CHECK: arith.remui
 

@@ -672,6 +672,14 @@ struct ObjectFifoToConduitPass
                                   llvm::SmallVector<mlir::Value, 4>>>
         allBlockWindowMaps;
 
+    // Track conduit.window SSA values that have been released.
+    // findWindowInDominatingBlock skips released windows to prevent a
+    // released preamble acquire from being subsumed as a live window
+    // by an inner loop body that needs its own fresh acquire.
+    // Bug: without this, preamble acquire @outRows released before a loop
+    // was reused inside the loop → no AcquireGreaterEqual in loop → deadlock.
+    llvm::DenseSet<mlir::Value> releasedWindows;
+
     // Helper: walk the region/block parent chain from `startBlock` upward,
     // returning the first window value found for `nameAttr`, or null if none.
     // This handles the common case where the release is inside a nested region
@@ -706,6 +714,11 @@ struct ObjectFifoToConduitPass
             for (auto it = wins.rbegin(); it != wins.rend(); ++it) {
               mlir::Value v = *it;
               if (!v)
+                continue;
+              // Skip windows that have been released: a released preamble
+              // acquire must not be reused by an inner loop body that needs
+              // its own fresh acquire and lock grant.
+              if (releasedWindows.count(v))
                 continue;
               // SSA dominance check: the window's defining op must appear
               // before `fence` in the block (or be in a different block,
@@ -1177,6 +1190,11 @@ struct ObjectFifoToConduitPass
                 PortAttr::get(ctx, port));
             blockWindowMap[nameAttr].push_back(winVal);
           }
+
+          // Mark this window as released so findWindowInDominatingBlock
+          // will not reuse it for subsequent acquires in dominated blocks.
+          if (winVal)
+            releasedWindows.insert(winVal);
 
           builder.create<Release>(
               loc, winVal,

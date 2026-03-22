@@ -32,25 +32,30 @@
 //
 // Topology: depth-2 shim-to-compute (shim tile [0,0] → compute tile [0,2]).
 // Target: npu1_1col (AIE2).
+// Note: the rotation counter is allocated as memref.alloca() inside the core
+// body (stack allocation).
 
 // CHECK-LABEL: module @rotation_modulo_test
 // CHECK:   aie.device(npu1_1col) {
 
-// --- Core body: rotation counter allocated as memref.alloc inside core ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// --- Rotation counter allocated inside core body (not aie.buffer at device level) ---
-// CHECK:       %[[ALLOCA:.*]] = memref.alloca() : memref<1xi32>
-// --- Counter initialized to 0 ---
-// CHECK:       memref.store {{.*}} %[[ALLOCA]]{{.*}} : memref<1xi32>
+// --- Rotation counter allocated as memref.alloca inside core body ---
+// CHECK:         %alloca = memref.alloca() : memref<1xi32>
+// --- Counter initialized to 0 at top of core body ---
+// CHECK:         memref.store {{.*}} %alloca{{.*}} : memref<1xi32>
 // CHECK:       scf.for
-// --- Counter loaded, used for index_switch, then incremented with remui ---
-// CHECK:         memref.load %[[ALLOCA]]{{.*}} : memref<1xi32>
-// CHECK:         scf.index_switch
+// --- Counter loaded, used for scf.if chain buffer selection, then incremented with remui ---
+// CHECK:         memref.load %alloca{{.*}} : memref<1xi32>
+// CHECK:         arith.index_cast
+// CHECK:         arith.cmpi eq
+// CHECK:         scf.if
 // --- Fix 1b: rotation counter update uses arith.remui (NOT conditional subtract) ---
-// CHECK:         memref.load %[[ALLOCA]]{{.*}} : memref<1xi32>
+// CHECK:         memref.load %alloca{{.*}} : memref<1xi32>
 // CHECK:         arith.addi
 // CHECK:         arith.remui
-// CHECK:         memref.store {{.*}} %[[ALLOCA]]{{.*}} : memref<1xi32>
+// CHECK:         memref.store {{.*}} %alloca{{.*}} : memref<1xi32>
+// --- No device-level aie.buffer for rotation counter ---
+// CHECK-NOT:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "rotation_counter_0_2"}
 
 // --- No residual Conduit ops ---
 // CHECK-NOT: conduit.create

@@ -26,11 +26,13 @@
 //   has 4 entries.
 //
 // Key assertions:
-//   - Producer-side: 2 buffers on tile_0_2 (effectiveDepth=2), shared counter
-//     buffer memref<2xi32> (slot 1 for producer, slot 0 stays for any consumer).
+//   - Producer-side: 2 buffers on tile_0_2 (effectiveDepth=2); rotation counter
+//     is memref.alloca() memref<2xi32> inside core body (slot 1 for producer).
 //   - Producer core remui divisor = 2 (effectiveDepth), NOT 4 (depth).
-//   - Consumer-side: 4 buffers on tile_0_4, counter memref<1xi32>, remui divisor = 4.
+//   - Consumer-side: 4 buffers on tile_0_4; rotation counter is memref.alloca()
+//     memref<1xi32> inside core body; remui divisor = 4.
 //   - CHECK-NOT: %c4_i32 in the producer core remui (regression guard).
+//   - No device-level aie.buffer for rotation counters.
 
 // CHECK-LABEL: module @producer_rotation_modulo
 // CHECK:   aie.device(npu1_1col) {
@@ -51,37 +53,45 @@
 // CHECK:     aie.buffer(%{{.*}}tile_0_4) {sym_name = "fifo_cons_buff_3"} : memref<8xi32>
 // CHECK:     aie.lock(%{{.*}}tile_0_4{{.*}}) {init = 4 : i32, sym_name = "fifo_cons_prod_lock_0"}
 
-// --- Producer core: rotation counter allocated as memref.alloc inside core ---
-// --- Counter uses remui with divisor 2 (effectiveDepth), NOT 4 (depth) ---
+// --- Producer rotation counter: memref.alloca() inside core body (memref<2xi32>) ---
+// --- Slot 1 of the shared counter used by the producer core ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:       %[[PALLOCA:.*]] = memref.alloca() : memref<2xi32>
-// CHECK:       memref.store %c0_i32, %[[PALLOCA]][%c1{{.*}}] : memref<2xi32>
+// CHECK:         %alloca = memref.alloca() : memref<2xi32>
+// CHECK:         memref.store %c0_i32, %alloca[%c1{{.*}}] : memref<2xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%{{.*}}fifo_prod_lock_0, AcquireGreaterEqual, 1)
-// CHECK:         memref.load %[[PALLOCA]][%c1{{.*}}] : memref<2xi32>
-// CHECK:         scf.index_switch
+// CHECK:         memref.load %alloca[%c1{{.*}}] : memref<2xi32>
+// CHECK:         arith.index_cast
+// CHECK:         arith.cmpi eq
+// CHECK:         scf.if
 // CHECK:           scf.yield %{{.*}}fifo_buff_0
 // CHECK:           scf.yield %{{.*}}fifo_buff_1
 // CHECK:         func.call @generate
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_lock_0, Release, 1)
-// CHECK:         memref.load %[[PALLOCA]][%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.load %alloca[%c1{{.*}}] : memref<2xi32>
 // CHECK:         arith.addi
 // CHECK:         %c2_i32 = arith.constant 2 : i32
 // CHECK:         arith.remui {{.*}} %c2_i32 : i32
-// CHECK:         memref.store {{.*}} %[[PALLOCA]][%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.store {{.*}} %alloca[%c1{{.*}}] : memref<2xi32>
 
-// --- Consumer core: rotation counter allocated as memref.alloc inside core ---
-// --- Counter uses remui with divisor 4 (full depth) ---
+// --- Consumer rotation counter: memref.alloca() inside core body (memref<1xi32>) ---
 // CHECK:     aie.core(%{{.*}}tile_0_4) {
-// CHECK:       %[[CALLOCA:.*]] = memref.alloca() : memref<1xi32>
-// CHECK:       memref.store
+// CHECK:         %alloca = memref.alloca() : memref<1xi32>
+// CHECK:         memref.store {{.*}}, %alloca{{.*}} : memref<1xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_cons_lock_0, AcquireGreaterEqual, 1)
-// CHECK:         scf.index_switch
-// CHECK:           scf.yield %{{.*}}fifo_cons_buff_0
+// CHECK:         arith.index_cast
+// CHECK:         arith.cmpi eq
+// CHECK:         scf.if
+// CHECK:           scf.yield %{{.*}}fifo_cons_buff_{{[23]}}
+// CHECK:           scf.yield %{{.*}}fifo_cons_buff_{{[23]}}
+// CHECK:         arith.cmpi eq
+// CHECK:         scf.if
 // CHECK:           scf.yield %{{.*}}fifo_cons_buff_1
-// CHECK:           scf.yield %{{.*}}fifo_cons_buff_2
-// CHECK:           scf.yield %{{.*}}fifo_cons_buff_3
+// CHECK:         arith.cmpi eq
+// CHECK:         scf.if
+// CHECK:           scf.yield %{{.*}}fifo_cons_buff_0
+// CHECK:         func.call @consume
 // CHECK:         arith.addi
 // CHECK:         %c4_i32 = arith.constant 4 : i32
 // CHECK:         arith.remui {{.*}} %c4_i32 : i32

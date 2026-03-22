@@ -118,33 +118,55 @@ void lowerPhase(ConduitToDMAState &state) {
                     builder.create<mlir::arith::RemUIOp>(loc, sum, depthConst);
               }
 
+              // IMPORTANT: Do NOT use scf::IndexSwitchOp here.
+              //
+              // PEANO (llvm-aie) has a code generation bug where it generates
+              // incorrect lookup tables for scf.index_switch when the modular
+              // index wraps around (e.g., (counter+1)%4 = 0 at counter=3).
+              // The erroneous table causes the wrong buffer address to be
+              // selected, resulting in concurrent DMA+core access to the same
+              // buffer without lock protection → hardware fault (unexpected
+              // command state) on AIE2 npu1.
+              //
+              // Confirmed: for depth=4 with 6 middle iterations, the table at
+              // .data[0x7bc4c+12] contained buff_3 instead of buff_0, causing
+              // the N=6 sliding window to fail while N=5 passed.
+              //
+              // Fix: use a chain of scf::IfOp (→ cf.cond_br), which PEANO
+              // generates correctly. This avoids the lookup table entirely.
               mlir::Type bufTy = op.getResult().getType();
-              llvm::SmallVector<int64_t> caseVals;
-              for (int64_t i = 0; i < numBufs; ++i)
-                caseVals.push_back(i);
 
-              auto switchOp = builder.create<mlir::scf::IndexSwitchOp>(
-                  loc, mlir::TypeRange{bufTy}, absIdx, caseVals,
-                  static_cast<int>(numBufs));
-
-              for (int64_t i = 0; i < numBufs; ++i) {
-                mlir::Block *caseBlock =
-                    &switchOp.getCaseRegions()[i].emplaceBlock();
-                mlir::OpBuilder caseBuilder =
-                    mlir::OpBuilder::atBlockEnd(caseBlock);
-                caseBuilder.create<mlir::scf::YieldOp>(
-                    loc, (*tileBuffers)[i].getResult());
+              // Build a nested if/else chain: if absIdx==0 yield buf[0]
+              // else if absIdx==1 yield buf[1] else ... else yield buf[N-1].
+              // The outermost if wraps the whole expression.
+              mlir::Value result = (*tileBuffers)[numBufs - 1].getResult();
+              for (int64_t i = numBufs - 2; i >= 0; --i) {
+                mlir::Value caseConst =
+                    builder.create<mlir::arith::ConstantIndexOp>(loc, i);
+                mlir::Value cond = builder.create<mlir::arith::CmpIOp>(
+                    loc, mlir::arith::CmpIPredicate::eq, absIdx, caseConst);
+                mlir::Value innerResult = result; // capture for lambda
+                auto ifOp = builder.create<mlir::scf::IfOp>(
+                    loc, bufTy, cond, /*withElseRegion=*/true);
+                // Then block: yield buf[i]
+                {
+                  mlir::OpBuilder::InsertionGuard g(builder);
+                  builder.setInsertionPointToStart(
+                      &ifOp.getThenRegion().front());
+                  builder.create<mlir::scf::YieldOp>(
+                      loc, (*tileBuffers)[i].getResult());
+                }
+                // Else block: yield the result from the inner chain
+                {
+                  mlir::OpBuilder::InsertionGuard g(builder);
+                  builder.setInsertionPointToStart(
+                      &ifOp.getElseRegion().front());
+                  builder.create<mlir::scf::YieldOp>(loc, innerResult);
+                }
+                result = ifOp.getResult(0);
               }
-              {
-                mlir::Block *defBlock =
-                    &switchOp.getDefaultRegion().emplaceBlock();
-                mlir::OpBuilder defBuilder =
-                    mlir::OpBuilder::atBlockEnd(defBlock);
-                defBuilder.create<mlir::scf::YieldOp>(
-                    loc, (*tileBuffers)[0].getResult());
-              }
 
-              op.getResult().replaceAllUsesWith(switchOp.getResult(0));
+              op.getResult().replaceAllUsesWith(result);
               replaced = true;
             }
           }
@@ -456,10 +478,22 @@ void lowerPhase(ConduitToDMAState &state) {
       // in the parent don't reduce the delta for the first child acquire.
       // Rationale: the DMA eagerly pre-fills slots up to lastAcquireCount,
       // so those slots are already in the buffer when the child block runs.
+      //
+      // IMPORTANT: this reset only applies to Consume channels (port=1).
+      // For Produce channels (port=0), no DMA pre-fills output slots — the
+      // core must acquire each slot from the lock.  If the parent released
+      // all held slots (heldCount=0), the child block must acquire fresh
+      // slots; resetting heldCount=lastAcquireCount would incorrectly
+      // suppress the delta, causing the inner loop to write output without
+      // owning the lock → hardware deadlock.
       for (mlir::Region &region : rawOp.getRegions()) {
         StateMap childState = liveState;
-        for (auto &[k, cs] : childState)
-          cs.heldCount = cs.lastAcquireCount;
+        for (auto &[k, cs] : childState) {
+          int port = k.second;  // 0=Produce, 1=Consume
+          if (port == static_cast<int>(Port::Consume))
+            cs.heldCount = cs.lastAcquireCount;
+          // Produce: keep actual heldCount (no DMA pre-fill for output slots).
+        }
 
         for (mlir::Block &childBlock : region)
           walkBlock(&childBlock, childState);
