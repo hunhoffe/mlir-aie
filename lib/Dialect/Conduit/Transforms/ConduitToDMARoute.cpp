@@ -197,7 +197,19 @@ static bool tryPacketFallback(ConduitToDMAState &state,
     return false;
   }
 
-  // Assign S2MM channel on the consumer tile.
+  // Assign S2MM channel on the consumer tile (with bounds check).
+  uint32_t maxS2MM_pkt = 2;
+  if (state.targetModel)
+    maxS2MM_pkt = state.targetModel->getNumDestSwitchboxConnections(
+        static_cast<int>(consCol), static_cast<int>(consRow),
+        AIE::WireBundle::DMA);
+  int32_t nextS2MM_pkt = state.tileNextS2MMChannel.count(consTileVal)
+                             ? state.tileNextS2MMChannel[consTileVal]
+                             : 0;
+  if (static_cast<uint32_t>(nextS2MM_pkt) >= maxS2MM_pkt) {
+    // S2MM channels exhausted on consumer tile; packet fallback ineligible.
+    return false;
+  }
   int32_t s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
   state.conduitConsS2MMChannel[{conduitName, consIdx}] = s2mmChannel;
 
@@ -344,6 +356,24 @@ void routePhase(ConduitToDMAState &state) {
         AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
         if (!consTile)
           continue;
+        // Bounds-check S2MM channels on the consumer tile.
+        uint32_t maxS2MM_4a = 2;
+        if (state.targetModel)
+          maxS2MM_4a = state.targetModel->getNumDestSwitchboxConnections(
+              static_cast<int>(consCol), static_cast<int>(consRow),
+              AIE::WireBundle::DMA);
+        int32_t nextS2MM_4a = state.tileNextS2MMChannel.count(
+                                  consTile.getResult())
+                                  ? state.tileNextS2MMChannel[consTile.getResult()]
+                                  : 0;
+        if (static_cast<uint32_t>(nextS2MM_4a) >= maxS2MM_4a) {
+          state.deviceOp.emitError(
+              llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on tile (")
+              + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
+              + "): all " + llvm::Twine(maxS2MM_4a) + " channels in use");
+          state.passFailed = true;
+          continue;
+        }
         int32_t s2mmCh =
             state.tileNextS2MMChannel[consTile.getResult()]++;
         state.conduitConsS2MMChannel[{name, consIdx}] = s2mmCh;
@@ -409,7 +439,29 @@ void routePhase(ConduitToDMAState &state) {
         }
       }
 
-      // Allocate the next available S2MM channel on the shim tile.
+      // Allocate the next available S2MM channel on the shim tile (with
+      // bounds check).  Use ShimMux (not Switchbox) for shim tiles:
+      // getNumDestSwitchboxConnections(col, 0, DMA) returns 0 on AIE2
+      // because WireBundle::DMA is not a switchbox port for shim tiles.
+      // The correct API is getNumDestShimMuxConnections which returns 2.
+      uint32_t maxS2MM_4b = 2;
+      if (state.targetModel)
+        maxS2MM_4b = state.targetModel->getNumDestShimMuxConnections(
+            static_cast<int>(shimCol), static_cast<int>(shimRow),
+            AIE::WireBundle::DMA);
+      int32_t nextS2MM_4b = state.tileNextS2MMChannel.count(
+                                shimTile.getResult())
+                                ? state.tileNextS2MMChannel[shimTile.getResult()]
+                                : 0;
+      if (static_cast<uint32_t>(nextS2MM_4b) >= maxS2MM_4b) {
+        state.deviceOp.emitError(
+            llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
+                        "shim tile (")
+            + llvm::Twine(shimCol) + "," + llvm::Twine(shimRow)
+            + "): all " + llvm::Twine(maxS2MM_4b) + " channels in use");
+        state.passFailed = true;
+        continue;
+      }
       int32_t shimS2MMCh =
           state.tileNextS2MMChannel[shimTile.getResult()]++;
 
@@ -639,6 +691,23 @@ void routePhase(ConduitToDMAState &state) {
         continue;
       }
 
+      // Bounds-check S2MM channels on the consumer tile.
+      uint32_t maxS2MM_4c = 2;
+      if (state.targetModel)
+        maxS2MM_4c = state.targetModel->getNumDestSwitchboxConnections(
+            static_cast<int>(consCol), static_cast<int>(consRow),
+            AIE::WireBundle::DMA);
+      int32_t nextS2MM_4c = state.tileNextS2MMChannel.count(consTileVal)
+                                ? state.tileNextS2MMChannel[consTileVal]
+                                : 0;
+      if (static_cast<uint32_t>(nextS2MM_4c) >= maxS2MM_4c) {
+        state.deviceOp.emitError(
+            llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on tile (")
+            + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
+            + "): all " + llvm::Twine(maxS2MM_4c) + " channels in use");
+        state.passFailed = true;
+        continue;
+      }
       int32_t s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
       state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
 

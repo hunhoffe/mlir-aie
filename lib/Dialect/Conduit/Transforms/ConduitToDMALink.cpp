@@ -96,7 +96,18 @@ void linkPhase(ConduitToDMAState &state) {
       return;
     }
 
-    if (!srcInfoPtr || srcInfoPtr->buffers.empty()) {
+    // For join links, the first source may be a MemTile relay whose buffers
+    // were not allocated in Phase 3j (relay producers live on MemTiles,
+    // not compute tiles).  The join path uses joinIntermediateBuffers, not
+    // srcInfo.buffers, so empty buffers are safe for MemTile relay sources.
+    bool isMemTileRelaySrc = false;
+    if (srcInfoPtr) {
+      auto [sp, sr] = srcInfoPtr->producerTileCoord;
+      isMemTileRelaySrc =
+          (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr));
+    }
+    if (!srcInfoPtr ||
+        (srcInfoPtr->buffers.empty() && !isMemTileRelaySrc)) {
       linkOp.emitError("conduit-to-dma: src conduit '" + srcName +
                        "' buffers not allocated for link op");
       state.passFailed = true;
@@ -287,8 +298,12 @@ void linkPhase(ConduitToDMAState &state) {
       auto it = state.conduitConsS2MMChannel.find({srcName, 0u});
       if (it != state.conduitConsS2MMChannel.end()) {
         ingestS2MMCh = it->second;
+        llvm::errs() << "DEBUG distIngest: link at " << memtileStr
+                     << " src='" << srcName << "' REUSED S2MM=" << ingestS2MMCh << "\n";
       } else {
         ingestS2MMCh = state.tileNextS2MMChannel[memtileVal]++;
+        llvm::errs() << "DEBUG distIngest: link at " << memtileStr
+                     << " src='" << srcName << "' NEW S2MM=" << ingestS2MMCh << "\n";
       }
     }
 
@@ -301,11 +316,42 @@ void linkPhase(ConduitToDMAState &state) {
     }
 
     // Join: per-source S2MM channels on the memtile.
+    // For MemTile relay sources, the upstream distribute link already
+    // allocated an S2MM channel on this memtile — reuse it to match
+    // the flow that delivers relay data.
     llvm::SmallVector<int32_t> joinS2MMChannels;
     if (!isDistribute) {
-      for (unsigned i = 0; i < static_cast<unsigned>(srcs.size()); ++i)
-        joinS2MMChannels.push_back(
-            state.tileNextS2MMChannel[memtileVal]++);
+      for (unsigned i = 0; i < static_cast<unsigned>(srcs.size()); ++i) {
+        std::string sName =
+            mlir::cast<mlir::StringAttr>(srcs[i]).getValue().str();
+        ConduitInfo *sInfo = state.lookupConduit(sName);
+        bool reused = false;
+        if (sInfo) {
+          auto [sp, sr] = sInfo->producerTileCoord;
+          llvm::errs() << "DEBUG joinS2MM: link at " << memtileStr
+                       << " src='" << sName << "' prod=(" << sp << "," << sr
+                       << ") isMemTile=" << (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr))
+                       << "\n";
+          if (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr)) {
+            auto chIt = state.conduitConsS2MMChannel.find({sName, 0u});
+            llvm::errs() << "DEBUG   consS2MM lookup key={'" << sName << "',0}: "
+                         << (chIt != state.conduitConsS2MMChannel.end() ? "FOUND" : "NOT FOUND");
+            if (chIt != state.conduitConsS2MMChannel.end())
+              llvm::errs() << " val=" << chIt->second;
+            llvm::errs() << "\n";
+            if (chIt != state.conduitConsS2MMChannel.end()) {
+              joinS2MMChannels.push_back(chIt->second);
+              reused = true;
+            }
+          }
+        }
+        if (!reused) {
+          int32_t ch = state.tileNextS2MMChannel[memtileVal]++;
+          llvm::errs() << "DEBUG   NEW S2MM on " << memtileStr
+                       << " ch=" << ch << " for src='" << sName << "'\n";
+          joinS2MMChannels.push_back(ch);
+        }
+      }
     }
 
     // Join: MM2S output channel on the memtile for the join destination.
@@ -401,6 +447,11 @@ void linkPhase(ConduitToDMAState &state) {
         auto [srcProdCol, srcProdRow] = sInfo->producerTileCoord;
         if (srcProdCol < 0 || srcProdRow == 0)
           continue;
+        // Skip MemTile relay join sources: the upstream distribute link
+        // already emitted the flow from the relay MemTile to this join
+        // MemTile.  Emitting again would create a duplicate flow.
+        if (targetModel.isMemTile(srcProdCol, srcProdRow))
+          continue;
         AIE::TileOp srcProdTile = state.lookupTileByCoord(srcProdCol, srcProdRow);
         if (!srcProdTile)
           continue;
@@ -425,6 +476,17 @@ void linkPhase(ConduitToDMAState &state) {
             if (consTile) {
               int32_t consS2MM =
                   state.tileNextS2MMChannel[consTile.getResult()]++;
+              // Record the allocated S2MM channel so downstream forward links
+              // can reuse it instead of double-allocating (join dst → forward
+              // src relay chain).  Without this, the forward link's source
+              // lookup in conduitConsS2MMChannel fails, causing a new S2MM
+              // channel to be allocated — leading to flow/DMAStartOp channel
+              // mismatch and potential MemTile S2MM overflow (>6 channels).
+              state.conduitConsS2MMChannel[{dstName, ci}] = consS2MM;
+              llvm::errs() << "DEBUG dstFlow: link at " << memtileStr
+                           << " dst='" << dstName << "' ci=" << ci
+                           << " consTile=(" << consCol << "," << consRow
+                           << ") S2MM=" << consS2MM << "\n";
               builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
                   AIE::WireBundle::DMA, joinMM2SCh, consTile.getResult(),
                   AIE::WireBundle::DMA, consS2MM);
