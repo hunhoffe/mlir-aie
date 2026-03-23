@@ -970,7 +970,10 @@ void linkPhase(ConduitToDMAState &state) {
             if (mlir::isa<AIE::EndOp>(op))
               endBlock = &blk;
 
-        if (endBlock) {
+        assert(endBlock &&
+               "conduit-to-dma: join-source append: existing aie.mem has no "
+               "aie.end block — region is malformed");
+        {
           auto addBlock = [&]() -> mlir::Block * {
             return builder.createBlock(memRegion);
           };
@@ -1134,7 +1137,10 @@ void linkPhase(ConduitToDMAState &state) {
                     if (mlir::isa<AIE::EndOp>(opInBlock))
                       endBlock = &block;
 
-                if (endBlock) {
+                assert(endBlock &&
+                       "conduit-to-dma: Case C append: existing DMA region "
+                       "has no aie.end block — region is malformed");
+                {
                   auto addBlock = [&]() -> mlir::Block * {
                     return builder.createBlock(&memRegion);
                   };
@@ -1327,7 +1333,10 @@ void linkPhase(ConduitToDMAState &state) {
             if (mlir::isa<AIE::EndOp>(opInBlock))
               endBlock = &block;
 
-        if (endBlock) {
+        assert(endBlock &&
+               "conduit-to-dma: Case B append: existing aie.mem has no "
+               "aie.end block — region is malformed");
+        {
           auto addMemBlock = [&]() -> mlir::Block * {
             return builder.createBlock(&memRegion);
           };
