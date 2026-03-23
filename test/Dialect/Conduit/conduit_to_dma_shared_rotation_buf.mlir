@@ -45,7 +45,7 @@
 // CHECK:         scf.yield %{{.*}}fifo_a_cons_buff_1
 // CHECK:       func.call @process_a
 // CHECK:       aie.use_lock(%{{.*}}fifo_a_cons_prod_lock_0, Release, 1)
-// CHECK:       arith.remui {{.*}} %c2_i32{{.*}} : i32
+// CHECK:       arith.andi {{.*}} %c1_i32{{.*}} : i32
 // CHECK:       memref.store {{.*}} %alloca[%c0{{.*}}] : memref<2xi32>
 
 // --- fifo_b acquire: loads from slot 1 ---
@@ -59,7 +59,7 @@
 // CHECK:         scf.yield %{{.*}}fifo_b_cons_buff_1
 // CHECK:       func.call @process_b
 // CHECK:       aie.use_lock(%{{.*}}fifo_b_cons_prod_lock_0, Release, 1)
-// CHECK:       arith.remui {{.*}} %c2_i32{{.*}} : i32
+// CHECK:       arith.andi {{.*}} %c1_i32{{.*}} : i32
 // CHECK:       memref.store {{.*}} %alloca[%c1{{.*}}] : memref<2xi32>
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire

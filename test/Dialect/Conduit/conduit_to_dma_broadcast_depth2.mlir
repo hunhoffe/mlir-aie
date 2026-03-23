@@ -53,8 +53,8 @@
 // CHECK:         aie.use_lock(%[[CONS_LOCK]], Release, 1)
 // CHECK:         memref.load %alloca
 // CHECK:         arith.addi
-// CHECK:         %[[ROTMOD:.*]] = arith.constant 2 : i32
-// CHECK:         arith.remui {{.*}}, %[[ROTMOD]] : i32
+// CHECK:         %[[ROTMASK:.*]] = arith.constant 1 : i32
+// CHECK:         arith.andi {{.*}}, %[[ROTMASK]] : i32
 // CHECK:         memref.store {{.*}}, %alloca
 // CHECK:     }
 // --- Consumer cores: rotation counters as memref.alloca() inside each core body ---

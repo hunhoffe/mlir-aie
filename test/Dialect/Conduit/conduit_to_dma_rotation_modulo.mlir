@@ -1,34 +1,25 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// P1-H regression test: rotation counter must use arith.remui (true modulo).
+// Rotation counter update test: depth-2 counter uses arith.andi (power-of-2
+// fast path), not arith.remui (software divide, no hardware divide on AIE2).
 //
-// Background (Fix 1b):
+// Background:
 //   For depth>1 conduits, Pass C emits a rotation counter that cycles through
 //   buffer slots 0, 1, ..., depth-1 on each acquire/release iteration.
 //   The counter update is:
 //
-//     new_counter = (old_counter + 1) % depth
+//     new_counter = (old_counter + count) % depth
 //
-//   Before Fix 1b, this was implemented as a conditional subtract:
+//   Since counter ∈ [0, depth-1] and count ≤ depth, the sum is < 2*depth, so
+//   one subtract (or AND for power-of-2) always suffices:
 //
-//     new_counter = old_counter + 1
-//     if (new_counter >= depth)  new_counter = new_counter - depth
+//     Power-of-2 depth:   new = arith.andi(old + count, depth - 1)
+//     General depth:      new = (old + count) >= depth
+//                               ? (old + count) - depth : (old + count)
 //
-//   This is incorrect when the CSDF acquire count can exceed depth across
-//   multiple iterations.  The conditional subtract only handles the case where
-//   old_counter+1 == depth; if old_counter+1 > depth (which happens when the
-//   counter is advanced multiple times per iteration), the subtract produces
-//   a value > 0 that is still >= depth, corrupting the buffer index.
+//   arith.remui is avoided because AIE2 has no hardware divide instruction.
 //
-//   Fix 1b replaced the conditional-subtract with arith.remui, which handles
-//   all values correctly:
-//
-//     %new = arith.addi %old, %c1 : i32
-//     %mod = arith.remui %new, %depth : i32
-//
-// This test verifies that arith.remui appears in the rotation counter update
-// logic for a depth-2 consumer.  If someone reverts to the conditional-subtract
-// pattern, this test will fail.
+// This test verifies the power-of-2 fast path (arith.andi) for depth=2.
 //
 // Topology: depth-2 shim-to-compute (shim tile [0,0] → compute tile [0,2]).
 // Target: npu1_1col (AIE2).
@@ -49,10 +40,10 @@
 // CHECK:         arith.index_cast
 // CHECK:         arith.cmpi eq
 // CHECK:         scf.if
-// --- Fix 1b: rotation counter update uses arith.remui (NOT conditional subtract) ---
+// --- Rotation counter update: arith.andi for power-of-2 depth (NOT arith.remui) ---
 // CHECK:         memref.load %alloca{{.*}} : memref<1xi32>
 // CHECK:         arith.addi
-// CHECK:         arith.remui
+// CHECK:         arith.andi
 // CHECK:         memref.store {{.*}} %alloca{{.*}} : memref<1xi32>
 // --- No device-level aie.buffer for rotation counter ---
 // CHECK-NOT:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "rotation_counter_0_2"}

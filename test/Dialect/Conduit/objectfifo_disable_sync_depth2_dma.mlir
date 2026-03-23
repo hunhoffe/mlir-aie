@@ -22,7 +22,7 @@
 // CHECK:       memref.store
 // CHECK:       memref.load
 // CHECK:       arith.addi
-// CHECK:       arith.remui
+// CHECK:       arith.andi
 // CHECK:       memref.store
 // CHECK:       aie.end
 // DMA flow

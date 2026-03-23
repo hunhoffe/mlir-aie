@@ -12,26 +12,24 @@
 //   With depth=4 and the producer acquiring 1 at a time:
 //     effectiveDepth = min(4, 1+1) = 2
 //
-//   The producer counter must therefore use arith.remui with divisor 2
-//   (not 4), while the consumer counter (which cycles over all depth slots
-//   to match the DMA BD ring) must use arith.remui with divisor 4.
+//   Both depths (2 and 4) are power-of-2, so the counter update uses
+//   arith.andi (mask = depth-1), not arith.remui (software divide).
+//   Producer uses effectiveDepth=2 → mask=1; consumer uses depth=4 → mask=3.
 //
 //   Before the BLOCK-1 fix, the producer used divisor 4 (depth), leading
 //   to a mismatch between the core's buffer selection and the DMA BD ring.
 //
 // Topology: compute producer tile(0,2) → compute consumer tile(0,4), depth=4.
-//   Producer acquires 1 at a time → effectiveDepth=2 → producer remui uses %c2.
-//   Consumer acquires 1 at a time → effectiveDepth=min(4,1+1)=2 → consumer
-//   remui also uses %c2 in this topology (consumer side), but the DMA BD ring
-//   has 4 entries.
+//   Producer acquires 1 at a time → effectiveDepth=2 → producer andi mask=1.
+//   Consumer acquires 1 at a time → consumer andi mask=3 (full depth=4 ring).
 //
 // Key assertions:
 //   - Producer-side: 2 buffers on tile_0_2 (effectiveDepth=2); rotation counter
 //     is memref.alloca() memref<2xi32> inside core body (slot 1 for producer).
-//   - Producer core remui divisor = 2 (effectiveDepth), NOT 4 (depth).
+//   - Producer core andi mask = 1 (effectiveDepth=2), NOT 3 (depth=4).
 //   - Consumer-side: 4 buffers on tile_0_4; rotation counter is memref.alloca()
-//     memref<1xi32> inside core body; remui divisor = 4.
-//   - CHECK-NOT: %c4_i32 in the producer core remui (regression guard).
+//     memref<1xi32> inside core body; andi mask = 3 (depth=4).
+//   - CHECK-NOT: %c3_i32 in the producer core andi (regression guard).
 //   - No device-level aie.buffer for rotation counters.
 
 // CHECK-LABEL: module @producer_rotation_modulo
@@ -70,8 +68,8 @@
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_lock_0, Release, 1)
 // CHECK:         memref.load %alloca[%c1{{.*}}] : memref<2xi32>
 // CHECK:         arith.addi
-// CHECK:         %c2_i32 = arith.constant 2 : i32
-// CHECK:         arith.remui {{.*}} %c2_i32 : i32
+// CHECK:         arith.constant 1 : i32
+// CHECK:         arith.andi {{.*}} : i32
 // CHECK:         memref.store {{.*}} %alloca[%c1{{.*}}] : memref<2xi32>
 
 // --- Consumer rotation counter: memref.alloca() inside core body (memref<1xi32>) ---
@@ -93,8 +91,8 @@
 // CHECK:           scf.yield %{{.*}}fifo_cons_buff_0
 // CHECK:         func.call @consume
 // CHECK:         arith.addi
-// CHECK:         %c4_i32 = arith.constant 4 : i32
-// CHECK:         arith.remui {{.*}} %c4_i32 : i32
+// CHECK:         %[[MASK4:.*]] = arith.constant 3 : i32
+// CHECK:         arith.andi {{.*}} %[[MASK4]] : i32
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.release

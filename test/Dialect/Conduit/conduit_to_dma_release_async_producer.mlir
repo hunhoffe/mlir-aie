@@ -5,7 +5,7 @@
 //
 // Background:
 //   The synchronous conduit.release handler (Step 2 in lowerPhase) emits the
-//   producer rotation counter increment (load/addi/remui/store) after the
+//   producer rotation counter increment (load/addi/andi/store) after the
 //   aie.use_lock Release op.  The async counterpart (conduit.release_async,
 //   Step 8d in lowerPhase) was not updated in the initial Bug 2 fix, so it
 //   emitted the lock op but left the producer counter permanently at 0.
@@ -15,7 +15,8 @@
 //   silently bypassing buff_1 in double-buffered pipelines.
 //
 //   After the fix: release_async on Port::Produce emits the same
-//   load/addi/remui/store sequence as the synchronous Release handler.
+//   load/addi/andi/store sequence as the synchronous Release handler.
+//   (arith.andi for power-of-2 depths; arith.remui avoided — software divide.)
 //
 // This test uses raw Pass C IR (conduit dialect, no objectfifo) to directly
 // exercise conduit.release_async with Port::Produce.  Using Pass C IR avoids
@@ -51,11 +52,11 @@
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
 // --- release_async: signals buffer filled ---
 // CHECK:         aie.use_lock(%[[CONS_LOCK]], Release, 1)
-// --- BLOCK-2 fix: producer rotation counter increment in release_async path ---
+// --- BLOCK-2 fix: producer rotation counter increment in release_async path (arith.andi) ---
 // CHECK:         memref.load %alloca
 // CHECK:         arith.addi
-// CHECK:         %[[C2:.*]] = arith.constant 2 : i32
-// CHECK:         arith.remui {{.*}}, %[[C2]] : i32
+// CHECK:         %[[MASK:.*]] = arith.constant 1 : i32
+// CHECK:         arith.andi {{.*}}, %[[MASK]] : i32
 // CHECK:         memref.store {{.*}}, %alloca
 // CHECK:     }
 // CHECK-NOT: conduit.create

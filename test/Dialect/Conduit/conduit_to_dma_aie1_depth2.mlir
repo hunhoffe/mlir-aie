@@ -6,8 +6,8 @@
 // AIE1 per-slot lock semantics for depth-2:
 //   Two locks (lock_0, lock_1), each init=0 (empty).
 //   BD block 0 uses lock_0; BD block 1 uses lock_1.
-//   Core uses rotation counter (arith.remui) to advance through slots.
-//   Fix 1b verified: rotation counter uses arith.remui (true modulo, not single subtract).
+//   Core uses rotation counter (arith.andi for power-of-2 depth) to advance through slots.
+//   Rotation counter uses arith.andi (power-of-2 fast path, not arith.remui/software divide).
 //   Rotation counter is allocated as memref.alloca() inside core body (stack allocation).
 
 // CHECK: aie.device(xcvc1902)
@@ -30,7 +30,7 @@
 // CHECK: arith.cmpi eq
 // CHECK: scf.if
 // CHECK: aie.use_lock(%{{.*}}, Release, 0)
-// CHECK: arith.remui
+// CHECK: arith.andi
 
 // --- Shim DMA and flow ---
 // CHECK: aie.shim_dma_allocation @{{.*}}shim_alloc

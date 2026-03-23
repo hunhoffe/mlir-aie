@@ -112,10 +112,17 @@ void lowerPhase(ConduitToDMAState &state) {
                     builder.create<mlir::arith::ConstantIndexOp>(loc, idx);
                 mlir::Value sum =
                     builder.create<mlir::arith::AddIOp>(loc, ctrIdx, idxConst);
+                // Branchless modulo: sum < 2*numBufs, so one conditional
+                // subtract suffices.  Avoids arith.remui (software divide on
+                // AIE2 which has no hardware divide instruction).
                 mlir::Value depthConst =
                     builder.create<mlir::arith::ConstantIndexOp>(loc, numBufs);
-                absIdx =
-                    builder.create<mlir::arith::RemUIOp>(loc, sum, depthConst);
+                mlir::Value cond = builder.create<mlir::arith::CmpIOp>(
+                    loc, mlir::arith::CmpIPredicate::uge, sum, depthConst);
+                mlir::Value sub =
+                    builder.create<mlir::arith::SubIOp>(loc, sum, depthConst);
+                absIdx = builder.create<mlir::arith::SelectOp>(loc, cond, sub,
+                                                               sum);
               }
 
               // IMPORTANT: Do NOT use scf::IndexSwitchOp here.
@@ -187,6 +194,34 @@ void lowerPhase(ConduitToDMAState &state) {
       return;
   }
 
+  // Helper: emit fast modulo for rotation counter updates.
+  //
+  // arith.remui is a software divide on AIE2 (no hardware divide instruction).
+  // Since the counter is always in [0, depth-1] and delta ≤ depth, the sum
+  // newVal = counter + delta satisfies newVal < 2*depth, so one conditional
+  // subtract always suffices.
+  //
+  // For power-of-2 depth d: andi(newVal, d-1) — single instruction.
+  // For general depth d:    cmpi sge + subi + select — branchless.
+  auto emitFastModulo = [&](mlir::Location loc, mlir::Value newVal,
+                            int64_t depth) -> mlir::Value {
+    mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+    if (depth > 1 && (depth & (depth - 1)) == 0) {
+      // Power-of-2: single AND.
+      mlir::Value mask =
+          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, depth - 1);
+      return builder.create<mlir::arith::AndIOp>(loc, newVal, mask);
+    }
+    // General: branchless conditional subtract.
+    mlir::Value depthVal =
+        mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, depth);
+    mlir::Value cond = builder.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::uge, newVal, depthVal);
+    mlir::Value sub =
+        builder.create<mlir::arith::SubIOp>(loc, newVal, depthVal);
+    return builder.create<mlir::arith::SelectOp>(loc, cond, sub, newVal);
+  };
+
   // Step 2: Release → use_lock; collect for deferred erase.
   llvm::SmallVector<Release> releasesToErase;
   module.walk([&](Release op) {
@@ -244,10 +279,7 @@ void lowerPhase(ConduitToDMAState &state) {
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value depthI32 =
-          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, cinfo->depth);
-      mlir::Value result =
-          builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
+      mlir::Value result = emitFastModulo(loc, newVal, cinfo->depth);
       builder.create<mlir::memref::StoreOp>(loc, result,
                                             resolvedRotationBuf,
                                             mlir::ValueRange{slotIdx});
@@ -270,10 +302,7 @@ void lowerPhase(ConduitToDMAState &state) {
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value depthI32 =
-          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, prodModulus);
-      mlir::Value result =
-          builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
+      mlir::Value result = emitFastModulo(loc, newVal, prodModulus);
       builder.create<mlir::memref::StoreOp>(
           loc, result, resolvedProducerRotationBuf,
           mlir::ValueRange{slotIdx});
@@ -733,10 +762,7 @@ void lowerPhase(ConduitToDMAState &state) {
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value depthI32 =
-          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, cinfo->depth);
-      mlir::Value result =
-          builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
+      mlir::Value result = emitFastModulo(loc, newVal, cinfo->depth);
       builder.create<mlir::memref::StoreOp>(loc, result,
                                             resolvedRotationBuf,
                                             mlir::ValueRange{slotIdx});
@@ -759,10 +785,7 @@ void lowerPhase(ConduitToDMAState &state) {
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value depthI32 =
-          mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, prodModulus);
-      mlir::Value result =
-          builder.create<mlir::arith::RemUIOp>(loc, newVal, depthI32);
+      mlir::Value result = emitFastModulo(loc, newVal, prodModulus);
       builder.create<mlir::memref::StoreOp>(
           loc, result, resolvedProducerRotationBuf,
           mlir::ValueRange{slotIdx});
