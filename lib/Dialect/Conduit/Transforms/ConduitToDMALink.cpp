@@ -916,83 +916,11 @@ void linkPhase(ConduitToDMAState &state) {
     // Handle link source conduits: emit aie.mem MM2S on producer compute tile.
     // Stream conduits: skip entirely — the producer uses a Core stream port,
     // not a DMA engine. No aie.mem or BD chain on the producer tile.
+    // Distribute sources (linkSrcNamesEarly) are unreachable here: Phase 3
+    // skips top-level prodLock/consLock for distribute sources (they use
+    // per-tile consumerTileLocks instead), so line 913 guards above fires and
+    // the loop body is never reached for distribute link sources.
     if (state.linkSrcNames.count(name)) {
-      if (state.linkSrcNamesEarly.count(name) &&
-          info.routingMode != "stream") {
-        // Distribute source with compute producer.
-        auto [prodCol, prodRow] = info.producerTileCoord;
-        if (prodRow < 2)
-          continue;
-
-        AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
-        if (!prodTile)
-          continue;
-
-        mlir::Value prodTileVal = prodTile.getResult();
-
-        auto bufIt = info.consumerTileBuffers.find(prodTileVal);
-        auto lockIt = info.consumerTileLocks.find(prodTileVal);
-        if (bufIt == info.consumerTileBuffers.end() ||
-            bufIt->second.empty() ||
-            lockIt == info.consumerTileLocks.end())
-          continue;
-
-        llvm::SmallVector<AIE::BufferOp> &prodBuffers = bufIt->second;
-        AIE::LockOp pProdLock = lockIt->second.first;
-        AIE::LockOp pConsLock = lockIt->second.second;
-
-        int64_t depth = info.depth > 0 ? info.depth : 1;
-        int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
-
-        builder.setInsertionPoint(state.deviceBody->getTerminator());
-        auto memOp =
-            builder.create<AIE::MemOp>(state.deviceOp.getLoc(), prodTileVal);
-        mlir::Region &memRegion = memOp.getBody();
-        auto addMemBlock = [&]() -> mlir::Block * {
-          return builder.createBlock(&memRegion);
-        };
-        mlir::Block *dmaStartBlock = addMemBlock();
-        llvm::SmallVector<mlir::Block *> bdBlocks;
-        for (int64_t i = 0; i < depth; ++i)
-          bdBlocks.push_back(addMemBlock());
-        mlir::Block *endMemBlock = addMemBlock();
-
-        builder.setInsertionPointToEnd(dmaStartBlock);
-        builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(),
-                                        AIE::DMAChannelDir::MM2S,
-                                        static_cast<int32_t>(0),
-                                        static_cast<int32_t>(0),
-                                        bdBlocks[0], endMemBlock);
-
-        llvm::SmallVector<AIE::LockOp> *pA1Locks = nullptr;
-        {
-          auto a1It = info.consumerTileAIE1Locks.find(prodTileVal);
-          if (a1It != info.consumerTileAIE1Locks.end() && !a1It->second.empty())
-            pA1Locks = &a1It->second;
-        }
-        for (int64_t i = 0; i < depth; ++i) {
-          mlir::Value blockAcq =
-              isAIE2 ? pConsLock.getResult()
-                     : (pA1Locks && !pA1Locks->empty()
-                            ? (*pA1Locks)[i % pA1Locks->size()].getResult()
-                            : pConsLock.getResult());
-          mlir::Value blockRel =
-              isAIE2 ? pProdLock.getResult() : blockAcq;
-          // No BDDimLayout for link-source distribute BDs: the dimensions
-          // apply to the endpoint tiles (shim/compute), not the MemTile relay.
-          state.emitBDBlock(
-              state.deviceOp.getLoc(), bdBlocks[i],
-              blockAcq, state.lockAcqValue(Port::Consume, 1),
-              prodBuffers[i % prodBuffers.size()].getResult(), 0, perBufLen,
-              blockRel, state.lockRelValue(Port::Consume));
-          builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                        bdBlocks[(i + 1) % depth]);
-        }
-        builder.setInsertionPointToEnd(endMemBlock);
-        builder.create<AIE::EndOp>(state.deviceOp.getLoc());
-        continue;
-      }
-
       // Join sources: compute producer sending to memtile.
       if (!state.linkJoinSrcNames.count(name))
         continue;
@@ -1007,44 +935,115 @@ void linkPhase(ConduitToDMAState &state) {
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
       int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
+      mlir::Value prodTileVal = prodTile.getResult();
 
-      builder.setInsertionPoint(state.deviceBody->getTerminator());
-      auto memOp =
-          builder.create<AIE::MemOp>(state.deviceOp.getLoc(), prodTile.getResult());
-      mlir::Region &memRegion = memOp.getBody();
-      auto addMemBlock = [&]() -> mlir::Block * {
-        return builder.createBlock(&memRegion);
-      };
-      mlir::Block *dmaStartBlock = addMemBlock();
-      llvm::SmallVector<mlir::Block *> bdBlocks;
-      for (int64_t i = 0; i < depth; ++i)
-        bdBlocks.push_back(addMemBlock());
-      mlir::Block *endMemBlock = addMemBlock();
-
-      builder.setInsertionPointToEnd(dmaStartBlock);
-      builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(),
-                                      AIE::DMAChannelDir::MM2S,
-                                      static_cast<int32_t>(0),
-                                      static_cast<int32_t>(0),
-                                      bdBlocks[0], endMemBlock);
-
-      for (int64_t i = 0; i < depth; ++i) {
-        mlir::Value blockLock = isAIE2 ? info.consLock.getResult()
-            : (info.aie1Locks.empty()
-                   ? info.consLock.getResult()
-                   : info.aie1Locks[i % info.aie1Locks.size()].getResult());
-        mlir::Value blockRelLock = isAIE2 ? info.prodLock.getResult()
-            : blockLock;
-        state.emitBDBlock(
-            state.deviceOp.getLoc(), bdBlocks[i],
-            blockLock, state.lockAcqValue(Port::Consume, 1),
-            info.buffers[i % info.buffers.size()].getResult(), 0, perBufLen,
-            blockRelLock, state.lockRelValue(Port::Consume));
-        builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                      bdBlocks[(i + 1) % depth]);
+      // Check for an existing aie.mem for this tile (e.g. created by Phase 5.5
+      // for a broadcast consumer S2MM on the same tile).  If one exists, append
+      // the MM2S chain into it rather than creating a duplicate aie.mem op.
+      // Without this check, a tile that is both a broadcast consumer and a join
+      // source receives two separate aie.mem blocks, and aiecc silently discards
+      // the second one, causing a hardware deadlock.
+      mlir::Region *existingRegion = nullptr;
+      {
+        auto it = tileToDMARegion.find(prodTileVal);
+        if (it != tileToDMARegion.end())
+          existingRegion = it->second;
       }
-      builder.setInsertionPointToEnd(endMemBlock);
-      builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+
+      // Acquire the MM2S channel index (channel 0 unless pre-used).
+      int32_t joinMM2SChannel = 0;
+      {
+        auto &usedCh = state.preUsedMM2SChannels[prodTileVal];
+        while (usedCh.count(joinMM2SChannel))
+          ++joinMM2SChannel;
+        usedCh.insert(joinMM2SChannel);
+      }
+
+      mlir::Region *memRegion = nullptr;
+      if (existingRegion) {
+        // Append MM2S into existing aie.mem: find the aie.end block and insert
+        // new DMA start + BD blocks before it.
+        memRegion = existingRegion;
+        mlir::Block *endBlock = nullptr;
+        for (mlir::Block &blk : *memRegion)
+          for (mlir::Operation &op : blk)
+            if (mlir::isa<AIE::EndOp>(op))
+              endBlock = &blk;
+
+        if (endBlock) {
+          auto addBlock = [&]() -> mlir::Block * {
+            return builder.createBlock(memRegion);
+          };
+          llvm::SmallVector<mlir::Block *> bdBlocks;
+          for (int64_t i = 0; i < depth; ++i)
+            bdBlocks.push_back(addBlock());
+          mlir::Block *newEndBlock = addBlock();
+
+          // Remove aie.end from old end block; it becomes a fallthrough.
+          endBlock->back().erase();
+
+          builder.setInsertionPointToEnd(endBlock);
+          builder.create<AIE::DMAStartOp>(
+              state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
+              joinMM2SChannel, static_cast<int32_t>(0),
+              bdBlocks[0], newEndBlock);
+
+          for (int64_t i = 0; i < depth; ++i) {
+            mlir::Value acqLock = isAIE2 ? info.consLock.getResult()
+                : (info.aie1Locks.empty() ? info.consLock.getResult()
+                       : info.aie1Locks[i % info.aie1Locks.size()].getResult());
+            mlir::Value relLock = isAIE2 ? info.prodLock.getResult() : acqLock;
+            state.emitBDBlock(
+                state.deviceOp.getLoc(), bdBlocks[i],
+                acqLock, state.lockAcqValue(Port::Consume, 1),
+                info.buffers[i % info.buffers.size()].getResult(), 0, perBufLen,
+                relLock, state.lockRelValue(Port::Consume));
+            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                          bdBlocks[(i + 1) % depth]);
+          }
+          builder.setInsertionPointToEnd(newEndBlock);
+          builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+        }
+      } else {
+        // No existing aie.mem for this tile — create one and register it.
+        builder.setInsertionPoint(state.deviceBody->getTerminator());
+        auto memOp = builder.create<AIE::MemOp>(
+            state.deviceOp.getLoc(), prodTileVal);
+        memRegion = &memOp.getBody();
+        tileToDMARegion[prodTileVal] = memRegion;   // register for later phases
+
+        auto addMemBlock = [&]() -> mlir::Block * {
+          return builder.createBlock(memRegion);
+        };
+        mlir::Block *dmaStartBlock = addMemBlock();
+        llvm::SmallVector<mlir::Block *> bdBlocks;
+        for (int64_t i = 0; i < depth; ++i)
+          bdBlocks.push_back(addMemBlock());
+        mlir::Block *endMemBlock = addMemBlock();
+
+        builder.setInsertionPointToEnd(dmaStartBlock);
+        builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(),
+                                        AIE::DMAChannelDir::MM2S,
+                                        joinMM2SChannel,
+                                        static_cast<int32_t>(0),
+                                        bdBlocks[0], endMemBlock);
+
+        for (int64_t i = 0; i < depth; ++i) {
+          mlir::Value acqLock = isAIE2 ? info.consLock.getResult()
+              : (info.aie1Locks.empty() ? info.consLock.getResult()
+                     : info.aie1Locks[i % info.aie1Locks.size()].getResult());
+          mlir::Value relLock = isAIE2 ? info.prodLock.getResult() : acqLock;
+          state.emitBDBlock(
+              state.deviceOp.getLoc(), bdBlocks[i],
+              acqLock, state.lockAcqValue(Port::Consume, 1),
+              info.buffers[i % info.buffers.size()].getResult(), 0, perBufLen,
+              relLock, state.lockRelValue(Port::Consume));
+          builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                        bdBlocks[(i + 1) % depth]);
+        }
+        builder.setInsertionPointToEnd(endMemBlock);
+        builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+      }
       continue;
     }
 
