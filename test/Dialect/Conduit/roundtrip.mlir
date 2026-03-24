@@ -253,22 +253,32 @@ func.func @csdf_balanced_different_periods() {
   return
 }
 
-// CHECK-LABEL: func.func @cascade_ops
-// Tests that conduit.put_cascade and conduit.get_cascade roundtrip correctly.
-// Uses vector<16xi32> = 512 bits (AIE2 cascade width).
-func.func @cascade_ops(%v : vector<16xi32>) -> vector<16xi32> {
+// Tests that conduit.create with routing_mode=cascade roundtrips correctly.
+// After cascade migration (#27), core-body cascade ops are aie.put_cascade /
+// aie.get_cascade directly.
+// Must wrap in aie.device(npu2) so the AIE verifier knows cascade width=512
+// (vector<16xi32> = 512 bits, valid for AIE2 / npu2).
+// CHECK-LABEL: aie.device
+aie.device(npu2) {
+  %t03 = aie.tile(0, 3)
+  %t13 = aie.tile(1, 3)
+  // CHECK: conduit.create @cas
   conduit.create @cas {capacity = 1 : i64,
                   producer_tile = array<i64: 0, 3>,
                   consumer_tiles = array<i64: 1, 3>,
                   depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>}
-  // CHECK: conduit.put_cascade @cas
-  // CHECK-SAME: vector<16xi32>
-  conduit.put_cascade @cas (%v : vector<16xi32>)
-  // CHECK: conduit.get_cascade @cas
-  // CHECK-SAME: vector<16xi32>
-  %r = conduit.get_cascade @cas : vector<16xi32>
-  return %r : vector<16xi32>
+  aie.core(%t03) {
+    %v = arith.constant dense<42> : vector<16xi32>
+    // CHECK: aie.put_cascade
+    aie.put_cascade(%v : vector<16xi32>)
+    aie.end
+  }
+  aie.core(%t13) {
+    // CHECK: aie.get_cascade
+    %r = aie.get_cascade() : vector<16xi32>
+    aie.end
+  }
 }
 
 } // module

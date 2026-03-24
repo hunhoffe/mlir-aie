@@ -33,15 +33,17 @@ module {
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
-    // Producer core — acquire+compute inside a loop so criteria 3+4 are met.
+    // Producer core — compute inside a loop so criteria 3+4 are met.
     // The cascade guard (criterion 0) must still prevent promotion.
+    // After cascade migration (#27), cascade core ops are aie.put_cascade /
+    // aie.get_cascade (not conduit.put_cascade / conduit.get_cascade).
     aie.core(%tile03) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
       scf.for %i = %c0 to %c4 step %c1 {
         %v = arith.constant dense<1> : vector<16xi32>
-        conduit.put_cascade @cas (%v : vector<16xi32>)
+        aie.put_cascade(%v : vector<16xi32>)
       }
       aie.end
     }
@@ -52,7 +54,7 @@ module {
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
       scf.for %i = %c0 to %c4 step %c1 {
-        %r = conduit.get_cascade @cas : vector<16xi32>
+        %r = aie.get_cascade() : vector<16xi32>
       }
       aie.end
     }

@@ -50,6 +50,7 @@
 // ============================================================================
 
 // CHECK: 'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=5 != sum(consumer_rates)*len(producer_rates)=2
+// PAIR: 'conduit.create' op CSDF rate imbalance
 
 func.func @case1_m6_csdf_rate_imbalance() {
   conduit.create @csdf_imbal {capacity = 5 : i64,
@@ -89,22 +90,27 @@ func.func @case2_m7_capacity_insufficient() {
 // -----
 
 // ============================================================================
-// Case 3: Cascade value width wrong — 32 bits instead of 384 or 512.
+// Case 3: conduit.distribute with a cascade-mode source — rejected by the
+//         distribute op verifier (M5: cascade src in distribute is invalid).
 //
-// conduit.put_cascade with an i32 operand.  AIE2 cascade requires 512 bits
-// (vector<16xi32>) or AIE1 requires 384 bits.  A 32-bit value is rejected
-// by PutCascade::verify → checkCascadeValueType.
+// After cascade migration (#27), conduit.put_cascade / conduit.get_cascade
+// no longer exist, so the old Case 3 (wrong cascade width) is superseded.
+// The cascade-mode distribute rejection still exercises cascade verifier logic.
 //
 // Fires under all RUN lines during dialect verification.
 // ============================================================================
 
-// CHECK: 'conduit.put_cascade' op cascade value type 'i32' has width 32 bits; must be 384 bits
+// CHECK: 'conduit.distribute' op cascade channel 'cas_c3_src' cannot be used in a distribute src
 
-conduit.create @cas_bad_width {capacity = 1 : i64,
-                routing_mode = #conduit.routing_mode<cascade>}
-
-func.func @case3_cascade_wrong_width(%c : i32) {
-  conduit.put_cascade @cas_bad_width (%c : i32)
+func.func @case3_cascade_distribute_src() {
+  conduit.create @cas_c3_src {capacity = 1 : i64, depth = 1 : i64,
+                  routing_mode = #conduit.routing_mode<cascade>,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 1>}
+  conduit.create @cas_c3_dst {capacity = 1 : i64, depth = 1 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 1, 2>}
+  conduit.distribute {srcs = [@cas_c3_src], dsts = [@cas_c3_dst], memtile = "tile(0,1)"}
   return
 }
 
@@ -138,12 +144,12 @@ module @case4_cascade_depth_gt1 {
 
     aie.core(%tile03) {
       %v = arith.constant dense<0> : vector<16xi32>
-      conduit.put_cascade @cas_d2 (%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>)
       aie.end
     }
 
     aie.core(%tile13) {
-      %r = conduit.get_cascade @cas_d2 : vector<16xi32>
+      %r = aie.get_cascade() : vector<16xi32>
       aie.end
     }
   }
@@ -235,15 +241,17 @@ module @case6_convergence_hazard {
 // -----
 
 // ============================================================================
-// Case 7: Unmatched put_cascade — no corresponding get_cascade.
+// Case 7: Unmatched aie.put_cascade — no corresponding aie.get_cascade.
 //
 // Cascade is a blocking rendezvous.  A producer with no matching consumer
 // get stalls indefinitely in hardware.
 //
-// --conduit-check-pairing (M9) warns on the unmatched put_cascade.
-// All other RUN lines produce no diagnostics on this section.
+// After cascade migration (#27), conduit.put_cascade / conduit.get_cascade
+// no longer exist; --conduit-check-pairing no longer checks cascade pairing
+// (deferred to --aie-check-cascade-pairing).  This section is now silent
+// under all RUN lines (including PAIR/RUN 5).
 //
-// PAIR: unmatched conduit.put_cascade: no corresponding get_cascade found in any consumer core
+// All RUN lines produce no cascade-specific diagnostics on this section.
 // ============================================================================
 
 module @case7_unmatched_put_cascade {
@@ -258,25 +266,22 @@ module @case7_unmatched_put_cascade {
 
     aie.core(%tile03) {
       %v = arith.constant dense<7> : vector<16xi32>
-      conduit.put_cascade @cas_unmatched (%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>)
       aie.end
     }
-    // No consumer core and no get_cascade anywhere.
+    // No consumer core and no aie.get_cascade anywhere.
   }
 }
 
 // -----
 
 // ============================================================================
-// Case 8: Ambiguous cascade — two get_cascade ops for the same conduit name.
+// Case 8: Two aie.get_cascade ops for the same conduit (hardware-invalid:
+//         cascade is point-to-point).
 //
-// Cascade is point-to-point.  Two cores both issuing get_cascade for the
-// same name means the hardware value goes to one; the other stalls forever.
-//
-// --conduit-check-pairing (M9) warns on each ambiguous get_cascade.
-// All other RUN lines produce no diagnostics on this section.
-//
-// PAIR: ambiguous cascade: multiple get_cascade ops for the same conduit name
+// After cascade migration (#27), conduit.get_cascade no longer exists.
+// --conduit-check-pairing no longer checks cascade pairing; deferred to
+// --aie-check-cascade-pairing.  This section is silent under all RUN lines.
 // ============================================================================
 
 module @case8_ambiguous_get_cascade {
@@ -293,19 +298,20 @@ module @case8_ambiguous_get_cascade {
 
     aie.core(%tile03) {
       %v = arith.constant dense<5> : vector<16xi32>
-      conduit.put_cascade @cas_ambig (%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>)
       aie.end
     }
 
-    // First consumer — valid get.
+    // First consumer — valid aie.get_cascade.
     aie.core(%tile13) {
-      %r = conduit.get_cascade @cas_ambig : vector<16xi32>
+      %r = aie.get_cascade() : vector<16xi32>
       aie.end
     }
 
-    // Second consumer — duplicate get for same conduit name: AMBIGUOUS.
+    // Second consumer — duplicate get (hardware-invalid).
+    // Use --aie-check-cascade-pairing to detect this.
     aie.core(%tile23) {
-      %r2 = conduit.get_cascade @cas_ambig : vector<16xi32>
+      %r2 = aie.get_cascade() : vector<16xi32>
       aie.end
     }
   }

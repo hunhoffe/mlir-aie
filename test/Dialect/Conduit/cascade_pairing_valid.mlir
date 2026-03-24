@@ -2,9 +2,12 @@
 //
 // P1-C: Cascade pairing check — valid case.
 //
-// A matched conduit.put_cascade / conduit.get_cascade pair (same conduit name)
-// in producer and consumer cores respectively.  The M9 pairing check should
-// emit no warnings.
+// After cascade migration (#27), conduit.put_cascade / conduit.get_cascade
+// no longer exist.  Core-body cascade ops are aie.put_cascade /
+// aie.get_cascade.  The --conduit-check-pairing pass no longer checks cascade
+// pairing (deferred to --aie-check-cascade-pairing); this test verifies that
+// --conduit-check-pairing emits no spurious warnings on a valid cascade design
+// with aie.put_cascade / aie.get_cascade.
 //
 // CHECK-NOT: warning
 // CHECK-NOT: M9
@@ -20,16 +23,16 @@ module {
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
-    // Producer core: put_cascade matched by get_cascade below.
+    // Producer core: aie.put_cascade matched by aie.get_cascade below.
     aie.core(%tile03) {
       %v = arith.constant dense<42> : vector<16xi32>
-      conduit.put_cascade @cas (%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>)
       aie.end
     }
 
-    // Consumer core: get_cascade matches the put_cascade above.
+    // Consumer core: aie.get_cascade matches the put_cascade above.
     aie.core(%tile13) {
-      %r = conduit.get_cascade @cas : vector<16xi32>
+      %r = aie.get_cascade() : vector<16xi32>
       aie.end
     }
   }

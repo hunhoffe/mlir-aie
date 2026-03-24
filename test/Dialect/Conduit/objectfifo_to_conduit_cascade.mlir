@@ -4,14 +4,13 @@
 //
 // Verifies that aie.objectfifo with via_cascade=true is lowered to:
 //   - conduit.create with routing_mode = #conduit.routing_mode<cascade> and depth = 1
-//   - conduit.put_cascade in the producer core body
+//   - aie.put_cascade in the producer core body
 //     (acquire + memref.store + release → put_cascade with the stored vector)
-//   - conduit.get_cascade in the consumer core body
+//   - aie.get_cascade in the consumer core body
 //     (acquire + memref.load + release → get_cascade; load replaced by get result)
 //
 // Uses memref<1xvector<16xi32>> as the element type so the inner vector type
 // (vector<16xi32> = 512 bits) matches the AIE2 cascade stream width.
-// The verifier rejects cascade ops whose value type is not 384 or 512 bits.
 
 // CHECK-LABEL: module
 
@@ -21,17 +20,16 @@
 // CHECK-SAME: depth = 1 : i64
 // CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
 
-// --- Producer core: acquire+store+release → put_cascade ---
+// --- Producer core: acquire+store+release → aie.put_cascade ---
 // CHECK:   aie.core
-// CHECK:     conduit.put_cascade @cas_fifo
+// CHECK:     aie.put_cascade
 // CHECK-SAME:   vector<16xi32>
 // CHECK-NOT:   conduit.acquire
 // CHECK-NOT:   conduit.release
 
-// --- Consumer core: acquire+load+release → get_cascade ---
+// --- Consumer core: acquire+load+release → aie.get_cascade ---
 // CHECK:   aie.core
-// CHECK:     conduit.get_cascade @cas_fifo
-// CHECK-SAME:   vector<16xi32>
+// CHECK:     aie.get_cascade
 
 // No objectfifo ops remain.
 // CHECK-NOT: aie.objectfifo

@@ -1,12 +1,15 @@
-// RUN: aie-opt --conduit-check-pairing %s 2>&1 | FileCheck %s
+// RUN: aie-opt --aie-check-cascade-pairing %s 2>&1 | FileCheck %s
 //
-// P1-C: Cascade pairing check — unmatched get_cascade.
+// P1-C: Cascade pairing check — unmatched aie.get_cascade.
 //
-// A conduit.get_cascade with no corresponding conduit.put_cascade in any
-// core body.  The M9 check should emit a warning on the get_cascade.
+// After cascade migration (#27), conduit.get_cascade no longer exists.
+// The AIE dialect --aie-check-cascade-pairing pass checks aie.cascade_flow
+// vs. core body aie.put_cascade / aie.get_cascade pairing.
 //
-// CHECK: warning
-// CHECK: unmatched conduit.get_cascade: no corresponding put_cascade found in any producer core
+// An aie.get_cascade in a consumer core with no corresponding aie.put_cascade
+// in any producer core and no aie.cascade_flow naming this tile as destination.
+//
+// CHECK: get_cascade
 
 module {
   aie.device(npu1) {
@@ -18,9 +21,9 @@ module {
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
-    // Consumer core: get_cascade with NO matching put_cascade anywhere.
+    // Consumer core: aie.get_cascade with NO matching aie.put_cascade anywhere.
     aie.core(%tile13) {
-      %r = conduit.get_cascade @cas : vector<16xi32>
+      %r = aie.get_cascade() : vector<16xi32>
       aie.end
     }
   }

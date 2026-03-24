@@ -1,13 +1,16 @@
 // RUN: aie-opt --conduit-check-pairing %s 2>&1 | FileCheck %s
 //
-// P1-C: Cascade pairing check — two get_cascade ops for the same conduit name.
+// P1-C: Cascade pairing check — two aie.get_cascade ops (valid from
+// --conduit-check-pairing perspective; cascade hardware supports exactly
+// one consumer, so this is actually invalid at hardware level, but
+// --conduit-check-pairing no longer checks cascade pairing after migration #27).
 //
-// Two cores both issue conduit.get_cascade @cas.  Cascade hardware is
-// point-to-point (single consumer); multiple get_cascade for the same name
-// is ambiguous.  The M9 check should emit a warning on each get_cascade.
+// After cascade migration (#27), conduit.put_cascade / conduit.get_cascade
+// no longer exist; the cascade pairing check is deferred to
+// --aie-check-cascade-pairing.  This test verifies --conduit-check-pairing
+// does not crash or emit spurious errors on designs with aie.get_cascade.
 //
-// CHECK: warning
-// CHECK: ambiguous cascade: multiple get_cascade ops for the same conduit name
+// CHECK-NOT: M9
 
 module {
   aie.device(npu1) {
@@ -24,19 +27,21 @@ module {
     // Producer core.
     aie.core(%tile03) {
       %v = arith.constant dense<5> : vector<16xi32>
-      conduit.put_cascade @cas (%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>)
       aie.end
     }
 
-    // First consumer: valid get_cascade.
+    // First consumer: valid aie.get_cascade.
     aie.core(%tile13) {
-      %r = conduit.get_cascade @cas : vector<16xi32>
+      %r = aie.get_cascade() : vector<16xi32>
       aie.end
     }
 
-    // Second consumer: duplicate get_cascade for the same conduit name.
+    // Second consumer: duplicate aie.get_cascade (hardware-invalid,
+    // but --conduit-check-pairing does not check this after migration #27;
+    // use --aie-check-cascade-pairing for this validation).
     aie.core(%tile23) {
-      %r2 = conduit.get_cascade @cas : vector<16xi32>
+      %r2 = aie.get_cascade() : vector<16xi32>
       aie.end
     }
   }

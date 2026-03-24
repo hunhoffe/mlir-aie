@@ -33,7 +33,6 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringMap.h"
 
 namespace xilinx::conduit {
 
@@ -94,56 +93,12 @@ struct ConduitPairingCheckPass
     // Check conduit.acquire_async → wait_window chains.
     // The warning above on wait_window covers this case; no duplicate needed.
 
-    // -----------------------------------------------------------------------
-    // Cascade pairing check:
-    // Every conduit.put_cascade must have exactly one matching
-    // conduit.get_cascade in some core body (same conduit name).
-    // -----------------------------------------------------------------------
-
-    // Collect all put_cascade ops by name across the module.
-    // putMap: name → list of PutCascade ops (there should be one per name)
-    llvm::StringMap<llvm::SmallVector<PutCascade, 1>> putMap;
-    module.walk([&](PutCascade putOp) {
-      putMap[putOp.getName()].push_back(putOp);
-    });
-
-    // Collect all get_cascade ops by name across the module.
-    // getMap: name → list of GetCascade ops (there should be one per name)
-    llvm::StringMap<llvm::SmallVector<GetCascade, 1>> getMap;
-    module.walk([&](GetCascade getOp) {
-      getMap[getOp.getName()].push_back(getOp);
-    });
-
-    // For each name with a put_cascade: check that a matching get_cascade exists.
-    for (auto &[name, puts] : putMap) {
-      auto it = getMap.find(name);
-      if (it == getMap.end()) {
-        // No get_cascade for this name anywhere.
-        for (PutCascade putOp : puts)
-          putOp.emitWarning(
-              "M9: unmatched conduit.put_cascade: no corresponding "
-              "get_cascade found in any consumer core");
-      } else {
-        // get_cascade exists — check for ambiguous multiple consumers.
-        if (it->second.size() > 1) {
-          for (GetCascade getOp : it->second)
-            getOp.emitWarning(
-                "M9: ambiguous cascade: multiple get_cascade ops for the "
-                "same conduit name");
-        }
-      }
-    }
-
-    // For each name with a get_cascade: check that a matching put_cascade exists.
-    for (auto &[name, gets] : getMap) {
-      if (putMap.find(name) == putMap.end()) {
-        // No put_cascade for this name anywhere.
-        for (GetCascade getOp : gets)
-          getOp.emitWarning(
-              "M9: unmatched conduit.get_cascade: no corresponding "
-              "put_cascade found in any producer core");
-      }
-    }
+    // Cascade pairing (aie.put_cascade / aie.get_cascade) is checked by the
+    // AIE dialect's --aie-check-cascade-pairing pass, which operates on the
+    // post-lowering aie.cascade_flow + aie.core bodies.  Conduit no longer
+    // carries conduit.put_cascade / conduit.get_cascade ops (they are emitted
+    // directly as aie.put_cascade / aie.get_cascade by Pass A/B), so no
+    // duplicate pairing check is performed here.
   }
 };
 

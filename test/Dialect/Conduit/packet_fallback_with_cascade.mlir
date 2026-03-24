@@ -62,11 +62,11 @@ module @pkt_fallback_with_cascade {
 
     %core03 = aie.core(%t03) {
       %v = arith.constant dense<0> : vector<16xi32>
-      conduit.put_cascade @cascade_ab (%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>)
       aie.end
     }
     %core13 = aie.core(%t13) {
-      %r = conduit.get_cascade @cascade_ab : vector<16xi32>
+      %r = aie.get_cascade() : vector<16xi32>
       aie.end
     }
     %core23 = aie.core(%t23) { aie.end }

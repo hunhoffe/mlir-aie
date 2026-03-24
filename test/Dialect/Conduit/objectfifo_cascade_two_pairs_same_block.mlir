@@ -22,9 +22,10 @@
 // CHECK-LABEL: module
 
 // Producer core must have exactly two put_cascade ops (one per pair).
+// After cascade migration (#27), Pass A emits aie.put_cascade directly.
 // CHECK:      aie.core
-// CHECK:        conduit.put_cascade @cas_fifo
-// CHECK:        conduit.put_cascade @cas_fifo
+// CHECK:        aie.put_cascade
+// CHECK:        aie.put_cascade
 // CHECK-NOT:    conduit.acquire
 // CHECK-NOT:    conduit.release
 // CHECK-NOT:    aie.objectfifo.acquire
