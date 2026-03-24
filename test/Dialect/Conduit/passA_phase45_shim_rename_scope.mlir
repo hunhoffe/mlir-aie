@@ -25,28 +25,29 @@
 // PASSA-LABEL: module @phase45_shim_rename_scope
 // PASSA:       aie.device(xcve2302) {
 
-// conduit.create ops must survive with their original names.
-// PASSA-DAG:   conduit.create @link_in
-// PASSA-DAG:   conduit.create @link_out_a
-// PASSA-DAG:   conduit.create @link_out_b
-// PASSA-DAG:   conduit.create @join_src_a
-// PASSA-DAG:   conduit.create @join_src_b
-// PASSA-DAG:   conduit.create @join_out
-
-// conduit.distribute srcs must be the conduit.create symbol, not the
-// shim_alloc symbol.
+// Phase 3: distribute link emitted with original conduit.create names.
+// conduit.distribute srcs must be the conduit.create symbol, NOT
+// the Phase 4.5 shim_alloc symbol (@link_in_shim_alloc).
+// PASSA:       conduit.create @link_in
+// PASSA:       conduit.create @link_out_a
+// PASSA:       conduit.create @link_out_b
 // PASSA:       conduit.distribute
-// PASSA-SAME:  srcs = [@link_in]
 // PASSA-SAME:  dsts = [@link_out_a, @link_out_b]
+// PASSA-SAME:  srcs = [@link_in]
 // PASSA-NOT:   srcs = [@link_in_shim_alloc]
 
-// conduit.join dsts must be the conduit.create symbol, not the shim_alloc.
+// Phase 3: join link emitted with original conduit.create names.
+// conduit.join dsts must be the conduit.create symbol, NOT
+// the Phase 4.5 shim_alloc symbol (@join_out_shim_alloc).
+// PASSA:       conduit.create @join_src_a
+// PASSA:       conduit.create @join_src_b
+// PASSA:       conduit.create @join_out
 // PASSA:       conduit.join
-// PASSA-SAME:  srcs = [@join_src_a, @join_src_b]
 // PASSA-SAME:  dsts = [@join_out]
+// PASSA-SAME:  srcs = [@join_src_a, @join_src_b]
 // PASSA-NOT:   dsts = [@join_out_shim_alloc]
 
-// Phase 4.5 must emit shim_dma_allocation with the _shim_alloc suffix.
+// Phase 4.5 must emit shim_dma_allocation ops with the _shim_alloc suffix.
 // PASSA:       aie.shim_dma_allocation @link_in_shim_alloc
 // PASSA:       aie.shim_dma_allocation @join_out_shim_alloc
 
@@ -73,7 +74,7 @@ module @phase45_shim_rename_scope {
     aie.objectfifo @link_in  (%shim_prod, {%memtile}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
     aie.objectfifo @link_out_a (%memtile, {%comp_a},  2 : i32) : !aie.objectfifo<memref<16xi32>>
     aie.objectfifo @link_out_b (%memtile, {%comp_b},  2 : i32) : !aie.objectfifo<memref<16xi32>>
-    aie.objectfifo.link [@link_in] -> [@link_out_a, @link_out_b] ([])
+    aie.objectfifo.link [@link_in] -> [@link_out_a, @link_out_b] ([][0, 16])
 
     // Join: two compute tiles → memtile → shim consumer (row 0).
     %comp_c    = aie.tile(3, 2)   // compute tile C: producer of join_src_a
@@ -84,6 +85,6 @@ module @phase45_shim_rename_scope {
     aie.objectfifo @join_src_a (%comp_c, {%memtile2}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
     aie.objectfifo @join_src_b (%comp_d, {%memtile2}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
     aie.objectfifo @join_out   (%memtile2, {%shim_cons}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
-    aie.objectfifo.link [@join_src_a, @join_src_b] -> [@join_out] ([0, 16])
+    aie.objectfifo.link [@join_src_a, @join_src_b] -> [@join_out] ([0, 16][])
   }
 }
