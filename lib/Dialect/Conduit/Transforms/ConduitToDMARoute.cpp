@@ -292,7 +292,15 @@ void routePhase(ConduitToDMAState &state) {
       // producers), so no linkDstNames guard is needed in 4a.
       // Skip lock allocation when disable_synchronization is set: the oracle
       // emits no locks or use_lock for these conduits.
-      if (isAIE2 && !info.disableSynchronization) {
+      //
+      // Skip shim lock allocation for distribute link sources (shim→MemTile).
+      // For these conduits the shim DMA is fire-and-forget (managed by host
+      // runtime via aiex.npu.dma_memcpy_nd). The MemTile S2MM synchronization
+      // uses per-destination locks allocated on the MemTile by linkPhase
+      // (sliceProdLocks/sliceConsLocks). Allocating locks on the shim tile
+      // produces dead resources with wrong init values and wrong tile placement.
+      bool isDistributeLinkSrc = state.linkSrcNamesEarly.count(name) > 0;
+      if (isAIE2 && !info.disableSynchronization && !isDistributeLinkSrc) {
         {
           int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
           std::string symName = name + "_prod_lock_0";
