@@ -646,17 +646,21 @@ def ConduitCheckOrdering : Pass<"conduit-check-ordering", "::mlir::ModuleOp"> {
 //===----------------------------------------------------------------------===//
 
 def ConduitCheckLoopBalance : Pass<"conduit-check-loop-balance", "::mlir::ModuleOp"> {
-  let summary = "Check that loop trip counts do not exceed conduit DMA repeat counts";
+  let summary = "Check that consumer loop trip counts do not exceed conduit iter_count";
   let description = [{
-    Emits a warning when a conduit.create channel has a finite DMA count
-    (repeat_count or iter_count attribute) and a consumer-side conduit.acquire
-    for that channel is inside a statically bounded scf.for whose trip count
-    exceeds the DMA count.
+    Emits a warning when a conduit.create channel has a finite total DMA send
+    count (iter_count attribute) and a consumer-side conduit.acquire for that
+    channel is inside a statically bounded scf.for whose trip count exceeds
+    iter_count.
 
-    This detects the Exp C class of token-deficit deadlock at compile time:
-    the producer DMA fires N times but the consumer loop iterates T > N times,
-    causing the consumer to stall after N iterations waiting for tokens that
-    never arrive.
+    Background:
+      iter_count=N on conduit.create means the DMA fires exactly N times total
+      (maps to DMAStartOp.repeat_count = N-1 with a non-circular BD chain).
+      If the consumer loop iterates T > N times, it will stall after N
+      iterations waiting for tokens that never arrive — hardware deadlock.
+
+      Note: repeat_count (per-BD repeat factor) is NOT checked here because it
+      is not the total send count; its effect depends on depth and BD structure.
 
     The check is conservative: only statically bounded loops (constant lb, ub,
     step) are checked.  Dynamic loops are silently skipped.

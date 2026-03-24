@@ -10,19 +10,43 @@
 //
 // MVE-1 analysis pass: --conduit-check-loop-balance
 //
-// Detects the Exp C class of token-deficit deadlock at compile time:
-//   A conduit.create with repeat_count=N (or iter_count=N) means the DMA
-//   fires exactly N times.  If the consumer-side conduit.acquire for that
-//   channel is inside an scf.for with a static trip count T > N, the
-//   consumer will stall after N iterations because no more tokens arrive.
+// Detects the Exp C class of token-deficit deadlock at compile time.
+//
+// Background:
+//   `conduit.create` carries two attributes that bound the total DMA sends:
+//
+//   - `iter_count` (OptionalAttr<I64Attr>): the total number of DMA task-queue
+//     iterations.  Maps to DMAStartOp.repeat_count = iter_count - 1 with a
+//     non-circular BD chain.  iter_count=N means the DMA fires exactly N times
+//     total, then stops.  This is the primary signal for finite-send channels.
+//
+//   - `repeat_count` (OptionalAttr<I64Attr>): a per-BD repeat count.  Each BD
+//     in the chain fires repeat_count times before advancing.  This is NOT the
+//     total send count; it depends on depth (chain length) and BD structure.
+//     Checking repeat_count alone for finite-send detection is unsound.
+//
+// This pass checks ONLY `iter_count`, which is the unambiguous total send count.
 //
 // Check:
-//   For each conduit.create with repeat_count=N or iter_count=N:
+//   For each conduit.create with iter_count=N:
 //     For each conduit.acquire on the Consume port referencing that channel:
-//       Walk the acquire's parent op chain upward.
-//       If an enclosing scf.for is found with statically constant bounds:
+//       Walk the acquire's parent op chain upward to find an enclosing scf.for.
+//       If the scf.for has statically constant bounds (lb, ub, step):
 //         T = (ub - lb) / step
 //         If T > N: emit warning on the conduit.create.
+//
+// The Exp C deadlock pattern:
+//   conduit.create @weights {iter_count = 64 : i64, depth = 1, ...}
+//   aie.core { scf.for %i = 0 to 128 step 1 {  // T=128 > N=64 → DEADLOCK
+//     conduit.acquire {name = @weights, ...}
+//   }}
+//
+// Name matching:
+//   conduit.acquire uses FlatSymbolRefAttr:$name.  The generated getName()
+//   accessor calls getNameAttr().getValue(), returning the root reference string
+//   (e.g. "weights" for @weights).  conduit.create uses SymbolNameAttr:$sym_name
+//   with getName() as a backward-compat alias for getSymName() → same StringRef.
+//   Both sides compare equal for matching channels.
 //
 // This pass emits warnings only (never signals pass failure).
 // It is OPT-IN and NOT part of the default pipeline.
@@ -77,40 +101,36 @@ struct ConduitCheckLoopBalancePass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
-    // Build a map from channel name → finite DMA count (repeat_count or
-    // iter_count).  Only channels with at least one of these attributes are
-    // checked.
-    llvm::StringMap<int64_t> channelDMACount;
+    // Build a map from channel name → total DMA send count (iter_count only).
+    // iter_count=N means the DMA fires exactly N times total.  repeat_count
+    // is a per-BD repeat factor and is NOT the total send count; it is not
+    // checked here.  Only channels with iter_count set are candidates.
+    // ODS generates std::optional<uint64_t> for I64Attr optional accessors.
+    llvm::StringMap<int64_t> channelIterCount;
 
     module.walk([&](Create createOp) {
-      // Prefer repeat_count; fall back to iter_count.
-      // The ODS-generated getter returns std::optional<uint64_t> (the raw
-      // integer value stored in the I64Attr), not llvm::APInt.
-      if (auto rc = createOp.getRepeatCount()) {
-        channelDMACount[createOp.getSymName()] =
-            static_cast<int64_t>(*rc);
-      } else if (auto ic = createOp.getIterCount()) {
-        channelDMACount[createOp.getSymName()] =
-            static_cast<int64_t>(*ic);
-      }
+      if (auto ic = createOp.getIterCount())
+        channelIterCount[createOp.getSymName()] = static_cast<int64_t>(*ic);
     });
 
-    if (channelDMACount.empty())
+    if (channelIterCount.empty())
       return;
 
     // For each conduit.acquire on the Consume port, check whether it is inside
-    // a statically bounded scf.for with trip count exceeding the DMA count.
+    // a statically bounded scf.for with trip count exceeding iter_count.
+    // getName() on Acquire returns FlatSymbolRefAttr::getValue() — the root
+    // reference string (e.g. "ch" for @ch), matching getSymName() on Create.
     module.walk([&](Acquire acqOp) {
-      // Only Consume-side acquires are bounded by the producer DMA count.
+      // Only Consume-side acquires are bounded by the producer DMA send count.
       if (acqOp.getPort() != Port::Consume)
         return;
 
       llvm::StringRef chanName = acqOp.getName();
-      auto it = channelDMACount.find(chanName);
-      if (it == channelDMACount.end())
-        return; // channel has no finite DMA count — skip
+      auto it = channelIterCount.find(chanName);
+      if (it == channelIterCount.end())
+        return; // channel has no iter_count — skip
 
-      int64_t dmaCount = it->second;
+      int64_t iterCount = it->second;
 
       // Walk upward to find an enclosing scf.for.
       mlir::scf::ForOp forOp = findEnclosingForOp(acqOp);
@@ -121,17 +141,17 @@ struct ConduitCheckLoopBalancePass
       if (tripCount < 0)
         return; // dynamic bounds — cannot check statically
 
-      if (tripCount > dmaCount) {
-        // Find the conduit.create to attach the warning.
+      if (tripCount > iterCount) {
+        // Find the conduit.create to attach the warning to the declaration.
         module.walk([&](Create createOp) {
           if (createOp.getSymName() != chanName)
             return;
           createOp.emitWarning()
               << "conduit-check-loop-balance: channel '@" << chanName
-              << "' has DMA count " << dmaCount
-              << " but consumer acquire is inside a loop with trip count "
-              << tripCount
-              << " — consumer will stall after " << dmaCount
+              << "' has iter_count " << iterCount
+              << " (total DMA sends) but consumer acquire is inside a loop"
+              << " with trip count " << tripCount
+              << " — consumer will stall after " << iterCount
               << " iterations (token deficit)";
         });
       }
