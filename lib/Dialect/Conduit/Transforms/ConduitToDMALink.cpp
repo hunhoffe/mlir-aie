@@ -298,12 +298,8 @@ void linkPhase(ConduitToDMAState &state) {
       auto it = state.conduitConsS2MMChannel.find({srcName, 0u});
       if (it != state.conduitConsS2MMChannel.end()) {
         ingestS2MMCh = it->second;
-        llvm::errs() << "DEBUG distIngest: link at " << memtileStr
-                     << " src='" << srcName << "' REUSED S2MM=" << ingestS2MMCh << "\n";
       } else {
         ingestS2MMCh = state.tileNextS2MMChannel[memtileVal]++;
-        llvm::errs() << "DEBUG distIngest: link at " << memtileStr
-                     << " src='" << srcName << "' NEW S2MM=" << ingestS2MMCh << "\n";
       }
     }
 
@@ -328,17 +324,8 @@ void linkPhase(ConduitToDMAState &state) {
         bool reused = false;
         if (sInfo) {
           auto [sp, sr] = sInfo->producerTileCoord;
-          llvm::errs() << "DEBUG joinS2MM: link at " << memtileStr
-                       << " src='" << sName << "' prod=(" << sp << "," << sr
-                       << ") isMemTile=" << (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr))
-                       << "\n";
           if (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr)) {
             auto chIt = state.conduitConsS2MMChannel.find({sName, 0u});
-            llvm::errs() << "DEBUG   consS2MM lookup key={'" << sName << "',0}: "
-                         << (chIt != state.conduitConsS2MMChannel.end() ? "FOUND" : "NOT FOUND");
-            if (chIt != state.conduitConsS2MMChannel.end())
-              llvm::errs() << " val=" << chIt->second;
-            llvm::errs() << "\n";
             if (chIt != state.conduitConsS2MMChannel.end()) {
               joinS2MMChannels.push_back(chIt->second);
               reused = true;
@@ -347,8 +334,6 @@ void linkPhase(ConduitToDMAState &state) {
         }
         if (!reused) {
           int32_t ch = state.tileNextS2MMChannel[memtileVal]++;
-          llvm::errs() << "DEBUG   NEW S2MM on " << memtileStr
-                       << " ch=" << ch << " for src='" << sName << "'\n";
           joinS2MMChannels.push_back(ch);
         }
       }
@@ -483,10 +468,6 @@ void linkPhase(ConduitToDMAState &state) {
               // channel to be allocated — leading to flow/DMAStartOp channel
               // mismatch and potential MemTile S2MM overflow (>6 channels).
               state.conduitConsS2MMChannel[{dstName, ci}] = consS2MM;
-              llvm::errs() << "DEBUG dstFlow: link at " << memtileStr
-                           << " dst='" << dstName << "' ci=" << ci
-                           << " consTile=(" << consCol << "," << consRow
-                           << ") S2MM=" << consS2MM << "\n";
               builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
                   AIE::WireBundle::DMA, joinMM2SCh, consTile.getResult(),
                   AIE::WireBundle::DMA, consS2MM);
@@ -970,9 +951,13 @@ void linkPhase(ConduitToDMAState &state) {
             if (mlir::isa<AIE::EndOp>(op))
               endBlock = &blk;
 
-        assert(endBlock &&
-               "conduit-to-dma: join-source append: existing aie.mem has no "
-               "aie.end block — region is malformed");
+        if (!endBlock) {
+          state.deviceOp.emitError(
+              "conduit-to-dma: join-source append: existing aie.mem has no "
+              "aie.end block — region is malformed");
+          state.passFailed = true;
+          return;
+        }
         {
           auto addBlock = [&]() -> mlir::Block * {
             return builder.createBlock(memRegion);
@@ -1137,9 +1122,13 @@ void linkPhase(ConduitToDMAState &state) {
                     if (mlir::isa<AIE::EndOp>(opInBlock))
                       endBlock = &block;
 
-                assert(endBlock &&
-                       "conduit-to-dma: Case C append: existing DMA region "
-                       "has no aie.end block — region is malformed");
+                if (!endBlock) {
+                  state.deviceOp.emitError(
+                      "conduit-to-dma: Case C append: existing DMA region "
+                      "has no aie.end block — region is malformed");
+                  state.passFailed = true;
+                  return;
+                }
                 {
                   auto addBlock = [&]() -> mlir::Block * {
                     return builder.createBlock(&memRegion);
@@ -1333,9 +1322,13 @@ void linkPhase(ConduitToDMAState &state) {
             if (mlir::isa<AIE::EndOp>(opInBlock))
               endBlock = &block;
 
-        assert(endBlock &&
-               "conduit-to-dma: Case B append: existing aie.mem has no "
-               "aie.end block — region is malformed");
+        if (!endBlock) {
+          state.deviceOp.emitError(
+              "conduit-to-dma: Case B append: existing aie.mem has no "
+              "aie.end block — region is malformed");
+          state.passFailed = true;
+          return;
+        }
         {
           auto addMemBlock = [&]() -> mlir::Block * {
             return builder.createBlock(&memRegion);

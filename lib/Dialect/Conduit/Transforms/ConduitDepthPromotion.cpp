@@ -260,8 +260,10 @@ struct ConduitDepthPromotePass
           tileBDCount[key] += depth;
           if (capAttr && elemTypeAttr) {
             int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
-            int64_t newDepth = 2;
-            tileMemUsed[key] += perSlotBytes * newDepth;
+            // Use the conduit's actual depth, not a hardcoded constant.
+            // Using 2 here underestimates memory for depth>2 conduits, which
+            // allows promotion past the tile memory budget.
+            tileMemUsed[key] += perSlotBytes * depth;
           }
         }
       }

@@ -585,7 +585,12 @@ struct ConduitToDMAState {
                    int32_t acqVal, mlir::Value buffer, int64_t offset,
                    int64_t len, mlir::Value relLock, int32_t relVal,
                    AIE::BDDimLayoutArrayAttr dims = {}) {
-    assert(buffer && "emitBDBlock: buffer must be non-null");
+    if (!buffer) {
+      mlir::emitError(loc,
+          "conduit-to-dma: emitBDBlock called with null buffer — "
+          "internal allocation error in Phase 3");
+      return;
+    }
     builder->setInsertionPointToEnd(block);
     if (acqLock)
       builder->create<AIE::UseLockOp>(loc, acqLock, acqAction, acqVal);

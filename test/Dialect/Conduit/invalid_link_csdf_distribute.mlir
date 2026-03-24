@@ -1,0 +1,114 @@
+// RUN: aie-opt %s -split-input-file -verify-diagnostics
+//
+// Tests for conduit.link distribute mode with CSDF rate annotations.
+//
+// This file covers the skip path and pass path for the Level 2 composed-consume
+// check (Denolf Eq. 48) in Link::verify() / checkDistributeComposedConsume().
+//
+// Background: Create::verify() runs M6/M7 on each conduit independently.
+// Link::verify() runs a second pass (checkDistributeComposedConsume) that is
+// unique to conduit.link: it computes the composed (minimum) consume across
+// ALL N destination consumers to verify the source buffer can accommodate the
+// worst-case occupancy when a slow consumer gates buffer reuse.
+//
+// Note on Denolf Eq. 48 negative test: triggering a genuine composed-consume
+// overflow that is not caught first by conduit.create M7 is non-trivial because
+// the constraints are coupled (see comment in invalid_link_csdf_distribute.mlir).
+// The negative path is indirectly covered by distribute_csdf_capacity.mlir
+// (Section 3) which documents the verification order.
+//
+// This file tests:
+//   (a) distribute with unannotated destinations → Level 2 skipped → PASS
+//   (b) distribute with 2 symmetric consumers (both annotated, same rate) → PASS
+//   (c) distribute with single consumer → Level 2 skip (size < 2) → PASS
+
+// -----
+
+// (a) distribute with unannotated destinations — Level 2 skipped.
+// checkDistributeComposedConsume: allDstsHaveRates=false → return success().
+
+func.func @distribute_unannotated_skip() {
+  conduit.create {name = "src_skip", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 1>,
+                  element_type = memref<4xi32>,
+                  depth = 1 : i64,
+                  producer_rates = array<i64: 1>,
+                  consumer_rates = array<i64: 1>}
+  conduit.create {name = "dst0_skip", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<4xi32>,
+                  depth = 1 : i64}
+  conduit.create {name = "dst1_skip", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 1, 3>,
+                  element_type = memref<4xi32>,
+                  depth = 1 : i64}
+  // No error: dst conduits lack rate annotations → skip Level 2.
+  conduit.link {srcs = ["src_skip"],
+                dsts = ["dst0_skip", "dst1_skip"],
+                mode = "distribute", memtile = "tile(0,1)"}
+  return
+}
+
+// -----
+
+// (b) distribute with 2 symmetric annotated consumers — Level 2 PASS.
+// Both dst consumers drain at 1/step. Composed consume = 1/step.
+// src P=[1], capacity=4: H=1: cumProd=1, composed=1, occ=0 ≤ 4 → PASS.
+
+func.func @distribute_symmetric_pass() {
+  conduit.create {name = "src_sym", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 1>,
+                  element_type = memref<4xi32>,
+                  depth = 4 : i64,
+                  producer_rates = array<i64: 1>,
+                  consumer_rates = array<i64: 1>}
+  conduit.create {name = "dst0_sym", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<4xi32>,
+                  depth = 4 : i64,
+                  producer_rates = array<i64: 1>,
+                  consumer_rates = array<i64: 1>}
+  conduit.create {name = "dst1_sym", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 1, 3>,
+                  element_type = memref<4xi32>,
+                  depth = 4 : i64,
+                  producer_rates = array<i64: 1>,
+                  consumer_rates = array<i64: 1>}
+  // No error: composed consume = per-consumer = 1, source capacity sufficient.
+  conduit.link {srcs = ["src_sym"],
+                dsts = ["dst0_sym", "dst1_sym"],
+                mode = "distribute", memtile = "tile(0,1)"}
+  return
+}
+
+// -----
+
+// (c) Single-consumer distribute — Level 2 skip (dstConsRates.size() < 2).
+// checkDistributeComposedConsume returns success immediately for N < 2.
+
+func.func @distribute_single_consumer_skip() {
+  conduit.create {name = "src_one", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 1>,
+                  element_type = memref<4xi32>,
+                  depth = 4 : i64,
+                  producer_rates = array<i64: 1>,
+                  consumer_rates = array<i64: 1>}
+  conduit.create {name = "dst0_one", capacity = 4 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 0, 3>,
+                  element_type = memref<4xi32>,
+                  depth = 4 : i64,
+                  producer_rates = array<i64: 1>,
+                  consumer_rates = array<i64: 1>}
+  // No error: single destination → Level 2 skip (per-edge check only).
+  conduit.link {srcs = ["src_one"], dsts = ["dst0_one"],
+                mode = "distribute", memtile = "tile(0,1)"}
+  return
+}

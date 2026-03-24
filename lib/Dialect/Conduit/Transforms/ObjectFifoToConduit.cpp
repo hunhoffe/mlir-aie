@@ -1058,8 +1058,15 @@ struct ObjectFifoToConduitPass
               // Find the corresponding acquire for this fifo in this block
               // (scanning forward is safe since we process in PreOrder).
               // The acquire was NOT added to acquiresToErase; we own it here.
+              // Find the acquire immediately preceding this release in block
+              // order. Scan forward and stop at the release op so we pick the
+              // last matching acquire BEFORE this release, not the last one in
+              // the whole block (which would be wrong when two acquire/release
+              // pairs for the same cascade fifo appear in the same block).
               AIE::ObjectFifoAcquireOp acqOp;
               for (mlir::Operation &scan : *block) {
+                if (&scan == op)
+                  break; // stop at this release — don't look past it
                 if (auto a = mlir::dyn_cast<AIE::ObjectFifoAcquireOp>(scan)) {
                   if (a.getObjFifoName() == name &&
                       a.getPort() == AIE::ObjectFifoPort::Produce)
