@@ -493,6 +493,7 @@ struct AirChannelToConduitPass
           /*viaDMA=*/mlir::BoolAttr{},
           /*plio=*/mlir::BoolAttr{},
           /*iter_count=*/mlir::IntegerAttr{},
+          /*window_size=*/mlir::IntegerAttr{},
           /*producer_dimensions=*/mlir::Attribute{},
           /*consumer_dimensions=*/mlir::Attribute{});
 
@@ -567,6 +568,7 @@ struct AirChannelToConduitPass
                 /*viaDMA=*/mlir::BoolAttr{},
                 /*plio=*/mlir::BoolAttr{},
                 /*iter_count=*/mlir::IntegerAttr{},
+                /*window_size=*/mlir::IntegerAttr{},
                 /*producer_dimensions=*/mlir::Attribute{},
                 /*consumer_dimensions=*/mlir::Attribute{});
             channelCreateOps[dstName] = consCreate.getOperation();

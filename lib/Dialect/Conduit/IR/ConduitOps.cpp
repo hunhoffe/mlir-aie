@@ -668,6 +668,22 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
     }
   }
 
+  // M7-window: sliding-window buffer capacity check.
+  // When window_size is set, the channel is a sliding-window channel where the
+  // consumer holds up to window_size slots simultaneously.  The depth must be
+  // at least window_size to avoid deadlock (the DMA ring must have enough
+  // physical slots to satisfy the maximum concurrent hold).
+  if (auto ws = getWindowSize()) {
+    int64_t wsize = static_cast<int64_t>(*ws);
+    if (auto d = getDepth()) {
+      int64_t depth = static_cast<int64_t>(*d);
+      if (depth < wsize)
+        return emitOpError(
+            "depth must be >= window_size for sliding-window channel (depth=")
+               << depth << ", window_size=" << wsize << ")";
+    }
+  }
+
   // M6: CSDF balance check (necessary condition).
   // producer_rates and consumer_rates must appear together.  When both are
   // present, the Lee-Messerschmitt consistency equation must hold:

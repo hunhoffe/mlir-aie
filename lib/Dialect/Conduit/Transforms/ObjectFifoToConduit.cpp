@@ -652,6 +652,7 @@ struct ObjectFifoToConduitPass
           /*plio=*/op.getPlio() ? mlir::BoolAttr::get(ctx, true)
                                 : mlir::BoolAttr{},
           iterCountAttr,
+          /*window_size=*/mlir::IntegerAttr{},
           prodDimsAttr,
           consDimsAttr);
 

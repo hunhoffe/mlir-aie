@@ -483,6 +483,14 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // non-circular BD chain (last BD → aie.end).
                        // Pass A propagates from objectfifo.create iter_count.
                        OptionalAttr<I64Attr>:$iter_count,
+                       // window_size: maximum number of buffer slots held simultaneously
+                       // by a sliding-window consumer (acquire_count > release_count).
+                       // When set, M7 checks depth >= window_size instead of running
+                       // CSDF hyper-period simulation (which is inappropriate for
+                       // sliding-window channels).  This attribute is independent of
+                       // producer_rates/consumer_rates — it may be set with or without
+                       // rate annotations.
+                       OptionalAttr<I64Attr>:$window_size,
                        // producer_dimensions: BDDimLayout traversal descriptor for
                        // the producer (MM2S) DMA BD chain. Stored as AnyAttr
                        // (AIE::BDDimLayoutArrayAttr at runtime) to avoid a cross-dialect
