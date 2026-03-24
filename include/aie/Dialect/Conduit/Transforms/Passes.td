@@ -641,4 +641,36 @@ def ConduitCheckOrdering : Pass<"conduit-check-ordering", "::mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Loop Balance Check — conduit-check-loop-balance (MVE-1)
+//===----------------------------------------------------------------------===//
+
+def ConduitCheckLoopBalance : Pass<"conduit-check-loop-balance", "::mlir::ModuleOp"> {
+  let summary = "Check that loop trip counts do not exceed conduit DMA repeat counts";
+  let description = [{
+    Emits a warning when a conduit.create channel has a finite DMA count
+    (repeat_count or iter_count attribute) and a consumer-side conduit.acquire
+    for that channel is inside a statically bounded scf.for whose trip count
+    exceeds the DMA count.
+
+    This detects the Exp C class of token-deficit deadlock at compile time:
+    the producer DMA fires N times but the consumer loop iterates T > N times,
+    causing the consumer to stall after N iterations waiting for tokens that
+    never arrive.
+
+    The check is conservative: only statically bounded loops (constant lb, ub,
+    step) are checked.  Dynamic loops are silently skipped.
+
+    This pass emits warnings only and never signals pass failure.
+    It is OPT-IN and NOT part of the default pipeline.
+
+    Run with:  aie-opt --conduit-check-loop-balance <input.mlir>
+  }];
+  let constructor = "xilinx::conduit::createConduitCheckLoopBalancePass()";
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "::mlir::scf::SCFDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES

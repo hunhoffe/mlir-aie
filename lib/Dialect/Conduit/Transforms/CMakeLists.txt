@@ -11,6 +11,7 @@ add_mlir_dialect_library(ConduitTransforms
   AirChannelToConduit.cpp
   ConduitCheckChannels.cpp
   ConduitCheckDeps.cpp
+  ConduitCheckLoopBalance.cpp
   ConduitCheckOrdering.cpp
   ConduitCheckTiers.cpp
   ConduitDepthPromotion.cpp
@@ -51,4 +52,5 @@ add_mlir_dialect_library(ConduitTransforms
   MLIRSupport
   MLIRTransformUtils
   MLIRFuncDialect
+  MLIRSCFDialect
 )

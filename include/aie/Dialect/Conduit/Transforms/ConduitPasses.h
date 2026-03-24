@@ -62,6 +62,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITINFERRATES
 #define GEN_PASS_DECL_CONDUITCHECKORDERING
 #define GEN_PASS_DECL_CONDUITCHECKTIERS
+#define GEN_PASS_DECL_CONDUITCHECKLOOPBALANCE
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -131,6 +132,11 @@ createConduitCheckOrderingPass();
 /// channel in the same aie.core region (rotation counter invariant violation).
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitCheckTiersPass();
+
+/// MVE-1 loop balance check: warn when a channel's DMA repeat count is
+/// exceeded by the static trip count of the enclosing scf.for consumer loop.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitCheckLoopBalancePass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)
