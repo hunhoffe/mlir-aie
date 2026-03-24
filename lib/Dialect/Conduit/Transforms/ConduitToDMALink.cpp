@@ -75,11 +75,246 @@ void linkPhase(ConduitToDMAState &state) {
     // Verify relay tile is a MemTile.
     bool relayIsMemTile =
         targetModel.isMemTile(memtile.getCol(), memtile.getRow());
+
+    // CoreTile relay path: when the relay is a compute tile (not a MemTile),
+    // lower as a compute-tile DMA relay. The relay tile's aie.mem gets both
+    // S2MM (receive from upstream) and MM2S (send to consumer), sharing the
+    // source conduit's relay buffers and locks.
+    //
+    // Two sub-cases:
+    //   (a) dst conduit is shared-memory (info.sharedMemory=true): only S2MM
+    //       on the relay tile; consumer reads buffers directly via shared mem.
+    //   (b) dst conduit uses DMA: S2MM + MM2S on relay, S2MM on consumer,
+    //       plus aie.flow from relay MM2S → consumer S2MM.
     if (!relayIsMemTile) {
-      linkOp.emitError("conduit-to-dma: relay tile '" + memtileStr.str() +
-                       "' is not a MemTile — conduit.link requires "
-                       "a MemTile relay for DMA forwarding");
-      state.passFailed = true;
+      std::string coreRelayName =
+          mlir::cast<mlir::StringAttr>(srcs[0]).getValue().str();
+      ConduitInfo *coreRelaySrcPtr = state.lookupConduit(coreRelayName);
+      if (!coreRelaySrcPtr) {
+        linkOp.emitError("conduit-to-dma: CoreTile relay: src conduit '" +
+                         coreRelayName + "' not found");
+        state.passFailed = true;
+        return;
+      }
+      ConduitInfo &coreRelaySrc = *coreRelaySrcPtr;
+
+      mlir::Value relayTileVal = memtile.getResult();
+
+      // Retrieve relay buffers and locks from srcInfo.
+      auto relayBufIt = coreRelaySrc.consumerTileBuffers.find(relayTileVal);
+      if (relayBufIt == coreRelaySrc.consumerTileBuffers.end() ||
+          relayBufIt->second.empty()) {
+        linkOp.emitError("conduit-to-dma: CoreTile relay: relay buffers for "
+                         "src conduit '" + coreRelayName +
+                         "' not found on relay tile '" + memtileStr.str() +
+                         "'");
+        state.passFailed = true;
+        return;
+      }
+      auto &relayBufs = relayBufIt->second;
+
+      AIE::LockOp relayProdLock, relayConsLock;
+      {
+        auto lockIt = coreRelaySrc.consumerTileLocks.find(relayTileVal);
+        if (lockIt != coreRelaySrc.consumerTileLocks.end()) {
+          relayProdLock = lockIt->second.first;
+          relayConsLock = lockIt->second.second;
+        }
+      }
+
+      int64_t relayDepth =
+          coreRelaySrc.depth > 0 ? coreRelaySrc.depth : 1;
+
+      // If relay locks are missing (e.g., shim→relay path where Phase 3 doesn't
+      // allocate consumer-side locks on the relay tile), allocate them now.
+      if (!relayProdLock && !coreRelaySrc.disableSynchronization) {
+        builder.setInsertionPoint(state.deviceBody->getTerminator());
+        {
+          int lockIdx = state.lockIdCounter[relayTileVal]++;
+          std::string symName = coreRelayName + "_cons_prod_lock_0";
+          AIE::LockOp lk = builder.create<AIE::LockOp>(
+              loc, relayTileVal, lockIdx, static_cast<int>(relayDepth));
+          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+          relayProdLock = lk;
+          coreRelaySrc.consumerTileLocks[relayTileVal].first = lk;
+        }
+        {
+          int lockIdx = state.lockIdCounter[relayTileVal]++;
+          std::string symName = coreRelayName + "_cons_cons_lock_0";
+          AIE::LockOp lk = builder.create<AIE::LockOp>(
+              loc, relayTileVal, lockIdx, 0);
+          lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
+          relayConsLock = lk;
+          coreRelaySrc.consumerTileLocks[relayTileVal].second = lk;
+        }
+      }
+
+      int64_t relayPerBufLen =
+          coreRelaySrc.capacity > 0 ? coreRelaySrc.capacity / relayDepth : 1;
+
+      // Retrieve the S2MM channel pre-assigned by Phase 4a.
+      int32_t relaySrcS2MMCh = -1;
+      {
+        auto chIt = state.conduitConsS2MMChannel.find({coreRelayName, 0u});
+        if (chIt != state.conduitConsS2MMChannel.end())
+          relaySrcS2MMCh = chIt->second;
+        else
+          relaySrcS2MMCh = state.tileNextS2MMChannel[relayTileVal]++;
+      }
+
+      // Always use DMA relay for CoreTile relay links.
+      // Phase 3c now skips linkDstNames conduits, so dst conduits are never
+      // marked sharedMemory here; we always generate S2MM + MM2S on the relay.
+      const bool allDstSharedMem = false;
+
+      // Helper: create or find the aie.mem region for the relay tile.
+      // We reuse the pre-computed tileToDMARegion map built at Phase 5.5 entry,
+      // but that hasn't been built yet (Phase 5 runs before 5.5). Walk ops now.
+      auto findOrCreateRelayMem = [&]() -> mlir::Region * {
+        // Check if an aie.mem already exists for this tile.
+        mlir::Region *existing = nullptr;
+        state.deviceOp.walk([&](AIE::MemOp m) {
+          if (m.getTile() == relayTileVal)
+            existing = &m.getBody();
+        });
+        if (existing)
+          return existing;
+        builder.setInsertionPoint(state.deviceBody->getTerminator());
+        auto memOp =
+            builder.create<AIE::MemOp>(loc, relayTileVal);
+        return &memOp.getBody();
+      };
+
+      // Emit S2MM BD chain on relay tile (receives from upstream).
+      // Then, if not all-shared-mem, append MM2S chain using same relay bufs.
+      {
+        mlir::Region *relayRegion = findOrCreateRelayMem();
+        auto addRelayBlock = [&]() -> mlir::Block * {
+          return builder.createBlock(relayRegion);
+        };
+
+        // Find or create end block.
+        mlir::Block *existEnd = nullptr;
+        for (mlir::Block &blk : *relayRegion)
+          for (mlir::Operation &op : blk)
+            if (mlir::isa<AIE::EndOp>(op))
+              existEnd = &blk;
+
+        // Build S2MM chain.
+        mlir::Block *s2mmEntry = existEnd ? existEnd : addRelayBlock();
+        if (existEnd)
+          existEnd->back().erase(); // remove old aie.end; this block continues
+
+        llvm::SmallVector<mlir::Block *> s2mmBDs;
+        for (int64_t i = 0; i < relayDepth; ++i)
+          s2mmBDs.push_back(addRelayBlock());
+
+        // S2MM exits to MM2S start (or to end if shared-mem only).
+        mlir::Block *mm2sStart = nullptr;
+        mlir::Block *endBlock = nullptr;
+        if (!allDstSharedMem) {
+          mm2sStart = addRelayBlock();
+        } else {
+          endBlock = addRelayBlock();
+        }
+        mlir::Block *s2mmExit = allDstSharedMem ? endBlock : mm2sStart;
+
+        builder.setInsertionPointToEnd(s2mmEntry);
+        builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::S2MM,
+                                        relaySrcS2MMCh, 0,
+                                        s2mmBDs[0], s2mmExit);
+
+        for (int64_t i = 0; i < relayDepth; ++i) {
+          mlir::Value acqLock =
+              relayProdLock ? relayProdLock.getResult() : mlir::Value{};
+          mlir::Value relLock =
+              relayConsLock ? relayConsLock.getResult() : mlir::Value{};
+          state.emitBDBlock(loc, s2mmBDs[i],
+                            acqLock, state.lockAcqValue(Port::Produce, 1),
+                            relayBufs[i % relayBufs.size()].getResult(),
+                            0, relayPerBufLen,
+                            relLock, state.lockRelValue(Port::Produce));
+          builder.create<AIE::NextBDOp>(loc, s2mmBDs[(i + 1) % relayDepth]);
+        }
+
+        if (allDstSharedMem) {
+          // Shared-memory-only case: just add aie.end after S2MM.
+          builder.setInsertionPointToEnd(endBlock);
+          builder.create<AIE::EndOp>(loc);
+        } else {
+          // DMA relay case: add MM2S chain for each dst.
+          // Use one MM2S channel per dst conduit.
+          mlir::Block *prevMM2SBlock = mm2sStart;
+          for (unsigned dstIdx = 0; dstIdx < static_cast<unsigned>(dsts.size());
+               ++dstIdx) {
+            std::string dstName =
+                mlir::cast<mlir::StringAttr>(dsts[dstIdx]).getValue().str();
+            ConduitInfo *dstInfo = state.lookupConduit(dstName);
+            if (!dstInfo || dstInfo->consumerTileCoords.empty()) {
+              continue;
+            }
+
+            // Allocate MM2S channel on relay tile.
+            int32_t mm2sCh = state.tileNextMM2SChannel[relayTileVal]++;
+
+            // Emit flows and record S2MM channels on consumer tiles.
+            for (unsigned consIdx = 0;
+                 consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
+              auto [consCol, consRow] = dstInfo->consumerTileCoords[consIdx];
+              AIE::TileOp consTile =
+                  state.lookupTileByCoord(consCol, consRow);
+              if (!consTile) continue;
+              mlir::Value consTileVal = consTile.getResult();
+              int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
+              state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+              builder.setInsertionPoint(state.deviceBody->getTerminator());
+              builder.create<AIE::FlowOp>(loc, relayTileVal,
+                                          AIE::WireBundle::DMA, mm2sCh,
+                                          consTileVal,
+                                          AIE::WireBundle::DMA, s2mmCh);
+            }
+
+            // Build MM2S BD chain for this dst.
+            llvm::SmallVector<mlir::Block *> mm2sBDs;
+            for (int64_t i = 0; i < relayDepth; ++i)
+              mm2sBDs.push_back(addRelayBlock());
+
+            bool isLastDst = (dstIdx + 1 == static_cast<unsigned>(dsts.size()));
+            mlir::Block *nextChainOrEnd =
+                isLastDst ? addRelayBlock() : addRelayBlock();
+            if (isLastDst)
+              endBlock = nextChainOrEnd;
+
+            builder.setInsertionPointToEnd(prevMM2SBlock);
+            builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S,
+                                            mm2sCh, 0,
+                                            mm2sBDs[0], nextChainOrEnd);
+
+            for (int64_t i = 0; i < relayDepth; ++i) {
+              // MM2S: acq consLock (data ready), send, rel prodLock (space free)
+              mlir::Value acqLock =
+                  relayConsLock ? relayConsLock.getResult() : mlir::Value{};
+              mlir::Value relLock =
+                  relayProdLock ? relayProdLock.getResult() : mlir::Value{};
+              state.emitBDBlock(loc, mm2sBDs[i],
+                                acqLock, state.lockAcqValue(Port::Consume, 1),
+                                relayBufs[i % relayBufs.size()].getResult(),
+                                0, relayPerBufLen,
+                                relLock, state.lockRelValue(Port::Consume));
+              builder.create<AIE::NextBDOp>(loc,
+                                            mm2sBDs[(i + 1) % relayDepth]);
+            }
+
+            prevMM2SBlock = nextChainOrEnd;
+          }
+          if (endBlock) {
+            builder.setInsertionPointToEnd(endBlock);
+            builder.create<AIE::EndOp>(loc);
+          }
+        }
+      }
+
+      linkOpsToErase.push_back(linkOp);
       return;
     }
 
@@ -965,11 +1200,12 @@ void linkPhase(ConduitToDMAState &state) {
           return;
         }
         {
+          int64_t nBufs = info.nConsumerBuffers();
           auto addBlock = [&]() -> mlir::Block * {
             return builder.createBlock(memRegion);
           };
           llvm::SmallVector<mlir::Block *> bdBlocks;
-          for (int64_t i = 0; i < depth; ++i)
+          for (int64_t i = 0; i < nBufs; ++i)
             bdBlocks.push_back(addBlock());
           mlir::Block *newEndBlock = addBlock();
 
@@ -982,7 +1218,7 @@ void linkPhase(ConduitToDMAState &state) {
               joinMM2SChannel, static_cast<int32_t>(0),
               bdBlocks[0], newEndBlock);
 
-          for (int64_t i = 0; i < depth; ++i) {
+          for (int64_t i = 0; i < nBufs; ++i) {
             mlir::Value acqLock = isAIE2 ? info.consLock.getResult()
                 : (info.aie1Locks.empty() ? info.consLock.getResult()
                        : info.aie1Locks[i % info.aie1Locks.size()].getResult());
@@ -993,7 +1229,7 @@ void linkPhase(ConduitToDMAState &state) {
                 info.buffers[i % info.buffers.size()].getResult(), 0, perBufLen,
                 relLock, state.lockRelValue(Port::Consume));
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                          bdBlocks[(i + 1) % depth]);
+                                          bdBlocks[(i + 1) % nBufs]);
           }
           builder.setInsertionPointToEnd(newEndBlock);
           builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -1006,12 +1242,13 @@ void linkPhase(ConduitToDMAState &state) {
         memRegion = &memOp.getBody();
         tileToDMARegion[prodTileVal] = memRegion;   // register for later phases
 
+        int64_t nBufs = info.nConsumerBuffers();
         auto addMemBlock = [&]() -> mlir::Block * {
           return builder.createBlock(memRegion);
         };
         mlir::Block *dmaStartBlock = addMemBlock();
         llvm::SmallVector<mlir::Block *> bdBlocks;
-        for (int64_t i = 0; i < depth; ++i)
+        for (int64_t i = 0; i < nBufs; ++i)
           bdBlocks.push_back(addMemBlock());
         mlir::Block *endMemBlock = addMemBlock();
 
@@ -1022,7 +1259,7 @@ void linkPhase(ConduitToDMAState &state) {
                                         static_cast<int32_t>(0),
                                         bdBlocks[0], endMemBlock);
 
-        for (int64_t i = 0; i < depth; ++i) {
+        for (int64_t i = 0; i < nBufs; ++i) {
           mlir::Value acqLock = isAIE2 ? info.consLock.getResult()
               : (info.aie1Locks.empty() ? info.consLock.getResult()
                      : info.aie1Locks[i % info.aie1Locks.size()].getResult());
@@ -1033,7 +1270,7 @@ void linkPhase(ConduitToDMAState &state) {
               info.buffers[i % info.buffers.size()].getResult(), 0, perBufLen,
               relLock, state.lockRelValue(Port::Consume));
           builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                        bdBlocks[(i + 1) % depth]);
+                                        bdBlocks[(i + 1) % nBufs]);
         }
         builder.setInsertionPointToEnd(endMemBlock);
         builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -1318,7 +1555,7 @@ void linkPhase(ConduitToDMAState &state) {
           static_cast<int32_t>(info.iterCount - 1) : 0;
       int64_t caseBBdRepeat = info.bdChainRepeatCount > 1 ?
           info.bdChainRepeatCount : 1;
-      int64_t caseBEffectiveBDs = depth * caseBBdRepeat;
+      int64_t caseBEffectiveBDs = info.nConsumerBuffers() * caseBBdRepeat;
 
       if (existingDMARegion) {
         mlir::Region &memRegion = *existingDMARegion;

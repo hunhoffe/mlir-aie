@@ -102,10 +102,14 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     }
 
     // Phase 3c path (shared memory, adjacent tiles).
+    // Link dst conduits skip shared-memory detection: the link relay changes
+    // data routing, so the relay's adjacent producer tile is not a direct
+    // shared-memory provider. These conduits take the normal DMA path.
     if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
         info.shimConsumerTileCoords.empty() &&
         !state.linkSrcNamesEarly.count(name) &&
-        !state.linkJoinSrcNames.count(name)) {
+        !state.linkJoinSrcNames.count(name) &&
+        !state.linkDstNames.count(name)) {
       auto [prodCol, prodRow] = info.producerTileCoord;
       auto [consCol, consRow] = info.consumerTileCoords[0];
       bool prodIsShim = (prodRow == 0);
@@ -409,11 +413,14 @@ void allocPhase(ConduitToDMAState &state) {
     // If producer and single consumer are adjacent tiles, buffers and locks
     // go on the producer (or alloc_tile delegate) — no DMA needed.
     // Skip when via_DMA=true: force DMA path even for adjacent tiles.
+    // Skip link dst conduits: the link relay changes data routing, so the
+    // relay's adjacent producer is not a direct shared-memory provider.
     // -------------------------------------------------------------------
     if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
         info.shimConsumerTileCoords.empty() &&
         !state.linkSrcNamesEarly.count(name) &&
-        !state.linkJoinSrcNames.count(name)) {
+        !state.linkJoinSrcNames.count(name) &&
+        !state.linkDstNames.count(name)) {
       auto [prodCol, prodRow] = info.producerTileCoord;
       auto [consCol, consRow] = info.consumerTileCoords[0];
       bool prodIsShim = (prodRow == 0);
