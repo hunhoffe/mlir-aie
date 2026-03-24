@@ -291,6 +291,9 @@ struct AirChannelToConduitPass
 
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<ConduitDialect>();
+    // AIE dialect needed: Pass B emits aie.put_cascade / aie.get_cascade
+    // directly for cascade channels (routing_mode="cascade").
+    registry.insert<xilinx::AIE::AIEDialect>();
     // memref and arith needed for cascade load/store in put/get lowering.
     registry.insert<mlir::memref::MemRefDialect>();
     registry.insert<mlir::arith::ArithDialect>();
@@ -940,18 +943,13 @@ struct AirChannelToConduitPass
           mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
           mlir::Value loadedVal = builder.create<mlir::memref::LoadOp>(
               loc, memrefVal, mlir::ValueRange{c0});
-          newOp = builder.create<PutCascade>(
-              loc,
-              mlir::FlatSymbolRefAttr::get(ctx, chanName),
-              loadedVal);
+          newOp = builder.create<AIE::PutCascadeOp>(loc, loadedVal);
         } else {
           // Get the cascade value and store it into the memref.
-          auto getCascOp = builder.create<GetCascade>(
-              loc, elemTy,
-              mlir::FlatSymbolRefAttr::get(ctx, chanName));
+          auto getCascOp = builder.create<AIE::GetCascadeOp>(loc, elemTy);
           mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
           builder.create<mlir::memref::StoreOp>(
-              loc, getCascOp.getValue(), memrefVal, mlir::ValueRange{c0});
+              loc, getCascOp.getCascadeValue(), memrefVal, mlir::ValueRange{c0});
           newOp = getCascOp;
         }
         // Cascade ops have no async token result.
@@ -1115,6 +1113,22 @@ struct AirChannelToConduitPass
         bool hasPuts = (pIt != putElemsMap.end() && !pIt->second.empty());
         bool hasGets = (gIt != getElemsMap.end() && !gIt->second.empty());
         if (!hasPuts || !hasGets) return;
+        // MVE-2: sliding-window guard.
+        // If max(get num_elems) > min(put num_elems), the consumer fetches more
+        // elements per step than the producer sends — sliding-window pattern.
+        // Attaching rates would give M6 an unbalanced consumer rate, causing a
+        // false rejection.  Skip rate annotation and emit a remark.
+        int64_t maxGet = *llvm::max_element(gIt->second);
+        int64_t minPut = *llvm::min_element(pIt->second);
+        if (maxGet > minPut) {
+          op->emitRemark(
+              "conduit-air-channel: skipping CSDF rate annotation for "
+              "sliding-window channel '")
+              << name
+              << "' (max get_elems=" << maxGet << " > min put_elems=" << minPut
+              << "); use explicit producer_rates/consumer_rates with window_size";
+          return;
+        }
         op->setAttr("producer_rates",
                     mlir::DenseI64ArrayAttr::get(ctx, pIt->second));
         op->setAttr("consumer_rates",

@@ -130,6 +130,11 @@ struct FifoInfo {
   // sequence is correct for the conduit.create's M6 check).
   llvm::SmallVector<int64_t> inferredProducerRates;
   llvm::SmallVector<int64_t> inferredConsumerRates;
+  // MVE-2: set when Phase 1.5 detected a sliding-window pattern
+  // (max acquire count > min release count on the Consume port).  Phase 2
+  // uses this to emit a remark and skip rate annotation instead of silently
+  // leaving rates empty.
+  bool slidingWindowSkip = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -141,6 +146,9 @@ struct ObjectFifoToConduitPass
 
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<ConduitDialect>();
+    // AIE dialect needed: Pass A emits aie.put_cascade / aie.get_cascade
+    // directly for cascade objectfifos (routing_mode="cascade").
+    registry.insert<xilinx::AIE::AIEDialect>();
   }
 
   // -----------------------------------------------------------------------
@@ -294,6 +302,9 @@ struct ObjectFifoToConduitPass
     });
 
     // Collect Produce-port release counts per (fifoName, CoreOp).
+    // Also collect Consume-port release counts for sliding-window detection.
+    // Sliding-window: consumer acquire count > consumer release count per step.
+    llvm::DenseMap<CoreKey, llvm::SmallVector<int64_t>> perCoreConsumeRelCounts;
     module.walk([&](AIE::ObjectFifoReleaseOp op) {
       auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
       mlir::Operation *coreOp = op->getParentOp();
@@ -301,11 +312,14 @@ struct ObjectFifoToConduitPass
         coreOp = coreOp->getParentOp();
       if (!coreOp)
         return;
+      CoreKey key = {nameAttr, coreOp};
       if (op.getPort() == AIE::ObjectFifoPort::Produce) {
-        CoreKey key = {nameAttr, coreOp};
         perCoreProduceCounts[key].push_back(
             static_cast<int64_t>(op.getSize()));
         fifoProducerCore[nameAttr] = coreOp;
+      } else if (op.getPort() == AIE::ObjectFifoPort::Consume) {
+        perCoreConsumeRelCounts[key].push_back(
+            static_cast<int64_t>(op.getSize()));
       }
     });
 
@@ -335,18 +349,42 @@ struct ObjectFifoToConduitPass
         // infer-rates: for single-consumer fifos, derive producer/consumer
         // rates from the release/acquire sequences.
         if (inferRates) {
-          // Consumer rates = the acquire count sequence for this core.
-          info.inferredConsumerRates.assign(counts.begin(), counts.end());
+          // MVE-2: sliding-window guard.
+          // A sliding-window fifo has acquire_count > release_count per step
+          // (consumer keeps K elements in the window, releases M < K).
+          // M6 checks CSDF balance on net token rates; attaching rates derived
+          // from acquire counts would report a false balance violation because
+          // the acquire count is not the net rate — the release count is.
+          // Guard: if max(acquireCounts) > min(Consume-side releaseCounts),
+          // this is a sliding-window — skip rate annotation and emit a remark.
+          CoreKey consKey = {nameAttr, consumerCores[0]};
+          auto relIt = perCoreConsumeRelCounts.find(consKey);
+          bool isSlidingWindow = false;
+          if (relIt != perCoreConsumeRelCounts.end() &&
+              !relIt->second.empty()) {
+            int64_t maxAcq = *llvm::max_element(counts);
+            int64_t minRel = *llvm::min_element(relIt->second);
+            if (maxAcq > minRel)
+              isSlidingWindow = true;
+          }
+          if (isSlidingWindow) {
+            // Leave inferredProducerRates/inferredConsumerRates empty.
+            // Mark for remark emission in Phase 2.
+            info.slidingWindowSkip = true;
+          } else {
+            // Consumer rates = the acquire count sequence for this core.
+            info.inferredConsumerRates.assign(counts.begin(), counts.end());
 
-          // Producer rates = the release count sequence from the producer core.
-          auto prodIt = fifoProducerCore.find(nameAttr);
-          if (prodIt != fifoProducerCore.end()) {
-            CoreKey prodKey = {nameAttr, prodIt->second};
-            auto prodCountIt = perCoreProduceCounts.find(prodKey);
-            if (prodCountIt != perCoreProduceCounts.end() &&
-                !prodCountIt->second.empty()) {
-              info.inferredProducerRates.assign(prodCountIt->second.begin(),
-                                                prodCountIt->second.end());
+            // Producer rates = the release count sequence from the producer core.
+            auto prodIt = fifoProducerCore.find(nameAttr);
+            if (prodIt != fifoProducerCore.end()) {
+              CoreKey prodKey = {nameAttr, prodIt->second};
+              auto prodCountIt = perCoreProduceCounts.find(prodKey);
+              if (prodCountIt != perCoreProduceCounts.end() &&
+                  !prodCountIt->second.empty()) {
+                info.inferredProducerRates.assign(prodCountIt->second.begin(),
+                                                  prodCountIt->second.end());
+              }
             }
           }
         }
@@ -443,6 +481,16 @@ struct ObjectFifoToConduitPass
               << name
               << "' — per-consumer acquire sequences differ; use explicit "
                  "annotations or --conduit-infer-rates for Pass B programs";
+        } else if (info.slidingWindowSkip) {
+          // MVE-2: sliding-window fifo: skip rate annotation with a remark.
+          // Attaching rates from acquire counts would give M6 an unbalanced
+          // rate (acquire > release per step), causing a false rejection.
+          op.emitRemark(
+              "conduit-objectfifo: skipping CSDF rate annotation for "
+              "sliding-window fifo '")
+              << name
+              << "' (acquire_count > release_count); use explicit "
+                 "producer_rates/consumer_rates with window_size for M7 check";
         } else if (!info.inferredProducerRates.empty() &&
                    !info.inferredConsumerRates.empty()) {
           inferredPRAttr =
@@ -1024,9 +1072,8 @@ struct ObjectFifoToConduitPass
             if (port == Port::Consume) {
               // Scalar element type (e.g., i32 from memref<1xi32>).
               mlir::Type elemTy = elemType.getElementType();
-              auto getCascOp = builder.create<GetCascade>(
-                  loc, elemTy, mlir::FlatSymbolRefAttr::get(ctx, name));
-              mlir::Value cascVal = getCascOp.getValue(); // scalar i32/vector
+              auto getCascOp = builder.create<AIE::GetCascadeOp>(loc, elemTy);
+              mlir::Value cascVal = getCascOp.getCascadeValue(); // scalar i32/vector
 
               mlir::Value subviewResult = op.getResult();
               for (mlir::Operation *user :
@@ -1237,8 +1284,7 @@ struct ObjectFifoToConduitPass
 
               if (storedVal) {
                 builder.setInsertionPoint(op);
-                builder.create<PutCascade>(
-                    loc, mlir::FlatSymbolRefAttr::get(ctx, name), storedVal);
+                builder.create<AIE::PutCascadeOp>(loc, storedVal);
               } else {
                 op->emitWarning(
                     "objectfifo-to-conduit: cascade Produce '")
@@ -1490,8 +1536,6 @@ struct ObjectFifoToConduitPass
           deviceOp.walk([&](PutMemrefAsync op)       { revertIfRenamed(op); });
           deviceOp.walk([&](GetMemrefAsync op)       { revertIfRenamed(op); });
           deviceOp.walk([&](WaitWindow op)           { revertIfRenamed(op); });
-          deviceOp.walk([&](PutCascade op)           { revertIfRenamed(op); });
-          deviceOp.walk([&](GetCascade op)           { revertIfRenamed(op); });
           deviceOp.walk([&](RegisterExternalBuffers op) { revertIfRenamed(op); });
           // Also revert srcs/dsts arrays on distribute/join/forward ops.
           // replaceAllSymbolUses renames FlatSymbolRefAttr elements inside
