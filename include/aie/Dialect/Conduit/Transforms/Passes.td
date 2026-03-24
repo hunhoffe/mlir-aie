@@ -53,6 +53,13 @@ def ObjectFifoToConduit : Pass<"objectfifo-to-conduit", "::mlir::ModuleOp"> {
 
   let constructor = "xilinx::conduit::createObjectFifoToConduitPass()";
 
+  let options = [
+    Option<"inferRates", "infer-rates", "bool", /*default=*/"false",
+           "Attach CSDF producer_rates/consumer_rates from objectfifo acquire "
+           "patterns (single-consumer fifos only). Multi-consumer fifos are "
+           "skipped with a remark. Default false to preserve existing behavior.">,
+  ];
+
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
     "xilinx::AIE::AIEDialect",

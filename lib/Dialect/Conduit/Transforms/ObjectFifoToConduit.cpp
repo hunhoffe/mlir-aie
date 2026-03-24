@@ -124,6 +124,12 @@ struct FifoInfo {
   // elemNumber (e.g., {2 : i32, 4 : i32} meaning producer depth=2,
   // consumer 0 depth=4).  Empty when all consumers share the uniform depth.
   llvm::SmallVector<int64_t> consumerDepths;
+  // CSDF rates inferred from Phase 1.5 acquire/release scans (infer-rates=true).
+  // Only populated for single-consumer fifos.  For multi-consumer fifos,
+  // rate annotation is skipped (per-consumer rates differ; no single merged rate
+  // sequence is correct for the conduit.create's M6 check).
+  llvm::SmallVector<int64_t> inferredProducerRates;
+  llvm::SmallVector<int64_t> inferredConsumerRates;
 };
 
 // ---------------------------------------------------------------------------
@@ -238,47 +244,124 @@ struct ObjectFifoToConduitPass
       fifoInfoMap[op.getSymNameAttr()] = std::move(info);
     });
 
-    // Phase 1.5: detect cyclostatic (CSDF) access patterns.
+    // Phase 1.5: detect cyclostatic (CSDF) access patterns and (when
+    // infer-rates=true) infer CSDF producer_rates/consumer_rates.
     //
-    // For each objectfifo, collect the sequence of acquire counts from all
-    // Consume-port acquire ops that reference it (in module walk order, which
-    // approximates program order within a flat core body).  If the sequence
-    // has more than one distinct value, it is a cyclostatic pattern and we
-    // record it in fifoInfoMap[name].accessPattern.
+    // Bug fix: previously consumeAcquireCounts accumulated counts from ALL
+    // consumer cores for each fifo name, merging them in DFS walk order.
+    // For multi-consumer fifos (core A: always acquire 1, core B: always
+    // acquire 2), this produced [1, 2] — a spurious CSDF pattern.
     //
-    // Limitation: acquires inside scf.for loops are visited multiple times by
-    // module.walk, but each unique acquire op appears exactly once.  For the
-    // corpus files (acquire 1 / acquire 2 / acquire 1 as three separate ops)
-    // this gives the correct pattern [1, 2, 1].  Acquire ops inside loops that
-    // all use the same count do not create a cyclostatic pattern.
+    // Fix: track per-(fifoName, CoreOp) using a pair key.  Each core's
+    // sequence is collected independently.  The merged accessPattern is
+    // derived only from a single consumer core (the first one found), and
+    // only when it is the sole consumer.
+    //
+    // For infer-rates=true:
+    //   - Single-consumer fifos: derive producer_rates from Produce-port
+    //     release counts and consumer_rates from the single consumer core's
+    //     Consume-port acquire counts.
+    //   - Multi-consumer fifos: skip with a remark.
 
-    // Per-fifo: ordered list of (Consume) acquire counts seen in program order.
-    //
-    // Fix 4p: Note: consumeAcquireCounts accumulates counts across ALL cores
-    // for each fifo name via module.walk. For multi-consumer fifos, this
-    // merges patterns from different cores in DFS walk order, which does not
-    // correspond to any single core's CSDF pattern.
-    llvm::DenseMap<mlir::StringAttr, llvm::SmallVector<int64_t>>
-        consumeAcquireCounts;
+    // Per-(fifoName, CoreOp): ordered list of (Consume) acquire counts in
+    // program order within that core.
+    using CoreKey = std::pair<mlir::StringAttr, mlir::Operation *>;
+    llvm::DenseMap<CoreKey, llvm::SmallVector<int64_t>> perCoreConsumeCounts;
+    // Per-(fifoName, CoreOp): ordered list of (Produce) release counts.
+    llvm::DenseMap<CoreKey, llvm::SmallVector<int64_t>> perCoreProduceCounts;
+    // Number of distinct consumer cores per fifo name.
+    llvm::DenseMap<mlir::StringAttr, llvm::SmallVector<mlir::Operation *>>
+        fifoConsumerCores;
+    // Number of distinct producer cores per fifo name.
+    llvm::DenseMap<mlir::StringAttr, mlir::Operation *> fifoProducerCore;
 
     module.walk([&](AIE::ObjectFifoAcquireOp op) {
-      // Only Consume-port acquires determine the consumer access pattern.
-      if (op.getPort() != AIE::ObjectFifoPort::Consume)
-        return;
       auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
-      consumeAcquireCounts[nameAttr].push_back(op.acqNumber());
+      // Find the enclosing aie.core op.
+      mlir::Operation *coreOp = op->getParentOp();
+      while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+        coreOp = coreOp->getParentOp();
+      if (!coreOp)
+        return;
+      if (op.getPort() == AIE::ObjectFifoPort::Consume) {
+        CoreKey key = {nameAttr, coreOp};
+        perCoreConsumeCounts[key].push_back(op.acqNumber());
+        // Track distinct consumer cores.
+        auto &consumerList = fifoConsumerCores[nameAttr];
+        if (llvm::find(consumerList, coreOp) == consumerList.end())
+          consumerList.push_back(coreOp);
+      }
     });
 
-    // For each fifo, if the counts are not all equal, record the pattern.
-    for (auto &[nameAttr, counts] : consumeAcquireCounts) {
-      if (counts.empty())
+    // Collect Produce-port release counts per (fifoName, CoreOp).
+    module.walk([&](AIE::ObjectFifoReleaseOp op) {
+      auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
+      mlir::Operation *coreOp = op->getParentOp();
+      while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
+        coreOp = coreOp->getParentOp();
+      if (!coreOp)
+        return;
+      if (op.getPort() == AIE::ObjectFifoPort::Produce) {
+        CoreKey key = {nameAttr, coreOp};
+        perCoreProduceCounts[key].push_back(
+            static_cast<int64_t>(op.getSize()));
+        fifoProducerCore[nameAttr] = coreOp;
+      }
+    });
+
+    // For each fifo, derive accessPattern from the single consumer core's
+    // acquire sequence (only when there is exactly one consumer core).
+    // For multi-consumer fifos, do NOT merge across cores.
+    for (auto &[nameAttr, consumerCores] : fifoConsumerCores) {
+      auto fifoIt = fifoInfoMap.find(nameAttr);
+      if (fifoIt == fifoInfoMap.end())
         continue;
-      // Check uniformity.
-      bool uniform = llvm::all_of(counts, [&](int64_t c) { return c == counts[0]; });
-      if (!uniform) {
-        auto it = fifoInfoMap.find(nameAttr);
-        if (it != fifoInfoMap.end())
-          it->second.accessPattern = counts;
+      FifoInfo &info = fifoIt->second;
+
+      if (consumerCores.size() == 1) {
+        // Single consumer core: use its acquire sequence as the access pattern.
+        CoreKey key = {nameAttr, consumerCores[0]};
+        auto countIt = perCoreConsumeCounts.find(key);
+        if (countIt == perCoreConsumeCounts.end())
+          continue;
+        const auto &counts = countIt->second;
+        if (counts.empty())
+          continue;
+        bool uniform = llvm::all_of(counts,
+                                    [&](int64_t c) { return c == counts[0]; });
+        if (!uniform)
+          info.accessPattern = counts;
+
+        // infer-rates: for single-consumer fifos, derive producer/consumer
+        // rates from the release/acquire sequences.
+        if (inferRates) {
+          // Consumer rates = the acquire count sequence for this core.
+          info.inferredConsumerRates.assign(counts.begin(), counts.end());
+
+          // Producer rates = the release count sequence from the producer core.
+          auto prodIt = fifoProducerCore.find(nameAttr);
+          if (prodIt != fifoProducerCore.end()) {
+            CoreKey prodKey = {nameAttr, prodIt->second};
+            auto prodCountIt = perCoreProduceCounts.find(prodKey);
+            if (prodCountIt != perCoreProduceCounts.end() &&
+                !prodCountIt->second.empty()) {
+              info.inferredProducerRates.assign(prodCountIt->second.begin(),
+                                                prodCountIt->second.end());
+            }
+          }
+        }
+      } else {
+        // Multi-consumer fifo: do NOT merge acquire counts from multiple cores.
+        // Each core may have a different (but internally uniform or CSDF)
+        // pattern; merging them into one sequence produces a spurious CSDF
+        // pattern that does not correspond to any single actor's rate.
+        if (inferRates) {
+          // Emit a remark on the conduit.create location (not available here;
+          // the remark is emitted in Phase 2 where the op is built).
+          // Just leave inferredProducerRates/inferredConsumerRates empty.
+          // Phase 2 will detect the empty rates and emit the remark.
+        }
+        // accessPattern: keep empty (no merged multi-consumer pattern).
       }
     }
 
@@ -342,6 +425,32 @@ struct ObjectFifoToConduitPass
       if (!info.accessPattern.empty())
         accessPatternAttr =
             mlir::DenseI64ArrayAttr::get(ctx, info.accessPattern);
+
+      // infer-rates: attach CSDF producer_rates/consumer_rates when inferred.
+      // For multi-consumer fifos, inferred rates are empty — emit a remark.
+      mlir::DenseI64ArrayAttr inferredPRAttr;
+      mlir::DenseI64ArrayAttr inferredCRAttr;
+      if (inferRates) {
+        // Count the number of non-shim consumer tiles to detect multi-consumer.
+        int64_t numConsumers = static_cast<int64_t>(
+            info.consumerTilesArr.size() / 2 +
+            info.shimConsumerTilesArr.size() / 2);
+        if (numConsumers > 1) {
+          // Multi-consumer fifo: skip rate annotation with a remark.
+          op.emitRemark(
+              "conduit-objectfifo: skipping CSDF rate annotation for "
+              "multi-consumer fifo '")
+              << name
+              << "' — per-consumer acquire sequences differ; use explicit "
+                 "annotations or --conduit-infer-rates for Pass B programs";
+        } else if (!info.inferredProducerRates.empty() &&
+                   !info.inferredConsumerRates.empty()) {
+          inferredPRAttr =
+              mlir::DenseI64ArrayAttr::get(ctx, info.inferredProducerRates);
+          inferredCRAttr =
+              mlir::DenseI64ArrayAttr::get(ctx, info.inferredConsumerRates);
+        }
+      }
 
       // Extract repeat_count from the source objectfifo, if present.
       // Propagated unconditionally (any value including >1) so Pass C can set
@@ -485,8 +594,8 @@ struct ObjectFifoToConduitPass
           /*link_mode=*/mlir::StringAttr{},
           accessPatternAttr,
           routingModeAttr,
-          /*producer_rates=*/mlir::DenseI64ArrayAttr{},
-          /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
+          /*producer_rates=*/inferredPRAttr,
+          /*consumer_rates=*/inferredCRAttr,
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
           repeatCountAttr,
           consumerDepthsAttr,
