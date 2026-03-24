@@ -61,6 +61,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITCHECKDEPS
 #define GEN_PASS_DECL_CONDUITINFERRATES
 #define GEN_PASS_DECL_CONDUITCHECKORDERING
+#define GEN_PASS_DECL_CONDUITCHECKTIERS
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -125,6 +126,11 @@ createConduitInferRatesPass();
 /// tile fire at overlapping CSDF phases (ambiguous ordering).
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitCheckOrderingPass();
+
+/// M-12 tier check: error when Tier 2 and Tier 3 ops reference the same
+/// channel in the same aie.core region (rotation counter invariant violation).
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitCheckTiersPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

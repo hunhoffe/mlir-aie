@@ -560,6 +560,43 @@ def AirChannelIndexFlattener : Pass<"air-channel-flatten-indices", "::mlir::Modu
 }
 
 //===----------------------------------------------------------------------===//
+// Tier Check — conduit-check-tiers (M-12 mixed-tier verifier)
+//===----------------------------------------------------------------------===//
+
+def ConduitCheckTiers : Pass<"conduit-check-tiers", "::mlir::ModuleOp"> {
+  let summary = "M-12: error when Tier 2 and Tier 3 ops reference the same channel in the same aie.core";
+  let description = [{
+    Analysis pass that rejects programs mixing Tier 2 (acquire/release) and
+    Tier 3 (get_memref/put_memref) ops for the same channel name within the
+    same aie.core region.
+
+    The bug: Tier 2 ops maintain a rotation counter inside the core body that
+    selects the current physical buffer.  Tier 3 ops bypass this counter — they
+    issue DMA transfers without advancing it.  If both tiers reference the same
+    channel in the same core, the next Tier 2 acquire reads from the wrong
+    physical buffer, producing a silent hardware correctness bug.
+
+    Valid cross-endpoint mixing is NOT rejected:
+      - Tier 3 on the shim producer + Tier 2 on a compute core consumer is the
+        canonical ObjectFIFO shim-to-core pattern and remains valid.
+      - Same channel name in different aie.core regions is valid (no shared
+        rotation counter across cores).
+
+    This pass emits hard errors and signals pass failure on violation.
+    It is OPT-IN and NOT part of the default pipeline.
+
+    Run with:  aie-opt --conduit-check-tiers <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitCheckTiersPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // Ordering Check — conduit-check-ordering (CSDFa static-ordering verifier)
 //===----------------------------------------------------------------------===//
 
