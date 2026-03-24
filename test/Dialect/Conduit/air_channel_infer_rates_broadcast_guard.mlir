@@ -1,0 +1,79 @@
+// RUN: aie-opt --allow-unregistered-dialect "--air-channel-to-conduit=infer-rates=true" %s 2>&1 | FileCheck %s
+//
+// Pass B broadcast guard for Phase 6 infer-rates.
+//
+// Verifies two things:
+//
+// 1. SPSC channel (@spsc_chan): no broadcast_shape → rates ARE annotated.
+// 2. Broadcast channel (@bcast_chan, broadcast_shape=[1,4]): rates are NOT
+//    annotated even with infer-rates=true, because capacity=4 is a fan-out
+//    count (not buffer slots) and M7 would misinterpret it.
+//
+// MLIR prints attributes alphabetically; conduit.create for spsc_chan appears
+// first (declaration order).
+//
+// The broadcast remark appears on stderr (merged via 2>&1) before the module
+// output. Use CHECK-LABEL on "module" to skip past the remark lines.
+
+// CHECK-LABEL: module
+
+// SPSC: consumer_rates and producer_rates attached.
+// CHECK: conduit.create
+// CHECK-SAME: consumer_rates = array<i64: 1>
+// CHECK-SAME: name = "spsc_chan"
+// CHECK-SAME: producer_rates = array<i64: 1>
+
+// Broadcast: capacity=4 (fan-out), NO producer_rates or consumer_rates.
+// After matching the bcast_chan create line, CHECK-NOT asserts producer_rates
+// does not appear on any remaining line (nothing follows bcast_chan in the
+// module-level IR).
+// CHECK: conduit.create
+// CHECK-SAME: capacity = 4
+// CHECK-SAME: name = "bcast_chan"
+// CHECK-NOT: producer_rates
+// CHECK-NOT: consumer_rates
+
+module {
+  // SPSC channel: scalar, no broadcast_shape.
+  "air.channel"() {sym_name = "spsc_chan", size = [1, 1]} : () -> ()
+
+  // Broadcast channel: broadcast_shape=[1,4] → capacity=4 (fan-out count).
+  "air.channel"() {sym_name = "bcast_chan", size = [1, 1],
+                   broadcast_shape = array<i64: 1, 4>} : () -> ()
+
+  func.func @producer_spsc(%buf : memref<64xi32>) {
+    // Scalar transfer: no offsets/sizes/strides → num_elems = 1.
+    "air.channel.put"(%buf)
+        {chan_name = @spsc_chan,
+         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+        : (memref<64xi32>) -> ()
+    return
+  }
+
+  func.func @consumer_spsc(%buf : memref<64xi32>) {
+    // Scalar transfer: no offsets/sizes/strides → num_elems = 1.
+    "air.channel.get"(%buf)
+        {chan_name = @spsc_chan,
+         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+        : (memref<64xi32>) -> ()
+    return
+  }
+
+  func.func @producer_bcast(%buf : memref<64xi32>) {
+    // Scalar transfer on broadcast channel.
+    "air.channel.put"(%buf)
+        {chan_name = @bcast_chan,
+         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+        : (memref<64xi32>) -> ()
+    return
+  }
+
+  func.func @consumer_bcast(%buf : memref<64xi32>) {
+    // Scalar transfer on broadcast channel (one of N consumers).
+    "air.channel.get"(%buf)
+        {chan_name = @bcast_chan,
+         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+        : (memref<64xi32>) -> ()
+    return
+  }
+}

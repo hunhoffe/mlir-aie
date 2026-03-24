@@ -120,6 +120,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
@@ -334,6 +335,14 @@ struct AirChannelToConduitPass
     llvm::StringMap<llvm::SmallVector<std::pair<int64_t, int64_t>>>
         channelConsumerTiles;
 
+    // Broadcast guard for Phase 6 infer-rates: track which channel names were
+    // detected as broadcast channels (broadcast_shape attribute present and
+    // product > 1).  Phase 6 skips rate annotation for these channels because
+    // their conduit.create capacity = product(broadcast_shape) represents fan-out
+    // count, not buffer slots.  M7 would misinterpret the inflated capacity as
+    // buffer capacity and produce wrong CSDF occupancy checks.
+    llvm::StringSet<> broadcastChannelNames;
+
     // Walk and collect all ops of interest.
     module.walk([&](mlir::Operation *op) {
       if (isAirChannelDecl(op))
@@ -425,6 +434,8 @@ struct AirChannelToConduitPass
           for (int64_t dim : denseAttr.asArrayRef())
             broadcastCapacity *= dim;
           isBroadcast = true;
+          // Record broadcast channel name so Phase 6 can skip rate annotation.
+          broadcastChannelNames.insert(name);
           // Check if we have consumer tile coordinates from aie.core enclosure.
           auto tileIt = broadcastConsumerTiles.find(name);
           bool hasTileCoords = (tileIt != broadcastConsumerTiles.end() &&
@@ -1094,6 +1105,10 @@ struct AirChannelToConduitPass
         auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
         if (!nameAttr) return;
         llvm::StringRef name = nameAttr.getValue();
+        // Broadcast guard: skip rate annotation for broadcast channels.
+        // Their capacity = product(broadcast_shape) is a fan-out count, not
+        // buffer slots; M7 would misinterpret it.
+        if (broadcastChannelNames.count(name)) return;
         if (hasDynElems.count(name)) return;
         auto pIt = putElemsMap.find(name);
         auto gIt = getElemsMap.find(name);
