@@ -382,40 +382,37 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
 }
 
 ::mlir::LogicalResult Link::verify() {
-  auto modeStr = getMode();
+  auto mode = getMode();
   auto srcs = getSrcs();
   auto dsts = getDsts();
   auto offsets = getOffsets();
 
   // M3: mode validation — enforce structural invariants per mode.
-  if (modeStr == "cascade")
-    return emitError("conduit.link: cascade mode not yet supported");
-  if (modeStr == "distribute") {
+  // Note: unknown mode strings are rejected by the ODS enum parser before
+  // the verifier runs; the exhaustive switch below is always safe.
+  if (mode == LinkMode::Distribute) {
     if (srcs.size() != 1)
       return emitOpError("distribute mode requires exactly 1 src, got ")
              << srcs.size();
-  } else if (modeStr == "join") {
+  } else if (mode == LinkMode::Join) {
     if (dsts.size() != 1)
       return emitOpError("join mode requires exactly 1 dst, got ")
              << dsts.size();
-  } else if (modeStr == "forward") {
+  } else if (mode == LinkMode::Forward) {
     if (srcs.size() != 1 || dsts.size() != 1)
       return emitOpError(
           "forward mode requires exactly 1 src and 1 dst, got ")
              << srcs.size() << " src(s) and " << dsts.size() << " dst(s)";
-  } else {
-    return emitOpError("unknown mode '")
-           << modeStr << "'; expected distribute, join, or forward";
   }
 
   // Offset count consistency checks.
   if (offsets.has_value() && !offsets->empty()) {
-    if (modeStr == "distribute") {
+    if (mode == LinkMode::Distribute) {
       if (offsets->size() != dsts.size())
         return emitOpError("distribute mode: offsets count (")
                << offsets->size() << ") must equal dsts count (" << dsts.size()
                << ")";
-    } else if (modeStr == "join") {
+    } else if (mode == LinkMode::Join) {
       if (offsets->size() != srcs.size())
         return emitOpError("join mode: offsets count (")
                << offsets->size() << ") must equal srcs count (" << srcs.size()
@@ -449,7 +446,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   // (not an error: rates are optional; M6 only fires when explicitly provided
   // or inferred by --conduit-infer-rates).
   // -------------------------------------------------------------------------
-  if (modeStr == "join") {
+  if (mode == LinkMode::Join) {
     // Check each source conduit independently.
     for (auto srcAttr : srcs) {
       llvm::StringRef srcName =
@@ -504,7 +501,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   //   drains at the declared rate), but a slow destination consumer gates
   //   buffer reuse and can cause overflow.
   // -------------------------------------------------------------------------
-  if (modeStr == "distribute") {
+  if (mode == LinkMode::Distribute) {
     // Level 1: Per-edge balance checks (Eq. 45).
     // Check source conduit.
     llvm::StringRef srcName =
@@ -578,9 +575,10 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   // hardware code (no actual flow is emitted for cascade, so the non-cascade
   // consumers/producers would deadlock).
   // -------------------------------------------------------------------------
-  if (modeStr == "distribute" || modeStr == "join") {
+  if (mode == LinkMode::Distribute || mode == LinkMode::Join) {
     // Check all src and dst channel names against their conduit.create
     // routing_mode.  Only the "cascade" value is illegal here.
+    llvm::StringRef modeName = stringifyLinkMode(mode);
     auto checkCascade = [&](mlir::ArrayAttr names) -> mlir::LogicalResult {
       for (auto attr : names) {
         llvm::StringRef name = mlir::cast<mlir::StringAttr>(attr).getValue();
@@ -588,9 +586,9 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
         if (!chanCreate)
           continue; // not in scope — skip
         auto routingModeOpt = chanCreate.getRoutingMode();
-        if (routingModeOpt && *routingModeOpt == "cascade") {
+        if (routingModeOpt && *routingModeOpt == RoutingMode::Cascade) {
           return emitOpError("cascade channel '")
-                 << name << "' cannot be used in a '" << modeStr << "' link";
+                 << name << "' cannot be used in a '" << modeName << "' link";
         }
       }
       return ::mlir::success();
@@ -641,15 +639,8 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
       }
     }
   }
-  if (auto rmOpt = getRoutingMode()) {
-    llvm::StringRef rm = *rmOpt;
-    if (rm != "circuit" && rm != "packet" && rm != "cascade" && rm != "any" &&
-        rm != "stream")
-      return emitOpError(
-                 "routing_mode must be \"circuit\", \"packet\", \"cascade\", "
-                 "\"stream\", or \"any\", got \"")
-             << rm << "\"";
-  }
+  // M5: routing_mode is now an ODS enum (RoutingModeAttr) — invalid values are
+  // rejected by the parser before the verifier runs. No explicit check needed.
 
   // B-5: producer_dimensions / consumer_dimensions type guard.
   //
@@ -678,6 +669,20 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
           "consumer_dimensions must be an AIE::BDDimLayoutArrayArrayAttr; "
           "got a scalar attribute — was this conduit.create round-tripped "
           "without the AIE dialect loaded?");
+  }
+
+  // plio verifier: plio=true requires producer_tile row == 0 (shim tile).
+  if (auto plioAttr = getPlio()) {
+    if (*plioAttr) {
+      if (auto tileArr = getProducerTile()) {
+        auto arr = *tileArr;
+        // producer_tile is encoded as [col, row]; row is index 1.
+        if (arr.size() >= 2 && arr[1] != 0)
+          return emitOpError("plio=true requires a shim tile (row 0) as "
+                             "producer_tile, but row=")
+                 << arr[1];
+      }
+    }
   }
 
   // M6: CSDF balance check (necessary condition).
@@ -963,6 +968,9 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   return ::mlir::success();
 }
 ::mlir::LogicalResult AcquireAsync::verify() {
+  if (getToken().use_empty())
+    return emitOpError("(M8-drop) window.token has no uses: acquired lock "
+                       "will never be released — deadlock");
   if (failed(checkTokenDoesNotEscape(getOperation(), getToken())))
     return ::mlir::failure();
   if (failed(checkWindowTokenLinear(getOperation(), getToken())))
@@ -1046,7 +1054,7 @@ checkCascadeConduit(mlir::Operation *op, llvm::StringRef name) {
       return mlir::WalkResult::advance();
     found = true;
     auto rmOpt = createOp.getRoutingMode();
-    if (!rmOpt || *rmOpt != "cascade")
+    if (!rmOpt || *rmOpt != RoutingMode::Cascade)
       wrongMode = true;
     return mlir::WalkResult::interrupt();
   });

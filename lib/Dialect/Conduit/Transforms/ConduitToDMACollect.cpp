@@ -80,9 +80,9 @@ void collectPhase(ConduitToDMAState &state) {
         info.accessPattern.push_back(v);
     }
 
-    // Routing mode.
+    // Routing mode (enum; absent = unresolved/circuit-default).
     if (auto rm = op.getRoutingMode())
-      info.routingMode = rm->str();
+      info.routingMode = stringifyRoutingMode(*rm).str();
 
     // Core stream port for routing_mode="stream".
     if (auto aspAttr =
@@ -128,8 +128,9 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto attr = op.getViaDMA())
       if (*attr)
         info.viaDMA = true;
-    if (auto plioAttr = op->getAttrOfType<mlir::BoolAttr>("plio"))
-      info.plio = plioAttr.getValue();
+    if (auto plioAttr = op.getPlio())
+      if (*plioAttr)
+        info.plio = true;
     if (auto attr = op.getIterCount())
       info.iterCount = static_cast<int64_t>(*attr);
     if (auto attr = op.getRepeatCount())
@@ -216,7 +217,7 @@ void collectPhase(ConduitToDMAState &state) {
   // Phase 3. Tracked separately for Phase 3 producer-tile reallocation.
   // -----------------------------------------------------------------------
   module.walk([&](Link linkOp) {
-    if (linkOp.getMode() == "distribute") {
+    if (linkOp.getMode() == LinkMode::Distribute) {
       for (auto s : linkOp.getSrcs())
         state.linkSrcNamesEarly.insert(
             mlir::cast<mlir::StringAttr>(s).getValue());

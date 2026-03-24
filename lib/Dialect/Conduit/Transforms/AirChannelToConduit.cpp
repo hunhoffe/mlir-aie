@@ -400,18 +400,18 @@ struct AirChannelToConduitPass
       mlir::Location loc = op->getLoc();
 
       // 5a: Propagate channel_type → routing_mode on conduit.create.
-      //   "dma_packet" → routing_mode = "packet"
-      //   "cascade"    → hard error (not supported in Conduit)
-      //   "dma_stream" / absent → leave routing_mode empty (circuit default)
-      mlir::StringAttr routingMode{};
+      //   "dma_packet" → routing_mode = Packet
+      //   "cascade"    → routing_mode = Cascade
+      //   "dma_stream" / absent → leave routing_mode absent (circuit default)
+      RoutingModeAttr routingMode{};
       if (auto ctAttr = op->getAttrOfType<mlir::StringAttr>("channel_type")) {
         llvm::StringRef ct = ctAttr.getValue();
         if (ct == "dma_packet") {
-          routingMode = mlir::StringAttr::get(ctx, "packet");
+          routingMode = RoutingModeAttr::get(ctx, RoutingMode::Packet);
         } else if (ct == "cascade") {
-          routingMode = mlir::StringAttr::get(ctx, "cascade");
+          routingMode = RoutingModeAttr::get(ctx, RoutingMode::Cascade);
         }
-        // "dma_stream" → leave routingMode empty (circuit default)
+        // "dma_stream" → leave routingMode absent (circuit default)
       }
 
       // 5b: Propagate broadcast_shape → conduit capacity.
@@ -478,7 +478,7 @@ struct AirChannelToConduitPass
           /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
           /*element_type=*/mlir::TypeAttr{},
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
-          /*link_mode=*/mlir::StringAttr{},
+          /*link_mode=*/LinkModeAttr{},
           /*access_pattern=*/mlir::DenseI64ArrayAttr{},
           /*routing_mode=*/routingMode,
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
@@ -488,6 +488,7 @@ struct AirChannelToConduitPass
           /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
           /*disable_synchronization=*/mlir::BoolAttr{},
           /*viaDMA=*/mlir::BoolAttr{},
+          /*plio=*/mlir::BoolAttr{},
           /*iter_count=*/mlir::IntegerAttr{},
           /*producer_dimensions=*/mlir::Attribute{},
           /*consumer_dimensions=*/mlir::Attribute{});
@@ -551,7 +552,7 @@ struct AirChannelToConduitPass
                 /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
                 /*element_type=*/mlir::TypeAttr{},
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
-                /*link_mode=*/mlir::StringAttr{},
+                /*link_mode=*/LinkModeAttr{},
                 /*access_pattern=*/mlir::DenseI64ArrayAttr{},
                 /*routing_mode=*/routingMode,
                 /*producer_rates=*/mlir::DenseI64ArrayAttr{},
@@ -561,6 +562,7 @@ struct AirChannelToConduitPass
                 /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
                 /*disable_synchronization=*/mlir::BoolAttr{},
                 /*viaDMA=*/mlir::BoolAttr{},
+                /*plio=*/mlir::BoolAttr{},
                 /*iter_count=*/mlir::IntegerAttr{},
                 /*producer_dimensions=*/mlir::Attribute{},
                 /*consumer_dimensions=*/mlir::Attribute{});
@@ -574,14 +576,14 @@ struct AirChannelToConduitPass
           for (auto &dst : dstNames)
             dstsAttrs.push_back(mlir::StringAttr::get(ctx, dst));
 
-          // Emit conduit.link{mode="distribute"}.
+          // Emit conduit.link{mode=Distribute}.
           // memtile is left empty — Pass C will resolve the MemTile from
           // the conduit.create consumer_tiles if needed.
           builder.create<Link>(
               loc,
               mlir::ArrayAttr::get(ctx, srcsAttrs),
               mlir::ArrayAttr::get(ctx, dstsAttrs),
-              mlir::StringAttr::get(ctx, "distribute"),
+              LinkModeAttr::get(ctx, LinkMode::Distribute),
               /*memtile=*/mlir::StringAttr::get(ctx, ""),
               /*offsets=*/mlir::DenseI64ArrayAttr{},
               /*lock_id=*/mlir::IntegerAttr{});
@@ -793,7 +795,7 @@ struct AirChannelToConduitPass
         if (it != channelCreateOps.end()) {
           if (auto createTypedOp = mlir::dyn_cast<Create>(it->second)) {
             auto rmOpt = createTypedOp.getRoutingMode();
-            if (rmOpt && *rmOpt == "cascade")
+            if (rmOpt && *rmOpt == RoutingMode::Cascade)
               isCascade = true;
           }
         }

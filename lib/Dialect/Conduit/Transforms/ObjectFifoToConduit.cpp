@@ -528,9 +528,9 @@ struct ObjectFifoToConduitPass
       if (op.getVia_DMA() || prodDimsAttr || consDimsAttr || hasRepeat)
         viaDMAAttr = mlir::BoolAttr::get(ctx, true);
 
-      // Propagate via_cascade → routing_mode = "cascade".
+      // Propagate via_cascade → routing_mode = Cascade.
       // Cascade has no hardware FIFO; depth must be 1.
-      mlir::StringAttr routingModeAttr;
+      RoutingModeAttr routingModeAttr;
       if (op.getViaCascade()) {
         if (info.depth != 1) {
           op.emitError(
@@ -554,10 +554,10 @@ struct ObjectFifoToConduitPass
           passFailed = true;
           return; // skip conduit.create for this fifo
         }
-        routingModeAttr = mlir::StringAttr::get(ctx, "cascade");
+        routingModeAttr = RoutingModeAttr::get(ctx, RoutingMode::Cascade);
       }
 
-      // Propagate aie_stream → routing_mode = "stream".
+      // Propagate aie_stream → routing_mode = Stream.
       // aie_stream ObjectFIFOs route data from the producer core's AXI
       // stream port directly into the consumer tile's DMA — no DMA engine
       // or buffers on the producer side. Pass C emits aie.flow(Core:N, ...)
@@ -580,7 +580,7 @@ struct ObjectFifoToConduitPass
       }
 
       if (streamPortIt != aieStreamFifoPort.end())
-        routingModeAttr = mlir::StringAttr::get(ctx, "stream");
+        routingModeAttr = RoutingModeAttr::get(ctx, RoutingMode::Stream);
 
       auto createOp = builder.create<Create>(
           loc,
@@ -591,7 +591,7 @@ struct ObjectFifoToConduitPass
           shimConsAttr,
           mlir::TypeAttr::get(info.elemType),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
-          /*link_mode=*/mlir::StringAttr{},
+          /*link_mode=*/LinkModeAttr{},
           accessPatternAttr,
           routingModeAttr,
           /*producer_rates=*/inferredPRAttr,
@@ -601,6 +601,8 @@ struct ObjectFifoToConduitPass
           consumerDepthsAttr,
           disableSyncAttr,
           viaDMAAttr,
+          /*plio=*/op.getPlio() ? mlir::BoolAttr::get(ctx, true)
+                                : mlir::BoolAttr{},
           iterCountAttr,
           prodDimsAttr,
           consDimsAttr);
@@ -612,12 +614,6 @@ struct ObjectFifoToConduitPass
             mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
                                    streamPortIt->second));
       }
-
-      // Propagate plio flag as a generic attribute on conduit.create.
-      // Pass C reads this to use WireBundle::PLIO in flows and set plio
-      // on shim_dma_allocation ops.
-      if (op.getPlio())
-        createOp->setAttr("plio", mlir::BoolAttr::get(ctx, true));
 
       fifosToErase.push_back(op);
     });
@@ -631,11 +627,11 @@ struct ObjectFifoToConduitPass
       auto fifoOuts = op.getFifoOuts();
 
       // Determine mode
-      std::string mode;
+      LinkMode linkMode;
       if (fifoIns.size() == 1 && fifoOuts.size() >= 1)
-        mode = "distribute";
+        linkMode = LinkMode::Distribute;
       else if (fifoIns.size() >= 1 && fifoOuts.size() == 1)
-        mode = "join";
+        linkMode = LinkMode::Join;
       else {
         // Fix 4h: N→M link (N>1 sources AND N>1 destinations) is not
         // supported. Emit an error rather than silently using "distribute".
@@ -714,10 +710,10 @@ struct ObjectFifoToConduitPass
       auto distOffsets = op.getDstOffsets();
 
       llvm::SmallVector<int64_t> offVec;
-      if (mode == "join" && joinOffsets && !joinOffsets.empty()) {
+      if (linkMode == LinkMode::Join && joinOffsets && !joinOffsets.empty()) {
         for (auto attr : joinOffsets)
           offVec.push_back(mlir::cast<mlir::IntegerAttr>(attr).getInt());
-      } else if (mode == "distribute" && distOffsets && !distOffsets.empty()) {
+      } else if (linkMode == LinkMode::Distribute && distOffsets && !distOffsets.empty()) {
         for (auto attr : distOffsets)
           offVec.push_back(mlir::cast<mlir::IntegerAttr>(attr).getInt());
       }
@@ -727,7 +723,7 @@ struct ObjectFifoToConduitPass
       builder.create<Link>(
           loc, mlir::ArrayAttr::get(ctx, srcAttrs),
           mlir::ArrayAttr::get(ctx, dstAttrs),
-          mlir::StringAttr::get(ctx, mode),
+          LinkModeAttr::get(ctx, linkMode),
           mlir::StringAttr::get(ctx, memtileStr),
           offsetsAttr,
           /*lock_id=*/nullptr);

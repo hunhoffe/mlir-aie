@@ -255,6 +255,45 @@ def Conduit_PortAttr : EnumAttr<Conduit_Dialect, Conduit_Port, "port"> {
 }
 
 // ---------------------------------------------------------------------------
+// RoutingMode enum — #conduit.routing_mode<circuit> / <packet> / etc.
+//
+// Replaces OptionalAttr<StrAttr> routing_mode on conduit.create.
+// Absent attribute means "unresolved" (previously spelled "any").
+// ---------------------------------------------------------------------------
+
+def Conduit_RoutingMode : I32EnumAttr<"RoutingMode", "Conduit routing mode", [
+  I32EnumAttrCase<"Circuit",  0, "circuit">,
+  I32EnumAttrCase<"Packet",   1, "packet">,
+  I32EnumAttrCase<"Cascade",  2, "cascade">,
+  I32EnumAttrCase<"Stream",   3, "stream">
+]> {
+  let cppNamespace = "::xilinx::conduit";
+  let genSpecializedAttr = 0;
+}
+def Conduit_RoutingModeAttr : EnumAttr<Conduit_Dialect, Conduit_RoutingMode, "routing_mode"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+// ---------------------------------------------------------------------------
+// LinkMode enum — #conduit.link_mode<distribute> / <join> / <forward>
+//
+// Used on conduit.link (required) and conduit.create link_mode (optional).
+// Replaces StrAttr mode / OptionalAttr<StrAttr> link_mode.
+// ---------------------------------------------------------------------------
+
+def Conduit_LinkMode : I32EnumAttr<"LinkMode", "Conduit link mode", [
+  I32EnumAttrCase<"Distribute", 0, "distribute">,
+  I32EnumAttrCase<"Join",       1, "join">,
+  I32EnumAttrCase<"Forward",    2, "forward">
+]> {
+  let cppNamespace = "::xilinx::conduit";
+  let genSpecializedAttr = 0;
+}
+def Conduit_LinkModeAttr : EnumAttr<Conduit_Dialect, Conduit_LinkMode, "link_mode"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+// ---------------------------------------------------------------------------
 // Window type — !conduit.window<T>
 // ---------------------------------------------------------------------------
 
@@ -395,9 +434,9 @@ def Conduit_Create : Conduit_Op<"create"> {
                        OptionalAttr<DenseI64ArrayAttr>:$shim_consumer_tiles,
                        OptionalAttr<TypeAttr>:$element_type,
                        OptionalAttr<I64Attr>:$depth,
-                       OptionalAttr<StrAttr>:$link_mode,
+                       OptionalAttr<Conduit_LinkModeAttr>:$link_mode,
                        OptionalAttr<DenseI64ArrayAttr>:$access_pattern,
-                       OptionalAttr<StrAttr>:$routing_mode,
+                       OptionalAttr<Conduit_RoutingModeAttr>:$routing_mode,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_rates,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_rates,
                        // alloc_tile: optional MemTile coordinate [col, row] for
@@ -410,8 +449,7 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // instead of hardcoded 0.  Each BD fires repeat_count times
                        // before advancing to the next BD in the chain.
                        // Pass A propagates this from aie.objectfifo.create's
-                       // repeat_count attribute.  P1-F rejects repeat_count > 1
-                       // until full Pass C implementation is done.
+                       // repeat_count attribute.
                        OptionalAttr<I64Attr>:$repeat_count,
                        // consumer_depths: optional per-consumer depth array.
                        // When present, consumer i uses consumer_depths[i] instead
@@ -433,6 +471,11 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // from objectfifo.create.  Pass C: skip Phase 3c shared-memory
                        // path and emit aie.flow for adjacent tiles.
                        OptionalAttr<BoolAttr>:$viaDMA,
+                       // plio: when true, the shim endpoint uses Platform I/O (PLIO)
+                       // instead of DMA.  Pass C emits WireBundle::PLIO flows and sets
+                       // plio=true on shim_dma_allocation ops.  Requires producer_tile
+                       // to be a shim tile (row == 0).
+                       OptionalAttr<BoolAttr>:$plio,
                        // iter_count: number of DMA task-queue iterations.
                        // Maps to DMAStartOp.repeat_count = iter_count - 1 with a
                        // non-circular BD chain (last BD → aie.end).
@@ -751,7 +794,7 @@ def Conduit_Link : Conduit_Op<"link"> {
   }];
   let arguments = (ins StrArrayAttr:$srcs,
                        StrArrayAttr:$dsts,
-                       StrAttr:$mode,
+                       Conduit_LinkModeAttr:$mode,
                        StrAttr:$memtile,
                        OptionalAttr<DenseI64ArrayAttr>:$offsets,
                        OptionalAttr<I64Attr>:$lock_id);
