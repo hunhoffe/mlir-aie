@@ -80,11 +80,11 @@ collectLinkedConduitNames(mlir::ModuleOp module) {
   auto collect = [&](mlir::Operation *op) {
     if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs"))
       for (auto s : srcsAttr)
-        if (auto str = mlir::dyn_cast<mlir::StringAttr>(s))
+        if (auto str = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(s))
           linked.insert(str.getValue());
     if (auto dstsAttr = op->getAttrOfType<mlir::ArrayAttr>("dsts"))
       for (auto d : dstsAttr)
-        if (auto str = mlir::dyn_cast<mlir::StringAttr>(d))
+        if (auto str = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(d))
           linked.insert(str.getValue());
   };
   module.walk([&](Distribute op) { collect(op.getOperation()); });
@@ -176,7 +176,7 @@ struct ConduitDepthPromotePass
     module.walk([&](mlir::Operation *op) {
       // --- Tier 2: acquire/release ---
       if (mlir::isa<Acquire, AcquireAsync>(op)) {
-        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         auto countAttr = op->getAttrOfType<mlir::IntegerAttr>("count");
         if (!nameAttr || !countAttr)
           return;
@@ -192,7 +192,7 @@ struct ConduitDepthPromotePass
           nameAllPassthrough[name] = false;
       }
       if (mlir::isa<Release, ReleaseAsync>(op)) {
-        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         auto countAttr = op->getAttrOfType<mlir::IntegerAttr>("count");
         if (!nameAttr || !countAttr)
           return;
@@ -201,7 +201,7 @@ struct ConduitDepthPromotePass
 
       // --- Tier 3: put_memref[_async] / get_memref[_async] ---
       if (mlir::isa<PutMemref, PutMemrefAsync>(op)) {
-        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         if (!nameAttr)
           return;
         llvm::StringRef name = nameAttr.getValue();
@@ -214,7 +214,7 @@ struct ConduitDepthPromotePass
         nameAllPassthrough[name] = false;
       }
       if (mlir::isa<GetMemref, GetMemrefAsync>(op)) {
-        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         if (!nameAttr)
           return;
         llvm::StringRef name = nameAttr.getValue();

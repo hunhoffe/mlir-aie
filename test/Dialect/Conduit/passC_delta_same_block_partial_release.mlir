@@ -40,7 +40,7 @@ module @passC_delta_same_block_partial_release {
       %val = arith.constant 42 : i32
 
       // First acquire: count=2, fresh → AGE(2).
-      %win1 = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win1 = conduit.acquire {name = @fifo, count = 2 : i64,
                                 port = #conduit.port<Consume>}
                   : !conduit.window<memref<128xi32>>
       %e0 = conduit.subview_access %win1 {index = 0 : i64}
@@ -54,7 +54,7 @@ module @passC_delta_same_block_partial_release {
           : !conduit.window<memref<128xi32>>
 
       // Second acquire: count=2, held=1 → delta=1 → AGE(1).
-      %win2 = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win2 = conduit.acquire {name = @fifo, count = 2 : i64,
                                 port = #conduit.port<Consume>}
                   : !conduit.window<memref<128xi32>>
       %f0 = conduit.subview_access %win2 {index = 0 : i64}

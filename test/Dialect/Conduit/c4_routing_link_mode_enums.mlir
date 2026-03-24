@@ -58,7 +58,7 @@ func.func @link_mode_distribute() {
   conduit.create @dst1 {capacity = 2 : i64}
   // CHECK: conduit.distribute
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.distribute {srcs = ["src"], dsts = ["dst0", "dst1"],
+  conduit.distribute {srcs = [@src], dsts = [@dst0, @dst1],
                 memtile = "tile(0,1)"}
   return
 }
@@ -70,7 +70,7 @@ func.func @link_mode_join() {
   conduit.create @dst {capacity = 4 : i64}
   // CHECK: conduit.join
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.join {srcs = ["src0", "src1"], dsts = ["dst"],
+  conduit.join {srcs = [@src0, @src1], dsts = [@dst],
                 memtile = "tile(0,1)"}
   return
 }
@@ -81,7 +81,7 @@ func.func @link_mode_forward() {
   conduit.create @out_fwd {capacity = 4 : i64}
   // CHECK: conduit.forward
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.forward {srcs = ["in_fwd"], dsts = ["out_fwd"],
+  conduit.forward {srcs = [@in_fwd], dsts = [@out_fwd],
                 memtile = "tile(0,1)"}
   return
 }

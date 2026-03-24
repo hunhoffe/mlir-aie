@@ -24,7 +24,7 @@ module @infer_rates_mismatch {
                   element_type = memref<128xi32>}
 
   func.func @producer(%buf : memref<64xi32>) {
-    %tok = conduit.put_memref_async {name = "chan", num_elems = 64 : i64,
+    %tok = conduit.put_memref_async {name = @chan, num_elems = 64 : i64,
                                      offsets = array<i64: 0>,
                                      sizes   = array<i64: 64>,
                                      strides = array<i64: 1>}
@@ -34,7 +34,7 @@ module @infer_rates_mismatch {
   }
 
   func.func @consumer(%buf : memref<128xi32>) {
-    %tok = conduit.get_memref_async {name = "chan", num_elems = 128 : i64,
+    %tok = conduit.get_memref_async {name = @chan, num_elems = 128 : i64,
                                      offsets = array<i64: 0>,
                                      sizes   = array<i64: 128>,
                                      strides = array<i64: 1>}

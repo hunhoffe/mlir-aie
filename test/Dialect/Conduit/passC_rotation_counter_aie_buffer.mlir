@@ -49,13 +49,13 @@ module @passC_rotation_counter_aie_buffer {
       %val = arith.constant 42 : i32
 
       scf.for %i = %c0 to %c4 step %c1 {
-        %wa = conduit.acquire {name = "fifoA", count = 1 : i64,
+        %wa = conduit.acquire {name = @fifoA, count = 1 : i64,
                                port = #conduit.port<Consume>}
                   : !conduit.window<memref<32xi32>>
         %ea = conduit.subview_access %wa {index = 0 : i64}
                   : !conduit.window<memref<32xi32>> -> memref<32xi32>
 
-        %wb = conduit.acquire {name = "fifoB", count = 1 : i64,
+        %wb = conduit.acquire {name = @fifoB, count = 1 : i64,
                                port = #conduit.port<Consume>}
                   : !conduit.window<memref<32xi32>>
         %eb = conduit.subview_access %wb {index = 0 : i64}

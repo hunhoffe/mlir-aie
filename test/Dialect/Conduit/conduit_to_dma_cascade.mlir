@@ -41,13 +41,13 @@ module {
     // Producer core: computes a vector and puts it on the cascade stream.
     aie.core(%tile03) {
       %v = arith.constant dense<42> : vector<16xi32>
-      conduit.put_cascade "cas" (%v : vector<16xi32>)
+      conduit.put_cascade @cas (%v : vector<16xi32>)
       aie.end
     }
 
     // Consumer core: reads the cascade value.
     aie.core(%tile13) {
-      %r = conduit.get_cascade "cas" : vector<16xi32>
+      %r = conduit.get_cascade @cas : vector<16xi32>
       aie.end
     }
   }

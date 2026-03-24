@@ -59,7 +59,7 @@ func.func @join_three_sources_pass() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 8>,
                   consumer_rates = array<i64: 8>}
-  conduit.join {srcs = ["js_s1", "js_s2", "js_s3"], dsts = ["js_dst"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [@js_s1, @js_s2, @js_s3], dsts = [@js_dst], memtile = "tile(0,1)"}
   return
 }
 
@@ -86,7 +86,7 @@ func.func @join_src_imbalanced() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.join {srcs = ["ji_s1_bad"], dsts = ["ji_dst"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [@ji_s1_bad], dsts = [@ji_dst], memtile = "tile(0,1)"}
   return
 }
 
@@ -113,6 +113,6 @@ func.func @join_multiple_dsts() {
                   element_type = memref<i32>,
                   depth = 1 : i64}
   // expected-error@+1 {{'conduit.join' op join requires exactly 1 dst, got 2}}
-  conduit.join {srcs = ["jm_s1"], dsts = ["jm_d1", "jm_d2"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [@jm_s1], dsts = [@jm_d1, @jm_d2], memtile = "tile(0,1)"}
   return
 }

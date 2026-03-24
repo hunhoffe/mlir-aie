@@ -71,7 +71,7 @@ module @shim_to_memtile_relay_locks {
     }
 
     // Relay: distribute stage1 → weights (1-to-1 forward through MemTile).
-    conduit.distribute {srcs = ["weights_stage1"], dsts = ["weights"],
+    conduit.distribute {srcs = [@weights_stage1], dsts = [@weights],
                         memtile = "tile(0,1)"}
 
     // Shim DMA pre-declaration.
@@ -83,7 +83,7 @@ module @shim_to_memtile_relay_locks {
       %c4 = arith.constant 4 : index
 
       scf.for %i = %c0 to %c4 step %c1 {
-        %win = conduit.acquire {name = "weights", count = 1 : i64,
+        %win = conduit.acquire {name = @weights, count = 1 : i64,
                                 port = #conduit.port<Consume>}
                  : !conduit.window<memref<1xi32>>
         conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}

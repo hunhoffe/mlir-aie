@@ -223,23 +223,23 @@ void collectPhase(ConduitToDMAState &state) {
   module.walk([&](Distribute distOp) {
     for (auto s : distOp.getSrcs())
       state.linkSrcNamesEarly.insert(
-          mlir::cast<mlir::StringAttr>(s).getValue());
+          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     for (auto d : distOp.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
   module.walk([&](Join joinOp) {
     for (auto s : joinOp.getSrcs())
       state.linkJoinSrcNames.insert(
-          mlir::cast<mlir::StringAttr>(s).getValue());
+          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     for (auto d : joinOp.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
   module.walk([&](Forward fwdOp) {
     for (auto s : fwdOp.getSrcs())
       state.linkSrcNamesEarly.insert(
-          mlir::cast<mlir::StringAttr>(s).getValue());
+          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     for (auto d : fwdOp.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
 
   // Conduit names with at least one Consume-port acquire op (for rotation

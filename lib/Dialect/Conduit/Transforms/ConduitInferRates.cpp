@@ -116,7 +116,7 @@ struct ConduitInferRatesPass
     llvm::StringMap<bool> hasDynamicElems;
 
     module.walk([&](PutMemrefAsync op) {
-      auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+      auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
       if (!nameAttr)
         return;
       llvm::StringRef name = nameAttr.getValue();
@@ -132,7 +132,7 @@ struct ConduitInferRatesPass
     });
 
     module.walk([&](GetMemrefAsync op) {
-      auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+      auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
       if (!nameAttr)
         return;
       llvm::StringRef name = nameAttr.getValue();

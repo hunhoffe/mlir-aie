@@ -28,7 +28,7 @@ module @passC_delta_fresh_acquire {
       %c0 = arith.constant 0 : index
       %val = arith.constant 42 : i32
 
-      %win = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win = conduit.acquire {name = @fifo, count = 2 : i64,
                                port = #conduit.port<Consume>}
                  : !conduit.window<memref<128xi32>>
       %e0 = conduit.subview_access %win {index = 0 : i64}

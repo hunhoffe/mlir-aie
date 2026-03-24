@@ -15,10 +15,10 @@
 // CHECK:     conduit.create @link3
 // CHECK:     conduit.create @link4
 // CHECK:     conduit.distribute
-// CHECK-SAME:   dsts = ["link2", "link3", "link4"]
+// CHECK-SAME:   dsts = [@link2, @link3, @link4]
 // CHECK-SAME:   memtile = "tile(2,1)"
 // CHECK-SAME:   offsets = array<i64: 0, 16, 36>
-// CHECK-SAME:   srcs = ["link1"]
+// CHECK-SAME:   srcs = [@link1]
 // CHECK-NOT: aie.objectfifo
 // CHECK-NOT: aie.objectfifo.link
 // CHECK-NOT: conduit.annotate

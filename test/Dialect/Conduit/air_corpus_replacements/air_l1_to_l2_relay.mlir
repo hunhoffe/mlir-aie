@@ -24,16 +24,16 @@
 
 // Put/get converted to conduit Tier 3 ops.
 // CHECK: conduit.put_memref_async
-// CHECK-SAME: name = "ch_in"
+// CHECK-SAME: name = @ch_in
 
 // CHECK: conduit.get_memref_async
-// CHECK-SAME: name = "ch_in"
+// CHECK-SAME: name = @ch_in
 
 // CHECK: conduit.put_memref_async
-// CHECK-SAME: name = "ch_out"
+// CHECK-SAME: name = @ch_out
 
 // CHECK: conduit.get_memref_async
-// CHECK-SAME: name = "ch_out"
+// CHECK-SAME: name = @ch_out
 
 // No residual air ops.
 // CHECK-NOT: air.channel

@@ -43,11 +43,11 @@ func.func @fuse_tier3_depth1() {
 
   // shallow_dma uses a put_memref (Tier 3), then tier2_shallow uses acquire/release.
   // Non-overlapping: shallow_dma interval ends before tier2_shallow begins.
-  conduit.put_memref {name = "shallow_dma", num_elems = 8 : i64,
+  conduit.put_memref {name = @shallow_dma, num_elems = 8 : i64,
                       offsets = array<i64: 0>, sizes = array<i64: 8>,
                       strides = array<i64: 1>}
 
-  %w = conduit.acquire {name = "tier2_shallow", count = 1 : i64,
+  %w = conduit.acquire {name = @tier2_shallow, count = 1 : i64,
                         port = #conduit.port<Consume>}
           : !conduit.window<memref<8xi32>>
   conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>}
@@ -86,11 +86,11 @@ func.func @skip_tier3_depth2() {
 
   // deep_tier3 uses put_memref (Tier 3); tier2_partner uses acquire/release.
   // Sequential non-overlapping — would be fuseable but for the depth>1 guard.
-  conduit.put_memref {name = "deep_tier3", num_elems = 8 : i64,
+  conduit.put_memref {name = @deep_tier3, num_elems = 8 : i64,
                       offsets = array<i64: 0>, sizes = array<i64: 8>,
                       strides = array<i64: 1>}
 
-  %w = conduit.acquire {name = "tier2_partner", count = 1 : i64,
+  %w = conduit.acquire {name = @tier2_partner, count = 1 : i64,
                         port = #conduit.port<Consume>}
           : !conduit.window<memref<8xi32>>
   conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>}
@@ -121,13 +121,13 @@ func.func @fuse_tier2_only() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
 
-  %wa = conduit.acquire {name = "t2_a", count = 1 : i64,
+  %wa = conduit.acquire {name = @t2_a, count = 1 : i64,
                          port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
   conduit.release %wa {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
 
-  %wb = conduit.acquire {name = "t2_b", count = 1 : i64,
+  %wb = conduit.acquire {name = @t2_b, count = 1 : i64,
                          port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
   conduit.release %wb {count = 1 : i64, port = #conduit.port<Consume>}

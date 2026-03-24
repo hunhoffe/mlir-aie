@@ -22,7 +22,7 @@ conduit.create @circuit_ch {capacity = 4 : i64,
 func.func @put_cascade_wrong_routing_mode() {
   %v = arith.constant dense<0> : vector<16xi32>
   // expected-error @+1 {{'conduit.put_cascade' op references conduit 'circuit_ch' which does not have routing_mode = #conduit.routing_mode<cascade>}}
-  conduit.put_cascade "circuit_ch" (%v : vector<16xi32>)
+  conduit.put_cascade @circuit_ch (%v : vector<16xi32>)
   return
 }
 
@@ -35,7 +35,7 @@ conduit.create @packet_ch {capacity = 4 : i64,
 
 func.func @get_cascade_wrong_routing_mode() {
   // expected-error @+1 {{'conduit.get_cascade' op references conduit 'packet_ch' which does not have routing_mode = #conduit.routing_mode<cascade>}}
-  %v = conduit.get_cascade "packet_ch" : vector<16xi32>
+  %v = conduit.get_cascade @packet_ch : vector<16xi32>
   return
 }
 
@@ -51,7 +51,7 @@ conduit.create @cas_float {capacity = 1 : i64,
 func.func @put_cascade_float_type() {
   %v = arith.constant 0.0 : f32
   // expected-error @+1 {{'conduit.put_cascade' op cascade value type 'f32' is not an integer or integer vector type}}
-  conduit.put_cascade "cas_float" (%v : f32)
+  conduit.put_cascade @cas_float (%v : f32)
   return
 }
 
@@ -67,7 +67,7 @@ conduit.create @cas_narrow {capacity = 1 : i64,
 func.func @put_cascade_wrong_width() {
   %v = arith.constant 0 : i64
   // expected-error @+1 {{'conduit.put_cascade' op cascade value type 'i64' has width 64 bits; must be 384 bits}}
-  conduit.put_cascade "cas_narrow" (%v : i64)
+  conduit.put_cascade @cas_narrow (%v : i64)
   return
 }
 
@@ -85,6 +85,6 @@ func.func @bad_distribute_cascade_src() {
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>}
   // expected-error @+1 {{'conduit.distribute' op cascade channel 'src' cannot be used in a distribute src}}
-  conduit.distribute {srcs = ["src"], dsts = ["dst"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@src], dsts = [@dst], memtile = "tile(0,1)"}
   return
 }

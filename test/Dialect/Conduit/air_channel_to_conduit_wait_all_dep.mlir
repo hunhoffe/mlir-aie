@@ -33,7 +33,7 @@
 // CHECK: conduit.create @chan1
 
 // put emitted, no deps.
-// CHECK: %[[PUT1:.*]] = conduit.put_memref_async {name = "chan1"
+// CHECK: %[[PUT1:.*]] = conduit.put_memref_async {name = @chan1
 // CHECK-SAME: : !conduit.dma.token
 
 // wait_all pre-emitted before the get (Phase 3 pre-emission).
@@ -42,7 +42,7 @@
 
 // get with dep on the pre-emitted wait_all token.
 // CHECK: %[[GET1:.*]] = conduit.get_memref_async[%[[WA1]] : !conduit.dma.token]
-// CHECK-SAME: name = "chan1"
+// CHECK-SAME: name = @chan1
 // CHECK-SAME: : !conduit.dma.token
 
 // -------------------------------------------------------------------
@@ -54,8 +54,8 @@
 // CHECK: conduit.create @ch2c
 
 // Two puts, no deps.
-// CHECK: %[[P2A:.*]] = conduit.put_memref_async {name = "ch2a"
-// CHECK: %[[P2B:.*]] = conduit.put_memref_async {name = "ch2b"
+// CHECK: %[[P2A:.*]] = conduit.put_memref_async {name = @ch2a
+// CHECK: %[[P2B:.*]] = conduit.put_memref_async {name = @ch2b
 
 // wait_all_async fan-in over both puts.
 // CHECK: %[[WA2:.*]] = conduit.wait_all_async %[[P2A]], %[[P2B]]
@@ -63,7 +63,7 @@
 
 // get with dep on merged fan-in.
 // CHECK: %[[GET2:.*]] = conduit.get_memref_async[%[[WA2]] : !conduit.dma.token]
-// CHECK-SAME: name = "ch2c"
+// CHECK-SAME: name = @ch2c
 // CHECK-SAME: : !conduit.dma.token
 
 // -------------------------------------------------------------------
@@ -75,16 +75,16 @@
 // CHECK: conduit.create @ch3b
 
 // put then pre-emitted wait_all_async.
-// CHECK: %[[P3:.*]] = conduit.put_memref_async {name = "ch3put"
+// CHECK: %[[P3:.*]] = conduit.put_memref_async {name = @ch3put
 // CHECK: %[[WA3:.*]] = conduit.wait_all_async %[[P3]]
 
 // First get: dep on pre-emitted token.
 // CHECK: %[[G3A:.*]] = conduit.get_memref_async[%[[WA3]] : !conduit.dma.token]
-// CHECK-SAME: name = "ch3a"
+// CHECK-SAME: name = @ch3a
 
 // Second get: also dep on the SAME pre-emitted token (no second wait_all_async).
 // CHECK: %[[G3B:.*]] = conduit.get_memref_async[%[[WA3]] : !conduit.dma.token]
-// CHECK-SAME: name = "ch3b"
+// CHECK-SAME: name = @ch3b
 
 // -------------------------------------------------------------------
 // Test 4: put → get → wait_all(put_tok, get_tok) → put[dep=merged].
@@ -97,9 +97,9 @@
 // CHECK: conduit.create @ch4c
 
 // put and get emitted with no deps.
-// CHECK: %[[P4:.*]] = conduit.put_memref_async {name = "ch4a"
+// CHECK: %[[P4:.*]] = conduit.put_memref_async {name = @ch4a
 // CHECK-SAME: : !conduit.dma.token
-// CHECK: %[[G4:.*]] = conduit.get_memref_async {name = "ch4b"
+// CHECK: %[[G4:.*]] = conduit.get_memref_async {name = @ch4b
 // CHECK-SAME: : !conduit.dma.token
 
 // wait_all_async pre-emitted with both put and get tokens.
@@ -108,7 +108,7 @@
 
 // Second put carries dep on merged token — the original bug scenario.
 // CHECK: conduit.put_memref_async[%[[WA4]] : !conduit.dma.token]
-// CHECK-SAME: name = "ch4c"
+// CHECK-SAME: name = @ch4c
 // CHECK-SAME: : !conduit.dma.token
 
 // CHECK-NOT: air.channel{{[^._]}}

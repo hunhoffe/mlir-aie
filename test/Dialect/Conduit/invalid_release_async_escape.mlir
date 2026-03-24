@@ -14,7 +14,7 @@
 func.func @release_async_escape_return() -> !conduit.window.token {
   conduit.create @ch_rel {capacity = 1 : i64}
   // expected-error @+1 {{'conduit.release_async' op M10: token escapes function scope via return}}
-  %tok = conduit.release_async {name = "ch_rel", count = 1 : i64,
+  %tok = conduit.release_async {name = @ch_rel, count = 1 : i64,
                                  port = #conduit.port<Consume>}
              : !conduit.window.token
   return %tok : !conduit.window.token
@@ -27,7 +27,7 @@ func.func private @downstream(%tok : !conduit.window.token)
 func.func @release_async_escape_call() {
   conduit.create @ch_rel2 {capacity = 1 : i64}
   // expected-error @+1 {{'conduit.release_async' op M10: token escapes function scope via call argument}}
-  %tok = conduit.release_async {name = "ch_rel2", count = 1 : i64,
+  %tok = conduit.release_async {name = @ch_rel2, count = 1 : i64,
                                   port = #conduit.port<Consume>}
              : !conduit.window.token
   func.call @downstream(%tok) : (!conduit.window.token) -> ()

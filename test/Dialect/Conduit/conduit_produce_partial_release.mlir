@@ -36,7 +36,7 @@ module @conduit_produce_partial_release {
       %val = arith.constant 42 : i32
 
       // Acquire 3 slots (partial-release pattern: depth=2, so 3 > depth)
-      %w0 = conduit.acquire {name = "sliding_out", count = 3 : i64,
+      %w0 = conduit.acquire {name = @sliding_out, count = 3 : i64,
                              port = #conduit.port<Produce>}
                 : !conduit.window<memref<32xi32>>
       %buf = conduit.subview_access %w0 {index = 0 : i64}

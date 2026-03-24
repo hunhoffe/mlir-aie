@@ -52,8 +52,8 @@ func.func @distribute_all_pass() {
                   depth = 2 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.distribute {srcs = ["dist_src_ok"],
-                dsts = ["dist_d1_ok", "dist_d2_ok", "dist_d3_ok"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@dist_src_ok],
+                dsts = [@dist_d1_ok, @dist_d2_ok, @dist_d3_ok], memtile = "tile(0,1)"}
   return
 }
 
@@ -95,8 +95,8 @@ func.func @distribute_dst2_imbalanced() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.distribute {srcs = ["dist2_src"],
-                dsts = ["dist2_d1", "dist2_d2_bad", "dist2_d3"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@dist2_src],
+                dsts = [@dist2_d1, @dist2_d2_bad, @dist2_d3], memtile = "tile(0,1)"}
   return
 }
 
@@ -133,7 +133,7 @@ func.func @distribute_dst1_capacity() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.distribute {srcs = ["dist3_src"],
-                dsts = ["dist3_d1_small", "dist3_d2"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@dist3_src],
+                dsts = [@dist3_d1_small, @dist3_d2], memtile = "tile(0,1)"}
   return
 }

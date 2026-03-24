@@ -94,11 +94,11 @@ module @async_sliding_window {
 
       scf.for %arg0 = %c0 to %c8 step %c1 {
         // Sliding window: acquire 3 rows asynchronously, wait, process, release 1.
-        %tok = conduit.acquire_async {name = "sw_fifo", count = 3 : i64,
+        %tok = conduit.acquire_async {name = @sw_fifo, count = 3 : i64,
                    port = #conduit.port<Consume>}
                    : !conduit.window.token
 
-        %win = conduit.wait_window %tok for "sw_fifo"
+        %win = conduit.wait_window %tok for @sw_fifo
                    : !conduit.window.token -> !conduit.window<memref<32xi8>>
 
         %row0 = conduit.subview_access %win {index = 0 : i64}

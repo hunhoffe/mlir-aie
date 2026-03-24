@@ -28,7 +28,7 @@ module {
                     alloc_tile = array<i64: 3, 3>}
 
     aie.core(%tile_0_2) {
-      %win = conduit.acquire {name = "shm_chan", count = 1 : i64,
+      %win = conduit.acquire {name = @shm_chan, count = 1 : i64,
                               port = #conduit.port<Produce>}
                  : !conduit.window<memref<16xi32>>
       %buf = conduit.subview_access %win {index = 0 : i64}
@@ -39,7 +39,7 @@ module {
     }
 
     aie.core(%tile_0_3) {
-      %win = conduit.acquire {name = "shm_chan", count = 1 : i64,
+      %win = conduit.acquire {name = @shm_chan, count = 1 : i64,
                               port = #conduit.port<Consume>}
                  : !conduit.window<memref<16xi32>>
       %buf = conduit.subview_access %win {index = 0 : i64}

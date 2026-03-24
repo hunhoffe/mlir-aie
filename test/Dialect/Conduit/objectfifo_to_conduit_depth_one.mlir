@@ -26,7 +26,7 @@
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       scf.for
 // CHECK:         conduit.acquire
-// CHECK-SAME:       name = "input_fifo"
+// CHECK-SAME:       name = @input_fifo
 // CHECK-SAME:       port = #conduit.port<Consume>
 // CHECK:         conduit.release
 // CHECK-SAME:       port = #conduit.port<Consume>

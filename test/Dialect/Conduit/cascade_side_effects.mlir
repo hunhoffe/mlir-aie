@@ -15,18 +15,18 @@
 func.func @test_put_cascade_not_cse_eliminated() {
   %v = arith.constant dense<1> : vector<16xi32>
   // CHECK: conduit.put_cascade
-  conduit.put_cascade "cas" (%v : vector<16xi32>)
+  conduit.put_cascade @cas (%v : vector<16xi32>)
   // CHECK: conduit.put_cascade
-  conduit.put_cascade "cas" (%v : vector<16xi32>)
+  conduit.put_cascade @cas (%v : vector<16xi32>)
   return
 }
 
 // CHECK-LABEL: func.func @test_get_cascade_not_cse_eliminated
 func.func @test_get_cascade_not_cse_eliminated() {
   // CHECK: conduit.get_cascade
-  %a = conduit.get_cascade "cas" : vector<16xi32>
+  %a = conduit.get_cascade @cas : vector<16xi32>
   // CHECK: conduit.get_cascade
-  %b = conduit.get_cascade "cas" : vector<16xi32>
+  %b = conduit.get_cascade @cas : vector<16xi32>
   // Use results to prevent trivial DCE of unused values.
   // (The effect declarations ensure CSE cannot merge the two get_cascade ops.)
   "test.use"(%a, %b) : (vector<16xi32>, vector<16xi32>) -> ()

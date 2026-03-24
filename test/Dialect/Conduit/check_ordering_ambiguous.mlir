@@ -26,10 +26,10 @@ module {
                   depth = 1 : i64}
 
   func.func @producer() {
-    %tok_a = conduit.put_memref_async {name = "ch_a", num_elems = 1 : i64,
+    %tok_a = conduit.put_memref_async {name = @ch_a, num_elems = 1 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 1>,
                  strides = array<i64: 1>} : !conduit.dma.token
-    %tok_b = conduit.put_memref_async {name = "ch_b", num_elems = 1 : i64,
+    %tok_b = conduit.put_memref_async {name = @ch_b, num_elems = 1 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 1>,
                  strides = array<i64: 1>} : !conduit.dma.token
     conduit.wait_all %tok_a, %tok_b : !conduit.dma.token, !conduit.dma.token

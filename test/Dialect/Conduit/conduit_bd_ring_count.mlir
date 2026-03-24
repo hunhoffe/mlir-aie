@@ -64,7 +64,7 @@ module @conduit_bd_ring_count {
       %c4 = arith.constant 4 : index
 
       // Preamble: acquire 2, release 1.
-      %win_pre = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_pre = conduit.acquire {name = @fifo, count = 2 : i64,
                                    port = #conduit.port<Consume>}
                      : !conduit.window<memref<32xi32>>
       conduit.release %win_pre {count = 1 : i64, port = #conduit.port<Consume>}
@@ -72,7 +72,7 @@ module @conduit_bd_ring_count {
 
       // Middle: acquire 3, release 1 (sliding window, maxConsumerAcquire=3).
       scf.for %i = %c0 to %c4 step %c1 {
-        %win_mid = conduit.acquire {name = "fifo", count = 3 : i64,
+        %win_mid = conduit.acquire {name = @fifo, count = 3 : i64,
                                      port = #conduit.port<Consume>}
                        : !conduit.window<memref<32xi32>>
         conduit.release %win_mid {count = 1 : i64, port = #conduit.port<Consume>}
@@ -80,7 +80,7 @@ module @conduit_bd_ring_count {
       }
 
       // Tail: acquire 2, release 2 (full release).
-      %win_tail = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_tail = conduit.acquire {name = @fifo, count = 2 : i64,
                                     port = #conduit.port<Consume>}
                       : !conduit.window<memref<32xi32>>
       conduit.release %win_tail {count = 2 : i64, port = #conduit.port<Consume>}

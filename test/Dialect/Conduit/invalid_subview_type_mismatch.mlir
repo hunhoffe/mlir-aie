@@ -17,7 +17,7 @@ func.func @subview_type_mismatch() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<10xi32>,
                   depth = 1 : i64}
-  %win = conduit.acquire {name = "typed_fifo", count = 1 : i64,
+  %win = conduit.acquire {name = @typed_fifo, count = 1 : i64,
                           port = #conduit.port<Consume>}
              : !conduit.window<memref<10xi32>>
   // expected-error @+1 {{'conduit.subview_access' op result type 'memref<10xi16>' does not match window element type 'memref<10xi32>'}}

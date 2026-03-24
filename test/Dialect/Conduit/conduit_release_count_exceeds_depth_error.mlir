@@ -34,7 +34,7 @@ module @release_count_exceeds_depth {
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
       scf.for %arg0 = %c0 to %c4 step %c1 {
-        %win = conduit.acquire {name = "fifo", count = 2 : i64,
+        %win = conduit.acquire {name = @fifo, count = 2 : i64,
                                port = #conduit.port<Consume>}
                    : !conduit.window<memref<8xi32>>
         %elem = conduit.subview_access %win {index = 0 : i64}

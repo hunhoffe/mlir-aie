@@ -43,7 +43,7 @@ module {
     %true = arith.constant true
 
     // Seed token: no deps.
-    %init_tok = conduit.put_memref_async {name = "chA", num_elems = 64 : i64,
+    %init_tok = conduit.put_memref_async {name = @chA, num_elems = 64 : i64,
                      offsets = array<i64: 0>, sizes = array<i64: 64>,
                      strides = array<i64: 1>} : !conduit.dma.token
 
@@ -57,7 +57,7 @@ module {
     %_ = scf.while (%iter_tok = %init_tok) : (!conduit.dma.token) -> !conduit.dma.token {
       // put_B deps on %iter_tok: creates edge iter_tok → tok_b in the DAG.
       %tok_b = conduit.put_memref_async [%iter_tok : !conduit.dma.token]
-                   {name = "chB", num_elems = 64 : i64,
+                   {name = @chB, num_elems = 64 : i64,
                     offsets = array<i64: 0>, sizes = array<i64: 64>,
                     strides = array<i64: 1>} : !conduit.dma.token
       // wait_all_async deps on tok_b: creates edge tok_b → tok_merged.

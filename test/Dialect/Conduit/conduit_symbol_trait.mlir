@@ -11,7 +11,7 @@
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create @my_channel
 // CHECK-NOT: sym_name = "my_channel"
-// CHECK-NOT: name = "my_channel"
+// CHECK-NOT: name = @my_channel
 // CHECK: conduit.create @another_chan
 
 module {

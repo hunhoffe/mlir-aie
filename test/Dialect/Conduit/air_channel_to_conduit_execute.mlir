@@ -23,11 +23,11 @@
 
 // put and get are lowered correctly.
 // CHECK: conduit.put_memref_async
-// CHECK-SAME: name = "chan"
+// CHECK-SAME: name = @chan
 // CHECK-SAME: num_elems = 256
 
 // CHECK: conduit.get_memref_async
-// CHECK-SAME: name = "chan"
+// CHECK-SAME: name = @chan
 // CHECK-SAME: num_elems = 256
 
 // air.channel decl is gone.

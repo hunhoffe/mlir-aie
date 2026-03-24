@@ -20,7 +20,7 @@
 //   line 1: remark: ... broadcast_shape ... capacity=4 ...
 //   line 2-3: source echo + note
 //   line 4: module {
-//   line 5: conduit.create {...capacity = 4...name = "bcast_chan"...routing_mode = #conduit.routing_mode<packet>}
+//   line 5: conduit.create {...capacity = 4...name = @bcast_chan...routing_mode = #conduit.routing_mode<packet>}
 //
 // Checks must follow the output order.
 

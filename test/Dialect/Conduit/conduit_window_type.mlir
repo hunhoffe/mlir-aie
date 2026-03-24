@@ -23,9 +23,9 @@ func.func @blocking_acquire_roundtrip() {
 
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 1
-  // CHECK-SAME: name = "input"
+  // CHECK-SAME: name = @input
   // CHECK-SAME: port = #conduit.port<Consume>
-  %win = conduit.acquire {name = "input", count = 1 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @input, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<10xi32>>
 
   // CHECK: conduit.subview_access
@@ -47,8 +47,8 @@ func.func @sliding_window_partial_release() {
 
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 4
-  // CHECK-SAME: name = "weights"
-  %win = conduit.acquire {name = "weights", count = 4 : i64, port = #conduit.port<Consume>}
+  // CHECK-SAME: name = @weights
+  %win = conduit.acquire {name = @weights, count = 4 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<4xi32>>
 
   // CHECK: conduit.subview_access
@@ -75,17 +75,17 @@ func.func @async_acquire_wait_window() {
   conduit.create @async_input {capacity = 16 : i64}
 
   // CHECK: conduit.acquire_async
-  // CHECK-SAME: name = "async_input"
+  // CHECK-SAME: name = @async_input
   // CHECK-SAME: !conduit.window.token
-  %tok = conduit.acquire_async {name = "async_input", count = 1 : i64,
+  %tok = conduit.acquire_async {name = @async_input, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
 
   // CHECK: conduit.wait_window
-  // CHECK-SAME: for "async_input"
+  // CHECK-SAME: for @async_input
   // CHECK-SAME: !conduit.window.token
   // CHECK-SAME: <memref<16xi32>>
-  %win = conduit.wait_window %tok for "async_input"
+  %win = conduit.wait_window %tok for @async_input
              : !conduit.window.token -> !conduit.window<memref<16xi32>>
 
   // CHECK: conduit.subview_access
@@ -106,12 +106,12 @@ func.func @async_acquire_with_overlap() {
   conduit.create @out {capacity = 1 : i64}
 
   // CHECK: conduit.put_memref_async
-  %dma_tok = conduit.put_memref_async {name = "in", num_elems = 9 : i64,
+  %dma_tok = conduit.put_memref_async {name = @in, num_elems = 9 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 9>,
                  strides = array<i64: 1>} : !conduit.dma.token
 
   // CHECK: conduit.acquire_async
-  %acq_tok = conduit.acquire_async {name = "out", count = 1 : i64,
+  %acq_tok = conduit.acquire_async {name = @out, count = 1 : i64,
                  port = #conduit.port<Consume>}
                  : !conduit.window.token
 
@@ -121,8 +121,8 @@ func.func @async_acquire_with_overlap() {
 
   // Acquire wait returns the window handle via the dedicated op.
   // CHECK: conduit.wait_window
-  // CHECK-SAME: for "out"
-  %win_out = conduit.wait_window %acq_tok for "out"
+  // CHECK-SAME: for @out
+  %win_out = conduit.wait_window %acq_tok for @out
                  : !conduit.window.token -> !conduit.window<memref<1xi32>>
 
   // CHECK: conduit.subview_access

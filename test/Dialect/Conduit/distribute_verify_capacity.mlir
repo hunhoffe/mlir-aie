@@ -51,7 +51,7 @@ func.func @distribute_slow_consumer_overflow() {
                   producer_rates = array<i64: 1, 1, 1>,
                   consumer_rates = array<i64: 1, 1, 1>}
   // expected-error@+1 {{'conduit.distribute' op M7-dist composed-consume (Denolf Eq. 48): source buffer capacity insufficient for multi-consumer distribute: peak occupancy=6 exceeds source capacity=3 (bottleneck consumer: 'ov_d2', hyper-period=3 steps; a container can only be freed after ALL 2 consumers have consumed it)}}
-  conduit.distribute {srcs = ["ov_src"], dsts = ["ov_d1", "ov_d2"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@ov_src], dsts = [@ov_d1, @ov_d2], memtile = "tile(0,1)"}
   return
 }
 
@@ -101,6 +101,6 @@ func.func @distribute_three_consumer_overflow() {
                   producer_rates = array<i64: 1, 1, 1, 1>,
                   consumer_rates = array<i64: 1, 1, 1, 1>}
   // expected-error@+1 {{'conduit.distribute' op M7-dist composed-consume (Denolf Eq. 48): source buffer capacity insufficient for multi-consumer distribute: peak occupancy=12 exceeds source capacity=4 (bottleneck consumer: 't3_d3', hyper-period=4 steps; a container can only be freed after ALL 3 consumers have consumed it)}}
-  conduit.distribute {srcs = ["t3_src"], dsts = ["t3_d1", "t3_d2", "t3_d3"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@t3_src], dsts = [@t3_d1, @t3_d2, @t3_d3], memtile = "tile(0,1)"}
   return
 }

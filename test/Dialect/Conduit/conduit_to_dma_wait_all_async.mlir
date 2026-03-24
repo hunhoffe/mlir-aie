@@ -96,12 +96,12 @@ module @wait_all_async_erasure {
         // Pattern 1: simple wait_all_async — result feeds conduit.wait.
         //
         // acquire emits use_lock(consLock, AcquireGreaterEqual, 1).
-        %win1 = conduit.acquire {name = "fifo_waa", count = 1 : i64,
+        %win1 = conduit.acquire {name = @fifo_waa, count = 1 : i64,
                                  port = #conduit.port<Consume>}
                     : !conduit.window<memref<8xi32>>
 
         // release_async (Step 8d) emits use_lock(prodLock, Release, 1).
-        %rel_tok1 = conduit.release_async {name = "fifo_waa", count = 1 : i64, port = #conduit.port<Consume>}
+        %rel_tok1 = conduit.release_async {name = @fifo_waa, count = 1 : i64, port = #conduit.port<Consume>}
                         : !conduit.window.token
 
         // wait_all_async: fan-in of a single window token.
@@ -120,12 +120,12 @@ module @wait_all_async_erasure {
         // All three Conduit ops must be erased without use-after-erase.
         //
         // acquire emits use_lock(consLock, AcquireGreaterEqual, 1).
-        %win2 = conduit.acquire {name = "fifo_waa", count = 1 : i64,
+        %win2 = conduit.acquire {name = @fifo_waa, count = 1 : i64,
                                  port = #conduit.port<Consume>}
                     : !conduit.window<memref<8xi32>>
 
         // release_async (Step 8d) emits use_lock(prodLock, Release, 1).
-        %rel_tok2 = conduit.release_async {name = "fifo_waa", count = 1 : i64, port = #conduit.port<Consume>}
+        %rel_tok2 = conduit.release_async {name = @fifo_waa, count = 1 : i64, port = #conduit.port<Consume>}
                         : !conduit.window.token
 
         // First wait_all_async: erased in Phase 7 walk.
@@ -151,7 +151,7 @@ module @wait_all_async_erasure {
         // op that still has live SSA uses and crash in debug builds.
         // No hardware op is emitted for either: DMA descriptor lowering for
         // put_memref_async is a separate future gap.
-        %dma_tok = conduit.put_memref_async {name = "fifo_waa",
+        %dma_tok = conduit.put_memref_async {name = @fifo_waa,
                        num_elems = 8 : i64,
                        offsets = array<i64: 0>,
                        sizes = array<i64: 8>,
@@ -165,7 +165,7 @@ module @wait_all_async_erasure {
         //
         // The result token has no consumers — Phase 7 must erase the op
         // even though no conduit.wait holds a reference to it.
-        %_unused = conduit.get_memref_async {name = "fifo_waa",
+        %_unused = conduit.get_memref_async {name = @fifo_waa,
                        num_elems = 8 : i64,
                        offsets = array<i64: 0>,
                        sizes = array<i64: 8>,
@@ -177,12 +177,12 @@ module @wait_all_async_erasure {
         //
         // These ops have no SSA result; they must be erased by a dedicated
         // walk so they do not appear as dangling Conduit ops in the output.
-        conduit.put_memref {name = "fifo_waa", num_elems = 8 : i64,
+        conduit.put_memref {name = @fifo_waa, num_elems = 8 : i64,
                             offsets = array<i64: 0>,
                             sizes = array<i64: 8>,
                             strides = array<i64: 1>}
 
-        conduit.get_memref {name = "fifo_waa", num_elems = 8 : i64,
+        conduit.get_memref {name = @fifo_waa, num_elems = 8 : i64,
                             offsets = array<i64: 0>,
                             sizes = array<i64: 8>,
                             strides = array<i64: 1>}

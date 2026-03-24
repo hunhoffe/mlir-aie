@@ -141,11 +141,11 @@ module @distribroad {
         // Non-blocking async acquires: emit NOTHING in hardware here.
         // Each token represents a pending lock grant; the hardware DMA fills
         // the buffers while the core continues to the wait_all below.
-        %tok_slice   = conduit.acquire_async {name = "input_slice",
+        %tok_slice   = conduit.acquire_async {name = @input_slice,
                                                count = 1 : i64,
                                                port = #conduit.port<Consume>}
                            : !conduit.window.token
-        %tok_weights = conduit.acquire_async {name = "shared_weights",
+        %tok_weights = conduit.acquire_async {name = @shared_weights,
                                                count = 1 : i64,
                                                port = #conduit.port<Consume>}
                            : !conduit.window.token
@@ -159,9 +159,9 @@ module @distribroad {
         // Materialize windows — in the fixed lowering these are the sites
         // where aie.use_lock(consLock, AcquireGreaterEqual, 1) is emitted,
         // deferred from the acquire_async sites above.
-        %win_slice   = conduit.wait_window %tok_slice   for "input_slice"
+        %win_slice   = conduit.wait_window %tok_slice   for @input_slice
                            : !conduit.window.token -> !conduit.window<memref<16xi32>>
-        %win_weights = conduit.wait_window %tok_weights for "shared_weights"
+        %win_weights = conduit.wait_window %tok_weights for @shared_weights
                            : !conduit.window.token -> !conduit.window<memref<8xi32>>
 
         // Access element 0 of each granted window.

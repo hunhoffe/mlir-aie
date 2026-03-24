@@ -22,11 +22,11 @@
 // CHECK-NOT: air.channel
 
 // conduit.put_cascade is emitted for the put path (load from memref[0]).
-// CHECK: conduit.put_cascade "cas_chan"
+// CHECK: conduit.put_cascade @cas_chan
 // CHECK-SAME: vector<16xi32>
 
 // conduit.get_cascade is emitted for the get path.
-// CHECK: conduit.get_cascade "cas_chan"
+// CHECK: conduit.get_cascade @cas_chan
 // CHECK-SAME: vector<16xi32>
 
 module {

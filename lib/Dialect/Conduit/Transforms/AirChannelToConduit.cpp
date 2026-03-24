@@ -569,12 +569,12 @@ struct AirChannelToConduitPass
             channelCreateOps[dstName] = consCreate.getOperation();
           }
 
-          // Build srcs and dsts string arrays for conduit.link.
+          // Build srcs and dsts symbol ref arrays for conduit.link.
           llvm::SmallVector<mlir::Attribute> srcsAttrs = {
-              mlir::StringAttr::get(ctx, name)};
+              mlir::FlatSymbolRefAttr::get(ctx, name)};
           llvm::SmallVector<mlir::Attribute> dstsAttrs;
           for (auto &dst : dstNames)
-            dstsAttrs.push_back(mlir::StringAttr::get(ctx, dst));
+            dstsAttrs.push_back(mlir::FlatSymbolRefAttr::get(ctx, dst));
 
           // Emit conduit.distribute.
           // memtile is left empty — Pass C will resolve the MemTile from
@@ -942,13 +942,13 @@ struct AirChannelToConduitPass
               loc, memrefVal, mlir::ValueRange{c0});
           newOp = builder.create<PutCascade>(
               loc,
-              mlir::StringAttr::get(ctx, chanName),
+              mlir::FlatSymbolRefAttr::get(ctx, chanName),
               loadedVal);
         } else {
           // Get the cascade value and store it into the memref.
           auto getCascOp = builder.create<GetCascade>(
               loc, elemTy,
-              mlir::StringAttr::get(ctx, chanName));
+              mlir::FlatSymbolRefAttr::get(ctx, chanName));
           mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
           builder.create<mlir::memref::StoreOp>(
               loc, getCascOp.getValue(), memrefVal, mlir::ValueRange{c0});
@@ -961,7 +961,7 @@ struct AirChannelToConduitPass
         if (isPut) {
           newOp = builder.create<PutMemrefAsync>(
               loc, conduitTokenTy,
-              mlir::StringAttr::get(ctx, chanName),
+              mlir::FlatSymbolRefAttr::get(ctx, chanName),
               mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
               mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
               mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
@@ -970,7 +970,7 @@ struct AirChannelToConduitPass
         } else {
           newOp = builder.create<GetMemrefAsync>(
               loc, conduitTokenTy,
-              mlir::StringAttr::get(ctx, chanName),
+              mlir::FlatSymbolRefAttr::get(ctx, chanName),
               mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), numElems),
               mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
               mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
@@ -1081,7 +1081,7 @@ struct AirChannelToConduitPass
       llvm::StringMap<bool> hasDynElems;
 
       module.walk([&](PutMemrefAsync op) {
-        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         if (!nameAttr) return;
         llvm::StringRef name = nameAttr.getValue();
         if (hasDynElems.count(name)) return;
@@ -1091,7 +1091,7 @@ struct AirChannelToConduitPass
       });
 
       module.walk([&](GetMemrefAsync op) {
-        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+        auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         if (!nameAttr) return;
         llvm::StringRef name = nameAttr.getValue();
         if (hasDynElems.count(name)) return;

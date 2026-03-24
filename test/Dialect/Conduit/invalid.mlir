@@ -3,7 +3,7 @@
 // distribute mode: offsets count must equal dsts count
 func.func @bad_distribute_offsets() {
   // expected-error@+1 {{'conduit.distribute' op distribute: offsets count (1) must equal dsts count (2)}}
-  conduit.distribute {srcs = ["in"], dsts = ["out0", "out1"], memtile = "tile(0,1)",
+  conduit.distribute {srcs = [@in], dsts = [@out0, @out1], memtile = "tile(0,1)",
                            offsets = array<i64: 0>}
   return
 }
@@ -13,7 +13,7 @@ func.func @bad_distribute_offsets() {
 // join mode: offsets count must equal srcs count
 func.func @bad_join_offsets() {
   // expected-error@+1 {{'conduit.join' op join: offsets count (1) must equal srcs count (2)}}
-  conduit.join {srcs = ["in0", "in1"], dsts = ["out"], memtile = "tile(0,1)",
+  conduit.join {srcs = [@in0, @in1], dsts = [@out], memtile = "tile(0,1)",
                            offsets = array<i64: 0>}
   return
 }
@@ -27,7 +27,7 @@ func.func @bad_subview_index() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 2 : i64}
-  %win = conduit.acquire {name = "fifo", count = 1 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @fifo, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // expected-error@+1 {{'conduit.subview_access' op index 2 out of bounds for acquire count 1}}
   %elem = conduit.subview_access %win {index = 2 : i64}
@@ -47,7 +47,7 @@ conduit.create @xblock {capacity = 16 : i64,
                 element_type = memref<16xi32>,
                 depth = 2 : i64}
 func.func @bad_subview_cross_block() {
-  %win = conduit.acquire {name = "xblock", count = 1 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @xblock, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<16xi32>>
   // expected-error@+1 {{'conduit.subview_access' op index 3 out of bounds for acquire count 1}}
   %elem = conduit.subview_access %win {index = 3 : i64}
@@ -62,7 +62,7 @@ func.func @bad_subview_cross_block() {
 // M3: distribute mode requires exactly 1 src
 func.func @bad_distribute_multiple_srcs() {
   // expected-error@+1 {{'conduit.distribute' op distribute requires exactly 1 src, got 2}}
-  conduit.distribute {srcs = ["in0", "in1"], dsts = ["out0", "out1"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@in0, @in1], dsts = [@out0, @out1], memtile = "tile(0,1)"}
   return
 }
 
@@ -71,7 +71,7 @@ func.func @bad_distribute_multiple_srcs() {
 // M3: join mode requires exactly 1 dst
 func.func @bad_join_multiple_dsts() {
   // expected-error@+1 {{'conduit.join' op join requires exactly 1 dst, got 2}}
-  conduit.join {srcs = ["in0", "in1"], dsts = ["out0", "out1"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [@in0, @in1], dsts = [@out0, @out1], memtile = "tile(0,1)"}
   return
 }
 
@@ -80,7 +80,7 @@ func.func @bad_join_multiple_dsts() {
 // M3-dist: conduit.distribute with zero dsts is rejected by verifier
 func.func @bad_distribute_zero_dsts() {
   // expected-error@+1 {{'conduit.distribute' op distribute requires at least 1 dst, got 0}}
-  conduit.distribute {srcs = ["in"], dsts = [], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@in], dsts = [], memtile = "tile(0,1)"}
   return
 }
 
@@ -168,7 +168,7 @@ func.func @bad_routing_mode() {
 // (Type enforcement is TableGen-generated; this tests that the type system rejects it.)
 func.func @bad_wait_window_token() {
   conduit.create @w {capacity = 1 : i64}
-  %tok = conduit.acquire_async {name = "w", count = 1 : i64,
+  %tok = conduit.acquire_async {name = @w, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
   // expected-error@+1 {{operand #0 must be}}
@@ -182,11 +182,11 @@ func.func @bad_wait_window_token() {
 // passing !conduit.dma.token must fail type checking.
 func.func @bad_wait_with_dma_token() {
   conduit.create @ch {capacity = 64 : i64}
-  %tok = conduit.put_memref_async {name = "ch", num_elems = 64 : i64,
+  %tok = conduit.put_memref_async {name = @ch, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
   // expected-error@+2 {{invalid kind of type specified: expected}}
-  %win = conduit.wait_window %tok for "ch"
+  %win = conduit.wait_window %tok for @ch
              : !conduit.dma.token -> !conduit.window<memref<64xi32>>
   return
 }
@@ -196,7 +196,7 @@ func.func @bad_wait_with_dma_token() {
 // forward mode: requires exactly 1 src and 1 dst; 2 srcs must fail.
 func.func @bad_forward_two_srcs() {
   // expected-error@+1 {{'conduit.forward' op forward requires exactly 1 src and 1 dst}}
-  conduit.forward {srcs = ["in0", "in1"], dsts = ["out"], memtile = "tile(0,1)"}
+  conduit.forward {srcs = [@in0, @in1], dsts = [@out], memtile = "tile(0,1)"}
   return
 }
 
@@ -205,7 +205,7 @@ func.func @bad_forward_two_srcs() {
 // forward mode: requires exactly 1 src and 1 dst; 2 dsts must fail.
 func.func @bad_forward_two_dsts() {
   // expected-error@+1 {{'conduit.forward' op forward requires exactly 1 src and 1 dst}}
-  conduit.forward {srcs = ["in"], dsts = ["out0", "out1"], memtile = "tile(0,1)"}
+  conduit.forward {srcs = [@in], dsts = [@out0, @out1], memtile = "tile(0,1)"}
   return
 }
 
@@ -265,7 +265,7 @@ func.func @m8a_double_release() {
                   element_type = memref<1xi32>,
                   depth = 1 : i64}
   // expected-error@+1 {{'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow}}
-  %win = conduit.acquire {name = "dbl", count = 1 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @dbl, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
@@ -283,7 +283,7 @@ func.func @m8c_wait_all_window_value() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,
                   depth = 1 : i64}
-  %win = conduit.acquire {name = "unx", count = 1 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @unx, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
   // expected-error@+1 {{'conduit.wait_all' op operand #0 must be variadic of conduit token type, but got '!conduit.window<memref<1xi32>>'}}
   conduit.wait_all %win : !conduit.window<memref<1xi32>>
@@ -300,12 +300,12 @@ func.func @m8b_double_wait_window() {
                   element_type = memref<1xi32>,
                   depth = 1 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M8: window.token has 2 conduit.wait_window uses}}
-  %tok = conduit.acquire_async {name = "dbl_tok", count = 1 : i64,
+  %tok = conduit.acquire_async {name = @dbl_tok, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
-  %win1 = conduit.wait_window %tok for "dbl_tok"
+  %win1 = conduit.wait_window %tok for @dbl_tok
               : !conduit.window.token -> !conduit.window<memref<1xi32>>
-  %win2 = conduit.wait_window %tok for "dbl_tok"
+  %win2 = conduit.wait_window %tok for @dbl_tok
               : !conduit.window.token -> !conduit.window<memref<1xi32>>
   conduit.release %win1 {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
@@ -319,7 +319,7 @@ func.func @m8b_double_wait_window() {
 // M8c: i32 operand in wait_all is not a token type.
 func.func @m8c_wait_all_non_token(%bad : i32) {
   conduit.create @ntok {capacity = 1 : i64}
-  %tok = conduit.put_memref_async {name = "ntok", num_elems = 1 : i64,
+  %tok = conduit.put_memref_async {name = @ntok, num_elems = 1 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 1>,
              strides = array<i64: 1>} : !conduit.dma.token
   // expected-error@+1 {{'conduit.wait_all' op operand #1 must be variadic of conduit token type, but got 'i32'}}
@@ -333,7 +333,7 @@ func.func @m8c_wait_all_non_token(%bad : i32) {
 func.func @m10_window_token_escape_return() -> !conduit.window.token {
   conduit.create @esc {capacity = 1 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via return}}
-  %tok = conduit.acquire_async {name = "esc", count = 1 : i64,
+  %tok = conduit.acquire_async {name = @esc, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
   return %tok : !conduit.window.token
@@ -345,7 +345,7 @@ func.func @m10_window_token_escape_return() -> !conduit.window.token {
 func.func @m10_dma_token_escape_return() -> !conduit.dma.token {
   conduit.create @esc_dma {capacity = 64 : i64}
   // expected-error@+1 {{'conduit.put_memref_async' op M10: token escapes function scope via return}}
-  %tok = conduit.put_memref_async {name = "esc_dma", num_elems = 64 : i64,
+  %tok = conduit.put_memref_async {name = @esc_dma, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
   return %tok : !conduit.dma.token
@@ -358,7 +358,7 @@ func.func private @callee(%tok : !conduit.window.token)
 func.func @m10_token_escape_call() {
   conduit.create @esc_call {capacity = 1 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via call argument}}
-  %tok = conduit.acquire_async {name = "esc_call", count = 1 : i64,
+  %tok = conduit.acquire_async {name = @esc_call, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
   func.call @callee(%tok) : (!conduit.window.token) -> ()
@@ -372,7 +372,7 @@ func.func @m10_token_escape_call() {
 // that result must not escape function scope.
 func.func @m10_wait_all_async_token_escape() -> !conduit.dma.token {
   conduit.create @wa_esc {capacity = 64 : i64}
-  %tok = conduit.put_memref_async {name = "wa_esc", num_elems = 64 : i64,
+  %tok = conduit.put_memref_async {name = @wa_esc, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
   // expected-error@+1 {{'conduit.wait_all_async' op M10: token escapes function scope via return}}

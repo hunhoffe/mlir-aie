@@ -56,7 +56,7 @@ module @passC_produce_crossblock_heldcount_reset {
       %val = arith.constant 42 : i32
 
       // Parent preamble: acquire 2 output slots (non-uniform acquire).
-      %pre_win = conduit.acquire {name = "outChan", count = 2 : i64,
+      %pre_win = conduit.acquire {name = @outChan, count = 2 : i64,
                                    port = #conduit.port<Produce>}
                      : !conduit.window<memref<32xi32>>
       %pre_buf0 = conduit.subview_access %pre_win {index = 0 : i64}
@@ -72,7 +72,7 @@ module @passC_produce_crossblock_heldcount_reset {
       // B-1 fix: child inherits heldCount=0 (not the parent's heldCount=1).
       // Without the fix, the first loop acquire would get delta=0 → deadlock.
       scf.for %i = %c0 to %c4 step %c1 {
-        %loop_win = conduit.acquire {name = "outChan", count = 1 : i64,
+        %loop_win = conduit.acquire {name = @outChan, count = 1 : i64,
                                       port = #conduit.port<Produce>}
                         : !conduit.window<memref<32xi32>>
         %loop_buf = conduit.subview_access %loop_win {index = 0 : i64}

@@ -128,7 +128,7 @@ module @fuse_channels_test {
       %c4 = arith.constant 4 : index
       scf.for %i = %c0 to %c4 step %c1 {
         // chan_a window: acquire, use, release.
-        %wa = conduit.acquire {name = "chan_a", count = 1 : i64, port = #conduit.port<Produce>}
+        %wa = conduit.acquire {name = @chan_a, count = 1 : i64, port = #conduit.port<Produce>}
                  : !conduit.window<memref<8xi32>>
         %buf_a = conduit.subview_access %wa {index = 0 : i64}
                     : !conduit.window<memref<8xi32>> -> memref<8xi32>
@@ -137,7 +137,7 @@ module @fuse_channels_test {
             : !conduit.window<memref<8xi32>>
 
         // chan_b window: acquire, use, release.
-        %wb = conduit.acquire {name = "chan_b", count = 1 : i64, port = #conduit.port<Produce>}
+        %wb = conduit.acquire {name = @chan_b, count = 1 : i64, port = #conduit.port<Produce>}
                  : !conduit.window<memref<8xi32>>
         %buf_b = conduit.subview_access %wb {index = 0 : i64}
                     : !conduit.window<memref<8xi32>> -> memref<8xi32>
@@ -154,7 +154,7 @@ module @fuse_channels_test {
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
       scf.for %i = %c0 to %c4 step %c1 {
-        %w = conduit.acquire {name = "chan_a", count = 1 : i64, port = #conduit.port<Consume>}
+        %w = conduit.acquire {name = @chan_a, count = 1 : i64, port = #conduit.port<Consume>}
                 : !conduit.window<memref<8xi32>>
         %buf = conduit.subview_access %w {index = 0 : i64}
                    : !conduit.window<memref<8xi32>> -> memref<8xi32>
@@ -171,7 +171,7 @@ module @fuse_channels_test {
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
       scf.for %i = %c0 to %c4 step %c1 {
-        %w = conduit.acquire {name = "chan_b", count = 1 : i64, port = #conduit.port<Consume>}
+        %w = conduit.acquire {name = @chan_b, count = 1 : i64, port = #conduit.port<Consume>}
                 : !conduit.window<memref<8xi32>>
         %buf = conduit.subview_access %w {index = 0 : i64}
                    : !conduit.window<memref<8xi32>> -> memref<8xi32>

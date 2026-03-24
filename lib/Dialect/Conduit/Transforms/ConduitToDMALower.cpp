@@ -419,7 +419,7 @@ void lowerPhase(ConduitToDMAState &state) {
 
         // Compute delta from live-window state.
         Port port = op.getPort();
-        auto key = std::make_pair(op.getNameAttr(),
+        auto key = std::make_pair(mlir::StringAttr::get(ctx, op.getName()),
                                   static_cast<int>(port));
         int64_t held = 0;
         if (auto it = liveState.find(key); it != liveState.end())
@@ -519,7 +519,7 @@ void lowerPhase(ConduitToDMAState &state) {
         mlir::StringAttr nameAttr;
         if (auto acqOp =
                 mlir::dyn_cast_or_null<Acquire>(op.getWindow().getDefiningOp()))
-          nameAttr = acqOp.getNameAttr();
+          nameAttr = mlir::StringAttr::get(ctx, acqOp.getName());
         else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
                      op.getWindow().getDefiningOp()))
           nameAttr = mlir::StringAttr::get(ctx, waitOp.getName());

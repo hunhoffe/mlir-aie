@@ -28,10 +28,10 @@
 
 // CONDUIT-LABEL: module @produce_acquire_loop_regression
 // CONDUIT:       aie.core
-// CONDUIT:         conduit.acquire {{{.*}}name = "outRows"{{.*}}port = #conduit.port<Produce>
+// CONDUIT:         conduit.acquire {{{.*}}name = @outRows{{.*}}port = #conduit.port<Produce>
 // CONDUIT:         conduit.release
 // CONDUIT:         scf.for
-// CONDUIT:           conduit.acquire {{{.*}}name = "outRows"{{.*}}port = #conduit.port<Produce>
+// CONDUIT:           conduit.acquire {{{.*}}name = @outRows{{.*}}port = #conduit.port<Produce>
 // CONDUIT:           conduit.release
 
 // DMA-LABEL: module @produce_acquire_loop_regression

@@ -47,7 +47,7 @@ module @passC_delta_zero_noop {
       %val = arith.constant 42 : i32
 
       // Parent: acquire(3), no release → heldCount=3, lastAcquireCount=3.
-      %win_pre = conduit.acquire {name = "fifo", count = 3 : i64,
+      %win_pre = conduit.acquire {name = @fifo, count = 3 : i64,
                                    port = #conduit.port<Consume>}
                      : !conduit.window<memref<128xi32>>
       %pre0 = conduit.subview_access %win_pre {index = 0 : i64}
@@ -61,7 +61,7 @@ module @passC_delta_zero_noop {
       // Loop body: acquire(3), delta=0 → no AcquireGreaterEqual.
       // Re-accesses the same 3 elements already in the buffer.
       scf.for %i = %c0 to %c4 step %c1 {
-        %win_mid = conduit.acquire {name = "fifo", count = 3 : i64,
+        %win_mid = conduit.acquire {name = @fifo, count = 3 : i64,
                                      port = #conduit.port<Consume>}
                        : !conduit.window<memref<128xi32>>
         %mid0 = conduit.subview_access %win_mid {index = 0 : i64}

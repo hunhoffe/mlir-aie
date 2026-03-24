@@ -20,7 +20,7 @@ module {
 
     // Consumer core: get_cascade with NO matching put_cascade anywhere.
     aie.core(%tile13) {
-      %r = conduit.get_cascade "cas" : vector<16xi32>
+      %r = conduit.get_cascade @cas : vector<16xi32>
       aie.end
     }
   }

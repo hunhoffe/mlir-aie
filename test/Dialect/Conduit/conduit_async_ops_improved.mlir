@@ -22,12 +22,12 @@ func.func @acquire_async_consume_port() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // CHECK: conduit.acquire_async
-  // CHECK-SAME: name = "fifo"
+  // CHECK-SAME: name = @fifo
   // CHECK-SAME: port = #conduit.port<Consume>
-  %tok = conduit.acquire_async {name = "fifo", count = 1 : i64,
+  %tok = conduit.acquire_async {name = @fifo, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
-  %win = conduit.wait_window %tok for "fifo"
+  %win = conduit.wait_window %tok for @fifo
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
@@ -47,10 +47,10 @@ func.func @acquire_async_produce_port() {
                   depth = 1 : i64}
   // CHECK: conduit.acquire_async
   // CHECK-SAME: port = #conduit.port<Produce>
-  %tok = conduit.acquire_async {name = "out", count = 1 : i64,
+  %tok = conduit.acquire_async {name = @out, count = 1 : i64,
              port = #conduit.port<Produce>}
              : !conduit.window.token
-  %win = conduit.wait_window %tok for "out"
+  %win = conduit.wait_window %tok for @out
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Produce>}
       : !conduit.window<memref<8xi32>>
@@ -69,14 +69,14 @@ func.func @release_async_with_window_operand() {
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  %win = conduit.acquire {name = "ch", count = 1 : i64,
+  %win = conduit.acquire {name = @ch, count = 1 : i64,
                           port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // CHECK: conduit.release_async
-  // CHECK-SAME: name = "ch"
+  // CHECK-SAME: name = @ch
   // CHECK-SAME: !conduit.window.token
   %rel_tok = conduit.release_async(%win : !conduit.window<memref<8xi32>>) {
-                 name = "ch", count = 1 : i64, port = #conduit.port<Consume>}
+                 name = @ch, count = 1 : i64, port = #conduit.port<Consume>}
                  : !conduit.window.token
   conduit.wait_all %rel_tok : !conduit.window.token
   return
@@ -95,9 +95,9 @@ func.func @release_async_name_only() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // CHECK: conduit.release_async
-  // CHECK-SAME: name = "fifo"
+  // CHECK-SAME: name = @fifo
   // CHECK-SAME: port = #conduit.port<Produce>
-  %rel_tok = conduit.release_async {name = "fifo", count = 1 : i64,
+  %rel_tok = conduit.release_async {name = @fifo, count = 1 : i64,
                  port = #conduit.port<Produce>}
                  : !conduit.window.token
   conduit.wait_all %rel_tok : !conduit.window.token
@@ -120,12 +120,12 @@ func.func @release_async_window_name_mismatch() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  %win_other = conduit.acquire {name = "other", count = 1 : i64,
+  %win_other = conduit.acquire {name = @other, count = 1 : i64,
                                 port = #conduit.port<Consume>}
                    : !conduit.window<memref<8xi32>>
   // expected-error@+1 {{'conduit.release_async' op $window is from channel 'other' but $name is 'ch'}}
   %rel_tok = conduit.release_async(%win_other : !conduit.window<memref<8xi32>>) {
-                 name = "ch", count = 1 : i64, port = #conduit.port<Consume>}
+                 name = @ch, count = 1 : i64, port = #conduit.port<Consume>}
                  : !conduit.window.token
   conduit.wait_all %rel_tok : !conduit.window.token
   conduit.release %win_other {count = 1 : i64, port = #conduit.port<Consume>}

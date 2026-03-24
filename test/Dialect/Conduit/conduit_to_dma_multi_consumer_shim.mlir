@@ -63,7 +63,7 @@ module @multi_consumer_shim {
 
     // Producer core: fill one element and signal done.
     %c_prod = aie.core(%tile_2) {
-      %win = conduit.acquire {name = "chan", count = 1 : i64,
+      %win = conduit.acquire {name = @chan, count = 1 : i64,
                                port = #conduit.port<Produce>}
                  : !conduit.window<memref<16xi32>>
       conduit.release %win {count = 1 : i64, port = #conduit.port<Produce>}
@@ -73,7 +73,7 @@ module @multi_consumer_shim {
 
     // Compute consumer core: read one element.
     %c_cons = aie.core(%tile_3) {
-      %win = conduit.acquire {name = "chan", count = 1 : i64,
+      %win = conduit.acquire {name = @chan, count = 1 : i64,
                                port = #conduit.port<Consume>}
                  : !conduit.window<memref<16xi32>>
       conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}

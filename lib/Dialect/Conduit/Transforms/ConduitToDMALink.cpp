@@ -38,21 +38,21 @@ void linkPhase(ConduitToDMAState &state) {
   // Collect ALL link source and destination names for Phase 5.5 skip logic.
   state.module.walk([&](Distribute op) {
     for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     for (auto d : op.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
   state.module.walk([&](Join op) {
     for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     for (auto d : op.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
   state.module.walk([&](Forward op) {
     for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     for (auto d : op.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
 
   // -----------------------------------------------------------------------
@@ -150,7 +150,7 @@ void linkPhase(ConduitToDMAState &state) {
     //       plus aie.flow from relay MM2S → consumer S2MM.
     if (!relayIsMemTile) {
       std::string coreRelayName =
-          mlir::cast<mlir::StringAttr>(srcs[0]).getValue().str();
+          mlir::cast<mlir::FlatSymbolRefAttr>(srcs[0]).getValue().str();
       ConduitInfo *coreRelaySrcPtr = state.lookupConduit(coreRelayName);
       if (!coreRelaySrcPtr) {
         linkOp.emitError("conduit-to-dma: CoreTile relay: src conduit '" +
@@ -310,7 +310,7 @@ void linkPhase(ConduitToDMAState &state) {
           for (unsigned dstIdx = 0; dstIdx < static_cast<unsigned>(dsts.size());
                ++dstIdx) {
             std::string dstName =
-                mlir::cast<mlir::StringAttr>(dsts[dstIdx]).getValue().str();
+                mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
             ConduitInfo *dstInfo = state.lookupConduit(dstName);
             if (!dstInfo || dstInfo->consumerTileCoords.empty()) {
               continue;
@@ -381,7 +381,7 @@ void linkPhase(ConduitToDMAState &state) {
     }
 
     std::string srcName =
-        mlir::cast<mlir::StringAttr>(srcs[0]).getValue().str();
+        mlir::cast<mlir::FlatSymbolRefAttr>(srcs[0]).getValue().str();
     ConduitInfo *srcInfoPtr = state.lookupConduit(srcName);
 
     // Guard: cascade-mode conduits cannot be used with distribute/join/forward.
@@ -456,7 +456,7 @@ void linkPhase(ConduitToDMAState &state) {
         int64_t dstRepeat = 1;
         {
           std::string dstNameR =
-              mlir::cast<mlir::StringAttr>(dsts[sliceIdx]).getValue().str();
+              mlir::cast<mlir::FlatSymbolRefAttr>(dsts[sliceIdx]).getValue().str();
           if (ConduitInfo *dstInfoR = state.lookupConduit(dstNameR))
             if (dstInfoR->bdChainRepeatCount > 1)
               dstRepeat = dstInfoR->bdChainRepeatCount;
@@ -513,7 +513,7 @@ void linkPhase(ConduitToDMAState &state) {
     int64_t joinDstPerBufForLen = 1;
 
     if (!isDistribute && !dsts.empty()) {
-      std::string jDstName = mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
+      std::string jDstName = mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
       ConduitInfo *jDstInfo = state.lookupConduit(jDstName);
       if (!jDstInfo) {
         linkOp.emitWarning("conduit-to-dma: join destination conduit '")
@@ -616,7 +616,7 @@ void linkPhase(ConduitToDMAState &state) {
     if (!isDistribute) {
       for (unsigned i = 0; i < static_cast<unsigned>(srcs.size()); ++i) {
         std::string sName =
-            mlir::cast<mlir::StringAttr>(srcs[i]).getValue().str();
+            mlir::cast<mlir::FlatSymbolRefAttr>(srcs[i]).getValue().str();
         ConduitInfo *sInfo = state.lookupConduit(sName);
         bool reused = false;
         if (sInfo) {
@@ -648,7 +648,7 @@ void linkPhase(ConduitToDMAState &state) {
     int32_t joinMM2SCh = -1;
     if (!isDistribute && !dsts.empty()) {
       std::string dstName0 =
-          mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
+          mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
       auto it = state.conduitMM2SChannel.find(dstName0);
       if (it != state.conduitMM2SChannel.end()) {
         joinMM2SCh = it->second;
@@ -664,7 +664,7 @@ void linkPhase(ConduitToDMAState &state) {
       builder.setInsertionPoint(state.deviceBody->getTerminator());
       for (unsigned dstIdx = 0; dstIdx < numDsts; ++dstIdx) {
         std::string dstName =
-            mlir::cast<mlir::StringAttr>(dsts[dstIdx]).getValue().str();
+            mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
         ConduitInfo *dstInfo = state.lookupConduit(dstName);
         if (!dstInfo || dstInfo->consumerTileCoords.empty())
           continue;
@@ -728,7 +728,7 @@ void linkPhase(ConduitToDMAState &state) {
 
       for (unsigned srcIdx = 0; srcIdx < srcs.size(); ++srcIdx) {
         std::string sName =
-            mlir::cast<mlir::StringAttr>(srcs[srcIdx]).getValue().str();
+            mlir::cast<mlir::FlatSymbolRefAttr>(srcs[srcIdx]).getValue().str();
         ConduitInfo *sInfo = state.lookupConduit(sName);
         if (!sInfo)
           continue;
@@ -756,7 +756,7 @@ void linkPhase(ConduitToDMAState &state) {
       // iterates all conduits with shimConsumerTileCoords. We must NOT emit
       // the shim flow here to avoid duplicating Phase 4b's emission.
       if (!dsts.empty()) {
-        std::string dstName = mlir::cast<mlir::StringAttr>(dsts[0]).getValue().str();
+        std::string dstName = mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
         if (ConduitInfo *dstFlowInfo = state.lookupConduit(dstName)) {
           for (unsigned ci = 0; ci < dstFlowInfo->consumerTileCoords.size(); ++ci) {
             auto [consCol, consRow] = dstFlowInfo->consumerTileCoords[ci];
@@ -1021,7 +1021,7 @@ void linkPhase(ConduitToDMAState &state) {
         int64_t mm2sDstRepeat = 1;
         {
           std::string dstName2 =
-              mlir::cast<mlir::StringAttr>(dsts[dstIdx]).getValue().str();
+              mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
           if (ConduitInfo *dstInfo = state.lookupConduit(dstName2)) {
             dstProdDims = dstInfo->producerDimensions;
             if (dstInfo->bdChainRepeatCount > 1)

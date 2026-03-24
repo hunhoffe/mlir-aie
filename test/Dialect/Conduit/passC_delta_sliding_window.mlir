@@ -68,7 +68,7 @@ module @passC_delta_sliding_window {
       %val = arith.constant 42 : i32
 
       // === Preamble: acquire(2), release(1) ===
-      %win_pre = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_pre = conduit.acquire {name = @fifo, count = 2 : i64,
                                    port = #conduit.port<Consume>}
                      : !conduit.window<memref<128xi32>>
       %pre0 = conduit.subview_access %win_pre {index = 0 : i64}
@@ -82,7 +82,7 @@ module @passC_delta_sliding_window {
 
       // === Middle: scf.for { acquire(3), release(1) } ===
       scf.for %i = %c0 to %c4 step %c1 {
-        %win_mid = conduit.acquire {name = "fifo", count = 3 : i64,
+        %win_mid = conduit.acquire {name = @fifo, count = 3 : i64,
                                      port = #conduit.port<Consume>}
                        : !conduit.window<memref<128xi32>>
         %mid0 = conduit.subview_access %win_mid {index = 0 : i64}
@@ -98,7 +98,7 @@ module @passC_delta_sliding_window {
       }
 
       // === Tail: acquire(2), release(2) ===
-      %win_tail = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_tail = conduit.acquire {name = @fifo, count = 2 : i64,
                                     port = #conduit.port<Consume>}
                       : !conduit.window<memref<128xi32>>
       %tail0 = conduit.subview_access %win_tail {index = 0 : i64}

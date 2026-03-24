@@ -643,15 +643,15 @@ struct ObjectFifoToConduitPass
         return;
       }
 
-      // Build src/dst name arrays
+      // Build src/dst symbol ref arrays for conduit.distribute / conduit.join.
       llvm::SmallVector<mlir::Attribute> srcAttrs, dstAttrs;
       for (auto sym : fifoIns) {
         auto flat = mlir::cast<mlir::FlatSymbolRefAttr>(sym);
-        srcAttrs.push_back(mlir::StringAttr::get(ctx, flat.getValue()));
+        srcAttrs.push_back(mlir::FlatSymbolRefAttr::get(ctx, flat.getValue()));
       }
       for (auto sym : fifoOuts) {
         auto flat = mlir::cast<mlir::FlatSymbolRefAttr>(sym);
-        dstAttrs.push_back(mlir::StringAttr::get(ctx, flat.getValue()));
+        dstAttrs.push_back(mlir::FlatSymbolRefAttr::get(ctx, flat.getValue()));
       }
 
       // Relay tile detection: find the tile that sits between the source and
@@ -1025,7 +1025,7 @@ struct ObjectFifoToConduitPass
               // Scalar element type (e.g., i32 from memref<1xi32>).
               mlir::Type elemTy = elemType.getElementType();
               auto getCascOp = builder.create<GetCascade>(
-                  loc, elemTy, mlir::StringAttr::get(ctx, name));
+                  loc, elemTy, mlir::FlatSymbolRefAttr::get(ctx, name));
               mlir::Value cascVal = getCascOp.getValue(); // scalar i32/vector
 
               mlir::Value subviewResult = op.getResult();
@@ -1117,7 +1117,7 @@ struct ObjectFifoToConduitPass
               // single window covers all elements that will be released.
               auto winTy = WindowType::get(ctx, elemType);
               winVal = builder.create<Acquire>(
-                  loc, winTy, mlir::StringAttr::get(ctx, name),
+                  loc, winTy, mlir::FlatSymbolRefAttr::get(ctx, name),
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
                                          effectiveCount),
                   PortAttr::get(ctx, port));
@@ -1238,7 +1238,7 @@ struct ObjectFifoToConduitPass
               if (storedVal) {
                 builder.setInsertionPoint(op);
                 builder.create<PutCascade>(
-                    loc, mlir::StringAttr::get(ctx, name), storedVal);
+                    loc, mlir::FlatSymbolRefAttr::get(ctx, name), storedVal);
               } else {
                 op->emitWarning(
                     "objectfifo-to-conduit: cascade Produce '")
@@ -1315,7 +1315,7 @@ struct ObjectFifoToConduitPass
                   mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
             auto winTy = WindowType::get(ctx, elemType);
             winVal = builder.create<Acquire>(
-                loc, winTy, mlir::StringAttr::get(ctx, name),
+                loc, winTy, mlir::FlatSymbolRefAttr::get(ctx, name),
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
                 PortAttr::get(ctx, port));
             blockWindowMap[nameAttr].push_back(winVal);
@@ -1384,7 +1384,7 @@ struct ObjectFifoToConduitPass
       llvm::SmallVector<mlir::Value> extBufs(extBufOp.getExternalBuffers());
 
       builder.create<RegisterExternalBuffers>(
-          extBufOp.getLoc(), mlir::StringAttr::get(ctx, name),
+          extBufOp.getLoc(), mlir::FlatSymbolRefAttr::get(ctx, name),
           mlir::DenseI64ArrayAttr::get(ctx, tileCoord), extBufs);
 
       extBufOp.erase();
@@ -1459,6 +1459,8 @@ struct ObjectFifoToConduitPass
         // Only rewrite symbol uses for the first (or only) allocation so that
         // a single symbol name continues to refer to the objectfifo.
         if (shimIdx == 0) {
+          // Save the original name so we can revert conduit op name attrs.
+          std::string origName = op.getSymName().str();
           if (mlir::failed(mlir::SymbolTable::replaceAllSymbolUses(
                   op.getSymNameAttr(), builder.getStringAttr(allocSym),
                   deviceOp))) {
@@ -1466,6 +1468,69 @@ struct ObjectFifoToConduitPass
                            "for shim-connected objectfifo '")
                 << op.getSymName() << "'";
           }
+          // replaceAllSymbolUses renames ALL FlatSymbolRefAttr occurrences
+          // (including conduit.* op name attrs) from @origName to @allocSym.
+          // However conduit.* name attrs reference the conduit.create symbol,
+          // not the aie.objectfifo — they must stay as @origName so Pass C's
+          // conduitMap lookup (keyed on conduit.create sym_name) succeeds.
+          // Walk all conduit use-site ops and revert their name attr.
+          mlir::FlatSymbolRefAttr allocRef =
+              mlir::FlatSymbolRefAttr::get(ctx, allocSym);
+          mlir::FlatSymbolRefAttr origRef =
+              mlir::FlatSymbolRefAttr::get(ctx, origName);
+          auto revertIfRenamed = [&](auto &walkOp) {
+            if (walkOp.getNameAttr() == allocRef)
+              walkOp.setNameAttr(origRef);
+          };
+          deviceOp.walk([&](Acquire op)              { revertIfRenamed(op); });
+          deviceOp.walk([&](AcquireAsync op)         { revertIfRenamed(op); });
+          deviceOp.walk([&](ReleaseAsync op)         { revertIfRenamed(op); });
+          deviceOp.walk([&](PutMemref op)            { revertIfRenamed(op); });
+          deviceOp.walk([&](GetMemref op)            { revertIfRenamed(op); });
+          deviceOp.walk([&](PutMemrefAsync op)       { revertIfRenamed(op); });
+          deviceOp.walk([&](GetMemrefAsync op)       { revertIfRenamed(op); });
+          deviceOp.walk([&](WaitWindow op)           { revertIfRenamed(op); });
+          deviceOp.walk([&](PutCascade op)           { revertIfRenamed(op); });
+          deviceOp.walk([&](GetCascade op)           { revertIfRenamed(op); });
+          deviceOp.walk([&](RegisterExternalBuffers op) { revertIfRenamed(op); });
+          // Also revert srcs/dsts arrays on distribute/join/forward ops.
+          // replaceAllSymbolUses renames FlatSymbolRefAttr elements inside
+          // SymbolRefArrayAttr arrays as well.
+          auto revertArray = [&](mlir::ArrayAttr arr) -> mlir::ArrayAttr {
+            if (!arr)
+              return arr;
+            llvm::SmallVector<mlir::Attribute> newAttrs;
+            bool changed = false;
+            for (auto attr : arr) {
+              if (attr == allocRef) {
+                newAttrs.push_back(origRef);
+                changed = true;
+              } else {
+                newAttrs.push_back(attr);
+              }
+            }
+            if (!changed)
+              return arr;
+            return mlir::ArrayAttr::get(ctx, newAttrs);
+          };
+          deviceOp.walk([&](Distribute op) {
+            auto newSrcs = revertArray(op.getSrcs());
+            auto newDsts = revertArray(op.getDsts());
+            if (newSrcs != op.getSrcs()) op.setSrcsAttr(newSrcs);
+            if (newDsts != op.getDsts()) op.setDstsAttr(newDsts);
+          });
+          deviceOp.walk([&](Join op) {
+            auto newSrcs = revertArray(op.getSrcs());
+            auto newDsts = revertArray(op.getDsts());
+            if (newSrcs != op.getSrcs()) op.setSrcsAttr(newSrcs);
+            if (newDsts != op.getDsts()) op.setDstsAttr(newDsts);
+          });
+          deviceOp.walk([&](Forward op) {
+            auto newSrcs = revertArray(op.getSrcs());
+            auto newDsts = revertArray(op.getDsts());
+            if (newSrcs != op.getSrcs()) op.setSrcsAttr(newSrcs);
+            if (newDsts != op.getDsts()) op.setDstsAttr(newDsts);
+          });
         }
       }
     }

@@ -56,14 +56,14 @@ module @conduit_direct_sliding_window_prior_count {
       %c4 = arith.constant 4 : index
 
       // Preamble: acquire(2), no prior held elements.
-      %win_pre = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_pre = conduit.acquire {name = @fifo, count = 2 : i64,
                                    port = #conduit.port<Consume>}
                      : !conduit.window<memref<128xi32>>
       %pre0 = conduit.subview_access %win_pre {index = 0 : i64}
                   : !conduit.window<memref<128xi32>> -> memref<128xi32>
       %pre1 = conduit.subview_access %win_pre {index = 1 : i64}
                   : !conduit.window<memref<128xi32>> -> memref<128xi32>
-      %win_out_pre = conduit.acquire {name = "out", count = 1 : i64,
+      %win_out_pre = conduit.acquire {name = @out, count = 1 : i64,
                                        port = #conduit.port<Produce>}
                          : !conduit.window<memref<64xi32>>
       %out_pre = conduit.subview_access %win_out_pre {index = 0 : i64}
@@ -75,7 +75,7 @@ module @conduit_direct_sliding_window_prior_count {
 
       // Middle: acquire(3). Pass C infers delta=1 via cross-block lastAcquireCount=2.
       scf.for %i = %c0 to %c4 step %c1 {
-        %win_mid = conduit.acquire {name = "fifo", count = 3 : i64,
+        %win_mid = conduit.acquire {name = @fifo, count = 3 : i64,
                                      port = #conduit.port<Consume>}
                        : !conduit.window<memref<128xi32>>
         %mid0 = conduit.subview_access %win_mid {index = 0 : i64}
@@ -84,7 +84,7 @@ module @conduit_direct_sliding_window_prior_count {
                     : !conduit.window<memref<128xi32>> -> memref<128xi32>
         %mid2 = conduit.subview_access %win_mid {index = 2 : i64}
                     : !conduit.window<memref<128xi32>> -> memref<128xi32>
-        %win_out_mid = conduit.acquire {name = "out", count = 1 : i64,
+        %win_out_mid = conduit.acquire {name = @out, count = 1 : i64,
                                          port = #conduit.port<Produce>}
                            : !conduit.window<memref<64xi32>>
         %out_mid = conduit.subview_access %win_out_mid {index = 0 : i64}
@@ -96,14 +96,14 @@ module @conduit_direct_sliding_window_prior_count {
       }
 
       // Tail: acquire(2). Pass C infers delta=1 via same-block heldCount=1.
-      %win_tail = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_tail = conduit.acquire {name = @fifo, count = 2 : i64,
                                     port = #conduit.port<Consume>}
                       : !conduit.window<memref<128xi32>>
       %tail0 = conduit.subview_access %win_tail {index = 0 : i64}
                    : !conduit.window<memref<128xi32>> -> memref<128xi32>
       %tail1 = conduit.subview_access %win_tail {index = 1 : i64}
                    : !conduit.window<memref<128xi32>> -> memref<128xi32>
-      %win_out_tail = conduit.acquire {name = "out", count = 1 : i64,
+      %win_out_tail = conduit.acquire {name = @out, count = 1 : i64,
                                         port = #conduit.port<Produce>}
                           : !conduit.window<memref<64xi32>>
       %out_tail = conduit.subview_access %win_out_tail {index = 0 : i64}

@@ -37,7 +37,7 @@ func.func @join_unannotated_srcs_pass() {
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
   // No expected-error: unannotated → skip path → PASS.
-  conduit.join {srcs = ["j_src_norates"], dsts = ["j_dst_norates"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [@j_src_norates], dsts = [@j_dst_norates], memtile = "tile(0,1)"}
   return
 }
 
@@ -66,6 +66,6 @@ func.func @join_all_balanced_link_check() {
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
   // No error expected: all rates balanced.
-  conduit.join {srcs = ["j2_src"], dsts = ["j2_dst"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [@j2_src], dsts = [@j2_dst], memtile = "tile(0,1)"}
   return
 }

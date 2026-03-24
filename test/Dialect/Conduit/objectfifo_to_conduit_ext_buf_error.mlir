@@ -12,7 +12,7 @@ module {
     aie.objectfifo @ext_fifo(%tile70, {%tile71}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
 
     %ext_buf = aie.external_buffer {sym_name = "ext_buffer_in"} : memref<64xi32>
-    // CHECK: conduit.register_external_buffers({{%.*}}) {name = "ext_fifo", tile_coord = array<i64: 7, 0>} : (memref<64xi32>)
+    // CHECK: conduit.register_external_buffers({{%.*}}) {name = @ext_fifo, tile_coord = array<i64: 7, 0>} : (memref<64xi32>)
     aie.objectfifo.register_external_buffers @ext_fifo(%tile70, {%ext_buf}) : (memref<64xi32>)
 
     %core71 = aie.core(%tile71) {

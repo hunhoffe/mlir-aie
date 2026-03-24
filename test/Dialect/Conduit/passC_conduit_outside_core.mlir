@@ -32,7 +32,7 @@ module @passC_conduit_outside_core {
     // conduit.acquire/release placed OUTSIDE aie.core — in the device body.
     // B-11: resolveForTile() should NOT walk past DeviceOp (sentinel stop).
     // The pass should produce a clear verifier diagnostic, NOT crash.
-    %win = conduit.acquire {name = "myChan", count = 1 : i64,
+    %win = conduit.acquire {name = @myChan, count = 1 : i64,
                              port = #conduit.port<Consume>}
                : !conduit.window<memref<32xi32>>
     conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}

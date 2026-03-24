@@ -53,7 +53,7 @@ module @passC_produce_acquire_loop_delta {
       %val = arith.constant 42 : i32
 
       // Preamble: acquire 1 output slot, write it, release it.
-      %pre_win = conduit.acquire {name = "outRows", count = 1 : i64,
+      %pre_win = conduit.acquire {name = @outRows, count = 1 : i64,
                                    port = #conduit.port<Produce>}
                      : !conduit.window<memref<32xi32>>
       %pre_buf = conduit.subview_access %pre_win {index = 0 : i64}
@@ -67,7 +67,7 @@ module @passC_produce_acquire_loop_delta {
       // Inner loop: each iteration acquires a fresh output slot.
       // This acquire must NOT be subsumed by the released preamble window.
       scf.for %i = %c0 to %c4 step %c1 {
-        %loop_win = conduit.acquire {name = "outRows", count = 1 : i64,
+        %loop_win = conduit.acquire {name = @outRows, count = 1 : i64,
                                       port = #conduit.port<Produce>}
                         : !conduit.window<memref<32xi32>>
         %loop_buf = conduit.subview_access %loop_win {index = 0 : i64}

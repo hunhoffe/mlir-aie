@@ -23,7 +23,7 @@
 
 // Async put becomes conduit.put_memref_async with descriptor.
 // CHECK: conduit.put_memref_async
-// CHECK-SAME: name = "dma_chan"
+// CHECK-SAME: name = @dma_chan
 // CHECK-SAME: num_elems = 1024
 // CHECK-SAME: offsets = array<i64: 0>
 // CHECK-SAME: sizes = array<i64: 1024>
@@ -31,7 +31,7 @@
 
 // Async get becomes conduit.get_memref_async.
 // CHECK: conduit.get_memref_async
-// CHECK-SAME: name = "dma_chan"
+// CHECK-SAME: name = @dma_chan
 // CHECK-SAME: num_elems = 1024
 
 // wait_all converted to conduit.wait_all_async.

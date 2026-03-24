@@ -545,7 +545,7 @@ def Conduit_RegisterExternalBuffers : Conduit_Op<"register_external_buffers"> {
           {name = "shim_chan", tile_coord = array<i64: 0, 0>}
           : (memref<512xi16>, memref<512xi16>)
   }];
-  let arguments = (ins StrAttr:$name,
+  let arguments = (ins FlatSymbolRefAttr:$name,
                        DenseI64ArrayAttr:$tile_coord,
                        Variadic<AnyMemRef>:$external_buffers);
   let assemblyFormat = "`(` $external_buffers `)` attr-dict `:` `(` type($external_buffers) `)`";
@@ -604,7 +604,7 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
   // Pass C infers the AcquireGreaterEqual lock delta automatically from
   // the live-window state it tracks during lowering.  count=N means
   // "I need a window of N elements total" — no compiler annotation needed.
-  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
+  let arguments = (ins FlatSymbolRefAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "attr-dict `:` type($window)";
   let hasVerifier = 1;
@@ -664,7 +664,7 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
       aie.use_lock(consLock, AcquireGreaterEqual, count)  // non-blocking poll
       The token is complete when the lock is granted.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
+  let arguments = (ins FlatSymbolRefAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
   let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
   let hasVerifier = 1;
@@ -752,7 +752,7 @@ def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
       port="Produce": aie.use_lock(consLock, Release, count) -- signal data ready
       The token signals when the release is complete.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port,
+  let arguments = (ins FlatSymbolRefAttr:$name, I64Attr:$count, Conduit_PortAttr:$port,
                    Optional<Conduit_WindowType>:$window);
   let results   = (outs Conduit_WindowTokenType:$token);
   // Custom format: optional $window operand before attrs.
@@ -833,8 +833,8 @@ def Conduit_Distribute : Conduit_Op<"distribute"> {
                           memtile = "tile(0,1)",
                           offsets = array<i64: 0, 1024>}
   }];
-  let arguments = (ins StrArrayAttr:$srcs,
-                       StrArrayAttr:$dsts,
+  let arguments = (ins SymbolRefArrayAttr:$srcs,
+                       SymbolRefArrayAttr:$dsts,
                        StrAttr:$memtile,
                        OptionalAttr<DenseI64ArrayAttr>:$offsets,
                        OptionalAttr<I64Attr>:$lock_id);
@@ -867,8 +867,8 @@ def Conduit_Join : Conduit_Op<"join"> {
                     memtile = "tile(0,1)",
                     offsets = array<i64: 0, 512>}
   }];
-  let arguments = (ins StrArrayAttr:$srcs,
-                       StrArrayAttr:$dsts,
+  let arguments = (ins SymbolRefArrayAttr:$srcs,
+                       SymbolRefArrayAttr:$dsts,
                        StrAttr:$memtile,
                        OptionalAttr<DenseI64ArrayAttr>:$offsets,
                        OptionalAttr<I64Attr>:$lock_id);
@@ -895,8 +895,8 @@ def Conduit_Forward : Conduit_Op<"forward"> {
                        dsts = ["out_fwd"],
                        memtile = "tile(0,1)"}
   }];
-  let arguments = (ins StrArrayAttr:$srcs,
-                       StrArrayAttr:$dsts,
+  let arguments = (ins SymbolRefArrayAttr:$srcs,
+                       SymbolRefArrayAttr:$dsts,
                        StrAttr:$memtile,
                        OptionalAttr<DenseI64ArrayAttr>:$offsets,
                        OptionalAttr<I64Attr>:$lock_id);
@@ -936,7 +936,7 @@ def Conduit_PutMemref : Conduit_Op<"put_memref"> {
                           sizes   = array<i64: 8, 8>,
                           strides = array<i64: 16, 1>}
   }];
-  let arguments = (ins StrAttr:$name,
+  let arguments = (ins FlatSymbolRefAttr:$name,
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
@@ -953,7 +953,7 @@ def Conduit_GetMemref : Conduit_Op<"get_memref"> {
 
     Maps to: air.channel.get (Pass B source); aie.dma_bd (Pass C output).
   }];
-  let arguments = (ins StrAttr:$name,
+  let arguments = (ins FlatSymbolRefAttr:$name,
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
@@ -982,7 +982,7 @@ def Conduit_PutMemrefAsync : Conduit_Op<"put_memref_async"> {
 
     Maps to: air.channel.put async [deps] (Pass B source).
   }];
-  let arguments = (ins StrAttr:$name,
+  let arguments = (ins FlatSymbolRefAttr:$name,
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
@@ -1001,7 +1001,7 @@ def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
 
     Maps to: air.channel.get async [deps] (Pass B source).
   }];
-  let arguments = (ins StrAttr:$name,
+  let arguments = (ins FlatSymbolRefAttr:$name,
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
@@ -1061,7 +1061,7 @@ def Conduit_WaitWindow : Conduit_Op<"wait_window"> {
       path.  conduit.wait_window emits aie.use_lock(consLock, AcquireGreaterEqual)
       and maps the resolved token to the allocated aie.buffer SSA value.
   }];
-  let arguments = (ins Conduit_WindowTokenType:$token, StrAttr:$name);
+  let arguments = (ins Conduit_WindowTokenType:$token, FlatSymbolRefAttr:$name);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "$token `for` $name attr-dict `:` type($token) `->` type($window)";
   let hasVerifier = 1;
@@ -1150,7 +1150,7 @@ def Conduit_PutCascade : Conduit_Op<"put_cascade", [MemoryEffects<[MemWrite]>]> 
     Example:
       conduit.put_cascade "cas" (%v : vector<16xi32>)
   }];
-  let arguments = (ins StrAttr:$name, AnyType:$value);
+  let arguments = (ins FlatSymbolRefAttr:$name, AnyType:$value);
   let results = (outs);
   let assemblyFormat = "$name `(` $value `:` type($value) `)` attr-dict";
   let hasVerifier = 1;
@@ -1172,7 +1172,7 @@ def Conduit_GetCascade : Conduit_Op<"get_cascade", [MemoryEffects<[MemRead, MemW
     Example:
       %v = conduit.get_cascade "cas" : vector<16xi32>
   }];
-  let arguments = (ins StrAttr:$name);
+  let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs AnyType:$value);
   let assemblyFormat = "$name attr-dict `:` type($value)";
   let hasVerifier = 1;

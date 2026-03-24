@@ -31,7 +31,7 @@ func.func @bad_distribute_cascade_src() {
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
   // expected-error@+1 {{'conduit.distribute' op cascade channel 'casc_src' cannot be used in a distribute src}}
-  conduit.distribute {srcs = ["casc_src"], dsts = ["out0", "out1"], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@casc_src], dsts = [@out0, @out1], memtile = "tile(0,1)"}
   return
 }
 
@@ -56,6 +56,6 @@ func.func @bad_join_cascade_dst() {
                   depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>}
   // expected-error@+1 {{'conduit.join' op cascade channel 'casc_dst' cannot be used in a join dst}}
-  conduit.join {srcs = ["in0", "in1"], dsts = ["casc_dst"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [@in0, @in1], dsts = [@casc_dst], memtile = "tile(0,1)"}
   return
 }

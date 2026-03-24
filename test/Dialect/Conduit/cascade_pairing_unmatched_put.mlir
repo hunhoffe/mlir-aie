@@ -21,7 +21,7 @@ module {
     // Producer core: put_cascade with NO matching get_cascade anywhere.
     aie.core(%tile03) {
       %v = arith.constant dense<7> : vector<16xi32>
-      conduit.put_cascade "cas" (%v : vector<16xi32>)
+      conduit.put_cascade @cas (%v : vector<16xi32>)
       aie.end
     }
   }

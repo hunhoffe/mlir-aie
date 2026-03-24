@@ -29,11 +29,11 @@
 // Tier 3 ops inside loop body.
 // CHECK: scf.for
 // CHECK: conduit.put_memref_async
-// CHECK-SAME: name = "chan"
+// CHECK-SAME: name = @chan
 
 // CHECK: scf.for
 // CHECK: conduit.get_memref_async
-// CHECK-SAME: name = "chan"
+// CHECK-SAME: name = @chan
 
 // No residual air ops.
 // CHECK-NOT: air.channel

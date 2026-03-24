@@ -36,12 +36,12 @@ module {
   // Case 1: linear chain A → B → wait_all_async
   func.func @linear_chain(%bufA : memref<64xi32>, %bufB : memref<64xi32>) {
     // put_A produces tok_a (no deps)
-    %tok_a = conduit.put_memref_async {name = "chA", num_elems = 64 : i64,
+    %tok_a = conduit.put_memref_async {name = @chA, num_elems = 64 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 64>,
                  strides = array<i64: 1>} : !conduit.dma.token
     // get_B depends on tok_a (tok_a → tok_b)
     %tok_b = conduit.get_memref_async[%tok_a : !conduit.dma.token]
-                 {name = "chB", num_elems = 64 : i64,
+                 {name = @chB, num_elems = 64 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 64>,
                  strides = array<i64: 1>} : !conduit.dma.token
     // wait_all_async depends on tok_b (tok_b → tok_merged)
@@ -53,10 +53,10 @@ module {
   // Case 2: fan-in diamond — two independent ops merge into wait_all_async
   func.func @fan_in(%bufX : memref<32xi32>, %bufY : memref<32xi32>) {
     // put_X and get_Y are independent (no deps between them)
-    %tok_x = conduit.put_memref_async {name = "chX", num_elems = 32 : i64,
+    %tok_x = conduit.put_memref_async {name = @chX, num_elems = 32 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 32>,
                  strides = array<i64: 1>} : !conduit.dma.token
-    %tok_y = conduit.get_memref_async {name = "chY", num_elems = 32 : i64,
+    %tok_y = conduit.get_memref_async {name = @chY, num_elems = 32 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 32>,
                  strides = array<i64: 1>} : !conduit.dma.token
     // Both fan into wait_all_async — tok_x and tok_y are both predecessors
@@ -68,10 +68,10 @@ module {
 
   // Case 3: no deps at all — isolated nodes, trivially acyclic
   func.func @no_deps(%bufP : memref<16xi32>, %bufQ : memref<16xi32>) {
-    %tok_p = conduit.put_memref_async {name = "chP", num_elems = 16 : i64,
+    %tok_p = conduit.put_memref_async {name = @chP, num_elems = 16 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 16>,
                  strides = array<i64: 1>} : !conduit.dma.token
-    %tok_q = conduit.get_memref_async {name = "chQ", num_elems = 16 : i64,
+    %tok_q = conduit.get_memref_async {name = @chQ, num_elems = 16 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 16>,
                  strides = array<i64: 1>} : !conduit.dma.token
     conduit.wait_all %tok_p, %tok_q : !conduit.dma.token, !conduit.dma.token

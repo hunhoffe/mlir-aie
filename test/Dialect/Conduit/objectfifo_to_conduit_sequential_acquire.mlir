@@ -37,7 +37,7 @@
 // CHECK:     aie.core(%{{.*}}) {
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 1
-// CHECK-SAME:     name = "fifo"
+// CHECK-SAME:     name = @fifo
 // CHECK-SAME:     port = #conduit.port<Produce>
 // CHECK:       conduit.subview_access
 // CHECK:       conduit.release
@@ -47,7 +47,7 @@
 // One conduit.acquire with count=3 (the max of the group).
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 3
-// CHECK-SAME:     name = "fifo"
+// CHECK-SAME:     name = @fifo
 // CHECK-SAME:     port = #conduit.port<Consume>
 // All four subview_access ops reuse the same window (no second acquire).
 // CHECK-COUNT-4:  conduit.subview_access

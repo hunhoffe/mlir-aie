@@ -30,8 +30,8 @@
 
 // Distribute op.
 // CHECK: conduit.distribute
-// CHECK-SAME: dsts = ["bcast_c0", "bcast_c1"]
-// CHECK-SAME: srcs = ["bcast"]
+// CHECK-SAME: dsts = [@bcast_c0, @bcast_c1]
+// CHECK-SAME: srcs = [@bcast]
 
 // No residual air ops.
 // CHECK-NOT: air.channel

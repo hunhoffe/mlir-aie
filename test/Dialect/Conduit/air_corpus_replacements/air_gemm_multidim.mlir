@@ -26,10 +26,10 @@
 // CHECK-DAG: conduit.create @data_in_1_0
 // CHECK-DAG: conduit.create @data_in_1_1
 // Conduit put/get ops reference scalar channel names.
-// CHECK-DAG: conduit.put_memref_async {{.*}}name = "data_in_0_0"
-// CHECK-DAG: conduit.put_memref_async {{.*}}name = "data_in_0_1"
-// CHECK-DAG: conduit.put_memref_async {{.*}}name = "data_in_1_0"
-// CHECK-DAG: conduit.put_memref_async {{.*}}name = "data_in_1_1"
+// CHECK-DAG: conduit.put_memref_async {{.*}}name = @data_in_0_0
+// CHECK-DAG: conduit.put_memref_async {{.*}}name = @data_in_0_1
+// CHECK-DAG: conduit.put_memref_async {{.*}}name = @data_in_1_0
+// CHECK-DAG: conduit.put_memref_async {{.*}}name = @data_in_1_1
 
 // No residual multi-dim channel or air ops.
 // CHECK-NOT: size = array<i64: 2, 2>

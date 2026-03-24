@@ -14,9 +14,9 @@ func.func @window_ops() {
                   depth = 1 : i64}
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 2 : i64
-  // CHECK-SAME: name = "w1"
+  // CHECK-SAME: name = @w1
   // CHECK-SAME: port = #conduit.port<Consume>
-  %win = conduit.acquire {name = "w1", count = 2 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @w1, count = 2 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // CHECK: conduit.subview_access
   // CHECK-SAME: index = 0 : i64
@@ -34,7 +34,7 @@ func.func @window_ops() {
 func.func @link_op() {
   // CHECK: conduit.distribute
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.distribute {srcs = ["in"], dsts = ["out0", "out1"], memtile = "tile(0,1)",
+  conduit.distribute {srcs = [@in], dsts = [@out0, @out1], memtile = "tile(0,1)",
                            offsets = array<i64: 0, 1024>}
   return
 }
@@ -42,11 +42,11 @@ func.func @link_op() {
 // CHECK-LABEL: func.func @memref_ops
 func.func @memref_ops() {
   // CHECK: conduit.put_memref
-  conduit.put_memref {name = "ch", num_elems = 256 : i64,
+  conduit.put_memref {name = @ch, num_elems = 256 : i64,
                       offsets = array<i64: 0>, sizes = array<i64: 256>,
                       strides = array<i64: 1>}
   // CHECK: conduit.get_memref
-  conduit.get_memref {name = "ch", num_elems = 256 : i64,
+  conduit.get_memref {name = @ch, num_elems = 256 : i64,
                       offsets = array<i64: 0>, sizes = array<i64: 256>,
                       strides = array<i64: 1>}
   return
@@ -62,12 +62,12 @@ func.func @async_ops() {
   conduit.create @ch_b {capacity = 1 : i64}
   // CHECK: conduit.put_memref_async
   // CHECK-SAME: !conduit.dma.token
-  %tok0 = conduit.put_memref_async {name = "ch_a", num_elems = 64 : i64,
+  %tok0 = conduit.put_memref_async {name = @ch_a, num_elems = 64 : i64,
                offsets = array<i64: 0>, sizes = array<i64: 64>,
                strides = array<i64: 1>} : !conduit.dma.token
   // CHECK: conduit.acquire_async
   // CHECK-SAME: !conduit.window.token
-  %tok1 = conduit.acquire_async {name = "ch_b", count = 1 : i64,
+  %tok1 = conduit.acquire_async {name = @ch_b, count = 1 : i64,
                port = #conduit.port<Consume>}
                : !conduit.window.token
   // CHECK: conduit.wait
@@ -85,7 +85,7 @@ func.func @async_ops() {
 // CHECK-LABEL: func.func @subview_op
 func.func @subview_op() {
   conduit.create @buf {capacity = 8 : i64}
-  %win = conduit.acquire {name = "buf", count = 2 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @buf, count = 2 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // CHECK: conduit.subview_access
   %elem = conduit.subview_access %win {index = 0 : i64}
@@ -106,13 +106,13 @@ func.func @acquire_async_op() {
   // Non-blocking window acquisition (Tier 2 bridge) — returns !conduit.window.token
   // CHECK: conduit.acquire_async
   // CHECK-SAME: !conduit.window.token
-  %acq_tok = conduit.acquire_async {name = "output", count = 1 : i64,
+  %acq_tok = conduit.acquire_async {name = @output, count = 1 : i64,
                  port = #conduit.port<Consume>}
                  : !conduit.window.token
   // Non-blocking DMA send — returns !conduit.dma.token
   // CHECK: conduit.put_memref_async
   // CHECK-SAME: !conduit.dma.token
-  %dma_tok = conduit.put_memref_async {name = "input", num_elems = 9 : i64,
+  %dma_tok = conduit.put_memref_async {name = @input, num_elems = 9 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 9>,
                  strides = array<i64: 1>} : !conduit.dma.token
   // Cross-tier wait: hardware satisfies DMA fill and lock grant in parallel.
@@ -121,9 +121,9 @@ func.func @acquire_async_op() {
   conduit.wait_all %dma_tok, %acq_tok : !conduit.dma.token, !conduit.window.token
   // wait_window accepts only !conduit.window.token; produces !conduit.window<T>.
   // CHECK: conduit.wait_window
-  // CHECK-SAME: for "output"
+  // CHECK-SAME: for @output
   // CHECK-SAME: -> <memref
-  %window = conduit.wait_window %acq_tok for "output"
+  %window = conduit.wait_window %acq_tok for @output
                 : !conduit.window.token -> !conduit.window<memref<9xi32>>
   // CHECK: conduit.subview_access
   %out = conduit.subview_access %window {index = 0 : i64}
@@ -138,11 +138,11 @@ func.func @acquire_async_op() {
 // conduit.wait accepts !conduit.dma.token only; use wait_all for window tokens.
 func.func @release_async_op() {
   conduit.create @out {capacity = 2 : i64}
-  %win = conduit.acquire {name = "out", count = 1 : i64, port = #conduit.port<Consume>}
+  %win = conduit.acquire {name = @out, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<2xi32>>
   // CHECK: conduit.release_async
   // CHECK-SAME: !conduit.window.token
-  %rel_tok = conduit.release_async(%win : !conduit.window<memref<2xi32>>) {name = "out", count = 1 : i64, port = #conduit.port<Consume>}
+  %rel_tok = conduit.release_async(%win : !conduit.window<memref<2xi32>>) {name = @out, count = 1 : i64, port = #conduit.port<Consume>}
                  : !conduit.window.token
   // wait_all accepts AnyType variadic — can wait on a window.token here.
   // CHECK: conduit.wait_all
@@ -153,11 +153,11 @@ func.func @release_async_op() {
 // CHECK-LABEL: func.func @register_ext_bufs
 func.func @register_ext_bufs(%buf0: memref<512xi16>, %buf1: memref<512xi16>) {
   // CHECK: conduit.register_external_buffers(%arg0, %arg1)
-  // CHECK-SAME: name = "shim_chan"
+  // CHECK-SAME: name = @shim_chan
   // CHECK-SAME: tile_coord = array<i64: 0, 0>
   // CHECK-SAME: : (memref<512xi16>, memref<512xi16>)
   conduit.register_external_buffers(%buf0, %buf1)
-      {name = "shim_chan", tile_coord = array<i64: 0, 0>}
+      {name = @shim_chan, tile_coord = array<i64: 0, 0>}
       : (memref<512xi16>, memref<512xi16>)
   return
 }
@@ -262,12 +262,12 @@ func.func @cascade_ops(%v : vector<16xi32>) -> vector<16xi32> {
                   consumer_tiles = array<i64: 1, 3>,
                   depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>}
-  // CHECK: conduit.put_cascade "cas"
+  // CHECK: conduit.put_cascade @cas
   // CHECK-SAME: vector<16xi32>
-  conduit.put_cascade "cas" (%v : vector<16xi32>)
-  // CHECK: conduit.get_cascade "cas"
+  conduit.put_cascade @cas (%v : vector<16xi32>)
+  // CHECK: conduit.get_cascade @cas
   // CHECK-SAME: vector<16xi32>
-  %r = conduit.get_cascade "cas" : vector<16xi32>
+  %r = conduit.get_cascade @cas : vector<16xi32>
   return %r : vector<16xi32>
 }
 

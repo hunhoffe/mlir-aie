@@ -39,7 +39,7 @@ module @passC_delta_same_block_full_release {
       %val = arith.constant 42 : i32
 
       // First acquire: count=2 → AGE(2).
-      %win1 = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win1 = conduit.acquire {name = @fifo, count = 2 : i64,
                                 port = #conduit.port<Consume>}
                   : !conduit.window<memref<128xi32>>
       %e0 = conduit.subview_access %win1 {index = 0 : i64}
@@ -51,7 +51,7 @@ module @passC_delta_same_block_full_release {
           : !conduit.window<memref<128xi32>>
 
       // Second acquire: count=3, held=0 → delta=3 → AGE(3).
-      %win2 = conduit.acquire {name = "fifo", count = 3 : i64,
+      %win2 = conduit.acquire {name = @fifo, count = 3 : i64,
                                 port = #conduit.port<Consume>}
                   : !conduit.window<memref<128xi32>>
       %f0 = conduit.subview_access %win2 {index = 0 : i64}

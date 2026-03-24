@@ -134,7 +134,7 @@ static llvm::StringRef getConduitOpName(mlir::Operation *op) {
   // All other Tier 2 / Tier 3 activity ops carry an explicit 'name' attribute.
   if (mlir::isa<Acquire, AcquireAsync, ReleaseAsync, WaitWindow,
                 PutMemref, GetMemref, PutMemrefAsync, GetMemrefAsync>(op))
-    if (auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name"))
+    if (auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name"))
       return nameAttr.getValue();
 
   return {};
@@ -314,7 +314,7 @@ struct ConduitFuseChannelsPass
           if (!mlir::isa<PutMemref, GetMemref, PutMemrefAsync, GetMemrefAsync>(
                   op))
             return;
-          auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+          auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
           if (nameAttr && nameAttr.getValue() == ci.name)
             hasTier3 = true;
         });

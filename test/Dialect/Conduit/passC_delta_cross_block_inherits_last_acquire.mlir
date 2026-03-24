@@ -48,7 +48,7 @@ module @passC_delta_cross_block_inherits {
 
       // Preamble: acquire(2), use, release(1).
       // After: heldCount=1, lastAcquireCount=2.
-      %win_pre = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_pre = conduit.acquire {name = @fifo, count = 2 : i64,
                                    port = #conduit.port<Consume>}
                      : !conduit.window<memref<128xi32>>
       %pre0 = conduit.subview_access %win_pre {index = 0 : i64}
@@ -64,7 +64,7 @@ module @passC_delta_cross_block_inherits {
       // Cross-block rule: inherits lastAcquireCount=2 (not heldCount=1).
       // delta = 3 - 2 = 1 → AGE(1).
       scf.for %i = %c0 to %c4 step %c1 {
-        %win_mid = conduit.acquire {name = "fifo", count = 3 : i64,
+        %win_mid = conduit.acquire {name = @fifo, count = 3 : i64,
                                      port = #conduit.port<Consume>}
                        : !conduit.window<memref<128xi32>>
         %mid0 = conduit.subview_access %win_mid {index = 0 : i64}

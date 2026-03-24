@@ -408,7 +408,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   auto checkCascade = [&](mlir::ArrayAttr names,
                           llvm::StringRef role) -> mlir::LogicalResult {
     for (auto attr : names) {
-      llvm::StringRef name = mlir::cast<mlir::StringAttr>(attr).getValue();
+      llvm::StringRef name = mlir::cast<mlir::FlatSymbolRefAttr>(attr).getValue();
       Create chanCreate = findConduitCreateByName(getOperation(), name);
       if (!chanCreate)
         continue;
@@ -431,7 +431,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   // Level 2 — Composed consume buffer capacity (Eq. 46/48).
   // -------------------------------------------------------------------------
   llvm::StringRef srcName =
-      mlir::cast<mlir::StringAttr>(srcs[0]).getValue();
+      mlir::cast<mlir::FlatSymbolRefAttr>(srcs[0]).getValue();
   Create srcCreate = findConduitCreateByName(getOperation(), srcName);
   if (srcCreate && srcCreate.getProducerRates().has_value() &&
       srcCreate.getConsumerRates().has_value()) {
@@ -444,7 +444,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   }
   for (auto dstAttr : dsts) {
     llvm::StringRef dstName =
-        mlir::cast<mlir::StringAttr>(dstAttr).getValue();
+        mlir::cast<mlir::FlatSymbolRefAttr>(dstAttr).getValue();
     Create dstCreate = findConduitCreateByName(getOperation(), dstName);
     if (!dstCreate || !dstCreate.getProducerRates().has_value() ||
         !dstCreate.getConsumerRates().has_value())
@@ -464,7 +464,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
     bool allDstsHaveRates = true;
     for (auto dstAttr : dsts) {
       llvm::StringRef dstName =
-          mlir::cast<mlir::StringAttr>(dstAttr).getValue();
+          mlir::cast<mlir::FlatSymbolRefAttr>(dstAttr).getValue();
       Create dstCreate = findConduitCreateByName(getOperation(), dstName);
       if (!dstCreate || !dstCreate.getConsumerRates().has_value()) {
         allDstsHaveRates = false;
@@ -513,7 +513,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   auto checkCascade = [&](mlir::ArrayAttr names,
                           llvm::StringRef role) -> mlir::LogicalResult {
     for (auto attr : names) {
-      llvm::StringRef name = mlir::cast<mlir::StringAttr>(attr).getValue();
+      llvm::StringRef name = mlir::cast<mlir::FlatSymbolRefAttr>(attr).getValue();
       Create chanCreate = findConduitCreateByName(getOperation(), name);
       if (!chanCreate)
         continue;
@@ -535,7 +535,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   // -------------------------------------------------------------------------
   for (auto srcAttr : srcs) {
     llvm::StringRef srcName =
-        mlir::cast<mlir::StringAttr>(srcAttr).getValue();
+        mlir::cast<mlir::FlatSymbolRefAttr>(srcAttr).getValue();
     Create srcCreate = findConduitCreateByName(getOperation(), srcName);
     if (!srcCreate || !srcCreate.getProducerRates().has_value() ||
         !srcCreate.getConsumerRates().has_value())
@@ -548,7 +548,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
       return ::mlir::failure();
   }
   llvm::StringRef dstName =
-      mlir::cast<mlir::StringAttr>(dsts[0]).getValue();
+      mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue();
   Create dstCreate = findConduitCreateByName(getOperation(), dstName);
   if (dstCreate && dstCreate.getProducerRates().has_value() &&
       dstCreate.getConsumerRates().has_value()) {

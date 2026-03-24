@@ -46,7 +46,7 @@ module @passC_no_index_switch_regression {
       %val = arith.constant 42 : i32
 
       scf.for %i = %c0 to %c8 step %c1 {
-        %win = conduit.acquire {name = "fifo", count = 1 : i64,
+        %win = conduit.acquire {name = @fifo, count = 1 : i64,
                                 port = #conduit.port<Consume>}
                    : !conduit.window<memref<32xi32>>
         %buf = conduit.subview_access %win {index = 0 : i64}

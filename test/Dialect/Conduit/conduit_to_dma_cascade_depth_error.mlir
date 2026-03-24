@@ -25,12 +25,12 @@ module {
 
     aie.core(%tile03) {
       %v = arith.constant dense<42> : vector<16xi32>
-      conduit.put_cascade "cas" (%v : vector<16xi32>)
+      conduit.put_cascade @cas (%v : vector<16xi32>)
       aie.end
     }
 
     aie.core(%tile13) {
-      %r = conduit.get_cascade "cas" : vector<16xi32>
+      %r = conduit.get_cascade @cas : vector<16xi32>
       aie.end
     }
   }

@@ -89,13 +89,13 @@ module @async_window_path {
       scf.for %arg0 = %c0 to %c4 step %c1 {
         // Async path: acquire_async issues the lock request (no hardware op
         // emitted here — deferred to wait_window).
-        %tok = conduit.acquire_async {name = "fifo_async", count = 1 : i64,
+        %tok = conduit.acquire_async {name = @fifo_async, count = 1 : i64,
                    port = #conduit.port<Consume>}
                    : !conduit.window.token
 
         // wait_window blocks until the lock is granted and produces the window.
         // Pass C emits use_lock(consLock, AcquireGreaterEqual, 1) here.
-        %win = conduit.wait_window %tok for "fifo_async"
+        %win = conduit.wait_window %tok for @fifo_async
                    : !conduit.window.token -> !conduit.window<memref<8xi32>>
 
         // subview_access resolves to the allocated aie.buffer.

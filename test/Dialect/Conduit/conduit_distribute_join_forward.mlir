@@ -9,10 +9,10 @@
 // CHECK-LABEL: func.func @valid_distribute
 func.func @valid_distribute() {
   // CHECK: conduit.distribute
-  // CHECK-SAME: dsts = ["dst0", "dst1"]
+  // CHECK-SAME: dsts = [@dst0, @dst1]
   // CHECK-SAME: memtile = "tile(0,1)"
-  // CHECK-SAME: srcs = ["src"]
-  conduit.distribute {srcs = ["src"], dsts = ["dst0", "dst1"],
+  // CHECK-SAME: srcs = [@src]
+  conduit.distribute {srcs = [@src], dsts = [@dst0, @dst1],
                       memtile = "tile(0,1)"}
   return
 }
@@ -23,10 +23,10 @@ func.func @valid_distribute() {
 // CHECK-LABEL: func.func @valid_join
 func.func @valid_join() {
   // CHECK: conduit.join
-  // CHECK-SAME: dsts = ["dst"]
+  // CHECK-SAME: dsts = [@dst]
   // CHECK-SAME: memtile = "tile(0,1)"
-  // CHECK-SAME: srcs = ["src0", "src1"]
-  conduit.join {srcs = ["src0", "src1"], dsts = ["dst"],
+  // CHECK-SAME: srcs = [@src0, @src1]
+  conduit.join {srcs = [@src0, @src1], dsts = [@dst],
                 memtile = "tile(0,1)",
                 offsets = array<i64: 0, 512>}
   return
@@ -38,10 +38,10 @@ func.func @valid_join() {
 // CHECK-LABEL: func.func @valid_forward
 func.func @valid_forward() {
   // CHECK: conduit.forward
-  // CHECK-SAME: dsts = ["out"]
+  // CHECK-SAME: dsts = [@out]
   // CHECK-SAME: memtile = "tile(0,1)"
-  // CHECK-SAME: srcs = ["in"]
-  conduit.forward {srcs = ["in"], dsts = ["out"],
+  // CHECK-SAME: srcs = [@in]
+  conduit.forward {srcs = [@in], dsts = [@out],
                    memtile = "tile(0,1)"}
   return
 }
@@ -51,7 +51,7 @@ func.func @valid_forward() {
 // Invalid conduit.distribute: empty dsts.
 func.func @invalid_distribute_empty_dsts() {
   // expected-error@+1 {{'conduit.distribute' op distribute requires at least 1 dst, got 0}}
-  conduit.distribute {srcs = ["src"], dsts = [], memtile = "tile(0,1)"}
+  conduit.distribute {srcs = [@src], dsts = [], memtile = "tile(0,1)"}
   return
 }
 
@@ -60,6 +60,6 @@ func.func @invalid_distribute_empty_dsts() {
 // Invalid conduit.join: empty srcs.
 func.func @invalid_join_empty_srcs() {
   // expected-error@+1 {{'conduit.join' op join requires at least 1 src, got 0}}
-  conduit.join {srcs = [], dsts = ["dst"], memtile = "tile(0,1)"}
+  conduit.join {srcs = [], dsts = [@dst], memtile = "tile(0,1)"}
   return
 }

@@ -21,14 +21,14 @@ func.func @bad_wait_window_name_mismatch() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
 
-  // acquire_async for "foo" produces a token.
-  %tok = conduit.acquire_async {name = "foo", count = 1 : i64,
+  // acquire_async for @foo produces a token.
+  %tok = conduit.acquire_async {name = @foo, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
 
-  // wait_window claims the token is for "bar" — name mismatch.
+  // wait_window claims the token is for @bar — name mismatch.
   // expected-error@+1 {{'conduit.wait_window' op wait_window channel name 'bar' does not match the channel name 'foo' of the acquire_async token operand}}
-  %win = conduit.wait_window %tok for "bar"
+  %win = conduit.wait_window %tok for @bar
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
 
   return

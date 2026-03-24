@@ -41,7 +41,7 @@ module {
       %c4 = arith.constant 4 : index
       scf.for %i = %c0 to %c4 step %c1 {
         %v = arith.constant dense<1> : vector<16xi32>
-        conduit.put_cascade "cas" (%v : vector<16xi32>)
+        conduit.put_cascade @cas (%v : vector<16xi32>)
       }
       aie.end
     }
@@ -52,7 +52,7 @@ module {
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
       scf.for %i = %c0 to %c4 step %c1 {
-        %r = conduit.get_cascade "cas" : vector<16xi32>
+        %r = conduit.get_cascade @cas : vector<16xi32>
       }
       aie.end
     }

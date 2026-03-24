@@ -48,7 +48,7 @@ func.func @eligible_loop_fifo(%result: memref<8xi32>) {
   %c1 = arith.constant 1 : index
   %c8 = arith.constant 8 : index
   scf.for %i = %c0 to %c8 step %c1 {
-    %win = conduit.acquire {name = "loop_fifo", count = 1 : i64, port = #conduit.port<Consume>}
+    %win = conduit.acquire {name = @loop_fifo, count = 1 : i64, port = #conduit.port<Consume>}
                : !conduit.window<memref<8xi32>>
     %elem = conduit.subview_access %win {index = 0 : i64}
                : !conduit.window<memref<8xi32>> -> memref<8xi32>
@@ -76,7 +76,7 @@ func.func @linked_conduit_not_promoted() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // This link causes both "linked_fifo" and "linked_out" to be excluded.
-  conduit.forward {srcs = ["linked_fifo"], dsts = ["linked_out"], memtile = "tile(0,1)"}
+  conduit.forward {srcs = [@linked_fifo], dsts = [@linked_out], memtile = "tile(0,1)"}
   return
 }
 
@@ -93,7 +93,7 @@ func.func @passthrough_not_promoted() {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   scf.for %i = %c0 to %c4 step %c1 {
-    %win = conduit.acquire {name = "passthrough_fifo", count = 1 : i64, port = #conduit.port<Consume>}
+    %win = conduit.acquire {name = @passthrough_fifo, count = 1 : i64, port = #conduit.port<Consume>}
                : !conduit.window<memref<4xi32>>
     // No compute between acquire and release — pure passthrough.
     conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}

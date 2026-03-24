@@ -85,14 +85,14 @@ module @release_async_producer_block2 {
       scf.for %arg0 = %c0 to %c4 step %c1 {
         // Blocking acquire on Produce port: waits for a free buffer slot.
         // Emits: aie.use_lock(prod_lock, AcquireGreaterEqual, 1)
-        %win = conduit.acquire {name = "fifo_async", count = 1 : i64,
+        %win = conduit.acquire {name = @fifo_async, count = 1 : i64,
                                 port = #conduit.port<Produce>}
                    : !conduit.window<memref<8xi32>>
 
         // release_async on Produce port: signals that the buffer is filled.
         // BLOCK-2 fix: Pass C must emit the producer rotation counter
         // increment (load/addi/remui/store) after the use_lock Release op.
-        %rel_tok = conduit.release_async {name = "fifo_async", count = 1 : i64,
+        %rel_tok = conduit.release_async {name = @fifo_async, count = 1 : i64,
                                           port = #conduit.port<Produce>}
                        : !conduit.window.token
 

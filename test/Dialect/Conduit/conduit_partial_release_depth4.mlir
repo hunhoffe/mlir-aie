@@ -69,7 +69,7 @@ module @conduit_partial_release_depth4 {
       %c4 = arith.constant 4 : index
 
       // Preamble: acquire 2.
-      %win_pre = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_pre = conduit.acquire {name = @fifo, count = 2 : i64,
                                    port = #conduit.port<Consume>}
                      : !conduit.window<memref<32xi32>>
       %pre0 = conduit.subview_access %win_pre {index = 0 : i64}
@@ -81,7 +81,7 @@ module @conduit_partial_release_depth4 {
 
       // Middle: acquire 3 rows, release 1 (sliding window).
       scf.for %i = %c0 to %c4 step %c1 {
-        %win_mid = conduit.acquire {name = "fifo", count = 3 : i64,
+        %win_mid = conduit.acquire {name = @fifo, count = 3 : i64,
                                      port = #conduit.port<Consume>}
                        : !conduit.window<memref<32xi32>>
         %mid0 = conduit.subview_access %win_mid {index = 0 : i64}
@@ -95,7 +95,7 @@ module @conduit_partial_release_depth4 {
       }
 
       // Tail: acquire 2, release 2 (full release).
-      %win_tail = conduit.acquire {name = "fifo", count = 2 : i64,
+      %win_tail = conduit.acquire {name = @fifo, count = 2 : i64,
                                     port = #conduit.port<Consume>}
                       : !conduit.window<memref<32xi32>>
       %tail0 = conduit.subview_access %win_tail {index = 0 : i64}

@@ -33,7 +33,7 @@ module @conduit_produce_sliding_window_error {
       %c0 = arith.constant 0 : index
       %val = arith.constant 42 : i32
 
-      %w0 = conduit.acquire {name = "sliding_out_err", count = 3 : i64,
+      %w0 = conduit.acquire {name = @sliding_out_err, count = 3 : i64,
                              port = #conduit.port<Produce>}
                 : !conduit.window<memref<32xi32>>
       %buf = conduit.subview_access %w0 {index = 0 : i64}

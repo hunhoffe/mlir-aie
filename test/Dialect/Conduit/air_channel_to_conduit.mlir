@@ -38,7 +38,7 @@
 // --- air.channel.put becomes conduit.put_memref_async ---
 // Static descriptor: offsets=[0,0], sizes=[8,8], strides=[8,1], num_elems=8*8=64
 // CHECK:   %[[TOK0:.*]] = conduit.put_memref_async
-// CHECK-SAME: name = "chan"
+// CHECK-SAME: name = @chan
 // CHECK-SAME: num_elems = 64
 // CHECK-SAME: offsets = array<i64: 0, 0>
 // CHECK-SAME: sizes = array<i64: 8, 8>
@@ -47,7 +47,7 @@
 //
 // --- air.channel.get becomes conduit.get_memref_async ---
 // CHECK:   %[[TOK1:.*]] = conduit.get_memref_async
-// CHECK-SAME: name = "chan"
+// CHECK-SAME: name = @chan
 // CHECK-SAME: num_elems = 64
 // CHECK-SAME: offsets = array<i64: 0, 0>
 // CHECK-SAME: sizes = array<i64: 8, 8>

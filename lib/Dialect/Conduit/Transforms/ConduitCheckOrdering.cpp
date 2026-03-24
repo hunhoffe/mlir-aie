@@ -65,7 +65,7 @@ static bool isDMAOnlyChannel(mlir::ModuleOp module, llvm::StringRef name) {
   module.walk([&](mlir::Operation *op) {
     if (hasWindowOps)
       return;
-    auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+    auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
     if (!nameAttr || nameAttr.getValue() != name)
       return;
     if (mlir::isa<Acquire, AcquireAsync>(op))

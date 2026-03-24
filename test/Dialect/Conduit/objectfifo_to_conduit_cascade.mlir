@@ -23,14 +23,14 @@
 
 // --- Producer core: acquire+store+release → put_cascade ---
 // CHECK:   aie.core
-// CHECK:     conduit.put_cascade "cas_fifo"
+// CHECK:     conduit.put_cascade @cas_fifo
 // CHECK-SAME:   vector<16xi32>
 // CHECK-NOT:   conduit.acquire
 // CHECK-NOT:   conduit.release
 
 // --- Consumer core: acquire+load+release → get_cascade ---
 // CHECK:   aie.core
-// CHECK:     conduit.get_cascade "cas_fifo"
+// CHECK:     conduit.get_cascade @cas_fifo
 // CHECK-SAME:   vector<16xi32>
 
 // No objectfifo ops remain.

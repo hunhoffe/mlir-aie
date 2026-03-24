@@ -68,7 +68,7 @@ func.func @light_candidate(%result: memref<32xi32>) {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   scf.for %i = %c0 to %c4 step %c1 {
-    %win = conduit.acquire {name = "light_fifo", count = 1 : i64,
+    %win = conduit.acquire {name = @light_fifo, count = 1 : i64,
                             port = #conduit.port<Consume>}
                : !conduit.window<memref<32xi32>>
     %elem = conduit.subview_access %win {index = 0 : i64}

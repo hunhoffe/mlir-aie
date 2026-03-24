@@ -25,7 +25,7 @@
 // CHECK:     aie.core(%{{.*}}) {
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 1
-// CHECK-SAME:     name = "fifo"
+// CHECK-SAME:     name = @fifo
 // CHECK-SAME:     port = #conduit.port<Produce>
 // CHECK:       conduit.release
 // CHECK:       conduit.acquire
@@ -37,7 +37,7 @@
 // CHECK:     aie.core(%{{.*}}) {
 // CHECK:       conduit.acquire
 // CHECK-SAME:     count = 1
-// CHECK-SAME:     name = "fifo"
+// CHECK-SAME:     name = @fifo
 // CHECK-SAME:     port = #conduit.port<Consume>
 // CHECK:       conduit.release
 // CHECK:       conduit.acquire

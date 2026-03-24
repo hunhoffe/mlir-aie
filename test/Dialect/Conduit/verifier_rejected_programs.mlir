@@ -104,7 +104,7 @@ conduit.create @cas_bad_width {capacity = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
 
 func.func @case3_cascade_wrong_width(%c : i32) {
-  conduit.put_cascade "cas_bad_width" (%c : i32)
+  conduit.put_cascade @cas_bad_width (%c : i32)
   return
 }
 
@@ -138,12 +138,12 @@ module @case4_cascade_depth_gt1 {
 
     aie.core(%tile03) {
       %v = arith.constant dense<0> : vector<16xi32>
-      conduit.put_cascade "cas_d2" (%v : vector<16xi32>)
+      conduit.put_cascade @cas_d2 (%v : vector<16xi32>)
       aie.end
     }
 
     aie.core(%tile13) {
-      %r = conduit.get_cascade "cas_d2" : vector<16xi32>
+      %r = conduit.get_cascade @cas_d2 : vector<16xi32>
       aie.end
     }
   }
@@ -258,7 +258,7 @@ module @case7_unmatched_put_cascade {
 
     aie.core(%tile03) {
       %v = arith.constant dense<7> : vector<16xi32>
-      conduit.put_cascade "cas_unmatched" (%v : vector<16xi32>)
+      conduit.put_cascade @cas_unmatched (%v : vector<16xi32>)
       aie.end
     }
     // No consumer core and no get_cascade anywhere.
@@ -293,19 +293,19 @@ module @case8_ambiguous_get_cascade {
 
     aie.core(%tile03) {
       %v = arith.constant dense<5> : vector<16xi32>
-      conduit.put_cascade "cas_ambig" (%v : vector<16xi32>)
+      conduit.put_cascade @cas_ambig (%v : vector<16xi32>)
       aie.end
     }
 
     // First consumer — valid get.
     aie.core(%tile13) {
-      %r = conduit.get_cascade "cas_ambig" : vector<16xi32>
+      %r = conduit.get_cascade @cas_ambig : vector<16xi32>
       aie.end
     }
 
     // Second consumer — duplicate get for same conduit name: AMBIGUOUS.
     aie.core(%tile23) {
-      %r2 = conduit.get_cascade "cas_ambig" : vector<16xi32>
+      %r2 = conduit.get_cascade @cas_ambig : vector<16xi32>
       aie.end
     }
   }
@@ -343,7 +343,7 @@ module @case9_sharedmem_nonadj_alloc {
                     alloc_tile = array<i64: 3, 3>}
 
     aie.core(%tile02) {
-      %win = conduit.acquire {name = "shm_bad", count = 1 : i64,
+      %win = conduit.acquire {name = @shm_bad, count = 1 : i64,
                               port = #conduit.port<Produce>}
                  : !conduit.window<memref<16xi32>>
       %buf = conduit.subview_access %win {index = 0 : i64}
@@ -354,7 +354,7 @@ module @case9_sharedmem_nonadj_alloc {
     }
 
     aie.core(%tile03) {
-      %win = conduit.acquire {name = "shm_bad", count = 1 : i64,
+      %win = conduit.acquire {name = @shm_bad, count = 1 : i64,
                               port = #conduit.port<Consume>}
                  : !conduit.window<memref<16xi32>>
       %buf = conduit.subview_access %win {index = 0 : i64}
@@ -387,7 +387,7 @@ func.func @case10_m8a_double_release() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,
                   depth = 1 : i64}
-  %win = conduit.acquire {name = "dbl_rel", count = 1 : i64,
+  %win = conduit.acquire {name = @dbl_rel, count = 1 : i64,
                           port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}

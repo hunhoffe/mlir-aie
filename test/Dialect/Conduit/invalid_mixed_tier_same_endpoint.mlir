@@ -28,7 +28,7 @@ module {
 
     aie.core(%cons) {
       // Tier 2 acquire — establishes the channel in T2 map.
-      %win = conduit.acquire {name = "foo", count = 1 : i64,
+      %win = conduit.acquire {name = @foo, count = 1 : i64,
                               port = #conduit.port<Consume>}
                  : !conduit.window<memref<32xi32>>
       %elem = conduit.subview_access %win {index = 0 : i64}
@@ -38,7 +38,7 @@ module {
 
       // Tier 3 get on SAME channel — should error.
       // expected-error @+1 {{conduit channel 'foo' mixed Tier 2}}
-      conduit.get_memref {name = "foo", num_elems = 32 : i64,
+      conduit.get_memref {name = @foo, num_elems = 32 : i64,
                           offsets = array<i64: 0>, sizes = array<i64: 32>,
                           strides = array<i64: 1>}
       aie.end
@@ -66,13 +66,13 @@ module {
 
     aie.core(%cons) {
       // Tier 3 get — establishes the channel in T3 map first.
-      conduit.get_memref {name = "bar", num_elems = 16 : i64,
+      conduit.get_memref {name = @bar, num_elems = 16 : i64,
                           offsets = array<i64: 0>, sizes = array<i64: 16>,
                           strides = array<i64: 1>}
 
       // Tier 2 acquire on SAME channel — error fires here (T3 seen first).
       // expected-error @+1 {{conduit channel 'bar' mixed Tier 2}}
-      %win = conduit.acquire {name = "bar", count = 1 : i64,
+      %win = conduit.acquire {name = @bar, count = 1 : i64,
                               port = #conduit.port<Consume>}
                  : !conduit.window<memref<16xi32>>
       // Release traces back to the acquire, so 'bar' is already in alreadyErrored —
@@ -104,7 +104,7 @@ module {
 
     aie.core(%prod) {
       // Tier 3 async put — establishes channel in T3 map first.
-      %dma = conduit.put_memref_async {name = "baz", num_elems = 8 : i64,
+      %dma = conduit.put_memref_async {name = @baz, num_elems = 8 : i64,
                                        offsets = array<i64: 0>,
                                        sizes = array<i64: 8>,
                                        strides = array<i64: 1>}
@@ -113,7 +113,7 @@ module {
 
       // Tier 2 async release on SAME channel — error fires here (T3 seen first).
       // expected-error @+1 {{conduit channel 'baz' mixed Tier 2}}
-      conduit.release_async {name = "baz", count = 1 : i64,
+      conduit.release_async {name = @baz, count = 1 : i64,
                              port = #conduit.port<Produce>}
           : !conduit.window.token
       aie.end
@@ -145,7 +145,7 @@ module {
 
     aie.core(%core) {
       // Compute core uses Tier 2 only.
-      %win = conduit.acquire {name = "input", count = 1 : i64,
+      %win = conduit.acquire {name = @input, count = 1 : i64,
                               port = #conduit.port<Consume>}
                  : !conduit.window<memref<32xi32>>
       %buf = conduit.subview_access %win {index = 0 : i64}
@@ -178,7 +178,7 @@ module {
 
     // Core A: Tier 2 only.
     aie.core(%coreA) {
-      %win = conduit.acquire {name = "shared", count = 1 : i64,
+      %win = conduit.acquire {name = @shared, count = 1 : i64,
                               port = #conduit.port<Produce>}
                  : !conduit.window<memref<16xi32>>
       conduit.release %win {count = 1 : i64, port = #conduit.port<Produce>}
@@ -188,7 +188,7 @@ module {
 
     // Core B: Tier 3 only.  Different aie.core region — no conflict.
     aie.core(%coreB) {
-      conduit.get_memref {name = "shared", num_elems = 16 : i64,
+      conduit.get_memref {name = @shared, num_elems = 16 : i64,
                           offsets = array<i64: 0>, sizes = array<i64: 16>,
                           strides = array<i64: 1>}
       aie.end
@@ -213,7 +213,7 @@ module {
                     depth = 1 : i64}
 
     aie.core(%t) {
-      %win = conduit.acquire {name = "only_t2", count = 1 : i64,
+      %win = conduit.acquire {name = @only_t2, count = 1 : i64,
                               port = #conduit.port<Consume>}
                  : !conduit.window<memref<8xi32>>
       conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
@@ -240,7 +240,7 @@ module {
                     depth = 1 : i64}
 
     aie.core(%t) {
-      conduit.get_memref {name = "only_t3", num_elems = 8 : i64,
+      conduit.get_memref {name = @only_t3, num_elems = 8 : i64,
                           offsets = array<i64: 0>, sizes = array<i64: 8>,
                           strides = array<i64: 1>}
       aie.end

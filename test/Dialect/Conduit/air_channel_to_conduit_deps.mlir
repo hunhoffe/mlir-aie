@@ -33,13 +33,13 @@
 // CHECK: conduit.create @putGet
 
 // put emitted first, no deps: no bracket dep list before the attr-dict.
-// CHECK: %[[PUT:.*]] = conduit.put_memref_async {name = "putGet"
+// CHECK: %[[PUT:.*]] = conduit.put_memref_async {name = @putGet
 // CHECK-SAME: : !conduit.dma.token
 
 // get emitted second, dep on put token.
 // CHECK: %[[GET:.*]] = conduit.get_memref_async
 // CHECK-SAME: [%[[PUT]] : !conduit.dma.token]
-// CHECK-SAME: name = "putGet"
+// CHECK-SAME: name = @putGet
 // CHECK-SAME: : !conduit.dma.token
 
 // -------------------------------------------------------------------
@@ -53,13 +53,13 @@
 
 // get emitted first, no deps.
 // CHECK: %[[GTOK:.*]] = conduit.get_memref_async
-// CHECK-SAME: name = "inChan"
+// CHECK-SAME: name = @inChan
 // CHECK-SAME: : !conduit.dma.token
 
 // put emitted second, dep on get token.
 // CHECK: %[[PTOK:.*]] = conduit.put_memref_async
 // CHECK-SAME: [%[[GTOK]] : !conduit.dma.token]
-// CHECK-SAME: name = "outChan"
+// CHECK-SAME: name = @outChan
 // CHECK-SAME: : !conduit.dma.token
 
 // -------------------------------------------------------------------
@@ -69,9 +69,9 @@
 // CHECK: conduit.create @waChan
 
 // CHECK: %[[W0:.*]] = conduit.put_memref_async
-// CHECK-SAME: name = "waChan"
+// CHECK-SAME: name = @waChan
 // CHECK: %[[W1:.*]] = conduit.get_memref_async
-// CHECK-SAME: name = "waChan"
+// CHECK-SAME: name = @waChan
 // CHECK: conduit.wait_all_async %[[W0]], %[[W1]]
 // CHECK-SAME: (!conduit.dma.token, !conduit.dma.token) -> !conduit.dma.token
 
@@ -86,7 +86,7 @@
 // CHECK: conduit.create @waDep
 
 // put emitted, no deps.
-// CHECK: %[[WD_PUT:.*]] = conduit.put_memref_async {name = "waDep"
+// CHECK: %[[WD_PUT:.*]] = conduit.put_memref_async {name = @waDep
 // CHECK-SAME: : !conduit.dma.token
 
 // wait_all_async pre-emitted before the get (Phase 3 pre-emission for PASSB-DEP-001).
@@ -95,7 +95,7 @@
 
 // get carries dep on the pre-emitted wait_all token — not directly on put.
 // CHECK: conduit.get_memref_async[%[[WD_MERGED]] : !conduit.dma.token]
-// CHECK-SAME: name = "waDep"
+// CHECK-SAME: name = @waDep
 // CHECK-SAME: : !conduit.dma.token
 
 // No residual air ops.
