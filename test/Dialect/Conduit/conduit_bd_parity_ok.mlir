@@ -2,6 +2,9 @@
 //
 // Positive test: MemTile BD parity pool within limits.
 //
+// NOTE (B-10): This test uses npu2 (AIE2). The BD parity pool check is
+// AIE2-specific and is guarded by state.aieArch != AIE2 in the verifier.
+//
 // This test creates a 1->3 distribute through MemTile(2,1) with depth=2.
 // The resulting BD allocation on the MemTile:
 //   S2MM channel 0 (even): 2 * 3 = 6 ingest BDs

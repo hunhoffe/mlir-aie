@@ -2,6 +2,11 @@
 //
 // Negative test: MemTile BD parity pool overflow.
 //
+// NOTE (B-10): This test uses npu2 (AIE2). The BD parity pool check is
+// AIE2-specific — the verifyMemTileBDParity() function guards on
+// state.aieArch != AIE2 and returns success immediately for AIE1 or
+// future architectures where this constraint may not apply.
+//
 // AIE2 MemTiles have 48 BDs partitioned by channel parity:
 //   BDs 0-23  (24): EVEN-numbered channels (0, 2, 4)
 //   BDs 24-47 (24): ODD-numbered channels  (1, 3, 5)
