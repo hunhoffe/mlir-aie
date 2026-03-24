@@ -1341,9 +1341,23 @@ void linkPhase(ConduitToDMAState &state) {
           mlir::Operation *oldEnd = endBlock->getTerminator();
           builder.setInsertionPointToEnd(endBlock);
           oldEnd->erase();
+          int32_t caseBMM2SCh = state.tileNextMM2SChannel[prodTileVal]++;
+          {
+            int32_t caseBMM2SLimit = static_cast<int32_t>(
+                targetModel.getNumSourceSwitchboxConnections(
+                    prodCol, prodRow, AIE::WireBundle::DMA));
+            if (caseBMM2SCh >= caseBMM2SLimit) {
+              state.deviceOp.emitError(
+                  "conduit-to-dma: MM2S channel limit exceeded on tile (")
+                  << prodCol << "," << prodRow << "): needed channel "
+                  << caseBMM2SCh << " but max is " << caseBMM2SLimit;
+              state.passFailed = true;
+              return;
+            }
+          }
           builder.create<AIE::DMAStartOp>(
               state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-              static_cast<int32_t>(0), caseBDmaRepeatCount,
+              caseBMM2SCh, caseBDmaRepeatCount,
               bdBlocks[0], newEndBlock);
 
           for (int64_t i = 0; i < caseBEffectiveBDs; ++i) {
@@ -1395,8 +1409,22 @@ void linkPhase(ConduitToDMAState &state) {
           bdBlocks.push_back(addMemBlock());
         mlir::Block *endMemBlock = addMemBlock();
         builder.setInsertionPointToEnd(dmaStartBlock);
+        int32_t caseBMM2SCh2 = state.tileNextMM2SChannel[prodTileVal]++;
+        {
+          int32_t caseBMM2SLimit2 = static_cast<int32_t>(
+              targetModel.getNumSourceSwitchboxConnections(
+                  prodCol, prodRow, AIE::WireBundle::DMA));
+          if (caseBMM2SCh2 >= caseBMM2SLimit2) {
+            state.deviceOp.emitError(
+                "conduit-to-dma: MM2S channel limit exceeded on tile (")
+                << prodCol << "," << prodRow << "): needed channel "
+                << caseBMM2SCh2 << " but max is " << caseBMM2SLimit2;
+            state.passFailed = true;
+            return;
+          }
+        }
         builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-                                        static_cast<int32_t>(0), caseBDmaRepeatCount,
+                                        caseBMM2SCh2, caseBDmaRepeatCount,
                                         bdBlocks[0], endMemBlock);
 
         for (int64_t i = 0; i < caseBEffectiveBDs; ++i) {

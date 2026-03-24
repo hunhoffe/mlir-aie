@@ -568,6 +568,37 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
     }
   }
 
+  // -------------------------------------------------------------------------
+  // A-10: cascade channels cannot be used in distribute or join links.
+  //
+  // Cascade is a register-level rendezvous with no FIFO buffering and no DMA
+  // channels — it is structurally incompatible with the multi-producer /
+  // multi-consumer split/merge semantics of distribute and join.  Attempting
+  // to route a cascade conduit through a link would silently produce incorrect
+  // hardware code (no actual flow is emitted for cascade, so the non-cascade
+  // consumers/producers would deadlock).
+  // -------------------------------------------------------------------------
+  if (modeStr == "distribute" || modeStr == "join") {
+    // Check all src and dst channel names against their conduit.create
+    // routing_mode.  Only the "cascade" value is illegal here.
+    auto checkCascade = [&](mlir::ArrayAttr names) -> mlir::LogicalResult {
+      for (auto attr : names) {
+        llvm::StringRef name = mlir::cast<mlir::StringAttr>(attr).getValue();
+        Create chanCreate = findConduitCreateByName(getOperation(), name);
+        if (!chanCreate)
+          continue; // not in scope — skip
+        auto routingModeOpt = chanCreate.getRoutingMode();
+        if (routingModeOpt && routingModeOpt->getValue() == "cascade") {
+          return emitOpError("cascade channel '")
+                 << name << "' cannot be used in a '" << modeStr << "' link";
+        }
+      }
+      return ::mlir::success();
+    };
+    if (failed(checkCascade(srcs)) || failed(checkCascade(dsts)))
+      return ::mlir::failure();
+  }
+
   return ::mlir::success();
 }
 
@@ -924,6 +955,21 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 
   // M9 Phase 2 (same-block pairing) is implemented in the separate
   // --conduit-check-pairing analysis pass (ConduitPairingCheck.cpp).
+
+  // Channel name consistency: the wait_window's name must match the name of
+  // the acquire_async that produced the token operand.  A mismatch indicates
+  // that a token from channel "foo" is being presented to wait_window for
+  // channel "bar", which would cause Pass C to emit use_lock on the wrong
+  // lock and silently corrupt the program.
+  if (auto acqAsync = getToken().getDefiningOp<AcquireAsync>()) {
+    if (acqAsync.getName() != this->getName()) {
+      return emitOpError("wait_window channel name '")
+             << this->getName()
+             << "' does not match the channel name '"
+             << acqAsync.getName()
+             << "' of the acquire_async token operand";
+    }
+  }
 
   return ::mlir::success();
 }

@@ -57,7 +57,28 @@ void lowerPhase(ConduitToDMAState &state) {
       } else if (auto waitOp = mlir::dyn_cast_or_null<WaitWindow>(
                      op.getWindow().getDefiningOp())) {
         conduitName = waitOp.getName();
+        // Derive port from whether the current core is the producer.
+        // Default to Consume; switch to Produce if the enclosing CoreOp's
+        // tile matches the conduit's producerTileCoord.
         acquirePort = Port::Consume;
+        ConduitInfo *winCinfo = state.lookupConduit(conduitName);
+        if (winCinfo) {
+          mlir::Operation *coreParent = op.getOperation()->getParentOp();
+          while (coreParent && !mlir::isa<AIE::CoreOp>(coreParent))
+            coreParent = coreParent->getParentOp();
+          if (coreParent) {
+            mlir::Value coreTileVal =
+                mlir::cast<AIE::CoreOp>(coreParent).getTile();
+            auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
+            if (coreTileOp) {
+              int64_t cCol = static_cast<int64_t>(coreTileOp.getCol());
+              int64_t cRow = static_cast<int64_t>(coreTileOp.getRow());
+              auto [pCol, pRow] = winCinfo->producerTileCoord;
+              if (cCol == pCol && cRow == pRow)
+                acquirePort = Port::Produce;
+            }
+          }
+        }
       }
 
       bool replaced = false;
@@ -268,6 +289,13 @@ void lowerPhase(ConduitToDMAState &state) {
     }
     // Counter increment for depth>1 Consume port.
     if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1) {
+      if (count > cinfo->depth) {
+        op.emitError("conduit-to-dma: release count (")
+            << count << ") exceeds conduit depth (" << cinfo->depth
+            << ") — rotation counter increment would be incorrect";
+        state.passFailed = true;
+        return;
+      }
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t resolvedRotationBufSlot = resolved.rotationBufSlot;
@@ -287,10 +315,17 @@ void lowerPhase(ConduitToDMAState &state) {
     // Counter increment for depth>1 Produce port (producer buffer rotation).
     if (resolvedProducerRotationBuf && port == Port::Produce &&
         cinfo->depth > 1) {
-      mlir::Location loc = op.getLoc();
-      mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t prodModulus =
           (cinfo->effectiveDepth > 0) ? cinfo->effectiveDepth : cinfo->depth;
+      if (count > prodModulus) {
+        op.emitError("conduit-to-dma: release count (")
+            << count << ") exceeds conduit depth (" << prodModulus
+            << ") — rotation counter increment would be incorrect";
+        state.passFailed = true;
+        return;
+      }
+      mlir::Location loc = op.getLoc();
+      mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t resolvedProducerRotationBufSlot =
           resolved.producerRotationBufSlot;
       mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(
@@ -751,6 +786,13 @@ void lowerPhase(ConduitToDMAState &state) {
     }
     // Counter increment for depth>1 Consume port.
     if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1) {
+      if (count > cinfo->depth) {
+        op.emitError("conduit-to-dma: release_async count (")
+            << count << ") exceeds conduit depth (" << cinfo->depth
+            << ") — rotation counter increment would be incorrect";
+        state.passFailed = true;
+        return;
+      }
       mlir::Location loc = op.getLoc();
       mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t resolvedRotationBufSlot = resolved.rotationBufSlot;
@@ -770,10 +812,17 @@ void lowerPhase(ConduitToDMAState &state) {
     // Counter increment for depth>1 Produce port (producer buffer rotation).
     if (resolvedProducerRotationBuf && port == Port::Produce &&
         cinfo->depth > 1) {
-      mlir::Location loc = op.getLoc();
-      mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t prodModulus =
           (cinfo->effectiveDepth > 0) ? cinfo->effectiveDepth : cinfo->depth;
+      if (count > prodModulus) {
+        op.emitError("conduit-to-dma: release_async count (")
+            << count << ") exceeds conduit depth (" << prodModulus
+            << ") — rotation counter increment would be incorrect";
+        state.passFailed = true;
+        return;
+      }
+      mlir::Location loc = op.getLoc();
+      mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
       int64_t resolvedProducerRotationBufSlot =
           resolved.producerRotationBufSlot;
       mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(

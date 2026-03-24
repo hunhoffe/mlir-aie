@@ -795,6 +795,7 @@ struct AirChannelToConduitPass
                  "block arguments) that cannot be extracted statically; "
                  "placeholder substitution would produce incorrect DMA "
                  "descriptors and silent data corruption on hardware";
+          putGetToErase.push_back(op);
           signalPassFailure();
           continue;
         }
@@ -1021,11 +1022,16 @@ struct AirChannelToConduitPass
     // Phase 5: erase air.channel declaration ops (after all put/get refs are gone).
     for (mlir::Operation *op : channelDeclsToErase) {
       if (auto symOp = mlir::dyn_cast<mlir::SymbolOpInterface>(op)) {
-        if (!mlir::SymbolTable::symbolKnownUseEmpty(symOp.getNameAttr(),
-                                                    module)) {
-          op->emitWarning(
-              "air-channel-to-conduit: channel decl has remaining uses after "
-              "rewrite — symbol references may be dangling");
+        llvm::StringRef name = symOp.getNameAttr().getValue();
+        bool symbolKnownUseEmpty = mlir::SymbolTable::symbolKnownUseEmpty(
+            symOp.getNameAttr(), module);
+        if (!symbolKnownUseEmpty) {
+          op->emitError("air-channel-to-conduit: channel decl '")
+              << name
+              << "' has remaining uses after rewrite — cannot erase";
+          signalPassFailure();
+          // Do NOT erase — erasing with remaining uses corrupts the IR.
+          continue;
         }
       }
       op->erase();

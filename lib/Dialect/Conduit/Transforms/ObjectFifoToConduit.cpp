@@ -1288,50 +1288,65 @@ struct ObjectFifoToConduitPass
       AIE::TileOp shimTile;
       AIE::DMAChannelDir channelDir;
 
+      // Collect all shim tiles involved in this objectfifo.
+      // Producer shim: emit MM2S allocation.
+      // Consumer shim(s): emit one S2MM allocation per shim consumer.
+      llvm::SmallVector<std::pair<AIE::TileOp, AIE::DMAChannelDir>> shimEntries;
       if (prodRow == 0) {
-        shimTile = prodTile;
-        channelDir = AIE::DMAChannelDir::MM2S;
+        shimEntries.push_back({prodTile, AIE::DMAChannelDir::MM2S});
       } else {
         for (mlir::Value cons : op.getConsumerTiles()) {
           auto consTile = mlir::cast<AIE::TileOp>(cons.getDefiningOp());
-          if (consTile.getRow() == 0) {
-            shimTile = consTile;
-            channelDir = AIE::DMAChannelDir::S2MM;
-            break;
-          }
+          if (consTile.getRow() == 0)
+            shimEntries.push_back({consTile, AIE::DMAChannelDir::S2MM});
         }
       }
 
-      if (!shimTile)
+      if (shimEntries.empty())
         continue;
 
       auto deviceOp = op->getParentOfType<AIE::DeviceOp>();
       if (!deviceOp)
         continue;
 
-      std::string allocSym = op.getSymName().str() + "_shim_alloc";
+      // For single-consumer (common case) keep the original _shim_alloc name so
+      // existing tests and runtime_sequence symbol references continue to work.
+      // For multiple shim consumers, suffix with _0, _1, … to distinguish them.
+      bool multiShim = shimEntries.size() > 1;
+      std::string baseAllocSym = op.getSymName().str() + "_shim_alloc";
 
-      // Allocate per-shim-tile per-direction channel index.
-      int channelIdx;
-      if (channelDir == AIE::DMAChannelDir::MM2S)
-        channelIdx = shimMM2SCounter[shimTile.getResult()]++;
-      else
-        channelIdx = shimS2MMCounter[shimTile.getResult()]++;
+      for (unsigned shimIdx = 0; shimIdx < shimEntries.size(); ++shimIdx) {
+        auto [shimTile, channelDir] = shimEntries[shimIdx];
+        std::string allocSym =
+            multiShim ? (baseAllocSym + "_" + std::to_string(shimIdx))
+                      : baseAllocSym;
 
-      builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
-      builder.create<AIE::ShimDMAAllocationOp>(
-          op.getLoc(), allocSym, shimTile.getResult(),
-          channelDir,
-          /*channel_index=*/static_cast<int64_t>(channelIdx),
-          /*plio=*/op.getPlio(),
-          /*packet=*/nullptr);
+        // Allocate per-shim-tile per-direction channel index.
+        int channelIdx;
+        if (channelDir == AIE::DMAChannelDir::MM2S)
+          channelIdx = shimMM2SCounter[shimTile.getResult()]++;
+        else
+          channelIdx = shimS2MMCounter[shimTile.getResult()]++;
 
-      if (mlir::failed(mlir::SymbolTable::replaceAllSymbolUses(
-              op.getSymNameAttr(), builder.getStringAttr(allocSym),
-              deviceOp))) {
-        op.emitWarning("ObjectFifoToConduit: failed to rewrite symbol uses "
-                       "for shim-connected objectfifo '")
-            << op.getSymName() << "'";
+        builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
+        builder.create<AIE::ShimDMAAllocationOp>(
+            op.getLoc(), allocSym, shimTile.getResult(),
+            channelDir,
+            /*channel_index=*/static_cast<int64_t>(channelIdx),
+            /*plio=*/op.getPlio(),
+            /*packet=*/nullptr);
+
+        // Only rewrite symbol uses for the first (or only) allocation so that
+        // a single symbol name continues to refer to the objectfifo.
+        if (shimIdx == 0) {
+          if (mlir::failed(mlir::SymbolTable::replaceAllSymbolUses(
+                  op.getSymNameAttr(), builder.getStringAttr(allocSym),
+                  deviceOp))) {
+            op.emitWarning("ObjectFifoToConduit: failed to rewrite symbol uses "
+                           "for shim-connected objectfifo '")
+                << op.getSymName() << "'";
+          }
+        }
       }
     }
 

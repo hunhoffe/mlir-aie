@@ -289,6 +289,7 @@ struct AirChannelIndexFlattenerPass
     //   - If any index is dynamic: hard error + signalPassFailure().
     // -----------------------------------------------------------------------
 
+    bool passFailed = false;
     module.walk([&](mlir::Operation *op) {
       if (!isAirChannelPut(op) && !isAirChannelGet(op))
         return;
@@ -312,6 +313,7 @@ struct AirChannelIndexFlattenerPass
         op->emitError()
             << "air-channel-flatten-indices: channel @" << chanName
             << " put/get has no operand_segment_sizes; cannot decode indices";
+        passFailed = true;
         signalPassFailure();
         return;
       }
@@ -333,6 +335,7 @@ struct AirChannelIndexFlattenerPass
             << "air-channel-flatten-indices: channel @" << chanName
             << " put/get: operand count " << allOps.size()
             << " < ndeps+nidx = " << ndeps + nidx;
+        passFailed = true;
         signalPassFailure();
         return;
       }
@@ -357,6 +360,7 @@ struct AirChannelIndexFlattenerPass
                "the target channel @" << chanName << "[i][j]. "
                "Use air-specialize-channel-broadcast before this pass to "
                "specialize dynamic indices to constants.";
+        passFailed = true;
         signalPassFailure();
         return;
       }
@@ -369,6 +373,7 @@ struct AirChannelIndexFlattenerPass
             << "air-channel-flatten-indices: channel @" << chanName
             << " index [" << i << ", " << j << "] out of bounds "
             << "[" << M << ", " << N << "]";
+        passFailed = true;
         signalPassFailure();
         return;
       }
@@ -381,12 +386,14 @@ struct AirChannelIndexFlattenerPass
 
     // -----------------------------------------------------------------------
     // Phase 4: erase original multi-dim channel declaration ops.
-    // (Only if no errors were signaled; the pass framework will abort anyway
-    // on signalPassFailure(), but erasing is still safe to do here since
-    // we've already rewritten all put/get chan_name references.)
+    // Only erase if no failure was signaled — on failure, put/get ops that
+    // triggered the error may still reference the original decl (they were
+    // not rewritten), so erasing would leave dangling symbol references.
     // -----------------------------------------------------------------------
-    for (mlir::Operation *op : multiDimDeclsToErase)
-      op->erase();
+    if (!passFailed) {
+      for (mlir::Operation *op : multiDimDeclsToErase)
+        op->erase();
+    }
   }
 };
 
