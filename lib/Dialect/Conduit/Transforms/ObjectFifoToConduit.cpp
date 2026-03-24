@@ -618,7 +618,7 @@ struct ObjectFifoToConduitPass
       fifosToErase.push_back(op);
     });
 
-    // Phase 3: rewrite aie.objectfifo.link → conduit.link.
+    // Phase 3: rewrite aie.objectfifo.link → conduit.distribute or conduit.join.
     module.walk([&](AIE::ObjectFifoLinkOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
@@ -626,12 +626,12 @@ struct ObjectFifoToConduitPass
       auto fifoIns = op.getFifoIns();
       auto fifoOuts = op.getFifoOuts();
 
-      // Determine mode
-      LinkMode linkMode;
+      // Determine mode: 1:N → distribute, N:1 → join, N:M → error.
+      bool isDistribute;
       if (fifoIns.size() == 1 && fifoOuts.size() >= 1)
-        linkMode = LinkMode::Distribute;
+        isDistribute = true;
       else if (fifoIns.size() >= 1 && fifoOuts.size() == 1)
-        linkMode = LinkMode::Join;
+        isDistribute = false;
       else {
         // Fix 4h: N→M link (N>1 sources AND N>1 destinations) is not
         // supported. Emit an error rather than silently using "distribute".
@@ -710,23 +710,25 @@ struct ObjectFifoToConduitPass
       auto distOffsets = op.getDstOffsets();
 
       llvm::SmallVector<int64_t> offVec;
-      if (linkMode == LinkMode::Join && joinOffsets && !joinOffsets.empty()) {
+      if (!isDistribute && joinOffsets && !joinOffsets.empty()) {
         for (auto attr : joinOffsets)
           offVec.push_back(mlir::cast<mlir::IntegerAttr>(attr).getInt());
-      } else if (linkMode == LinkMode::Distribute && distOffsets && !distOffsets.empty()) {
+      } else if (isDistribute && distOffsets && !distOffsets.empty()) {
         for (auto attr : distOffsets)
           offVec.push_back(mlir::cast<mlir::IntegerAttr>(attr).getInt());
       }
       if (!offVec.empty())
         offsetsAttr = mlir::DenseI64ArrayAttr::get(ctx, offVec);
 
-      builder.create<Link>(
-          loc, mlir::ArrayAttr::get(ctx, srcAttrs),
-          mlir::ArrayAttr::get(ctx, dstAttrs),
-          LinkModeAttr::get(ctx, linkMode),
-          mlir::StringAttr::get(ctx, memtileStr),
-          offsetsAttr,
-          /*lock_id=*/nullptr);
+      mlir::ArrayAttr srcsArr = mlir::ArrayAttr::get(ctx, srcAttrs);
+      mlir::ArrayAttr dstsArr = mlir::ArrayAttr::get(ctx, dstAttrs);
+      mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
+      if (isDistribute)
+        builder.create<Distribute>(loc, srcsArr, dstsArr, memtileAttr,
+                                   offsetsAttr, /*lock_id=*/nullptr);
+      else
+        builder.create<Join>(loc, srcsArr, dstsArr, memtileAttr,
+                             offsetsAttr, /*lock_id=*/nullptr);
 
       op.erase();
     });

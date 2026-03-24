@@ -16,7 +16,7 @@
 // checkCascadeConduit() finds the conduit.create, sees routing_mode="circuit"
 // (not "cascade"), and emits the error.
 
-conduit.create {name = "circuit_ch", capacity = 4 : i64,
+conduit.create @circuit_ch {capacity = 4 : i64,
                 routing_mode = #conduit.routing_mode<circuit>}
 
 func.func @put_cascade_wrong_routing_mode() {
@@ -30,7 +30,7 @@ func.func @put_cascade_wrong_routing_mode() {
 
 // (b) get_cascade referencing a packet-mode conduit must be rejected.
 
-conduit.create {name = "packet_ch", capacity = 4 : i64,
+conduit.create @packet_ch {capacity = 4 : i64,
                 routing_mode = #conduit.routing_mode<packet>}
 
 func.func @get_cascade_wrong_routing_mode() {
@@ -45,7 +45,7 @@ func.func @get_cascade_wrong_routing_mode() {
 // checkCascadeValueType() returns 0 bits for f32, emits the "not an integer
 // or integer vector type" error.
 
-conduit.create {name = "cas_float", capacity = 1 : i64,
+conduit.create @cas_float {capacity = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
 
 func.func @put_cascade_float_type() {
@@ -61,7 +61,7 @@ func.func @put_cascade_float_type() {
 // checkCascadeValueType() computes 64 bits, which is neither 384 (AIE1) nor
 // 512 (AIE2); emits the "has width N bits; must be 384 bits ... or 512 bits" error.
 
-conduit.create {name = "cas_narrow", capacity = 1 : i64,
+conduit.create @cas_narrow {capacity = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
 
 func.func @put_cascade_wrong_width() {
@@ -73,12 +73,18 @@ func.func @put_cascade_wrong_width() {
 
 // -----
 
-// (e) conduit.link with mode="cascade" is rejected by the ODS enum parser.
-// "cascade" is not a valid LinkMode enum value (only distribute/join/forward).
+// (e) conduit.distribute with a cascade-mode src is rejected by the verifier.
+// Cascade is incompatible with distribute fan-out.
 
-func.func @link_cascade_mode() {
-  // expected-error @+1 {{attribute 'mode' failed to satisfy constraint: Conduit link mode}}
-  conduit.link {srcs = ["src"], dsts = ["dst"],
-                mode = "cascade", memtile = "tile(0,1)"}
+func.func @bad_distribute_cascade_src() {
+  conduit.create @src {capacity = 1 : i64, depth = 1 : i64,
+                  routing_mode = #conduit.routing_mode<cascade>,
+                  producer_tile = array<i64: 0, 2>,
+                  consumer_tiles = array<i64: 0, 1>}
+  conduit.create @dst {capacity = 1 : i64, depth = 1 : i64,
+                  producer_tile = array<i64: 0, 1>,
+                  consumer_tiles = array<i64: 1, 2>}
+  // expected-error @+1 {{'conduit.distribute' op cascade channel 'src' cannot be used in a distribute src}}
+  conduit.distribute {srcs = ["src"], dsts = ["dst"], memtile = "tile(0,1)"}
   return
 }

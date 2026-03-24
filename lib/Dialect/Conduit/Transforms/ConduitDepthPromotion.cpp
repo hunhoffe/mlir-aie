@@ -73,22 +73,23 @@ static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Collect conduit names that appear in any conduit.link (src or dst).
+/// Collect conduit names that appear in any distribute/join/forward (src or dst).
 static llvm::StringSet<>
 collectLinkedConduitNames(mlir::ModuleOp module) {
   llvm::StringSet<> linked;
-  module.walk([&](Link op) {
-    if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs")) {
+  auto collect = [&](mlir::Operation *op) {
+    if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs"))
       for (auto s : srcsAttr)
         if (auto str = mlir::dyn_cast<mlir::StringAttr>(s))
           linked.insert(str.getValue());
-    }
-    if (auto dstsAttr = op->getAttrOfType<mlir::ArrayAttr>("dsts")) {
+    if (auto dstsAttr = op->getAttrOfType<mlir::ArrayAttr>("dsts"))
       for (auto d : dstsAttr)
         if (auto str = mlir::dyn_cast<mlir::StringAttr>(d))
           linked.insert(str.getValue());
-    }
-  });
+  };
+  module.walk([&](Distribute op) { collect(op.getOperation()); });
+  module.walk([&](Join op) { collect(op.getOperation()); });
+  module.walk([&](Forward op) { collect(op.getOperation()); });
   return linked;
 }
 
@@ -290,10 +291,12 @@ struct ConduitDepthPromotePass
     mlir::OpBuilder builder(module.getContext());
 
     for (mlir::Operation *createOp : candidates) {
-      auto nameAttr = createOp->getAttrOfType<mlir::StringAttr>("name");
-      if (!nameAttr)
+      auto typedCreate = mlir::dyn_cast<Create>(createOp);
+      if (!typedCreate)
         continue;
-      llvm::StringRef name = nameAttr.getValue();
+      llvm::StringRef name = typedCreate.getSymName();
+      if (name.empty())
+        continue;
 
       // Criterion 0: cascade conduits — depth is architecturally fixed at 1.
       // The cascade stream is a hardware register (rendezvous channel), not a FIFO.

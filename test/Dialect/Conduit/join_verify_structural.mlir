@@ -31,36 +31,35 @@
 // verifies each conduit in isolation.
 
 func.func @join_three_sources_pass() {
-  conduit.create {name = "js_s1", capacity = 4 : i64,
+  conduit.create @js_s1 {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create {name = "js_s2", capacity = 4 : i64,
+  conduit.create @js_s2 {capacity = 4 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 1, 1>,
                   consumer_rates = array<i64: 1, 1>}
-  conduit.create {name = "js_s3", capacity = 8 : i64,
+  conduit.create @js_s3 {capacity = 8 : i64,
                   producer_tile = array<i64: 2, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 4>,
                   consumer_rates = array<i64: 4>}
-  conduit.create {name = "js_dst", capacity = 16 : i64,
+  conduit.create @js_dst {capacity = 16 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<16xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 8>,
                   consumer_rates = array<i64: 8>}
-  conduit.link {srcs = ["js_s1", "js_s2", "js_s3"], dsts = ["js_dst"],
-                mode = #conduit.link_mode<join>, memtile = "tile(0,1)"}
+  conduit.join {srcs = ["js_s1", "js_s2", "js_s3"], dsts = ["js_dst"], memtile = "tile(0,1)"}
   return
 }
 
@@ -73,22 +72,21 @@ func.func @join_three_sources_pass() {
 
 func.func @join_src_imbalanced() {
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=2}}
-  conduit.create {name = "ji_s1_bad", capacity = 4 : i64,
+  conduit.create @ji_s1_bad {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 3>,
                   consumer_rates = array<i64: 1, 1>}
-  conduit.create {name = "ji_dst", capacity = 4 : i64,
+  conduit.create @ji_dst {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.link {srcs = ["ji_s1_bad"], dsts = ["ji_dst"],
-                mode = #conduit.link_mode<join>, memtile = "tile(0,1)"}
+  conduit.join {srcs = ["ji_s1_bad"], dsts = ["ji_dst"], memtile = "tile(0,1)"}
   return
 }
 
@@ -99,23 +97,22 @@ func.func @join_src_imbalanced() {
 // M3 structural invariant violation: join mode can only have 1 destination.
 
 func.func @join_multiple_dsts() {
-  conduit.create {name = "jm_s1", capacity = 2 : i64,
+  conduit.create @jm_s1 {capacity = 2 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64}
-  conduit.create {name = "jm_d1", capacity = 2 : i64,
+  conduit.create @jm_d1 {capacity = 2 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<i32>,
                   depth = 1 : i64}
-  conduit.create {name = "jm_d2", capacity = 2 : i64,
+  conduit.create @jm_d2 {capacity = 2 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 0>,
                   element_type = memref<i32>,
                   depth = 1 : i64}
-  // expected-error@+1 {{'conduit.link' op join mode requires exactly 1 dst, got 2}}
-  conduit.link {srcs = ["jm_s1"], dsts = ["jm_d1", "jm_d2"],
-                mode = #conduit.link_mode<join>, memtile = "tile(0,1)"}
+  // expected-error@+1 {{'conduit.join' op join requires exactly 1 dst, got 2}}
+  conduit.join {srcs = ["jm_s1"], dsts = ["jm_d1", "jm_d2"], memtile = "tile(0,1)"}
   return
 }

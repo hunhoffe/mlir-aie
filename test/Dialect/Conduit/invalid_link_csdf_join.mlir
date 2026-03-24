@@ -26,19 +26,18 @@
 // Unannotated conduits are silently skipped.
 
 func.func @join_unannotated_srcs_pass() {
-  conduit.create {name = "j_src_norates", capacity = 4 : i64,
+  conduit.create @j_src_norates {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
-  conduit.create {name = "j_dst_norates", capacity = 4 : i64,
+  conduit.create @j_dst_norates {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
   // No expected-error: unannotated → skip path → PASS.
-  conduit.link {srcs = ["j_src_norates"], dsts = ["j_dst_norates"],
-                mode = #conduit.link_mode<join>, memtile = "tile(0,1)"}
+  conduit.join {srcs = ["j_src_norates"], dsts = ["j_dst_norates"], memtile = "tile(0,1)"}
   return
 }
 
@@ -52,14 +51,14 @@ func.func @join_unannotated_srcs_pass() {
 // Link::verify M6-join: both pass → no error.
 
 func.func @join_all_balanced_link_check() {
-  conduit.create {name = "j2_src", capacity = 4 : i64,
+  conduit.create @j2_src {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create {name = "j2_dst", capacity = 4 : i64,
+  conduit.create @j2_dst {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
@@ -67,7 +66,6 @@ func.func @join_all_balanced_link_check() {
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
   // No error expected: all rates balanced.
-  conduit.link {srcs = ["j2_src"], dsts = ["j2_dst"],
-                mode = #conduit.link_mode<join>, memtile = "tile(0,1)"}
+  conduit.join {srcs = ["j2_src"], dsts = ["j2_dst"], memtile = "tile(0,1)"}
   return
 }

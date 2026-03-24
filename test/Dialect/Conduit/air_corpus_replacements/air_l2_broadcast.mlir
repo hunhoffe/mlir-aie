@@ -18,23 +18,19 @@
 // CHECK-LABEL: module
 
 // Source conduit.create with capacity=2 (broadcast fan-out).
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast
 // CHECK-SAME: capacity = 2
-// CHECK-SAME: name = "bcast"
 
 // Per-consumer aliases from broadcast Step 2.
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast_c0
 // CHECK-SAME: consumer_tiles = array<i64: 0, 3>
-// CHECK-SAME: name = "bcast_c0"
 
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast_c1
 // CHECK-SAME: consumer_tiles = array<i64: 1, 3>
-// CHECK-SAME: name = "bcast_c1"
 
-// Distribute link.
-// CHECK: conduit.link
+// Distribute op.
+// CHECK: conduit.distribute
 // CHECK-SAME: dsts = ["bcast_c0", "bcast_c1"]
-// CHECK-SAME: mode = #conduit.link_mode<distribute>
 // CHECK-SAME: srcs = ["bcast"]
 
 // No residual air ops.

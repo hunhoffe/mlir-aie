@@ -6,7 +6,7 @@
 // air-to-aie lowering pass has run), Pass B can extract the enclosing tile
 // coordinates and emit:
 //   - Per-consumer conduit.create aliases (@bcast_c0, @bcast_c1)
-//   - conduit.link {mode = #conduit.link_mode<distribute>, srcs = ["bcast"], dsts = ["bcast_c0", "bcast_c1"]}
+//   - conduit.distribute {srcs = ["bcast"], dsts = ["bcast_c0", "bcast_c1"]}
 //
 // This test exercises the aie.core enclosure path.
 //
@@ -17,7 +17,7 @@
 //   conduit.create with name="bcast", capacity=2  (source)
 //   conduit.create with name="bcast_c0", consumer_tiles=[2,2]
 //   conduit.create with name="bcast_c1", consumer_tiles=[3,2]
-//   conduit.link with mode="distribute", srcs=["bcast"], dsts=["bcast_c0","bcast_c1"]
+//   conduit.distribute with srcs=["bcast"], dsts=["bcast_c0","bcast_c1"]
 //
 // Note: the remark "found 2 consumer tiles from aie.core enclosure" is emitted.
 
@@ -26,24 +26,20 @@
 // CHECK-LABEL: module
 
 // Source conduit.create with capacity=2.
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast
 // CHECK-SAME: capacity = 2
-// CHECK-SAME: name = "bcast"
 
 // Consumer alias for tile (2,2).
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast_c0
 // CHECK-SAME: consumer_tiles = array<i64: 2, 2>
-// CHECK-SAME: name = "bcast_c0"
 
 // Consumer alias for tile (3,2).
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast_c1
 // CHECK-SAME: consumer_tiles = array<i64: 3, 2>
-// CHECK-SAME: name = "bcast_c1"
 
-// Distribute link.
-// CHECK: conduit.link
+// Distribute op.
+// CHECK: conduit.distribute
 // CHECK-SAME: dsts = ["bcast_c0", "bcast_c1"]
-// CHECK-SAME: mode = #conduit.link_mode<distribute>
 // CHECK-SAME: srcs = ["bcast"]
 
 // No residual air.channel declarations.

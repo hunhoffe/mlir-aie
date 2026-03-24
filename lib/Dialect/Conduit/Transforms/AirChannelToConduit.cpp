@@ -576,14 +576,13 @@ struct AirChannelToConduitPass
           for (auto &dst : dstNames)
             dstsAttrs.push_back(mlir::StringAttr::get(ctx, dst));
 
-          // Emit conduit.link{mode=Distribute}.
+          // Emit conduit.distribute.
           // memtile is left empty — Pass C will resolve the MemTile from
           // the conduit.create consumer_tiles if needed.
-          builder.create<Link>(
+          builder.create<Distribute>(
               loc,
               mlir::ArrayAttr::get(ctx, srcsAttrs),
               mlir::ArrayAttr::get(ctx, dstsAttrs),
-              LinkModeAttr::get(ctx, LinkMode::Distribute),
               /*memtile=*/mlir::StringAttr::get(ctx, ""),
               /*offsets=*/mlir::DenseI64ArrayAttr{},
               /*lock_id=*/mlir::IntegerAttr{});
@@ -1104,9 +1103,8 @@ struct AirChannelToConduitPass
       module.walk([&](Create op) {
         if (op.getProducerRates().has_value() || op.getConsumerRates().has_value())
           return;
-        auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
-        if (!nameAttr) return;
-        llvm::StringRef name = nameAttr.getValue();
+        llvm::StringRef name = op.getSymName();
+        if (name.empty()) return;
         // Broadcast guard: skip rate annotation for broadcast channels.
         // Their capacity = product(broadcast_shape) is a fan-out count, not
         // buffer slots; M7 would misinterpret it.

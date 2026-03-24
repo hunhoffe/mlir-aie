@@ -8,9 +8,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Phase 5: Lower conduit.link → MemTile DMA BD chain.
+// Phase 5: Lower conduit.distribute/join/forward → MemTile DMA BD chain.
 //   Distribute (1 src → N dsts): S2MM ingests full buffer, N MM2S channels.
 //   Join (N srcs → 1 dst): N S2MM channels, one MM2S output.
+//   Forward (1 src → 1 dst): treated as distribute with 1 destination.
 //
 // Phase 5.5: Generate aie.mem BD chains for simple (non-link) conduits.
 //   Case C: producer MM2S, consumer S2MM.
@@ -35,41 +36,102 @@ void linkPhase(ConduitToDMAState &state) {
   (void)ctx; // suppress unused warning when not used in all paths
 
   // Collect ALL link source and destination names for Phase 5.5 skip logic.
-  state.module.walk([&](Link linkOp) {
-    for (auto s : linkOp.getSrcs())
+  state.module.walk([&](Distribute op) {
+    for (auto s : op.getSrcs())
       state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
-    for (auto d : linkOp.getDsts())
+    for (auto d : op.getDsts())
+      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+  });
+  state.module.walk([&](Join op) {
+    for (auto s : op.getSrcs())
+      state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+    for (auto d : op.getDsts())
+      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+  });
+  state.module.walk([&](Forward op) {
+    for (auto s : op.getSrcs())
+      state.linkSrcNames.insert(mlir::cast<mlir::StringAttr>(s).getValue());
+    for (auto d : op.getDsts())
       state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
   });
 
   // -----------------------------------------------------------------------
-  // Phase 5: Lower conduit.link.
+  // Phase 5: Lower conduit.distribute / conduit.join / conduit.forward.
+  //
+  // LinkAdapter unifies the three op types so the lowering body can be shared.
   // -----------------------------------------------------------------------
 
-  // Collect link ops to erase after processing (avoid erase-inside-walk).
-  llvm::SmallVector<Link> linkOpsToErase;
+  struct LinkAdapter {
+    mlir::Operation *op;
+    mlir::ArrayAttr srcs;
+    mlir::ArrayAttr dsts;
+    llvm::StringRef memtileStr;
+    bool isDistribute; // true for Distribute + Forward; false for Join
+    std::optional<llvm::ArrayRef<int64_t>> offsets;
+
+    mlir::Location getLoc() const { return op->getLoc(); }
+    mlir::InFlightDiagnostic emitError(const llvm::Twine &msg) const {
+      return op->emitError(msg);
+    }
+    mlir::InFlightDiagnostic emitWarning(const llvm::Twine &msg) const {
+      return op->emitWarning(msg);
+    }
+  };
+
+  llvm::SmallVector<mlir::Operation *> linkOpsToErase;
+  llvm::SmallVector<LinkAdapter> linkAdapters;
+
+  state.module.walk([&](Distribute distOp) {
+    LinkAdapter a;
+    a.op = distOp.getOperation();
+    a.srcs = distOp.getSrcs();
+    a.dsts = distOp.getDsts();
+    a.memtileStr = distOp.getMemtile();
+    a.isDistribute = true;
+    a.offsets = distOp.getOffsets();
+    linkAdapters.push_back(a);
+  });
+  state.module.walk([&](Join joinOp) {
+    LinkAdapter a;
+    a.op = joinOp.getOperation();
+    a.srcs = joinOp.getSrcs();
+    a.dsts = joinOp.getDsts();
+    a.memtileStr = joinOp.getMemtile();
+    a.isDistribute = false;
+    a.offsets = joinOp.getOffsets();
+    linkAdapters.push_back(a);
+  });
+  state.module.walk([&](Forward fwdOp) {
+    LinkAdapter a;
+    a.op = fwdOp.getOperation();
+    a.srcs = fwdOp.getSrcs();
+    a.dsts = fwdOp.getDsts();
+    a.memtileStr = fwdOp.getMemtile();
+    a.isDistribute = true; // forward = distribute with 1 dst
+    a.offsets = fwdOp.getOffsets();
+    linkAdapters.push_back(a);
+  });
 
   // Map from memtile tile value → existing MemTileDMAOp for merging.
   // When multiple link groups reference the same memtile, we merge them
   // into a single MemTileDMAOp with non-overlapping DMA channel numbers.
   llvm::DenseMap<mlir::Value, AIE::MemTileDMAOp> memtileDMAMap;
 
-  state.module.walk([&](Link linkOp) {
+  for (auto &linkOp : linkAdapters) {
     builder.setInsertionPoint(state.deviceBody->getTerminator());
     mlir::Location loc = linkOp.getLoc();
 
-    auto srcs = linkOp.getSrcs();
-    auto dsts = linkOp.getDsts();
-    llvm::StringRef memtileStr = linkOp.getMemtile();
-    LinkMode mode = linkOp.getMode();
-    auto offsets = linkOp.getOffsets();
+    auto srcs = linkOp.srcs;
+    auto dsts = linkOp.dsts;
+    llvm::StringRef memtileStr = linkOp.memtileStr;
+    auto offsets = linkOp.offsets;
 
     AIE::TileOp memtile = state.lookupTile(memtileStr);
     if (!memtile) {
       linkOp.emitError("conduit-to-dma: relay tile '" + memtileStr.str() +
                        "' not found — cannot lower link op");
       state.passFailed = true;
-      return;
+      continue;
     }
 
     // Verify relay tile is a MemTile.
@@ -94,7 +156,7 @@ void linkPhase(ConduitToDMAState &state) {
         linkOp.emitError("conduit-to-dma: CoreTile relay: src conduit '" +
                          coreRelayName + "' not found");
         state.passFailed = true;
-        return;
+        continue;
       }
       ConduitInfo &coreRelaySrc = *coreRelaySrcPtr;
 
@@ -109,7 +171,7 @@ void linkPhase(ConduitToDMAState &state) {
                          "' not found on relay tile '" + memtileStr.str() +
                          "'");
         state.passFailed = true;
-        return;
+        continue;
       }
       auto &relayBufs = relayBufIt->second;
 
@@ -314,21 +376,21 @@ void linkPhase(ConduitToDMAState &state) {
         }
       }
 
-      linkOpsToErase.push_back(linkOp);
-      return;
+      linkOpsToErase.push_back(linkOp.op);
+      continue;
     }
 
     std::string srcName =
         mlir::cast<mlir::StringAttr>(srcs[0]).getValue().str();
     ConduitInfo *srcInfoPtr = state.lookupConduit(srcName);
 
-    // Guard: cascade-mode conduits cannot be used with conduit.link.
+    // Guard: cascade-mode conduits cannot be used with distribute/join/forward.
     if (srcInfoPtr && srcInfoPtr->routingMode == "cascade") {
-      linkOp.emitError("conduit.link cannot use cascade-mode conduit '" +
-                       srcName + "' — cascade is point-to-point and has no "
-                       "MemTile relay or DMA BD chain");
+      linkOp.emitError("conduit distribute/join/forward cannot use cascade-mode "
+                       "conduit '" + srcName + "' — cascade is point-to-point "
+                       "and has no MemTile relay or DMA BD chain");
       state.passFailed = true;
-      return;
+      continue;
     }
 
     // For join links, the first source may be a MemTile relay whose buffers
@@ -346,7 +408,7 @@ void linkPhase(ConduitToDMAState &state) {
       linkOp.emitError("conduit-to-dma: src conduit '" + srcName +
                        "' buffers not allocated for link op");
       state.passFailed = true;
-      return;
+      continue;
     }
 
     ConduitInfo &srcInfo = *srcInfoPtr;
@@ -361,8 +423,8 @@ void linkPhase(ConduitToDMAState &state) {
     int64_t perBufLen =
         srcInfo.capacity > 0 ? srcInfo.capacity / linkDepth : 1;
 
-    // Per-destination independent lock pairs on the MemTile (distribute).
-    bool isDistribute = (mode == LinkMode::Distribute);
+    // Per-destination independent lock pairs on the MemTile (distribute/forward).
+    bool isDistribute = linkOp.isDistribute;
     unsigned numDsts = static_cast<unsigned>(dsts.size());
 
     llvm::SmallVector<AIE::LockOp> sliceProdLocks;
@@ -1010,12 +1072,12 @@ void linkPhase(ConduitToDMAState &state) {
     builder.setInsertionPointToEnd(endBlock);
     builder.create<AIE::EndOp>(loc);
 
-    linkOpsToErase.push_back(linkOp);
-  });
+    linkOpsToErase.push_back(linkOp.op);
+  } // end for (auto &linkOp : linkAdapters)
 
-  // Erase link ops after processing (collect-then-erase pattern).
-  for (auto op : llvm::reverse(linkOpsToErase))
-    op.erase();
+  // Erase distribute/join/forward ops after processing (collect-then-erase).
+  for (auto *op : llvm::reverse(linkOpsToErase))
+    op->erase();
 
   if (state.passFailed)
     return;

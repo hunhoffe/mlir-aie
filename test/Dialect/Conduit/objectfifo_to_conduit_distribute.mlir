@@ -10,18 +10,13 @@
 
 // CHECK-LABEL: module @link_distribute_offsets
 // CHECK:   aie.device(xcve2302) {
-// CHECK:     conduit.create
-// CHECK-SAME:   name = "link1"
-// CHECK:     conduit.create
-// CHECK-SAME:   name = "link2"
-// CHECK:     conduit.create
-// CHECK-SAME:   name = "link3"
-// CHECK:     conduit.create
-// CHECK-SAME:   name = "link4"
-// CHECK:     conduit.link
+// CHECK:     conduit.create @link1
+// CHECK:     conduit.create @link2
+// CHECK:     conduit.create @link3
+// CHECK:     conduit.create @link4
+// CHECK:     conduit.distribute
 // CHECK-SAME:   dsts = ["link2", "link3", "link4"]
 // CHECK-SAME:   memtile = "tile(2,1)"
-// CHECK-SAME:   mode = #conduit.link_mode<distribute>
 // CHECK-SAME:   offsets = array<i64: 0, 16, 36>
 // CHECK-SAME:   srcs = ["link1"]
 // CHECK-NOT: aie.objectfifo

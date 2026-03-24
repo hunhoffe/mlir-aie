@@ -28,27 +28,26 @@
 // checkDistributeComposedConsume: allDstsHaveRates=false → return success().
 
 func.func @distribute_unannotated_skip() {
-  conduit.create {name = "src_skip", capacity = 4 : i64,
+  conduit.create @src_skip {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.create {name = "dst0_skip", capacity = 4 : i64,
+  conduit.create @dst0_skip {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
-  conduit.create {name = "dst1_skip", capacity = 4 : i64,
+  conduit.create @dst1_skip {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 3>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
   // No error: dst conduits lack rate annotations → skip Level 2.
-  conduit.link {srcs = ["src_skip"],
-                dsts = ["dst0_skip", "dst1_skip"],
-                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
+  conduit.distribute {srcs = ["src_skip"],
+                dsts = ["dst0_skip", "dst1_skip"], memtile = "tile(0,1)"}
   return
 }
 
@@ -59,21 +58,21 @@ func.func @distribute_unannotated_skip() {
 // src P=[1], capacity=4: H=1: cumProd=1, composed=1, occ=0 ≤ 4 → PASS.
 
 func.func @distribute_symmetric_pass() {
-  conduit.create {name = "src_sym", capacity = 4 : i64,
+  conduit.create @src_sym {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 4 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.create {name = "dst0_sym", capacity = 4 : i64,
+  conduit.create @dst0_sym {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
                   depth = 4 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.create {name = "dst1_sym", capacity = 4 : i64,
+  conduit.create @dst1_sym {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 3>,
                   element_type = memref<4xi32>,
@@ -81,9 +80,8 @@ func.func @distribute_symmetric_pass() {
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
   // No error: composed consume = per-consumer = 1, source capacity sufficient.
-  conduit.link {srcs = ["src_sym"],
-                dsts = ["dst0_sym", "dst1_sym"],
-                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
+  conduit.distribute {srcs = ["src_sym"],
+                dsts = ["dst0_sym", "dst1_sym"], memtile = "tile(0,1)"}
   return
 }
 
@@ -93,14 +91,14 @@ func.func @distribute_symmetric_pass() {
 // checkDistributeComposedConsume returns success immediately for N < 2.
 
 func.func @distribute_single_consumer_skip() {
-  conduit.create {name = "src_one", capacity = 4 : i64,
+  conduit.create @src_one {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 4 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.create {name = "dst0_one", capacity = 4 : i64,
+  conduit.create @dst0_one {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
@@ -108,7 +106,6 @@ func.func @distribute_single_consumer_skip() {
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
   // No error: single destination → Level 2 skip (per-edge check only).
-  conduit.link {srcs = ["src_one"], dsts = ["dst0_one"],
-                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
+  conduit.distribute {srcs = ["src_one"], dsts = ["dst0_one"], memtile = "tile(0,1)"}
   return
 }

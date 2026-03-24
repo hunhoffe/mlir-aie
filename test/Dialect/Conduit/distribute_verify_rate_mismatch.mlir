@@ -21,7 +21,7 @@
 //   This fires on conduit.create for dst1 (Create::verify M6 runs first).
 
 func.func @distribute_dst_imbalanced() {
-  conduit.create {name = "rm_src", capacity = 4 : i64,
+  conduit.create @rm_src {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
@@ -29,22 +29,21 @@ func.func @distribute_dst_imbalanced() {
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=4 != sum(consumer_rates)*len(producer_rates)=3}}
-  conduit.create {name = "rm_d1_bad", capacity = 3 : i64,
+  conduit.create @rm_d1_bad {capacity = 3 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<i32>,
                   depth = 3 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 1, 2>}
-  conduit.create {name = "rm_d2", capacity = 2 : i64,
+  conduit.create @rm_d2 {capacity = 2 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.link {srcs = ["rm_src"], dsts = ["rm_d1_bad", "rm_d2"],
-                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
+  conduit.distribute {srcs = ["rm_src"], dsts = ["rm_d1_bad", "rm_d2"], memtile = "tile(0,1)"}
   return
 }
 
@@ -58,21 +57,20 @@ func.func @distribute_dst_imbalanced() {
 
 func.func @distribute_src_imbalanced() {
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=2}}
-  conduit.create {name = "rm2_src_bad", capacity = 4 : i64,
+  conduit.create @rm2_src_bad {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 3>,
                   consumer_rates = array<i64: 1, 1>}
-  conduit.create {name = "rm2_d1", capacity = 2 : i64,
+  conduit.create @rm2_d1 {capacity = 2 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.link {srcs = ["rm2_src_bad"], dsts = ["rm2_d1"],
-                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
+  conduit.distribute {srcs = ["rm2_src_bad"], dsts = ["rm2_d1"], memtile = "tile(0,1)"}
   return
 }

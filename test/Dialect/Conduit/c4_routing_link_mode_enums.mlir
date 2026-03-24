@@ -18,7 +18,7 @@
 // CHECK-LABEL: func.func @routing_mode_circuit
 func.func @routing_mode_circuit() {
   // CHECK: routing_mode = #conduit.routing_mode<circuit>
-  conduit.create {name = "rm_circuit", capacity = 4 : i64,
+  conduit.create @rm_circuit {capacity = 4 : i64,
                   routing_mode = #conduit.routing_mode<circuit>}
   return
 }
@@ -26,7 +26,7 @@ func.func @routing_mode_circuit() {
 // CHECK-LABEL: func.func @routing_mode_packet
 func.func @routing_mode_packet() {
   // CHECK: routing_mode = #conduit.routing_mode<packet>
-  conduit.create {name = "rm_packet", capacity = 4 : i64,
+  conduit.create @rm_packet {capacity = 4 : i64,
                   routing_mode = #conduit.routing_mode<packet>}
   return
 }
@@ -34,7 +34,7 @@ func.func @routing_mode_packet() {
 // CHECK-LABEL: func.func @routing_mode_cascade
 func.func @routing_mode_cascade() {
   // CHECK: routing_mode = #conduit.routing_mode<cascade>
-  conduit.create {name = "rm_cascade", capacity = 1 : i64, depth = 1 : i64,
+  conduit.create @rm_cascade {capacity = 1 : i64, depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>}
   return
 }
@@ -42,7 +42,7 @@ func.func @routing_mode_cascade() {
 // CHECK-LABEL: func.func @routing_mode_stream
 func.func @routing_mode_stream() {
   // CHECK: routing_mode = #conduit.routing_mode<stream>
-  conduit.create {name = "rm_stream", capacity = 4 : i64,
+  conduit.create @rm_stream {capacity = 4 : i64,
                   routing_mode = #conduit.routing_mode<stream>}
   return
 }
@@ -53,35 +53,35 @@ func.func @routing_mode_stream() {
 
 // CHECK-LABEL: func.func @link_mode_distribute
 func.func @link_mode_distribute() {
-  conduit.create {name = "src", capacity = 4 : i64}
-  conduit.create {name = "dst0", capacity = 2 : i64}
-  conduit.create {name = "dst1", capacity = 2 : i64}
-  // CHECK: mode = #conduit.link_mode<distribute>
-  conduit.link {srcs = ["src"], dsts = ["dst0", "dst1"],
-                mode = #conduit.link_mode<distribute>,
+  conduit.create @src {capacity = 4 : i64}
+  conduit.create @dst0 {capacity = 2 : i64}
+  conduit.create @dst1 {capacity = 2 : i64}
+  // CHECK: conduit.distribute
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.distribute {srcs = ["src"], dsts = ["dst0", "dst1"],
                 memtile = "tile(0,1)"}
   return
 }
 
 // CHECK-LABEL: func.func @link_mode_join
 func.func @link_mode_join() {
-  conduit.create {name = "src0", capacity = 2 : i64}
-  conduit.create {name = "src1", capacity = 2 : i64}
-  conduit.create {name = "dst", capacity = 4 : i64}
-  // CHECK: mode = #conduit.link_mode<join>
-  conduit.link {srcs = ["src0", "src1"], dsts = ["dst"],
-                mode = #conduit.link_mode<join>,
+  conduit.create @src0 {capacity = 2 : i64}
+  conduit.create @src1 {capacity = 2 : i64}
+  conduit.create @dst {capacity = 4 : i64}
+  // CHECK: conduit.join
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.join {srcs = ["src0", "src1"], dsts = ["dst"],
                 memtile = "tile(0,1)"}
   return
 }
 
 // CHECK-LABEL: func.func @link_mode_forward
 func.func @link_mode_forward() {
-  conduit.create {name = "in_fwd", capacity = 4 : i64}
-  conduit.create {name = "out_fwd", capacity = 4 : i64}
-  // CHECK: mode = #conduit.link_mode<forward>
-  conduit.link {srcs = ["in_fwd"], dsts = ["out_fwd"],
-                mode = #conduit.link_mode<forward>,
+  conduit.create @in_fwd {capacity = 4 : i64}
+  conduit.create @out_fwd {capacity = 4 : i64}
+  // CHECK: conduit.forward
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.forward {srcs = ["in_fwd"], dsts = ["out_fwd"],
                 memtile = "tile(0,1)"}
   return
 }
@@ -94,9 +94,8 @@ func.func @link_mode_forward() {
 
 // CHECK-LABEL: func.func @absent_routing_mode
 func.func @absent_routing_mode() {
-  // CHECK: conduit.create
-  // CHECK-SAME: name = "unresolved"
+  // CHECK: conduit.create @unresolved
   // CHECK-NOT: routing_mode
-  conduit.create {name = "unresolved", capacity = 4 : i64}
+  conduit.create @unresolved {capacity = 4 : i64}
   return
 }
