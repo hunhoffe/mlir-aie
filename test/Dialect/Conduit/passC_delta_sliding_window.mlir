@@ -7,20 +7,21 @@
 //
 //   Preamble: acquire(2), release(1)  → AGE(2)
 //   Middle:   scf.for { acquire(3), release(1) }  → AGE(1) per iter
-//   Tail:     acquire(2), release(2)  → AGE(1)
+//   Tail:     acquire(2), release(2)  → NO AcquireGreaterEqual (delta=0)
 //
-// State trace:
+// State trace (with cross-block held-count propagation fix):
 //   Preamble acquire(2):  heldCount=0 → delta=2 → AGE(2). held=2, last=2.
 //   Preamble release(1):  held=2-1=1. last=2 (unchanged).
 //   Enter scf.for:        childState.heldCount = last = 2.
 //     Middle acquire(3):  held=2 → delta=3-2=1 → AGE(1). held=3, last=3.
 //     Middle release(1):  held=3-1=2. last=3.
 //     (next iter: acquire(3), held=2, delta=1 → AGE(1). Consistent.)
-//   Back in parent:       held=1 (unchanged from before loop; child is a copy).
-//   Tail acquire(2):      held=1 → delta=2-1=1 → AGE(1).
+//   Child exits with:     held=2, last=3.
+//   Back in parent:       held updated to 2 (child exit held propagated back).
+//   Tail acquire(2):      held=2 → delta=2-2=0 → NO AcquireGreaterEqual.
 //   Tail release(2):      held=2-2=0.
 //
-// Expected: AGE(2), AGE(1) inside loop, AGE(1) for tail.
+// Expected: AGE(2), AGE(1) inside loop, NO AGE for tail.
 // No AGE(3) anywhere.  No AGE(2) after the first one.
 //
 // Topology: shim(0,0) → compute(0,2), depth=4, element=memref<128xi32>.
@@ -41,12 +42,10 @@
 // CHECK-NOT: AcquireGreaterEqual, 3
 // CHECK: use_lock(%{{.*}}_cons_lock_0, AcquireGreaterEqual, 1)
 //
-// Tail: AGE(1) after loop.
-// CHECK: use_lock(%{{.*}}_cons_lock_0, AcquireGreaterEqual, 1)
-//
-// No AGE(2) or AGE(3) after the preamble.
+// Tail: NO AcquireGreaterEqual (delta=0 after cross-block held-count fix).
+// The Release(2) must be the next use_lock after the loop's Release(1).
 // CHECK-NOT: AcquireGreaterEqual, 2
-// CHECK-NOT: AcquireGreaterEqual, 3
+// CHECK-NOT: AcquireGreaterEqual, 1
 // CHECK: aie.end
 
 module @passC_delta_sliding_window {
@@ -98,6 +97,8 @@ module @passC_delta_sliding_window {
       }
 
       // === Tail: acquire(2), release(2) ===
+      // After the loop, parent held is updated to 2 (child exit held).
+      // acquire(2) → delta = 2-2 = 0 → NO AcquireGreaterEqual.
       %win_tail = conduit.acquire {name = @fifo, count = 2 : i64,
                                     port = #conduit.port<Consume>}
                       : !conduit.window<memref<128xi32>>

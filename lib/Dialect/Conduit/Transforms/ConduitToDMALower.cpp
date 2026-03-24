@@ -405,8 +405,11 @@ void lowerPhase(ConduitToDMAState &state) {
   // The function processes the given block's ops in program order and
   // recurses into nested regions, passing `lastAcquireCount` (not heldCount)
   // as the inherited state for child blocks.
-  std::function<void(mlir::Block *, StateMap)> walkBlock;
-  walkBlock = [&](mlir::Block *block, StateMap liveState) {
+  // walkBlock returns the final StateMap after processing the block.
+  // Callers use the returned map to propagate child held-counts back to the
+  // parent scope (cross-block held-count tracking for tail partial-release).
+  std::function<StateMap(mlir::Block *, StateMap)> walkBlock;
+  walkBlock = [&](mlir::Block *block, StateMap liveState) -> StateMap {
     for (mlir::Operation &rawOp : *block) {
       if (auto op = mlir::dyn_cast<Acquire>(rawOp)) {
         ConduitInfo *cinfo = state.lookupConduit(op.getName());
@@ -575,17 +578,44 @@ void lowerPhase(ConduitToDMAState &state) {
           }
         }
 
+        // Process each child block; track the final state from the last block.
+        // For scf.for, this is the loop body's exit state.
+        StateMap childFinalState = childState;
         for (mlir::Block &childBlock : region)
-          walkBlock(&childBlock, childState);
+          childFinalState = walkBlock(&childBlock, childState);
+
+        // Propagate child's post-loop heldCount back to parent for Consume
+        // channels.  After an scf.for with acquire=K/release=1 per iteration,
+        // the child exits with heldCount=K-1 (the sliding-window tail).  The
+        // parent must know about these still-held slots so that a subsequent
+        // tail acquire in the outer block computes delta=0 (no new slots
+        // needed) instead of delta=count-parentHeld (wrong AcquireGreaterEqual).
+        //
+        // Only Consume port: Produce port holds are reset to 0 at loop entry
+        // (B-1 fix), so no slots are inherited from the child Produce side.
+        //
+        // lastAcquireCount is also updated to reflect the child's last acquire,
+        // enabling correct delta computation for any further nested regions.
+        for (auto &[k, childCs] : childFinalState) {
+          int port = k.second;
+          if (port == static_cast<int>(Port::Consume)) {
+            liveState[k].heldCount = childCs.heldCount;
+            liveState[k].lastAcquireCount = childCs.lastAcquireCount;
+          }
+          // Produce: do not propagate — parent retains its pre-loop state.
+          // The Produce port heldCount in the parent is managed by its own
+          // acquire/release ops; child loop iterations operate independently.
+        }
       }
     }
+    return liveState;
   };
 
   // Seed the walk from each aie.core region with empty initial state.
   module.walk([&](AIE::CoreOp coreOp) {
     StateMap initialState;
     for (mlir::Block &block : coreOp.getBody())
-      walkBlock(&block, initialState);
+      initialState = walkBlock(&block, initialState);
   });
 
   // Step 3: Erase Release ops (after walkBlock has seen them for delta inference).
