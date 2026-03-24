@@ -180,12 +180,14 @@ struct ConduitInfo {
   // Partial-release buffer count adjustment.
   // Populated by Phase 2.6 in collectPhase.
   //
-  // slidingWindowOverhead: for sliding-window patterns (acquire_count >
-  //   release_count), the maximum (acquireCount - releaseCount) across all
-  //   Consume-port acquire/release pairs. 0 = no sliding window.
+  // maxConsumerAcquire: maximum acquire count seen across all Consume-port
+  //   acquire/release pairs where acquireCount > releaseCount (sliding window).
+  //   0 = no sliding window (normal SDF or CSDF with full release per step).
   //
-  // nConsumerBuffers() uses: depth + max(0, slidingWindowOverhead).
-  int64_t slidingWindowOverhead = 0;
+  // nConsumerBuffers() uses: max(depth, maxConsumerAcquire + 1).
+  // Derivation: a K-tap sliding window needs K+1 physical buffers minimum
+  // (K held by consumer + 1 being filled by DMA). If depth > K+1, use depth.
+  int64_t maxConsumerAcquire = 0;
 
   // --- Populated by Phase 3 (allocateBuffersAndLocks). ---
 
@@ -278,13 +280,15 @@ struct ConduitInfo {
   // For the sliding-window pattern (acquire_count > release_count on a paired
   // acquire/release), extra buffer slots are needed to hold the unreleased
   // elements while the DMA pre-fills the next slot.
-  // Formula: depth + max(0, slidingWindowOverhead)
-  // slidingWindowOverhead = 0 for normal SDF or CSDF (no accumulation).
+  // Formula: max(depth, maxConsumerAcquire + 1)
+  // Derivation: a K-tap sliding window needs K+1 physical buffers minimum
+  // (K held by consumer + 1 for DMA). If depth > K+1, depth is used.
+  // maxConsumerAcquire = 0 for normal SDF/CSDF (full release per step).
   int64_t nConsumerBuffers() const {
     int64_t d = depth > 0 ? depth : 1;
-    if (slidingWindowOverhead <= 0)
+    if (maxConsumerAcquire <= 0)
       return d;
-    return d + slidingWindowOverhead;
+    return std::max(d, maxConsumerAcquire + 1);
   }
 
   // Result of resolving per-tile resources from the enclosing CoreOp.

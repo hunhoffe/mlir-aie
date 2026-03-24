@@ -285,24 +285,24 @@ void collectPhase(ConduitToDMAState &state) {
   //
   // For the sliding-window pattern, the consumer acquires N elements but
   // releases fewer than N per step, holding onto the remainder.
-  // The DMA ring must have extra buffer slots to accommodate the unreleased
-  // elements.
+  // The DMA ring must have extra buffer slots: max(depth, maxAcquire + 1).
   //
-  // Strategy: pair each conduit.release with its corresponding
-  // conduit.acquire (via the window SSA def-use chain) and compute
-  // max(acquireCount - releaseCount) across all Consume-port pairs.
-  // This yields the maximum number of slots held across a partial release.
-  // Formula:
-  //   nConsumerBuffers = depth + max(0, maxPairwiseSlidingOverhead)
+  // Strategy: scan Consume-port acquire/release pairs (via window SSA
+  // def-use chain) and record the maximum acquire count across all pairs
+  // where acquireCount > releaseCount.
   //
   // Only Consume-port acquire/release pairs are considered.
   // ReleaseAsync ops are omitted (async pattern never forms a sliding window
   // in practice; and they lack a direct window SSA operand).
+  //
+  // Produce-port partial release (acquireCount > releaseCount on Produce port)
+  // is not supported — Pass C cannot infer the correct buffer count for it.
+  // A hard error is emitted if this pattern is detected.
   // -----------------------------------------------------------------------
   {
-    // Per-conduit: maximum (acquireCount - releaseCount) across all
-    // Consume-port acquire/release pairs where releaseCount < acquireCount.
-    llvm::DenseMap<llvm::StringRef, int64_t> maxSlidingOverhead;
+    // Per-conduit: maximum acquire count across all Consume-port
+    // acquire/release pairs where acquireCount > releaseCount.
+    llvm::DenseMap<llvm::StringRef, int64_t> maxConsAcquire;
 
     module.walk([&](Release relOp) {
       if (relOp.getPort() != Port::Consume)
@@ -317,19 +317,51 @@ void collectPhase(ConduitToDMAState &state) {
       llvm::StringRef conduitName = acqOp.getName();
       int64_t acqCount = static_cast<int64_t>(acqOp.getCount());
       int64_t relCount = static_cast<int64_t>(relOp.getCount());
-      int64_t overhead = acqCount - relCount;
-      if (overhead <= 0)
+      if (acqCount <= relCount)
         return; // Full release — not a sliding window
-      auto &cur = maxSlidingOverhead[conduitName];
-      if (overhead > cur)
-        cur = overhead;
+      auto &cur = maxConsAcquire[conduitName];
+      if (acqCount > cur)
+        cur = acqCount;
     });
 
     for (auto &[name, info] : state.conduitMap) {
-      auto it = maxSlidingOverhead.find(name);
-      if (it != maxSlidingOverhead.end())
-        info.slidingWindowOverhead = it->second;
+      auto it = maxConsAcquire.find(name);
+      if (it != maxConsAcquire.end())
+        info.maxConsumerAcquire = it->second;
     }
+
+    // Hard error: Produce-port sliding windows where maxProdAcquire+1 > depth.
+    // effectiveDepth = min(depth, maxProdAcquire+1). If maxProdAcquire+1 > depth,
+    // the producer tries to simultaneously hold more slots than are allocated.
+    // Partial release where maxProdAcquire+1 <= depth is safe (effectiveDepth
+    // equals depth and all slots are available). Only reject the unsafe case.
+    module.walk([&](Release relOp) {
+      if (relOp.getPort() != Port::Produce)
+        return;
+      auto *defOp = relOp.getWindow().getDefiningOp();
+      if (!defOp)
+        return;
+      auto acqOp = mlir::dyn_cast<Acquire>(defOp);
+      if (!acqOp)
+        return;
+      int64_t acqCount = static_cast<int64_t>(acqOp.getCount());
+      int64_t relCount = static_cast<int64_t>(relOp.getCount());
+      if (acqCount <= relCount)
+        return; // Full release — safe
+      // Partial release: check if maxProdAcquire+1 exceeds depth.
+      llvm::StringRef conduitName = acqOp.getName();
+      ConduitInfo *cinfo = state.lookupConduit(conduitName);
+      if (!cinfo)
+        return;
+      int64_t depth = cinfo->depth > 0 ? cinfo->depth : 1;
+      if (acqCount > depth) {
+        relOp.emitError(
+            "Produce-port sliding windows (acquire > release on Produce port) "
+            "are not yet supported in Pass C when maxProdAcquire > depth; "
+            "use acquire==release on the producer side or increase depth");
+        state.passFailed = true;
+      }
+    });
   }
 
   // -----------------------------------------------------------------------
