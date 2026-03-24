@@ -303,6 +303,24 @@ struct ConduitFuseChannelsPass
         nextGroupId += maxGroup + 1;
       }
 
+      // Build a set of conduit names that have Tier 3 ops (put_memref /
+      // get_memref) for this tile group.  Tier 3 channels with depth>1 have
+      // a multi-block BD ring; fusing them would create BD chain ordering
+      // conflicts and is therefore not supported.
+      llvm::StringMap<bool> nameIsTier3;
+      for (auto &ci : conduits) {
+        bool hasTier3 = false;
+        module.walk([&](mlir::Operation *op) {
+          if (!mlir::isa<PutMemref, GetMemref, PutMemrefAsync, GetMemrefAsync>(
+                  op))
+            return;
+          auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+          if (nameAttr && nameAttr.getValue() == ci.name)
+            hasTier3 = true;
+        });
+        nameIsTier3[ci.name] = hasTier3;
+      }
+
       // Only annotate groups with >= 2 members; singleton groups have no
       // fusion partner and annotating them would mislead Pass C.
       llvm::DenseMap<unsigned, unsigned> groupCount;
@@ -328,6 +346,24 @@ struct ConduitFuseChannelsPass
         unsigned gid = it->second;
         if (groupCount[gid] < 2)
           continue;
+
+        // Skip Tier 3 channels with depth > 1 — their multi-block BD ring
+        // would create ordering conflicts when chained into a fuse group.
+        // Pass A/B only emit Tier 3 at depth=1, so this only arises in
+        // hand-authored Conduit IR.
+        if (nameIsTier3.count(ci.name) && nameIsTier3[ci.name]) {
+          int64_t depth = 1;
+          if (auto depthOpt = ci.createOp.getDepth())
+            depth = *depthOpt;
+          if (depth > 1) {
+            ci.createOp.emitRemark()
+                << "conduit-fuse-channels: skipping '" << ci.name
+                << "' — Tier 3 channel with depth>1 not supported in fuse "
+                   "groups";
+            continue;
+          }
+        }
+
         std::string label = "group" + std::to_string(gid);
         mlir::MLIRContext *ctx = module.getContext();
         ci.createOp->setAttr(
