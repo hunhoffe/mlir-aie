@@ -335,6 +335,12 @@ void linkPhase(ConduitToDMAState &state) {
         if (!reused) {
           int32_t ch = state.tileNextS2MMChannel[memtileVal]++;
           joinS2MMChannels.push_back(ch);
+          // B-2 fix: record the newly allocated S2MM channel in
+          // conduitConsS2MMChannel so that if this join source conduit also
+          // appears as a broadcast consumer (or in a subsequent link group),
+          // the lookup in Phase 4a/4.5a finds the same channel instead of
+          // allocating a new one and mismatching the upstream flow.
+          state.conduitConsS2MMChannel[{sName, 0u}] = ch;
         }
       }
     }
@@ -1341,18 +1347,27 @@ void linkPhase(ConduitToDMAState &state) {
           mlir::Operation *oldEnd = endBlock->getTerminator();
           builder.setInsertionPointToEnd(endBlock);
           oldEnd->erase();
-          int32_t caseBMM2SCh = state.tileNextMM2SChannel[prodTileVal]++;
+          int32_t caseBMM2SCh;
           {
-            int32_t caseBMM2SLimit = static_cast<int32_t>(
-                targetModel.getNumSourceSwitchboxConnections(
-                    prodCol, prodRow, AIE::WireBundle::DMA));
-            if (caseBMM2SCh >= caseBMM2SLimit) {
-              state.deviceOp.emitError(
-                  "conduit-to-dma: MM2S channel limit exceeded on tile (")
-                  << prodCol << "," << prodRow << "): needed channel "
-                  << caseBMM2SCh << " but max is " << caseBMM2SLimit;
-              state.passFailed = true;
-              return;
+            // Reuse MM2S channel allocated by routePhase for shim consumers,
+            // if present. Otherwise allocate a new one.
+            auto chIt = state.conduitMM2SChannel.find(name);
+            if (chIt != state.conduitMM2SChannel.end()) {
+              caseBMM2SCh = chIt->second;
+            } else {
+              caseBMM2SCh = state.tileNextMM2SChannel[prodTileVal]++;
+              int32_t caseBMM2SLimit = static_cast<int32_t>(
+                  targetModel.getNumSourceSwitchboxConnections(
+                      prodCol, prodRow, AIE::WireBundle::DMA));
+              if (caseBMM2SCh >= caseBMM2SLimit) {
+                state.deviceOp.emitError(
+                    "conduit-to-dma: MM2S channel limit exceeded on tile (")
+                    << prodCol << "," << prodRow << "): needed channel "
+                    << caseBMM2SCh << " but max is " << caseBMM2SLimit;
+                state.passFailed = true;
+                return;
+              }
+              state.conduitMM2SChannel[name] = caseBMM2SCh;
             }
           }
           builder.create<AIE::DMAStartOp>(
@@ -1409,18 +1424,27 @@ void linkPhase(ConduitToDMAState &state) {
           bdBlocks.push_back(addMemBlock());
         mlir::Block *endMemBlock = addMemBlock();
         builder.setInsertionPointToEnd(dmaStartBlock);
-        int32_t caseBMM2SCh2 = state.tileNextMM2SChannel[prodTileVal]++;
+        int32_t caseBMM2SCh2;
         {
-          int32_t caseBMM2SLimit2 = static_cast<int32_t>(
-              targetModel.getNumSourceSwitchboxConnections(
-                  prodCol, prodRow, AIE::WireBundle::DMA));
-          if (caseBMM2SCh2 >= caseBMM2SLimit2) {
-            state.deviceOp.emitError(
-                "conduit-to-dma: MM2S channel limit exceeded on tile (")
-                << prodCol << "," << prodRow << "): needed channel "
-                << caseBMM2SCh2 << " but max is " << caseBMM2SLimit2;
-            state.passFailed = true;
-            return;
+          // Reuse MM2S channel allocated by routePhase for shim consumers,
+          // if present. Otherwise allocate a new one.
+          auto chIt = state.conduitMM2SChannel.find(name);
+          if (chIt != state.conduitMM2SChannel.end()) {
+            caseBMM2SCh2 = chIt->second;
+          } else {
+            caseBMM2SCh2 = state.tileNextMM2SChannel[prodTileVal]++;
+            int32_t caseBMM2SLimit2 = static_cast<int32_t>(
+                targetModel.getNumSourceSwitchboxConnections(
+                    prodCol, prodRow, AIE::WireBundle::DMA));
+            if (caseBMM2SCh2 >= caseBMM2SLimit2) {
+              state.deviceOp.emitError(
+                  "conduit-to-dma: MM2S channel limit exceeded on tile (")
+                  << prodCol << "," << prodRow << "): needed channel "
+                  << caseBMM2SCh2 << " but max is " << caseBMM2SLimit2;
+              state.passFailed = true;
+              return;
+            }
+            state.conduitMM2SChannel[name] = caseBMM2SCh2;
           }
         }
         builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,

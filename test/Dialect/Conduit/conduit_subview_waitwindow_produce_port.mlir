@@ -27,7 +27,7 @@
 // CHECK-LABEL: module @subview_wait_window_produce_side
 // CHECK: aie.device
 // CHECK:   %[[PROD_BUFF:.*]] = aie.buffer(%{{.*}}tile_0_2)
-// CHECK-SAME:   sym_name = "fifo_prod_buff_0"
+// CHECK-SAME:   sym_name = "fifo_buff_0"
 // CHECK:   aie.core(%{{.*}}tile_0_2) {
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     func.call @produce(%[[PROD_BUFF]])

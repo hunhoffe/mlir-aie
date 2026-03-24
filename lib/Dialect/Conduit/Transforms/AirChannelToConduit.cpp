@@ -744,6 +744,21 @@ struct AirChannelToConduitPass
       // memref
       mlir::ValueRange offsetsRange, sizesRange, stridesRange;
       if (static_cast<int32_t>(allOps.size()) >= base + 1 + noffsets + nsizes + nstrides) {
+        // B-7: Reject rank≥3 memref operands explicitly.
+        // The Conduit BD descriptor supports rank 0, 1, and 2 (flat and 2-D
+        // strides).  Rank≥3 operands are silently truncated to 2-D by the
+        // offset/size/stride extraction, producing incorrect DMA descriptors.
+        // Emit a hard error here instead of producing wrong output.
+        mlir::Value memrefOperand = allOps[base];
+        if (auto memrefMT = mlir::dyn_cast<mlir::MemRefType>(memrefOperand.getType())) {
+          if (memrefMT.getRank() >= 3) {
+            op->emitError("air-channel-to-conduit: rank-")
+                << memrefMT.getRank() << " memref operand is not supported "
+                   "(maximum rank 2); restructure as rank-2 channels";
+            signalPassFailure();
+            continue;
+          }
+        }
         base += 1; // skip memref operand itself
         offsetsRange = allOps.slice(base, noffsets); base += noffsets;
         sizesRange   = allOps.slice(base, nsizes);   base += nsizes;

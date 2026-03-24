@@ -10,7 +10,7 @@
 // Before the fix, this was silently accepted, producing wrong modular arithmetic
 // that could cause the rotation counter to jump to wrong buffer indices.
 //
-// CHECK: error:{{.*}}release count (3) exceeds conduit depth (2)
+// CHECK: error:{{.*}}M8: cumulative release count (3) exceeds acquired count (2)
 
 module @release_count_exceeds_depth {
   aie.device(npu1_1col) {
