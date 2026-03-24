@@ -675,7 +675,7 @@ void lowerPhase(ConduitToDMAState &state) {
   module.walk([&](AcquireAsync op) {
     AsyncAcquireInfo info;
     info.conduitName = op.getName().str();
-    info.port = Port::Consume;
+    info.port = op.getPort();
     info.count = static_cast<int64_t>(op.getCount());
     state.asyncAcquireMap[op.getToken()] = info;
     asyncAcquiresToErase.push_back(op);

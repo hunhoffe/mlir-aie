@@ -121,6 +121,7 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/BuiltinTypes.td"
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 // ---------------------------------------------------------------------------
@@ -381,19 +382,19 @@ def Conduit_Create : Conduit_Op<"create"> {
                         + consumer_rates for full CSDF semantics.
 
     Example:
-      conduit.create {name = "c1", capacity = 10 : i64,
-                      producer_tile = array<i64: 0, 2>,
-                      shim_consumer_tiles = array<i64: 0, 0>,
-                      element_type = memref<10xi32>,
-                      depth = 1 : i64}
+      conduit.create @c1 {capacity = 10 : i64,
+                          producer_tile = array<i64: 0, 2>,
+                          shim_consumer_tiles = array<i64: 0, 0>,
+                          element_type = memref<10xi32>,
+                          depth = 1 : i64}
 
     Cyclostatic (CSDF) example — consumer alternates between acquiring 1 then 2:
-      conduit.create {name = "csdf_fifo", capacity = 4 : i64,
-                      producer_tile = array<i64: 2, 2>,
-                      consumer_tiles = array<i64: 2, 3>,
-                      element_type = memref<i32>,
-                      depth = 4 : i64,
-                      access_pattern = array<i64: 1, 2, 1>}
+      conduit.create @csdf_fifo {capacity = 4 : i64,
+                                 producer_tile = array<i64: 2, 2>,
+                                 consumer_tiles = array<i64: 2, 3>,
+                                 element_type = memref<i32>,
+                                 depth = 4 : i64,
+                                 access_pattern = array<i64: 1, 2, 1>}
 
     The access_pattern encodes the cyclostatic consume sequence: the consumer
     acquires access_pattern[0] elements on the first iteration, access_pattern[1]
@@ -404,20 +405,20 @@ def Conduit_Create : Conduit_Op<"create"> {
     count = capacity / depth per iteration.
 
     Full CSDF example with explicit producer and consumer rates:
-      conduit.create {name = "csdf_full", capacity = 6 : i64,
-                      producer_tile = array<i64: 0, 2>,
-                      consumer_tiles = array<i64: 0, 3>,
-                      element_type = memref<i32>,
-                      depth = 6 : i64,
-                      producer_rates = array<i64: 1, 2>,
-                      consumer_rates = array<i64: 1, 2>}
+      conduit.create @csdf_full {capacity = 6 : i64,
+                                 producer_tile = array<i64: 0, 2>,
+                                 consumer_tiles = array<i64: 0, 3>,
+                                 element_type = memref<i32>,
+                                 depth = 6 : i64,
+                                 producer_rates = array<i64: 1, 2>,
+                                 consumer_rates = array<i64: 1, 2>}
       // Balance check: sum(P)*len(C) = 3*2 = 6 == sum(C)*len(P) = 3*2 = 6 ✓
       // (same-period case q=r=2, average rate = 1.5 tokens/firing for both)
 
     Different-period balanced example (producer bursts 3 then 1; consumer uniform 2):
-      conduit.create {name = "csdf_diff_period", capacity = 4 : i64, ...,
-                      producer_rates = array<i64: 3, 1>,
-                      consumer_rates = array<i64: 2>}
+      conduit.create @csdf_diff_period {capacity = 4 : i64, ...,
+                                        producer_rates = array<i64: 3, 1>,
+                                        consumer_rates = array<i64: 2>}
       // P=[3,1] sum=4 q=2; C=[2] sum=2 r=1
       // Balance: sum(P)*len(C) = 4*1 = 4 == sum(C)*len(P) = 2*2 = 4 ✓
       // Average rate: 4/2 = 2 tokens/phase for both actors.
@@ -427,7 +428,7 @@ def Conduit_Create : Conduit_Op<"create"> {
       // Balance: sum(P)*len(C) = 3*2 = 6 != sum(C)*len(P) = 3*1 = 3 ✗
       // Producer avg rate = 3/1 = 3; consumer avg rate = 3/2 = 1.5 — mismatch.
   }];
-  let arguments = (ins StrAttr:$name,
+  let arguments = (ins SymbolNameAttr:$sym_name,
                        I64Attr:$capacity,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_tile,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_tiles,
@@ -506,8 +507,17 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // Stored as AnyAttr (AIE::BDDimLayoutArrayArrayAttr at runtime).
                        // Same AnyAttr limitation as producer_dimensions above.
                        OptionalAttr<AnyAttr>:$consumer_dimensions);
-  let assemblyFormat = "attr-dict";
+  // Print as: conduit.create @sym_name { capacity = ..., ... }
+  // sym_name is consumed by $sym_name so attr-dict omits it automatically.
+  let assemblyFormat = "$sym_name attr-dict";
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    // Backward-compatibility accessors so existing C++ call sites using
+    // getName() / getNameAttr() continue to compile without changes.
+    // Phase 2 will remove these once all use-sites are updated.
+    ::llvm::StringRef getName() { return getSymName(); }
+    ::mlir::StringAttr getNameAttr() { return getSymNameAttr(); }
+  }];
 }
 
 def Conduit_RegisterExternalBuffers : Conduit_Op<"register_external_buffers"> {
@@ -615,8 +625,13 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
     simultaneously), NOT a per-phase CSDF firing rate.  For CSDF rate
     information see the producer_rates / consumer_rates attrs on conduit.create.
 
-    NOTE on port: acquire_async is always consumer-side (Consume port implicit).
-    For producer-side async acquisition, use conduit.acquire with port='Produce'.
+    The 'port' attribute is required and specifies which side of the channel
+    is acquiring:
+    - "Consume": consumer-side acquisition (most common; wait for data to arrive)
+    - "Produce": producer-side acquisition (wait for a free output slot)
+
+    Pass C uses 'port' to select the correct lock (consLock vs prodLock) when
+    emitting the AcquireGreaterEqual use_lock op at conduit.wait_window time.
 
     This op is the key to unifying ObjectFIFO and AIR Channel semantics:
     - A !conduit.window.token from acquire_async IS pending permission to
@@ -634,7 +649,8 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
                      strides = array<i64: 16, 1>} : !conduit.dma.token
 
       // Non-blocking: request output window (Tier 2 bridge op)
-      %acq_tok = conduit.acquire_async {name = "output", count = 1 : i64}
+      %acq_tok = conduit.acquire_async {name = "output", count = 1 : i64,
+                     port = #conduit.port<Consume>}
                      : !conduit.window.token
 
       // Hardware satisfies both in parallel; software waits for both
@@ -648,7 +664,7 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
       aie.use_lock(consLock, AcquireGreaterEqual, count)  // non-blocking poll
       The token is complete when the lock is granted.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count);
+  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
   let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
   let hasVerifier = 1;
@@ -706,14 +722,43 @@ def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
     Returns !conduit.window.token (not !conduit.dma.token) because the release
     is a lock operation (Tier 2 window model), not a DMA transfer.
 
+    The optional '$window' SSA operand enables type-checker verification that
+    the value being released is actually a !conduit.window<T> that was acquired
+    for this channel.  When present, the verifier confirms:
+      (1) the operand type is !conduit.window<T>
+      (2) the channel name of the defining op matches '$name'
+
+    When '$window' is omitted, the op identifies the channel purely by '$name'
+    (name-only release path).  This is valid for producer-side standalone
+    release ops (e.g. signalling data ready without an explicit prior acquire
+    in the same scope).
+
+    Example — type-checked consumer release after conduit.acquire:
+      %win = conduit.acquire {name = "fifo", count = 1 : i64,
+                              port = #conduit.port<Consume>}
+                 : !conduit.window<memref<8xi32>>
+      // ... compute ...
+      %rel_tok = conduit.release_async %win {name = "fifo", count = 1 : i64,
+                     port = #conduit.port<Consume>}
+                     : !conduit.window<memref<8xi32>> -> !conduit.window.token
+
+    Example — name-only producer release (no prior acquire):
+      %rel_tok = conduit.release_async {name = "fifo", count = 1 : i64,
+                     port = #conduit.port<Produce>}
+                     : !conduit.window.token
+
     Hardware lowering (Pass C):
       port="Consume": aie.use_lock(prodLock, Release, count) -- free up producer slots
       port="Produce": aie.use_lock(consLock, Release, count) -- signal data ready
       The token signals when the release is complete.
   }];
-  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
+  let arguments = (ins StrAttr:$name, I64Attr:$count, Conduit_PortAttr:$port,
+                   Optional<Conduit_WindowType>:$window);
   let results   = (outs Conduit_WindowTokenType:$token);
-  let assemblyFormat = "attr-dict `:` type($token)";
+  // Custom format: optional $window operand before attrs.
+  //   With window:    conduit.release_async %win attr-dict : type($window) -> type($token)
+  //   Without window: conduit.release_async attr-dict : type($token)
+  let assemblyFormat = "(`(` $window^ `:` type($window) `)`)? attr-dict `:` type($token)";
   let hasVerifier = 1;
 }
 
@@ -760,41 +805,98 @@ def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {
 // Hardware structure ops
 // ---------------------------------------------------------------------------
 
-def Conduit_Link : Conduit_Op<"link"> {
-  let summary = "link conduits via a MemTile relay for hardware-mediated distribute or join";
+def Conduit_Distribute : Conduit_Op<"distribute"> {
+  let summary = "fan-out: relay one source conduit to N consumer aliases via a MemTile";
   let description = [{
-    Represents aie.objectfifo.link semantics: hardware-mediated data relay
-    through a MemTile with optional element-offset splits.
-
-    Three modes:
-    - "distribute": 1 source → N destinations, each starting at an element offset
-    - "join":       N sources (each at an element offset) → 1 destination
-    - "forward":    exactly 1 source → exactly 1 destination; direct pass-through
-                    relay with no splitting or joining (invariant: srcs.size()==1,
-                    dsts.size()==1)
-
-    Invariants (enforced by verifier):
-    - distribute mode: when offsets is non-empty, offsets.size() == dsts.size()
-    - join mode: when offsets is non-empty, offsets.size() == srcs.size()
-    - forward mode: srcs.size() == 1 and dsts.size() == 1
+    Represents the 1:N distribute pattern: a single source conduit is relayed
+    through a MemTile to N destination conduit aliases.  Pass C allocates S2MM
+    on the MemTile for the source and N MM2S channels for the destinations.
 
     The 'memtile' attribute is a coordinate hint ("tile(col,row)") indicating
     which MemTile tile performs the relay.  Pass C uses this to locate the
     correct tile SSA value in the device body.
 
-    The 'lock_id', when present, passes through to generated AIE ops to
-    preserve synchronization semantics.
+    The 'offsets' attribute, when present, gives a per-destination byte offset
+    within the source buffer (one entry per destination).
+
+    The 'lock_id', when present, passes through to generated AIE ops.
+
+    Invariants (enforced by verifier):
+    - srcs must contain exactly 1 name
+    - dsts must contain at least 1 name
+    - when offsets is non-empty, offsets.size() == dsts.size()
+    - cascade-mode conduits may not appear in srcs or dsts
 
     Example:
-      conduit.link {srcs = ["of_in"],
-                               dsts = ["of_out0", "of_out1"],
-                               mode = "distribute",
-                               memtile = "tile(0,1)",
-                               offsets = array<i64: 0, 1024>}
+      conduit.distribute {srcs = ["of_in"],
+                          dsts = ["of_out0", "of_out1"],
+                          memtile = "tile(0,1)",
+                          offsets = array<i64: 0, 1024>}
   }];
   let arguments = (ins StrArrayAttr:$srcs,
                        StrArrayAttr:$dsts,
-                       Conduit_LinkModeAttr:$mode,
+                       StrAttr:$memtile,
+                       OptionalAttr<DenseI64ArrayAttr>:$offsets,
+                       OptionalAttr<I64Attr>:$lock_id);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def Conduit_Join : Conduit_Op<"join"> {
+  let summary = "fan-in: relay N source conduits into one destination via a MemTile";
+  let description = [{
+    Represents the N:1 join pattern: N source conduits are relayed through a
+    MemTile into a single destination conduit.  Pass C allocates S2MM channels
+    on the MemTile for each source and a single MM2S for the destination.
+
+    The 'memtile' attribute is a coordinate hint ("tile(col,row)") identifying
+    the relay MemTile.
+
+    The 'offsets' attribute, when present, gives a per-source byte offset
+    within the destination buffer (one entry per source).
+
+    Invariants (enforced by verifier):
+    - srcs must contain at least 1 name
+    - dsts must contain exactly 1 name
+    - when offsets is non-empty, offsets.size() == srcs.size()
+    - cascade-mode conduits may not appear in srcs or dsts
+
+    Example:
+      conduit.join {srcs = ["in0", "in1"],
+                    dsts = ["of_out"],
+                    memtile = "tile(0,1)",
+                    offsets = array<i64: 0, 512>}
+  }];
+  let arguments = (ins StrArrayAttr:$srcs,
+                       StrArrayAttr:$dsts,
+                       StrAttr:$memtile,
+                       OptionalAttr<DenseI64ArrayAttr>:$offsets,
+                       OptionalAttr<I64Attr>:$lock_id);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def Conduit_Forward : Conduit_Op<"forward"> {
+  let summary = "relay: forward exactly one source conduit to one destination via a tile";
+  let description = [{
+    Represents the 1:1 forward (pass-through) pattern: a single source conduit
+    is relayed through an intermediate tile to a single destination conduit,
+    with no splitting or joining.
+
+    The 'memtile' attribute identifies the relay tile (may be MemTile or
+    compute tile).
+
+    Invariants (enforced by verifier):
+    - srcs must contain exactly 1 name
+    - dsts must contain exactly 1 name
+
+    Example:
+      conduit.forward {srcs = ["in_fwd"],
+                       dsts = ["out_fwd"],
+                       memtile = "tile(0,1)"}
+  }];
+  let arguments = (ins StrArrayAttr:$srcs,
+                       StrArrayAttr:$dsts,
                        StrAttr:$memtile,
                        OptionalAttr<DenseI64ArrayAttr>:$offsets,
                        OptionalAttr<I64Attr>:$lock_id);

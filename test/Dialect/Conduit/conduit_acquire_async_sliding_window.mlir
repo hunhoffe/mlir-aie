@@ -81,7 +81,7 @@ module @async_sliding_window {
     %tile_0_2 = aie.tile(0, 2)
 
     // Conduit IR: depth=4 channel, shim → compute tile.
-    conduit.create {name = "sw_fifo", capacity = 32 : i64,
+    conduit.create @sw_fifo {capacity = 32 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<32xi8>,
@@ -94,7 +94,8 @@ module @async_sliding_window {
 
       scf.for %arg0 = %c0 to %c8 step %c1 {
         // Sliding window: acquire 3 rows asynchronously, wait, process, release 1.
-        %tok = conduit.acquire_async {name = "sw_fifo", count = 3 : i64}
+        %tok = conduit.acquire_async {name = "sw_fifo", count = 3 : i64,
+                   port = #conduit.port<Consume>}
                    : !conduit.window.token
 
         %win = conduit.wait_window %tok for "sw_fifo"

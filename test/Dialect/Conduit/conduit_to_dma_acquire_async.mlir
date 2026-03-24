@@ -75,7 +75,7 @@ module @async_window_path {
 
     // Hand-written Conduit IR that the async path would produce.
     // conduit.create declares the channel metadata for Pass C.
-    conduit.create {name = "fifo_async", capacity = 8 : i64,
+    conduit.create @fifo_async {capacity = 8 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<8xi32>,
@@ -89,7 +89,8 @@ module @async_window_path {
       scf.for %arg0 = %c0 to %c4 step %c1 {
         // Async path: acquire_async issues the lock request (no hardware op
         // emitted here — deferred to wait_window).
-        %tok = conduit.acquire_async {name = "fifo_async", count = 1 : i64}
+        %tok = conduit.acquire_async {name = "fifo_async", count = 1 : i64,
+                   port = #conduit.port<Consume>}
                    : !conduit.window.token
 
         // wait_window blocks until the lock is granted and produces the window.

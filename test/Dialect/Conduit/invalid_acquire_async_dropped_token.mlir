@@ -10,9 +10,10 @@
 
 // acquire_async token with no uses must be rejected (M8-drop).
 func.func @acquire_async_dropped_token() {
-  conduit.create {name = "ch", capacity = 128 : i64}
+  conduit.create @ch {capacity = 128 : i64}
   // expected-error @+1 {{'conduit.acquire_async' op (M8-drop) window.token has no uses}}
-  %tok = conduit.acquire_async {name = "ch", count = 1 : i64}
+  %tok = conduit.acquire_async {name = "ch", count = 1 : i64,
+             port = #conduit.port<Consume>}
              : !conduit.window.token
   // %tok is never used — lock permanently acquired, hardware deadlock.
   return

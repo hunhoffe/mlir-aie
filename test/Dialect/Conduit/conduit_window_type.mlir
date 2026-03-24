@@ -19,7 +19,7 @@
 
 // CHECK-LABEL: func.func @blocking_acquire_roundtrip
 func.func @blocking_acquire_roundtrip() {
-  conduit.create {name = "input", capacity = 10 : i64}
+  conduit.create @input {capacity = 10 : i64}
 
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 1
@@ -43,7 +43,7 @@ func.func @blocking_acquire_roundtrip() {
 
 // CHECK-LABEL: func.func @sliding_window_partial_release
 func.func @sliding_window_partial_release() {
-  conduit.create {name = "weights", capacity = 4 : i64}
+  conduit.create @weights {capacity = 4 : i64}
 
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 4
@@ -72,12 +72,13 @@ func.func @sliding_window_partial_release() {
 // CHECK-LABEL: func.func @async_acquire_wait_window
 // conduit.wait_window: dedicated op for acquire tokens; conduit.wait is void.
 func.func @async_acquire_wait_window() {
-  conduit.create {name = "async_input", capacity = 16 : i64}
+  conduit.create @async_input {capacity = 16 : i64}
 
   // CHECK: conduit.acquire_async
   // CHECK-SAME: name = "async_input"
   // CHECK-SAME: !conduit.window.token
-  %tok = conduit.acquire_async {name = "async_input", count = 1 : i64}
+  %tok = conduit.acquire_async {name = "async_input", count = 1 : i64,
+             port = #conduit.port<Consume>}
              : !conduit.window.token
 
   // CHECK: conduit.wait_window
@@ -101,8 +102,8 @@ func.func @async_acquire_wait_window() {
 // CHECK-LABEL: func.func @async_acquire_with_overlap
 // Overlapping DMA and acquire — the canonical double-buffer usage.
 func.func @async_acquire_with_overlap() {
-  conduit.create {name = "in",  capacity = 9 : i64}
-  conduit.create {name = "out", capacity = 1 : i64}
+  conduit.create @in {capacity = 9 : i64}
+  conduit.create @out {capacity = 1 : i64}
 
   // CHECK: conduit.put_memref_async
   %dma_tok = conduit.put_memref_async {name = "in", num_elems = 9 : i64,
@@ -110,7 +111,8 @@ func.func @async_acquire_with_overlap() {
                  strides = array<i64: 1>} : !conduit.dma.token
 
   // CHECK: conduit.acquire_async
-  %acq_tok = conduit.acquire_async {name = "out", count = 1 : i64}
+  %acq_tok = conduit.acquire_async {name = "out", count = 1 : i64,
+                 port = #conduit.port<Consume>}
                  : !conduit.window.token
 
   // DMA wait is void — does NOT return a window.

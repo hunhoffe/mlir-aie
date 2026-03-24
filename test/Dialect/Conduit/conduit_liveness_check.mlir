@@ -25,7 +25,7 @@
 //===----------------------------------------------------------------------===//
 
 func.func @ok_sync_release() {
-  conduit.create {name = "c", capacity = 8 : i64,
+  conduit.create @c {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
@@ -44,12 +44,13 @@ func.func @ok_sync_release() {
 //===----------------------------------------------------------------------===//
 
 func.func @ok_async_acquire() {
-  conduit.create {name = "c", capacity = 8 : i64,
+  conduit.create @c {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  %tok = conduit.acquire_async {name = "c", count = 1 : i64}
+  %tok = conduit.acquire_async {name = "c", count = 1 : i64,
+             port = #conduit.port<Consume>}
              : !conduit.window.token
   %win = conduit.wait_window %tok for "c"
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
@@ -65,7 +66,7 @@ func.func @ok_async_acquire() {
 //===----------------------------------------------------------------------===//
 
 func.func @ok_release_async() {
-  conduit.create {name = "c", capacity = 8 : i64,
+  conduit.create @c {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
@@ -88,7 +89,7 @@ func.func @ok_release_async() {
 //===----------------------------------------------------------------------===//
 
 func.func @ok_partial_release() {
-  conduit.create {name = "c", capacity = 24 : i64,
+  conduit.create @c {capacity = 24 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<24xi32>,
@@ -108,7 +109,7 @@ func.func @ok_partial_release() {
 
 // expected-note@+1 {{in function '@fail_no_release'}}
 func.func @fail_no_release() {
-  conduit.create {name = "c", capacity = 8 : i64,
+  conduit.create @c {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
@@ -127,12 +128,13 @@ func.func @fail_no_release() {
 
 // expected-note@+1 {{in function '@fail_wait_window_no_release'}}
 func.func @fail_wait_window_no_release() {
-  conduit.create {name = "c", capacity = 8 : i64,
+  conduit.create @c {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  %tok = conduit.acquire_async {name = "c", count = 1 : i64}
+  %tok = conduit.acquire_async {name = "c", count = 1 : i64,
+             port = #conduit.port<Consume>}
              : !conduit.window.token
   // expected-error@+1 {{M11: window lock grant from conduit.wait_window on channel 'c' is never released}}
   %win = conduit.wait_window %tok for "c"
@@ -148,7 +150,7 @@ func.func @fail_wait_window_no_release() {
 
 // expected-note@+1 {{in function '@fail_second_acquire_leaked'}}
 func.func @fail_second_acquire_leaked() {
-  conduit.create {name = "c", capacity = 8 : i64,
+  conduit.create @c {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
@@ -174,7 +176,7 @@ func.func @fail_second_acquire_leaked() {
 
 // expected-note@+1 {{in function '@fail_wrong_channel_release_async'}}
 func.func @fail_wrong_channel_release_async() {
-  conduit.create {name = "c", capacity = 8 : i64,
+  conduit.create @c {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,

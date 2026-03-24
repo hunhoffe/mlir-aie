@@ -10,19 +10,20 @@
 // The verifier must detect and reject this at IR parse / verification time.
 
 func.func @bad_wait_window_name_mismatch() {
-  conduit.create {name = "foo", capacity = 8 : i64,
+  conduit.create @foo {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  conduit.create {name = "bar", capacity = 8 : i64,
+  conduit.create @bar {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
 
   // acquire_async for "foo" produces a token.
-  %tok = conduit.acquire_async {name = "foo", count = 1 : i64}
+  %tok = conduit.acquire_async {name = "foo", count = 1 : i64,
+             port = #conduit.port<Consume>}
              : !conduit.window.token
 
   // wait_window claims the token is for "bar" — name mismatch.

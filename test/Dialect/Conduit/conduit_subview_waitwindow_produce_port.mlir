@@ -48,7 +48,7 @@ module @subview_wait_window_produce_side {
     %tile_0_2 = aie.tile(0, 2)
     %tile_0_4 = aie.tile(0, 4)
 
-    conduit.create {name = "fifo", capacity = 8 : i64,
+    conduit.create @fifo {capacity = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>,
@@ -61,7 +61,8 @@ module @subview_wait_window_produce_side {
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
       scf.for %arg0 = %c0 to %c4 step %c1 {
-        %tok = conduit.acquire_async {name = "fifo", count = 1 : i64}
+        %tok = conduit.acquire_async {name = "fifo", count = 1 : i64,
+                   port = #conduit.port<Produce>}
                    : !conduit.window.token
         %win = conduit.wait_window %tok for "fifo"
                    : !conduit.window.token -> !conduit.window<memref<8xi32>>

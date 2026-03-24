@@ -13,9 +13,11 @@
 //
 // Custom verifiers:
 //   SubviewAccess::verify() — M2: index bounds against conduit depth
-//   Link::verify() — M3: mode structural invariants + offset counts
-//                    M6-join / M7-join: CSDF balance + buffer capacity for N:1 join
-//                    M6-dist / M7-dist: CSDF balance + buffer capacity for 1:N distribute
+//   Distribute::verify() — M3-dist: structural invariants + offset counts
+//                          M6-dist / M7-dist: CSDF balance + buffer capacity for 1:N distribute
+//   Join::verify()        — M3-join: structural invariants + offset counts
+//                          M6-join / M7-join: CSDF balance + buffer capacity for N:1 join
+//   Forward::verify()     — M3-fwd: srcs.size()==1 && dsts.size()==1
 //   Create::verify() — M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
 //   Acquire::verify() / WaitWindow::verify() — M8a: window value release linearity
 //                                              M9: same-block acquire-release pairing (llvm::errs)
@@ -24,11 +26,11 @@
 //   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token types
 //
 // Denolf 2007 channel type mapping (DOI: 10.1155/2007/84078):
-//   conduit.link mode="distribute" (1:N) — Denolf §3.3.3 multi-consumer / nondestructive-read.
+//   conduit.distribute (1:N) — Denolf §3.3.3 multi-consumer / nondestructive-read.
 //     Level 1: Bilsen 1:1 equation applied per-edge (Eq. 45).
 //     Level 2: Composed consume buffer capacity (Eq. 46/48) — cross-conduit check on the
 //     source buffer, accounting for the slowest consumer gating buffer reuse.
-//   conduit.link mode="join" (N:1) — Denolf §3.3.4 multi-producer / shared-buffer pattern.
+//   conduit.join (N:1) — Denolf §3.3.4 multi-producer / shared-buffer pattern.
 //     Per-edge Bilsen 1:1 check (conservative structural approximation).
 //     NOTE: Denolf §3.3.4 proves that N:1 join has NO equivalent standard CSDF channel
 //     because token arrival order depends on runtime response time.  No exact
@@ -381,221 +383,194 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
   return ::mlir::success();
 }
 
-::mlir::LogicalResult Link::verify() {
-  auto mode = getMode();
+::mlir::LogicalResult Distribute::verify() {
   auto srcs = getSrcs();
   auto dsts = getDsts();
   auto offsets = getOffsets();
 
-  // M3: mode validation — enforce structural invariants per mode.
-  // Note: unknown mode strings are rejected by the ODS enum parser before
-  // the verifier runs; the exhaustive switch below is always safe.
-  if (mode == LinkMode::Distribute) {
-    if (srcs.size() != 1)
-      return emitOpError("distribute mode requires exactly 1 src, got ")
-             << srcs.size();
-  } else if (mode == LinkMode::Join) {
-    if (dsts.size() != 1)
-      return emitOpError("join mode requires exactly 1 dst, got ")
-             << dsts.size();
-  } else if (mode == LinkMode::Forward) {
-    if (srcs.size() != 1 || dsts.size() != 1)
-      return emitOpError(
-          "forward mode requires exactly 1 src and 1 dst, got ")
-             << srcs.size() << " src(s) and " << dsts.size() << " dst(s)";
-  }
+  // M3-dist: structural invariants.
+  if (srcs.size() != 1)
+    return emitOpError("distribute requires exactly 1 src, got ") << srcs.size();
+  if (dsts.empty())
+    return emitOpError("distribute requires at least 1 dst, got 0");
 
-  // Offset count consistency checks.
+  // Offset count consistency.
   if (offsets.has_value() && !offsets->empty()) {
-    if (mode == LinkMode::Distribute) {
-      if (offsets->size() != dsts.size())
-        return emitOpError("distribute mode: offsets count (")
-               << offsets->size() << ") must equal dsts count (" << dsts.size()
-               << ")";
-    } else if (mode == LinkMode::Join) {
-      if (offsets->size() != srcs.size())
-        return emitOpError("join mode: offsets count (")
-               << offsets->size() << ") must equal srcs count (" << srcs.size()
-               << ")";
-    }
+    if (offsets->size() != dsts.size())
+      return emitOpError("distribute: offsets count (")
+             << offsets->size() << ") must equal dsts count (" << dsts.size()
+             << ")";
   }
 
   // -------------------------------------------------------------------------
-  // M6-join / M7-join: CSDF balance and buffer capacity for N:1 join.
-  //
-  // Theory: Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.4 shows
-  // that the N:1 multi-producer (join) pattern CANNOT be reformulated as
-  // an equivalent standard CSDF channel.  The paper states:
-  //   "there does not exist an equivalent standard channel for a channel
-  //    with multiple producers.  The reason is that token order depends on
-  //    runtime response time."
-  //
-  // Consequence: there is no exact Denolf-style composed-produce formula
-  // for join.  The per-edge Bilsen 1:1 check applied to each source and
-  // the destination is a CONSERVATIVE STRUCTURAL APPROXIMATION: it verifies
-  // that each individual conduit is internally balanced, but cannot verify
-  // the cross-conduit token arrival ordering that is inherently runtime-
-  // dependent.
-  //
-  // Implementation: for each source conduit and the destination conduit,
-  // apply the Bilsen 1:1 balance equation and M7 buffer capacity simulation
-  // independently.  This catches rate imbalances and undersized buffers on
-  // individual conduits but does not attempt cross-conduit analysis.
-  //
-  // If any conduit lacks rate annotations, the check is skipped for that edge
-  // (not an error: rates are optional; M6 only fires when explicitly provided
-  // or inferred by --conduit-infer-rates).
+  // A-10: cascade channels cannot be used in conduit.distribute.
   // -------------------------------------------------------------------------
-  if (mode == LinkMode::Join) {
-    // Check each source conduit independently.
-    for (auto srcAttr : srcs) {
-      llvm::StringRef srcName =
-          mlir::cast<mlir::StringAttr>(srcAttr).getValue();
-      Create srcCreate = findConduitCreateByName(getOperation(), srcName);
-      if (!srcCreate)
-        continue; // conduit.create not in scope — skip
-      if (!srcCreate.getProducerRates().has_value() ||
-          !srcCreate.getConsumerRates().has_value())
-        continue; // no rate annotations — skip
-      auto pRates = *srcCreate.getProducerRates();
-      auto cRates = *srcCreate.getConsumerRates();
-      int64_t cap = srcCreate.getCapacity();
-      std::string label = "join source '" + srcName.str() + "'";
-      if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
-        return ::mlir::failure();
+  auto checkCascade = [&](mlir::ArrayAttr names,
+                          llvm::StringRef role) -> mlir::LogicalResult {
+    for (auto attr : names) {
+      llvm::StringRef name = mlir::cast<mlir::StringAttr>(attr).getValue();
+      Create chanCreate = findConduitCreateByName(getOperation(), name);
+      if (!chanCreate)
+        continue;
+      auto routingModeOpt = chanCreate.getRoutingMode();
+      if (routingModeOpt && *routingModeOpt == RoutingMode::Cascade)
+        return emitOpError("cascade channel '")
+               << name << "' cannot be used in a distribute " << role;
     }
-    // Check destination conduit.
-    llvm::StringRef dstName =
-        mlir::cast<mlir::StringAttr>(dsts[0]).getValue();
-    Create dstCreate = findConduitCreateByName(getOperation(), dstName);
-    if (dstCreate && dstCreate.getProducerRates().has_value() &&
-        dstCreate.getConsumerRates().has_value()) {
-      auto pRates = *dstCreate.getProducerRates();
-      auto cRates = *dstCreate.getConsumerRates();
-      int64_t cap = dstCreate.getCapacity();
-      std::string label = "join destination '" + dstName.str() + "'";
-      if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
-        return ::mlir::failure();
-    }
-  }
+    return ::mlir::success();
+  };
+  if (failed(checkCascade(srcs, "src")) || failed(checkCascade(dsts, "dst")))
+    return ::mlir::failure();
 
   // -------------------------------------------------------------------------
   // M6-dist / M7-dist: CSDF balance and buffer capacity for 1:N distribute.
   //
   // Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.3 Equations 45-48.
   //
-  // Two levels of verification:
-  //
-  // Level 1 — Per-edge balance (Eq. 45): each conduit's own producer_rates
-  //   and consumer_rates must satisfy the Bilsen 1:1 balance equation.
-  //   This is the same check applied to individual conduit.create ops and
-  //   catches imbalanced rate sequences per edge.
-  //
-  // Level 2 — Composed consume buffer capacity (Eq. 46/48): the source
-  //   conduit's buffer is shared by all N destination consumers.  A buffer
-  //   container can only be freed after ALL consumers have consumed from it
-  //   (Eq. 46: composed consume = min over all consumers).  The source
-  //   buffer capacity must be >= the peak occupancy under this constraint
-  //   (Eq. 48).  This is a cross-conduit check that per-edge analysis
-  //   cannot detect: the source's own M7 check passes (its relay consumer
-  //   drains at the declared rate), but a slow destination consumer gates
-  //   buffer reuse and can cause overflow.
+  // Level 1 — Per-edge balance (Eq. 45).
+  // Level 2 — Composed consume buffer capacity (Eq. 46/48).
   // -------------------------------------------------------------------------
-  if (mode == LinkMode::Distribute) {
-    // Level 1: Per-edge balance checks (Eq. 45).
-    // Check source conduit.
-    llvm::StringRef srcName =
-        mlir::cast<mlir::StringAttr>(srcs[0]).getValue();
-    Create srcCreate = findConduitCreateByName(getOperation(), srcName);
-    if (srcCreate && srcCreate.getProducerRates().has_value() &&
-        srcCreate.getConsumerRates().has_value()) {
-      auto pRates = *srcCreate.getProducerRates();
-      auto cRates = *srcCreate.getConsumerRates();
-      int64_t cap = srcCreate.getCapacity();
-      std::string label = "distribute source '" + srcName.str() + "'";
-      if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
-        return ::mlir::failure();
-    }
-    // Check each destination conduit independently.
+  llvm::StringRef srcName =
+      mlir::cast<mlir::StringAttr>(srcs[0]).getValue();
+  Create srcCreate = findConduitCreateByName(getOperation(), srcName);
+  if (srcCreate && srcCreate.getProducerRates().has_value() &&
+      srcCreate.getConsumerRates().has_value()) {
+    auto pRates = *srcCreate.getProducerRates();
+    auto cRates = *srcCreate.getConsumerRates();
+    int64_t cap = srcCreate.getCapacity();
+    std::string label = "distribute source '" + srcName.str() + "'";
+    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
+      return ::mlir::failure();
+  }
+  for (auto dstAttr : dsts) {
+    llvm::StringRef dstName =
+        mlir::cast<mlir::StringAttr>(dstAttr).getValue();
+    Create dstCreate = findConduitCreateByName(getOperation(), dstName);
+    if (!dstCreate || !dstCreate.getProducerRates().has_value() ||
+        !dstCreate.getConsumerRates().has_value())
+      continue;
+    auto pRates = *dstCreate.getProducerRates();
+    auto cRates = *dstCreate.getConsumerRates();
+    int64_t cap = dstCreate.getCapacity();
+    std::string label = "distribute destination '" + dstName.str() + "'";
+    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
+      return ::mlir::failure();
+  }
+
+  // Level 2: Composed consume buffer capacity (Denolf Eq. 46/48).
+  if (srcCreate && srcCreate.getProducerRates().has_value()) {
+    llvm::SmallVector<llvm::SmallVector<int64_t>> allDstConsRates;
+    llvm::SmallVector<std::string> allDstNames;
+    bool allDstsHaveRates = true;
     for (auto dstAttr : dsts) {
       llvm::StringRef dstName =
           mlir::cast<mlir::StringAttr>(dstAttr).getValue();
       Create dstCreate = findConduitCreateByName(getOperation(), dstName);
-      if (!dstCreate)
-        continue;
-      if (!dstCreate.getProducerRates().has_value() ||
-          !dstCreate.getConsumerRates().has_value())
-        continue;
-      auto pRates = *dstCreate.getProducerRates();
+      if (!dstCreate || !dstCreate.getConsumerRates().has_value()) {
+        allDstsHaveRates = false;
+        break;
+      }
       auto cRates = *dstCreate.getConsumerRates();
-      int64_t cap = dstCreate.getCapacity();
-      std::string label = "distribute destination '" + dstName.str() + "'";
-      if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
+      llvm::SmallVector<int64_t> rates(cRates.begin(), cRates.end());
+      allDstConsRates.push_back(std::move(rates));
+      allDstNames.push_back(dstName.str());
+    }
+    if (allDstsHaveRates && allDstConsRates.size() >= 2) {
+      auto srcPRates = *srcCreate.getProducerRates();
+      llvm::SmallVector<int64_t> srcPR(srcPRates.begin(), srcPRates.end());
+      if (failed(checkDistributeComposedConsume(
+              getOperation(), srcPR, srcCreate.getCapacity(),
+              allDstConsRates, allDstNames)))
         return ::mlir::failure();
     }
+  }
 
-    // Level 2: Composed consume buffer capacity (Denolf Eq. 46/48).
-    // Collect destination consumer_rates and check the source buffer
-    // capacity against the multi-consumer composed consume.
-    if (srcCreate && srcCreate.getProducerRates().has_value()) {
-      llvm::SmallVector<llvm::SmallVector<int64_t>> allDstConsRates;
-      llvm::SmallVector<std::string> allDstNames;
-      bool allDstsHaveRates = true;
-      for (auto dstAttr : dsts) {
-        llvm::StringRef dstName =
-            mlir::cast<mlir::StringAttr>(dstAttr).getValue();
-        Create dstCreate = findConduitCreateByName(getOperation(), dstName);
-        if (!dstCreate || !dstCreate.getConsumerRates().has_value()) {
-          allDstsHaveRates = false;
-          break;
-        }
-        auto cRates = *dstCreate.getConsumerRates();
-        llvm::SmallVector<int64_t> rates(cRates.begin(), cRates.end());
-        allDstConsRates.push_back(std::move(rates));
-        allDstNames.push_back(dstName.str());
-      }
-      if (allDstsHaveRates && allDstConsRates.size() >= 2) {
-        auto srcPRates = *srcCreate.getProducerRates();
-        llvm::SmallVector<int64_t> srcPR(srcPRates.begin(), srcPRates.end());
-        if (failed(checkDistributeComposedConsume(
-                getOperation(), srcPR, srcCreate.getCapacity(),
-                allDstConsRates, allDstNames)))
-          return ::mlir::failure();
-      }
-    }
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult Join::verify() {
+  auto srcs = getSrcs();
+  auto dsts = getDsts();
+  auto offsets = getOffsets();
+
+  // M3-join: structural invariants.
+  if (srcs.empty())
+    return emitOpError("join requires at least 1 src, got 0");
+  if (dsts.size() != 1)
+    return emitOpError("join requires exactly 1 dst, got ") << dsts.size();
+
+  // Offset count consistency.
+  if (offsets.has_value() && !offsets->empty()) {
+    if (offsets->size() != srcs.size())
+      return emitOpError("join: offsets count (")
+             << offsets->size() << ") must equal srcs count (" << srcs.size()
+             << ")";
   }
 
   // -------------------------------------------------------------------------
-  // A-10: cascade channels cannot be used in distribute or join links.
-  //
-  // Cascade is a register-level rendezvous with no FIFO buffering and no DMA
-  // channels — it is structurally incompatible with the multi-producer /
-  // multi-consumer split/merge semantics of distribute and join.  Attempting
-  // to route a cascade conduit through a link would silently produce incorrect
-  // hardware code (no actual flow is emitted for cascade, so the non-cascade
-  // consumers/producers would deadlock).
+  // A-10: cascade channels cannot be used in conduit.join.
   // -------------------------------------------------------------------------
-  if (mode == LinkMode::Distribute || mode == LinkMode::Join) {
-    // Check all src and dst channel names against their conduit.create
-    // routing_mode.  Only the "cascade" value is illegal here.
-    llvm::StringRef modeName = stringifyLinkMode(mode);
-    auto checkCascade = [&](mlir::ArrayAttr names) -> mlir::LogicalResult {
-      for (auto attr : names) {
-        llvm::StringRef name = mlir::cast<mlir::StringAttr>(attr).getValue();
-        Create chanCreate = findConduitCreateByName(getOperation(), name);
-        if (!chanCreate)
-          continue; // not in scope — skip
-        auto routingModeOpt = chanCreate.getRoutingMode();
-        if (routingModeOpt && *routingModeOpt == RoutingMode::Cascade) {
-          return emitOpError("cascade channel '")
-                 << name << "' cannot be used in a '" << modeName << "' link";
-        }
-      }
-      return ::mlir::success();
-    };
-    if (failed(checkCascade(srcs)) || failed(checkCascade(dsts)))
+  auto checkCascade = [&](mlir::ArrayAttr names,
+                          llvm::StringRef role) -> mlir::LogicalResult {
+    for (auto attr : names) {
+      llvm::StringRef name = mlir::cast<mlir::StringAttr>(attr).getValue();
+      Create chanCreate = findConduitCreateByName(getOperation(), name);
+      if (!chanCreate)
+        continue;
+      auto routingModeOpt = chanCreate.getRoutingMode();
+      if (routingModeOpt && *routingModeOpt == RoutingMode::Cascade)
+        return emitOpError("cascade channel '")
+               << name << "' cannot be used in a join " << role;
+    }
+    return ::mlir::success();
+  };
+  if (failed(checkCascade(srcs, "src")) || failed(checkCascade(dsts, "dst")))
+    return ::mlir::failure();
+
+  // -------------------------------------------------------------------------
+  // M6-join / M7-join: CSDF balance and buffer capacity for N:1 join.
+  //
+  // Theory: Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.4.
+  // Per-edge Bilsen 1:1 check (conservative structural approximation).
+  // -------------------------------------------------------------------------
+  for (auto srcAttr : srcs) {
+    llvm::StringRef srcName =
+        mlir::cast<mlir::StringAttr>(srcAttr).getValue();
+    Create srcCreate = findConduitCreateByName(getOperation(), srcName);
+    if (!srcCreate || !srcCreate.getProducerRates().has_value() ||
+        !srcCreate.getConsumerRates().has_value())
+      continue;
+    auto pRates = *srcCreate.getProducerRates();
+    auto cRates = *srcCreate.getConsumerRates();
+    int64_t cap = srcCreate.getCapacity();
+    std::string label = "join source '" + srcName.str() + "'";
+    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
       return ::mlir::failure();
   }
+  llvm::StringRef dstName =
+      mlir::cast<mlir::StringAttr>(dsts[0]).getValue();
+  Create dstCreate = findConduitCreateByName(getOperation(), dstName);
+  if (dstCreate && dstCreate.getProducerRates().has_value() &&
+      dstCreate.getConsumerRates().has_value()) {
+    auto pRates = *dstCreate.getProducerRates();
+    auto cRates = *dstCreate.getConsumerRates();
+    int64_t cap = dstCreate.getCapacity();
+    std::string label = "join destination '" + dstName.str() + "'";
+    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
+      return ::mlir::failure();
+  }
+
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult Forward::verify() {
+  auto srcs = getSrcs();
+  auto dsts = getDsts();
+
+  // M3-fwd: exactly 1 src and 1 dst.
+  if (srcs.size() != 1 || dsts.size() != 1)
+    return emitOpError("forward requires exactly 1 src and 1 dst, got ")
+           << srcs.size() << " src(s) and " << dsts.size() << " dst(s)";
 
   return ::mlir::success();
 }
@@ -992,6 +967,31 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 ::mlir::LogicalResult ReleaseAsync::verify() {
   if (failed(checkTokenDoesNotEscape(getOperation(), getToken())))
     return ::mlir::failure();
+  // When the optional $window operand is present, verify:
+  //   (1) The operand is a !conduit.window<T> type (enforced by ODS already,
+  //       but belt-and-suspenders check for diagnostics clarity).
+  //   (2) If the defining op is a conduit.acquire or conduit.wait_window,
+  //       its channel name must match $name.
+  if (mlir::Value win = getWindow()) {
+    if (!mlir::isa<WindowType>(win.getType()))
+      return emitOpError("$window operand must be of type !conduit.window<T>, got ")
+             << win.getType();
+    if (auto *defOp = win.getDefiningOp()) {
+      llvm::StringRef defName;
+      bool haveDefName = false;
+      if (auto acqOp = mlir::dyn_cast<Acquire>(defOp)) {
+        defName = acqOp.getName();
+        haveDefName = true;
+      } else if (auto waitOp = mlir::dyn_cast<WaitWindow>(defOp)) {
+        defName = waitOp.getName();
+        haveDefName = true;
+      }
+      if (haveDefName && defName != getName())
+        return emitOpError("$window is from channel '")
+               << defName << "' but $name is '" << getName()
+               << "' — release_async must release the same channel it acquired";
+    }
+  }
   return checkWindowTokenLinear(getOperation(), getToken());
 }
 ::mlir::LogicalResult WaitWindow::verify() {

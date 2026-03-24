@@ -5,10 +5,9 @@ module {
 // CHECK-LABEL: func.func @window_ops
 // Tests the Tier 2 buffer-window workflow with typed conduit.create.
 func.func @window_ops() {
-  // CHECK: conduit.create
+  // CHECK: conduit.create @w1
   // CHECK-SAME: capacity = 8 : i64
-  // CHECK-SAME: name = "w1"
-  conduit.create {name = "w1", capacity = 8 : i64,
+  conduit.create @w1 {capacity = 8 : i64,
                   producer_tile = array<i64: 0, 0>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<8xi32>,
@@ -33,11 +32,9 @@ func.func @window_ops() {
 
 // CHECK-LABEL: func.func @link_op
 func.func @link_op() {
-  // CHECK: conduit.link
+  // CHECK: conduit.distribute
   // CHECK-SAME: memtile = "tile(0,1)"
-  // CHECK-SAME: mode = #conduit.link_mode<distribute>
-  conduit.link {srcs = ["in"], dsts = ["out0", "out1"],
-                           mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)",
+  conduit.distribute {srcs = ["in"], dsts = ["out0", "out1"], memtile = "tile(0,1)",
                            offsets = array<i64: 0, 1024>}
   return
 }
@@ -61,8 +58,8 @@ func.func @memref_ops() {
 // acquire_async    → !conduit.window.token
 // wait accepts dma.token; wait_all accepts AnyType (mixed); wait_all_async result is dma.token
 func.func @async_ops() {
-  conduit.create {name = "ch_a", capacity = 64 : i64}
-  conduit.create {name = "ch_b", capacity = 1 : i64}
+  conduit.create @ch_a {capacity = 64 : i64}
+  conduit.create @ch_b {capacity = 1 : i64}
   // CHECK: conduit.put_memref_async
   // CHECK-SAME: !conduit.dma.token
   %tok0 = conduit.put_memref_async {name = "ch_a", num_elems = 64 : i64,
@@ -70,7 +67,8 @@ func.func @async_ops() {
                strides = array<i64: 1>} : !conduit.dma.token
   // CHECK: conduit.acquire_async
   // CHECK-SAME: !conduit.window.token
-  %tok1 = conduit.acquire_async {name = "ch_b", count = 1 : i64}
+  %tok1 = conduit.acquire_async {name = "ch_b", count = 1 : i64,
+               port = #conduit.port<Consume>}
                : !conduit.window.token
   // CHECK: conduit.wait
   // CHECK-SAME: !conduit.dma.token
@@ -86,7 +84,7 @@ func.func @async_ops() {
 
 // CHECK-LABEL: func.func @subview_op
 func.func @subview_op() {
-  conduit.create {name = "buf", capacity = 8 : i64}
+  conduit.create @buf {capacity = 8 : i64}
   %win = conduit.acquire {name = "buf", count = 2 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // CHECK: conduit.subview_access
@@ -103,12 +101,13 @@ func.func @subview_op() {
 // and produces the window when the buffer is ready.
 // Cross-tier: mix the window.token with a dma.token in wait_all.
 func.func @acquire_async_op() {
-  conduit.create {name = "output", capacity = 1 : i64}
-  conduit.create {name = "input", capacity = 64 : i64}
+  conduit.create @output {capacity = 1 : i64}
+  conduit.create @input {capacity = 64 : i64}
   // Non-blocking window acquisition (Tier 2 bridge) — returns !conduit.window.token
   // CHECK: conduit.acquire_async
   // CHECK-SAME: !conduit.window.token
-  %acq_tok = conduit.acquire_async {name = "output", count = 1 : i64}
+  %acq_tok = conduit.acquire_async {name = "output", count = 1 : i64,
+                 port = #conduit.port<Consume>}
                  : !conduit.window.token
   // Non-blocking DMA send — returns !conduit.dma.token
   // CHECK: conduit.put_memref_async
@@ -138,12 +137,12 @@ func.func @acquire_async_op() {
 // release_async returns !conduit.window.token (it is a lock op, not a DMA op).
 // conduit.wait accepts !conduit.dma.token only; use wait_all for window tokens.
 func.func @release_async_op() {
-  conduit.create {name = "out", capacity = 2 : i64}
+  conduit.create @out {capacity = 2 : i64}
   %win = conduit.acquire {name = "out", count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<2xi32>>
   // CHECK: conduit.release_async
   // CHECK-SAME: !conduit.window.token
-  %rel_tok = conduit.release_async {name = "out", count = 1 : i64, port = #conduit.port<Consume>}
+  %rel_tok = conduit.release_async(%win : !conduit.window<memref<2xi32>>) {name = "out", count = 1 : i64, port = #conduit.port<Consume>}
                  : !conduit.window.token
   // wait_all accepts AnyType variadic — can wait on a window.token here.
   // CHECK: conduit.wait_all
@@ -167,12 +166,11 @@ func.func @register_ext_bufs(%buf0: memref<512xi16>, %buf1: memref<512xi16>) {
 // Tests that conduit.create with an access_pattern (CSDF) attribute
 // roundtrips correctly through the parser and printer.
 func.func @csdf_create() {
-  // CHECK: conduit.create
+  // CHECK: conduit.create @csdf_ch
   // CHECK-SAME: access_pattern = array<i64: 1, 2, 1>
   // CHECK-SAME: capacity = 4 : i64
   // CHECK-SAME: depth = 4 : i64
-  // CHECK-SAME: name = "csdf_ch"
-  conduit.create {name = "csdf_ch", capacity = 4 : i64,
+  conduit.create @csdf_ch {capacity = 4 : i64,
                   producer_tile = array<i64: 2, 2>,
                   consumer_tiles = array<i64: 2, 3>,
                   element_type = memref<i32>,
@@ -184,11 +182,10 @@ func.func @csdf_create() {
 // CHECK-LABEL: func.func @routing_mode_packet
 // Tests that conduit.create with routing_mode = #conduit.routing_mode<packet> roundtrips correctly.
 func.func @routing_mode_packet() {
-  // CHECK: conduit.create
+  // CHECK: conduit.create @pkt_ch
   // CHECK-SAME: capacity = 10 : i64
-  // CHECK-SAME: name = "pkt_ch"
   // CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
-  conduit.create {name = "pkt_ch", capacity = 10 : i64,
+  conduit.create @pkt_ch {capacity = 10 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<10xi32>,
@@ -205,11 +202,10 @@ func.func @routing_mode_packet() {
 //   P=[1,2] sum=3 len=2, C=[1,2] sum=3 len=2
 //   Check: 3*2 == 3*2 → 6 == 6 ✓
 func.func @csdf_balanced_rates() {
-  // CHECK: conduit.create
+  // CHECK: conduit.create @csdf_full
   // CHECK-SAME: consumer_rates = array<i64: 1, 2>
-  // CHECK-SAME: name = "csdf_full"
   // CHECK-SAME: producer_rates = array<i64: 1, 2>
-  conduit.create {name = "csdf_full", capacity = 6 : i64,
+  conduit.create @csdf_full {capacity = 6 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -244,11 +240,10 @@ func.func @csdf_balanced_different_periods() {
   // Interpretation: producer fires a 2-phase cycle delivering 3 then 1 token;
   // consumer fires every phase consuming 2 tokens.  Over 2 producer phases / 2
   // consumer phases: producer delivers 4, consumer expects 4 — balanced.
-  // CHECK: conduit.create
+  // CHECK: conduit.create @csdf_diff_period
   // CHECK-SAME: consumer_rates = array<i64: 2>
-  // CHECK-SAME: name = "csdf_diff_period"
   // CHECK-SAME: producer_rates = array<i64: 3, 1>
-  conduit.create {name = "csdf_diff_period", capacity = 4 : i64,
+  conduit.create @csdf_diff_period {capacity = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -262,7 +257,7 @@ func.func @csdf_balanced_different_periods() {
 // Tests that conduit.put_cascade and conduit.get_cascade roundtrip correctly.
 // Uses vector<16xi32> = 512 bits (AIE2 cascade width).
 func.func @cascade_ops(%v : vector<16xi32>) -> vector<16xi32> {
-  conduit.create {name = "cas", capacity = 1 : i64,
+  conduit.create @cas {capacity = 1 : i64,
                   producer_tile = array<i64: 0, 3>,
                   consumer_tiles = array<i64: 1, 3>,
                   depth = 1 : i64,

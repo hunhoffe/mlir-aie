@@ -117,8 +117,7 @@ module @distribroad {
 
     // Conduit 1: shim DMA (MM2S) → tile(2,2).
     // Carries a unique input slice (distribute: each consumer gets different data).
-    conduit.create {name = "input_slice",
-                    capacity = 16 : i64,
+    conduit.create @input_slice {capacity = 16 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 2>,
                     element_type = memref<16xi32>,
@@ -126,8 +125,7 @@ module @distribroad {
 
     // Conduit 2: shim DMA (MM2S) → tile(2,2).
     // Carries broadcast shared weights (all consumers receive the same data).
-    conduit.create {name = "shared_weights",
-                    capacity = 8 : i64,
+    conduit.create @shared_weights {capacity = 8 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 2>,
                     element_type = memref<8xi32>,
@@ -144,10 +142,12 @@ module @distribroad {
         // Each token represents a pending lock grant; the hardware DMA fills
         // the buffers while the core continues to the wait_all below.
         %tok_slice   = conduit.acquire_async {name = "input_slice",
-                                               count = 1 : i64}
+                                               count = 1 : i64,
+                                               port = #conduit.port<Consume>}
                            : !conduit.window.token
         %tok_weights = conduit.acquire_async {name = "shared_weights",
-                                               count = 1 : i64}
+                                               count = 1 : i64,
+                                               port = #conduit.port<Consume>}
                            : !conduit.window.token
 
         // Cross-tier fan-in: the key distribroad op.

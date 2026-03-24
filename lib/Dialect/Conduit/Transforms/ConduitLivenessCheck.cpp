@@ -83,6 +83,9 @@ namespace {
 // Collect the set of channel names for which a conduit.release_async exists
 // anywhere in the given function.  Used to suppress M11 on windows that are
 // released asynchronously by name rather than by SSA value.
+// Note: release_async with the SSA $window operand is also captured here (by
+// name), and additionally matched directly in checkWindowLiveness via the use
+// list of the window SSA value.
 static llvm::StringSet<>
 collectAsyncReleaseNames(mlir::func::FuncOp func) {
   llvm::StringSet<> names;
@@ -105,10 +108,14 @@ checkWindowLiveness(mlir::Operation *producerOp, mlir::Value windowVal,
     return mlir::success();
 
   // Fast path 2: direct SSA release — the window value must appear as the
-  // operand of at least one conduit.release.
+  // operand of at least one conduit.release or conduit.release_async (with
+  // the SSA window operand form).
   for (mlir::OpOperand &use : windowVal.getUses()) {
     if (mlir::isa<Release>(use.getOwner()))
       return mlir::success();
+    if (auto relAsync = mlir::dyn_cast<ReleaseAsync>(use.getOwner()))
+      if (relAsync.getWindow() == windowVal)
+        return mlir::success();
   }
 
   // No release found via either path: the lock grant is permanently held.
