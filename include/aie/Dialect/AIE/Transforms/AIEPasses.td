@@ -421,6 +421,28 @@ def AIETraceToConfig : Pass<"aie-trace-to-config", "DeviceOp"> {
   ];
 }
 
+def AIECheckCascadePairing : Pass<"aie-check-cascade-pairing", "DeviceOp"> {
+  let summary = "Verify that every aie.cascade_flow has matching put/get_cascade ops in core bodies";
+  let description = [{
+    This pass validates structural correctness of cascade connections declared via
+    `aie.cascade_flow`. For each `aie.cascade_flow(src, dst)` present in the device:
+
+    - The source tile's `aie.core` body must contain at least one `aie.put_cascade` op.
+    - The destination tile's `aie.core` body must contain at least one `aie.get_cascade` op.
+
+    Conversely, for each `aie.core` body that contains an `aie.put_cascade` op, there
+    must be an `aie.cascade_flow` that names that tile as its source.
+
+    Errors are emitted on the offending `aie.cascade_flow` or `aie.put_cascade` op.
+    The pass calls `signalPassFailure()` if any violations are found.
+  }];
+
+  let constructor = "xilinx::AIE::createAIECheckCascadePairingPass()";
+  let dependentDialects = [
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
 def AIETraceRegPackWrites : Pass<"aie-trace-pack-reg-writes", "DeviceOp"> {
   let summary = "Pack multiple register field writes into single register writes";
   let description = [{

@@ -554,9 +554,22 @@ void lowerPhase(ConduitToDMAState &state) {
         StateMap childState = liveState;
         for (auto &[k, cs] : childState) {
           int port = k.second;  // 0=Produce, 1=Consume
-          if (port == static_cast<int>(Port::Consume))
+          if (port == static_cast<int>(Port::Consume)) {
+            // Consume: inherit lastAcquireCount as heldCount.
+            // DMA eagerly pre-fills slots up to lastAcquireCount, so those
+            // slots are already in the buffer when the child block runs.
             cs.heldCount = cs.lastAcquireCount;
-          // Produce: keep actual heldCount (no DMA pre-fill for output slots).
+          } else {
+            // B-1 fix: Produce port — reset heldCount to 0 at loop body entry.
+            // Each loop iteration starts fresh: the parent may have released a
+            // non-uniform fraction (acquire N, release M<N, enter loop), but
+            // the child should start from 0 held — the child acquire must wait
+            // for a new slot from the lock, not assume the parent's partial hold
+            // persists.  Keeping the parent's heldCount would suppress the
+            // AcquireGreaterEqual delta, causing the core to write without owning
+            // the lock → hardware deadlock.
+            cs.heldCount = 0;
+          }
         }
 
         for (mlir::Block &childBlock : region)

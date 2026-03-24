@@ -51,6 +51,16 @@ static bool verifyMemTileBDParity(ConduitToDMAState &state) {
   if (!state.deviceOp)
     return true;
 
+  // B-10: The BD parity pool constraint (even-channel pool: BDs 0-23,
+  // odd-channel pool: BDs 24-47, max 24 each) is AIE2-specific hardware.
+  // AIE1 does not have this partitioning; applying this check to AIE1 would
+  // incorrectly reject valid designs.  Future architectures should be
+  // verified against their target model before enabling this check.
+  //
+  // TODO: query target model for BD pool split when the API is available.
+  if (state.aieArch != AIE::AIEArch::AIE2)
+    return true;
+
   bool passed = true;
 
   state.deviceOp.walk([&](AIE::MemTileDMAOp mtDMA) {
@@ -213,6 +223,14 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
     mlir::OpBuilder builder(module.getContext());
+
+    // B-3/B-9: Error protocol for multi-phase pass.
+    // Phases set state.passFailed = true and return early when they encounter
+    // an unrecoverable error. runOnOperation() checks passFailed after each
+    // phase and calls signalPassFailure() + returns if set.
+    // Do NOT call signalPassFailure() inside a module.walk() callback — it
+    // does not stop the walk. Instead, set state.passFailed and return from
+    // the walk callback; runOnOperation() handles signalPassFailure() centrally.
 
     // Initialize shared state.
     ConduitToDMAState state;

@@ -371,8 +371,10 @@ void routePhase(ConduitToDMAState &state) {
               llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on tile (")
               + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
               + "): all " + llvm::Twine(maxS2MM_4a) + " channels in use");
+          // B-3 fix: set passFailed and return immediately so the enclosing
+          // conduit loop does not continue processing with broken state.
           state.passFailed = true;
-          continue;
+          return;
         }
         int32_t s2mmCh =
             state.tileNextS2MMChannel[consTile.getResult()]++;
@@ -459,8 +461,9 @@ void routePhase(ConduitToDMAState &state) {
                         "shim tile (")
             + llvm::Twine(shimCol) + "," + llvm::Twine(shimRow)
             + "): all " + llvm::Twine(maxS2MM_4b) + " channels in use");
+        // B-3 fix: return immediately to stop processing with broken state.
         state.passFailed = true;
-        continue;
+        return;
       }
       int32_t shimS2MMCh =
           state.tileNextS2MMChannel[shimTile.getResult()]++;
@@ -684,7 +687,11 @@ void routePhase(ConduitToDMAState &state) {
               + llvm::Twine(prodCol) + "," + llvm::Twine(prodRow)
               + ") and packet DMA fallback is also ineligible "
                 "(check BD budget, lock budget, and packet flow ID budget)");
+          // B-3 fix: return immediately so the outer conduit loop does not
+          // continue processing subsequent conduits with broken state after
+          // both circuit DMA and packet fallback have been exhausted.
           state.passFailed = true;
+          return;
         }
         // tryPacketFallback records conduitMM2SChannel and
         // conduitConsS2MMChannel internally; skip the circuit path below.
@@ -705,8 +712,10 @@ void routePhase(ConduitToDMAState &state) {
             llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on tile (")
             + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
             + "): all " + llvm::Twine(maxS2MM_4c) + " channels in use");
+        // B-3 fix: return immediately so the outer conduit loop does not
+        // continue emitting flows for subsequent conduits with broken state.
         state.passFailed = true;
-        continue;
+        return;
       }
       int32_t s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
       state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
@@ -744,15 +753,18 @@ void routePhase(ConduitToDMAState &state) {
           llvm::Twine("conduit-to-dma: cascade conduit '") + name +
           "' must have exactly one consumer tile (cascade is point-to-point), got ")
           << info.consumerTileCoords.size();
+      // B-3 fix: return immediately so the cascade loop does not continue
+      // processing subsequent conduits with already-broken state.
       state.passFailed = true;
-      continue;
+      return;
     }
     if (!info.shimConsumerTileCoords.empty()) {
       state.deviceOp.emitError(
           llvm::Twine("conduit-to-dma: cascade conduit '") + name +
           "' has a shim consumer tile — cascade cannot connect to shim tiles");
+      // B-3 fix: return immediately.
       state.passFailed = true;
-      continue;
+      return;
     }
 
     AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);

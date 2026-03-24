@@ -454,6 +454,22 @@ struct ObjectFifoToConduitPass
       // or buffers on the producer side. Pass C emits aie.flow(Core:N, ...)
       // instead of aie.flow(DMA:N, ...) and skips producer-side allocation.
       auto streamPortIt = aieStreamFifoPort.find(op.getSymNameAttr());
+
+      // B-8: via_cascade=true and aie_stream are mutually exclusive.
+      // Both would set routingModeAttr: cascade would set "cascade" and
+      // aie_stream would overwrite it with "stream" silently.  The result
+      // is an aie_stream conduit with cascade semantics applied — wrong on
+      // both counts.  Reject this combination explicitly.
+      if (op.getViaCascade() && streamPortIt != aieStreamFifoPort.end()) {
+        op.emitError("objectfifo-to-conduit: objectfifo '")
+            << op.getSymName()
+            << "' has both via_cascade=true and aie_stream routing — "
+               "these are mutually exclusive";
+        signalPassFailure();
+        passFailed = true;
+        return; // skip conduit.create for this fifo
+      }
+
       if (streamPortIt != aieStreamFifoPort.end())
         routingModeAttr = mlir::StringAttr::get(ctx, "stream");
 
@@ -1284,9 +1300,6 @@ struct ObjectFifoToConduitPass
       auto prodTile =
           mlir::cast<AIE::TileOp>(op.getProducerTile().getDefiningOp());
       int64_t prodRow = prodTile.getRow();
-
-      AIE::TileOp shimTile;
-      AIE::DMAChannelDir channelDir;
 
       // Collect all shim tiles involved in this objectfifo.
       // Producer shim: emit MM2S allocation.

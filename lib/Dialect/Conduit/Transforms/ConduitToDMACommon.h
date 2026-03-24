@@ -289,9 +289,21 @@ struct ConduitInfo {
     res.producerRotationBuf = producerRotationBuf;
     res.producerRotationBufSlot = producerRotationBufSlot;
 
+    // B-11: Walk up the parent chain to find the enclosing CoreOp.
+    // Stop at DeviceOp (sentinel) — ops placed directly inside aie.device
+    // (but outside aie.core) are not core-body ops and have no per-tile
+    // resources in the resolved form.  Without this sentinel, the walk would
+    // continue past DeviceOp into ModuleOp and then nullptr, which is harmless
+    // but wasteful and could mask future issues if non-device ancestors exist.
     res.coreOp = op->getParentOp();
-    while (res.coreOp && !mlir::isa<AIE::CoreOp>(res.coreOp))
+    while (res.coreOp && !mlir::isa<AIE::CoreOp>(res.coreOp)) {
+      if (mlir::isa<AIE::DeviceOp>(res.coreOp)) {
+        // Op is inside the device but not inside any core — no CoreOp found.
+        res.coreOp = nullptr;
+        break;
+      }
       res.coreOp = res.coreOp->getParentOp();
+    }
     if (!res.coreOp)
       return res;
 

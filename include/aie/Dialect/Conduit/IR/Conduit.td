@@ -439,15 +439,29 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // Pass A propagates from objectfifo.create iter_count.
                        OptionalAttr<I64Attr>:$iter_count,
                        // producer_dimensions: BDDimLayout traversal descriptor for
-                       // the producer (MM2S) DMA BD chain.  Carried as-is from the
-                       // objectfifo dimensionsToStream attribute.
-                       // producer_dimensions: BDDimLayout traversal descriptor for
-                       // the producer (MM2S) DMA BD chain. Stored as generic Attr
-                       // (AIE::BDDimLayoutArrayAttr at runtime) to avoid cross-dialect
-                       // tablegen dependency. Use getProducerDimensionsTyped() in C++.
+                       // the producer (MM2S) DMA BD chain. Stored as AnyAttr
+                       // (AIE::BDDimLayoutArrayAttr at runtime) to avoid a cross-dialect
+                       // TableGen dependency on the AIE dialect.
+                       //
+                       // LIMITATION (B-5): Using AnyAttr means the TableGen-generated
+                       // parser/printer accepts any attribute here, so the type is NOT
+                       // enforced at the IR level. Round-tripping through aie-opt
+                       // --mlir-print-op-generic when the AIE dialect is NOT loaded
+                       // will lose the BDDimLayout structure (printed as opaque).
+                       // When the AIE dialect IS loaded (normal usage), the attribute
+                       // round-trips correctly.
+                       //
+                       // The Create::verify() in ConduitOps.cpp emits a clear error if
+                       // the attribute is present but not a BDDimLayoutArrayAttr at runtime,
+                       // preventing a silent cast failure downstream in Pass C.
+                       //
+                       // Future fix: once mlir-aie provides a stable C++ API for
+                       // BDDimLayoutArrayAttr without requiring AIE dialect inclusion at
+                       // TableGen time, change AnyAttr to the proper constrained type.
                        OptionalAttr<AnyAttr>:$producer_dimensions,
                        // consumer_dimensions: per-consumer BDDimLayout array.
-                       // Stored as generic Attr (AIE::BDDimLayoutArrayArrayAttr at runtime).
+                       // Stored as AnyAttr (AIE::BDDimLayoutArrayArrayAttr at runtime).
+                       // Same AnyAttr limitation as producer_dimensions above.
                        OptionalAttr<AnyAttr>:$consumer_dimensions);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;

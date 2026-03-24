@@ -588,7 +588,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
         if (!chanCreate)
           continue; // not in scope — skip
         auto routingModeOpt = chanCreate.getRoutingMode();
-        if (routingModeOpt && routingModeOpt->getValue() == "cascade") {
+        if (routingModeOpt && *routingModeOpt == "cascade") {
           return emitOpError("cascade channel '")
                  << name << "' cannot be used in a '" << modeStr << "' link";
         }
@@ -649,6 +649,35 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
                  "routing_mode must be \"circuit\", \"packet\", \"cascade\", "
                  "\"stream\", or \"any\", got \"")
              << rm << "\"";
+  }
+
+  // B-5: producer_dimensions / consumer_dimensions type guard.
+  //
+  // Both attributes are stored as AnyAttr to avoid a cross-dialect TableGen
+  // dependency on AIE::BDDimLayoutArrayAttr / AIE::BDDimLayoutArrayArrayAttr.
+  //
+  // AIE::BDDimLayoutArrayAttr is NOT a subclass of mlir::ArrayAttr — it is a
+  // custom attribute defined with ArrayOfAttr<> in TableGen, which produces
+  // its own C++ class.  Therefore mlir::isa<mlir::ArrayAttr>() cannot be used
+  // to validate it from this file (which does not include the AIE dialect).
+  //
+  // The minimal safe check: reject obviously wrong scalar attribute types
+  // (StringAttr, IntegerAttr) that can NEVER be valid BDDimLayout descriptors
+  // and would cause a crash when Pass C attempts to cast the attribute.
+  // Valid BDDimLayoutArrayAttr attributes will always pass this check.
+  if (auto prodDimsAttr = getProducerDimensions()) {
+    if (mlir::isa<mlir::StringAttr, mlir::IntegerAttr>(*prodDimsAttr))
+      return emitOpError(
+          "producer_dimensions must be an AIE::BDDimLayoutArrayAttr; "
+          "got a scalar attribute — was this conduit.create round-tripped "
+          "without the AIE dialect loaded?");
+  }
+  if (auto consDimsAttr = getConsumerDimensions()) {
+    if (mlir::isa<mlir::StringAttr, mlir::IntegerAttr>(*consDimsAttr))
+      return emitOpError(
+          "consumer_dimensions must be an AIE::BDDimLayoutArrayArrayAttr; "
+          "got a scalar attribute — was this conduit.create round-tripped "
+          "without the AIE dialect loaded?");
   }
 
   // M6: CSDF balance check (necessary condition).
