@@ -1492,6 +1492,8 @@ void linkPhase(ConduitToDMAState &state) {
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
       int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
+      // nConsumerBuffers() >= depth; extra slots support sliding-window patterns.
+      int64_t nBufs = info.nConsumerBuffers();
 
       for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
            ++consIdx) {
@@ -1583,7 +1585,7 @@ void linkPhase(ConduitToDMAState &state) {
             static_cast<int32_t>(info.iterCount - 1) : 0;
 
         llvm::SmallVector<mlir::Block *> bdBlocks;
-        for (int64_t i = 0; i < depth; ++i)
+        for (int64_t i = 0; i < nBufs; ++i)
           bdBlocks.push_back(addMemBlock());
 
         // bdTermBlock strategy: when adding a channel to an existing DMA region
@@ -1619,7 +1621,7 @@ void linkPhase(ConduitToDMAState &state) {
         if (!info.consumerDimensions.empty())
           consDims = info.consumerDimensions[consIdx % info.consumerDimensions.size()];
 
-        for (int64_t i = 0; i < depth; ++i) {
+        for (int64_t i = 0; i < nBufs; ++i) {
           // Null locks for disable_synchronization — emitBDBlock skips them.
           mlir::Value blockLockAcq =
               tileProdLock
@@ -1642,13 +1644,13 @@ void linkPhase(ConduitToDMAState &state) {
               blockLockRel, state.lockRelValue(Port::Produce), consDims);
           // Non-circular chain when iter_count > 0: last BD → bdTermBlock (if
           // existingEndBlock) or endMemBlock (fresh region, no extra block needed).
-          bool isLast = (i == depth - 1) && (info.iterCount > 0);
+          bool isLast = (i == nBufs - 1) && (info.iterCount > 0);
           if (isLast)
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdTermBlock ? bdTermBlock : endMemBlock);
           else
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                          bdBlocks[(i + 1) % depth]);
+                                          bdBlocks[(i + 1) % nBufs]);
         }
         if (bdTermBlock) {
           builder.setInsertionPointToEnd(bdTermBlock);

@@ -288,10 +288,13 @@ void lowerPhase(ConduitToDMAState &state) {
                                      AIE::LockAction::Release, relVal);
     }
     // Counter increment for depth>1 Consume port.
+    // Use nConsumerBuffers() as the ring modulus: for sliding-window patterns,
+    // nConsumerBuffers() > depth to accommodate extra held slots.
     if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1) {
-      if (count > cinfo->depth) {
+      int64_t consModulus = cinfo->nConsumerBuffers();
+      if (count > consModulus) {
         op.emitError("conduit-to-dma: release count (")
-            << count << ") exceeds conduit depth (" << cinfo->depth
+            << count << ") exceeds consumer buffer count (" << consModulus
             << ") — rotation counter increment would be incorrect";
         state.passFailed = true;
         return;
@@ -307,7 +310,7 @@ void lowerPhase(ConduitToDMAState &state) {
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value result = emitFastModulo(loc, newVal, cinfo->depth);
+      mlir::Value result = emitFastModulo(loc, newVal, consModulus);
       builder.create<mlir::memref::StoreOp>(loc, result,
                                             resolvedRotationBuf,
                                             mlir::ValueRange{slotIdx});
@@ -797,11 +800,13 @@ void lowerPhase(ConduitToDMAState &state) {
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
                                      AIE::LockAction::Release, relVal);
     }
-    // Counter increment for depth>1 Consume port.
+    // Counter increment for depth>1 Consume port (release_async path).
+    // Use nConsumerBuffers() as the ring modulus (same as sync Release path).
     if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1) {
-      if (count > cinfo->depth) {
+      int64_t consModulus = cinfo->nConsumerBuffers();
+      if (count > consModulus) {
         op.emitError("conduit-to-dma: release_async count (")
-            << count << ") exceeds conduit depth (" << cinfo->depth
+            << count << ") exceeds consumer buffer count (" << consModulus
             << ") — rotation counter increment would be incorrect";
         state.passFailed = true;
         return;
@@ -817,7 +822,7 @@ void lowerPhase(ConduitToDMAState &state) {
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
-      mlir::Value result = emitFastModulo(loc, newVal, cinfo->depth);
+      mlir::Value result = emitFastModulo(loc, newVal, consModulus);
       builder.create<mlir::memref::StoreOp>(loc, result,
                                             resolvedRotationBuf,
                                             mlir::ValueRange{slotIdx});

@@ -482,6 +482,7 @@ void allocPhase(ConduitToDMAState &state) {
             // Fall through to normal consumer loop below.
           } else {
             int64_t depth = info.depth > 0 ? info.depth : 1;
+            int64_t nBufs = info.nConsumerBuffers();
             mlir::Type bufTy = info.elemType;
             if (!bufTy) {
               int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
@@ -498,9 +499,10 @@ void allocPhase(ConduitToDMAState &state) {
             mlir::Value prodTileVal = prodTile.getResult();
             mlir::Value consTileVal = consTile.getResult();
 
-            // Allocate depth-many buffers on the allocation tile.
+            // Allocate nBufs-many buffers on the allocation tile.
+            // nBufs >= depth; extra slots support sliding-window acquire>release.
             llvm::SmallVector<AIE::BufferOp> sharedBuffers =
-                state.allocateBuffers(allocTileVal, name, bufTy, depth);
+                state.allocateBuffers(allocTileVal, name, bufTy, nBufs);
             info.buffers = sharedBuffers;
 
             // Allocate lock(s) on the allocation tile (skip if
@@ -509,9 +511,9 @@ void allocPhase(ConduitToDMAState &state) {
             if (!info.disableSynchronization) {
               int64_t repeatN =
                   info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
-              int64_t prodInit = depth * repeatN;
+              int64_t prodInit = nBufs * repeatN;
               auto locks =
-                  state.allocateLockPair(allocTileVal, name, depth, prodInit);
+                  state.allocateLockPair(allocTileVal, name, nBufs, prodInit);
               sharedProdLock = locks.prodLock;
               sharedConsLock = locks.consLock;
               info.prodLock = locks.prodLock;
@@ -596,6 +598,9 @@ void allocPhase(ConduitToDMAState &state) {
     // Normal consumer tile allocation (handles broadcast).
     // -------------------------------------------------------------------
     int64_t depth = info.depth > 0 ? info.depth : 1;
+    // nBufs >= depth: extra buffer slots support sliding-window patterns
+    // where acquire_count > release_count (partial release).
+    int64_t nBufs = info.nConsumerBuffers();
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
       int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
@@ -632,7 +637,7 @@ void allocPhase(ConduitToDMAState &state) {
 
       std::string consPrefix = name + bufSuffix;
       llvm::SmallVector<AIE::BufferOp> consBuffers =
-          state.allocateBuffers(consTileVal, consPrefix, bufTy, depth);
+          state.allocateBuffers(consTileVal, consPrefix, bufTy, nBufs);
       // Intentionally assigned before the linkSrcNamesEarly branch so the
       // branch's continue does not skip it.
       if (consIdx == 0)
@@ -692,16 +697,16 @@ void allocPhase(ConduitToDMAState &state) {
       // Allocate lock(s) on the consumer tile (skip if
       // disable_synchronization).
       //
-      // Consumer-tile lock init = depth (the number of buffer slots at the
-      // receiving tile). repeat_count does NOT multiply here: the DMA BD
-      // chain fires repeat_count times per buffer slot, but the consumer FIFO
-      // always has exactly depth slots. The repeat_count scaling belongs only
-      // on the producer-side lock (allocated in Phase 3d below).
+      // Consumer-tile prod_lock init = nBufs (number of buffer slots, including
+      // any extra for sliding-window partial release). repeat_count does NOT
+      // multiply here: the DMA BD chain fires repeat_count times per buffer
+      // slot, but the repeat_count scaling belongs only on the producer-side
+      // lock (allocated in Phase 3d below).
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.disableSynchronization) {
-        int64_t prodInit = depth;
+        int64_t prodInit = nBufs;
         auto consLocks =
-            state.allocateLockPair(consTileVal, consPrefix, depth, prodInit);
+            state.allocateLockPair(consTileVal, consPrefix, nBufs, prodInit);
         thisProdLock = consLocks.prodLock;
         thisConsLock = consLocks.consLock;
         if (consIdx == 0) {

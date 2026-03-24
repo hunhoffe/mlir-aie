@@ -177,6 +177,16 @@ struct ConduitInfo {
   // 0 means "use raw depth" (no optimization).
   int64_t effectiveDepth = 0;
 
+  // Partial-release buffer count adjustment.
+  // Populated by Phase 2.6 in collectPhase.
+  //
+  // slidingWindowOverhead: for sliding-window patterns (acquire_count >
+  //   release_count), the maximum (acquireCount - releaseCount) across all
+  //   Consume-port acquire/release pairs. 0 = no sliding window.
+  //
+  // nConsumerBuffers() uses: depth + max(0, slidingWindowOverhead).
+  int64_t slidingWindowOverhead = 0;
+
   // --- Populated by Phase 3 (allocateBuffersAndLocks). ---
 
   // Shared memory flag: set when producer and consumer are adjacent tiles.
@@ -263,6 +273,19 @@ struct ConduitInfo {
   llvm::SmallVector<AIE::BDDimLayoutArrayAttr> consumerDimensions;
 
   // --- Helper methods ---
+
+  // Compute the consumer-side buffer count for this conduit.
+  // For the sliding-window pattern (acquire_count > release_count on a paired
+  // acquire/release), extra buffer slots are needed to hold the unreleased
+  // elements while the DMA pre-fills the next slot.
+  // Formula: depth + max(0, slidingWindowOverhead)
+  // slidingWindowOverhead = 0 for normal SDF or CSDF (no accumulation).
+  int64_t nConsumerBuffers() const {
+    int64_t d = depth > 0 ? depth : 1;
+    if (slidingWindowOverhead <= 0)
+      return d;
+    return d + slidingWindowOverhead;
+  }
 
   // Result of resolving per-tile resources from the enclosing CoreOp.
   struct ResolvedTileResources {

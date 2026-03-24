@@ -281,6 +281,58 @@ void collectPhase(ConduitToDMAState &state) {
   }
 
   // -----------------------------------------------------------------------
+  // Phase 2.6: Compute partial-release buffer adjustment.
+  //
+  // For the sliding-window pattern, the consumer acquires N elements but
+  // releases fewer than N per step, holding onto the remainder.
+  // The DMA ring must have extra buffer slots to accommodate the unreleased
+  // elements.
+  //
+  // Strategy: pair each conduit.release with its corresponding
+  // conduit.acquire (via the window SSA def-use chain) and compute
+  // max(acquireCount - releaseCount) across all Consume-port pairs.
+  // This yields the maximum number of slots held across a partial release.
+  // Formula:
+  //   nConsumerBuffers = depth + max(0, maxPairwiseSlidingOverhead)
+  //
+  // Only Consume-port acquire/release pairs are considered.
+  // ReleaseAsync ops are omitted (async pattern never forms a sliding window
+  // in practice; and they lack a direct window SSA operand).
+  // -----------------------------------------------------------------------
+  {
+    // Per-conduit: maximum (acquireCount - releaseCount) across all
+    // Consume-port acquire/release pairs where releaseCount < acquireCount.
+    llvm::DenseMap<llvm::StringRef, int64_t> maxSlidingOverhead;
+
+    module.walk([&](Release relOp) {
+      if (relOp.getPort() != Port::Consume)
+        return;
+      // Recover the paired acquire op from the window SSA operand.
+      auto *defOp = relOp.getWindow().getDefiningOp();
+      if (!defOp)
+        return;
+      auto acqOp = mlir::dyn_cast<Acquire>(defOp);
+      if (!acqOp)
+        return; // WaitWindow or other — not a simple acquire/release pair
+      llvm::StringRef conduitName = acqOp.getName();
+      int64_t acqCount = static_cast<int64_t>(acqOp.getCount());
+      int64_t relCount = static_cast<int64_t>(relOp.getCount());
+      int64_t overhead = acqCount - relCount;
+      if (overhead <= 0)
+        return; // Full release — not a sliding window
+      auto &cur = maxSlidingOverhead[conduitName];
+      if (overhead > cur)
+        cur = overhead;
+    });
+
+    for (auto &[name, info] : state.conduitMap) {
+      auto it = maxSlidingOverhead.find(name);
+      if (it != maxSlidingOverhead.end())
+        info.slidingWindowOverhead = it->second;
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Phase 1.5: Collect conduit.register_external_buffers.
   //
   // Records the external buffer SSA values and tile coordinates into
