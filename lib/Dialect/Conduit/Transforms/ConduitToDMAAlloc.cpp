@@ -95,7 +95,11 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       if (!prodTile)
         continue;
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      // Partial-release Produce-port: need max(effDepth, maxProduceAcquire+1).
+      int64_t prodDepth = (info.maxProduceAcquire > 0)
+                              ? std::max(effDepth, info.maxProduceAcquire + 1)
+                              : effDepth;
       if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
         addProducerSlot(prodTile.getResult());
       continue;
@@ -150,7 +154,11 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       if (!prodTile)
         continue;
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      // Partial-release Produce-port: need max(effDepth, maxProduceAcquire+1).
+      int64_t prodDepth = (info.maxProduceAcquire > 0)
+                              ? std::max(effDepth, info.maxProduceAcquire + 1)
+                              : effDepth;
       if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
         addProducerSlot(prodTile.getResult());
       continue;
@@ -174,8 +182,11 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
           if (pCol >= 0 && pRow >= 2) {
             AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
             if (pTile && !info.consumerTileBuffers.count(pTile.getResult())) {
-              int64_t prodDepth =
+              int64_t effDepth =
                   info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+              int64_t prodDepth = (info.maxProduceAcquire > 0)
+                  ? std::max(effDepth, info.maxProduceAcquire + 1)
+                  : effDepth;
               if (prodDepth > 1 &&
                   state.conduitNamesWithProducerAcquire.count(name))
                 addProducerSlot(pTile.getResult());
@@ -235,7 +246,10 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       continue;
 
     int64_t depth = info.depth > 0 ? info.depth : 1;
-    int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+    int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+    int64_t prodDepth = (info.maxProduceAcquire > 0)
+        ? std::max(effDepth, info.maxProduceAcquire + 1)
+        : effDepth;
     if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
       addConsumerSlot(prodTileVal);
     if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
@@ -374,7 +388,16 @@ void allocPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      // Producer buffer count: effectiveDepth, inflated by partial-release when needed.
+      // effectiveDepth = min(depth, maxProdAcquire+1) reduces allocation for
+      // producers that never hold more than maxProdAcquire+1 slots simultaneously.
+      // When maxProduceAcquire > 0 (partial-release pattern), inflate to at least
+      // maxProduceAcquire+1 so the DMA can drain while the core holds extra slots.
+      int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      // Partial-release Produce-port: need max(effDepth, maxProduceAcquire+1).
+      int64_t prodDepth = (info.maxProduceAcquire > 0)
+                              ? std::max(effDepth, info.maxProduceAcquire + 1)
+                              : effDepth;
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
         int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
@@ -569,7 +592,11 @@ void allocPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      // Partial-release Produce-port: need max(effDepth, maxProduceAcquire+1).
+      int64_t prodDepth = (info.maxProduceAcquire > 0)
+                              ? std::max(effDepth, info.maxProduceAcquire + 1)
+                              : effDepth;
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
         int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
@@ -672,8 +699,11 @@ void allocPhase(ConduitToDMAState &state) {
             if (pTile) {
               mlir::Value pTileVal = pTile.getResult();
               if (!info.consumerTileBuffers.count(pTileVal)) {
-                int64_t prodDepth =
+                int64_t effDepth =
                     info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+                int64_t prodDepth = (info.maxProduceAcquire > 0)
+                    ? std::max(effDepth, info.maxProduceAcquire + 1)
+                    : effDepth;
                 auto pBufs =
                     state.allocateBuffers(pTileVal, name, bufTy, prodDepth);
 
@@ -793,7 +823,10 @@ void allocPhase(ConduitToDMAState &state) {
       continue;
 
     int64_t depth = info.depth > 0 ? info.depth : 1;
-    int64_t prodDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+    int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+    int64_t prodDepth = (info.maxProduceAcquire > 0)
+        ? std::max(effDepth, info.maxProduceAcquire + 1)
+        : effDepth;
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
       int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;

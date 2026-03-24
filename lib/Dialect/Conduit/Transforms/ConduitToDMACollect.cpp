@@ -220,26 +220,25 @@ void collectPhase(ConduitToDMAState &state) {
   // Join sources: Phase 5 uses the existing per-source lock pairs from
   // Phase 3. Tracked separately for Phase 3 producer-tile reallocation.
   // -----------------------------------------------------------------------
-  module.walk([&](Link linkOp) {
-    if (linkOp.getMode() == LinkMode::Distribute) {
-      for (auto s : linkOp.getSrcs())
-        state.linkSrcNamesEarly.insert(
-            mlir::cast<mlir::StringAttr>(s).getValue());
-    } else {
-      for (auto s : linkOp.getSrcs())
-        state.linkJoinSrcNames.insert(
-            mlir::cast<mlir::StringAttr>(s).getValue());
-      // Join destination conduits: Phase 3 must skip buffer/lock allocation
-      // because Phase 5 (join) allocates per-source lock pairs and uses
-      // the join destination's buffers for the intermediate join buffer.
-      // Over-allocating in Phase 3 produces duplicate buffers + extra locks.
-      for (auto d : linkOp.getDsts())
-        state.linkDstNames.insert(
-            mlir::cast<mlir::StringAttr>(d).getValue());
-    }
-    // Populate linkDstNames early so allocPhase/routePhase can skip
-    // destination conduits that share the MemTile buffer set.
-    for (auto d : linkOp.getDsts())
+  module.walk([&](Distribute distOp) {
+    for (auto s : distOp.getSrcs())
+      state.linkSrcNamesEarly.insert(
+          mlir::cast<mlir::StringAttr>(s).getValue());
+    for (auto d : distOp.getDsts())
+      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+  });
+  module.walk([&](Join joinOp) {
+    for (auto s : joinOp.getSrcs())
+      state.linkJoinSrcNames.insert(
+          mlir::cast<mlir::StringAttr>(s).getValue());
+    for (auto d : joinOp.getDsts())
+      state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
+  });
+  module.walk([&](Forward fwdOp) {
+    for (auto s : fwdOp.getSrcs())
+      state.linkSrcNamesEarly.insert(
+          mlir::cast<mlir::StringAttr>(s).getValue());
+    for (auto d : fwdOp.getDsts())
       state.linkDstNames.insert(mlir::cast<mlir::StringAttr>(d).getValue());
   });
 
@@ -288,30 +287,26 @@ void collectPhase(ConduitToDMAState &state) {
   // -----------------------------------------------------------------------
   // Phase 2.6: Compute partial-release buffer adjustment.
   //
-  // For the sliding-window pattern, the consumer acquires N elements but
-  // releases fewer than N per step, holding onto the remainder.
+  // For the sliding-window pattern, one port acquires N elements but releases
+  // fewer than N per step, holding onto the remainder.
   // The DMA ring must have extra buffer slots: max(depth, maxAcquire + 1).
   //
-  // Strategy: scan Consume-port acquire/release pairs (via window SSA
-  // def-use chain) and record the maximum acquire count across all pairs
-  // where acquireCount > releaseCount.
+  // Strategy: scan acquire/release pairs (via window SSA def-use chain) and
+  // record the maximum acquire count across all pairs where acqCount > relCount,
+  // separately for Consume-port and Produce-port.
   //
-  // Only Consume-port acquire/release pairs are considered.
   // ReleaseAsync ops are omitted (async pattern never forms a sliding window
   // in practice; and they lack a direct window SSA operand).
-  //
-  // Produce-port partial release (acquireCount > releaseCount on Produce port)
-  // is not supported — Pass C cannot infer the correct buffer count for it.
-  // A hard error is emitted if this pattern is detected.
   // -----------------------------------------------------------------------
   {
     // Per-conduit: maximum acquire count across all Consume-port
     // acquire/release pairs where acquireCount > releaseCount.
     llvm::DenseMap<llvm::StringRef, int64_t> maxConsAcquire;
+    // Per-conduit: maximum acquire count across all Produce-port
+    // acquire/release pairs where acquireCount > releaseCount.
+    llvm::DenseMap<llvm::StringRef, int64_t> maxProdAcquirePartial;
 
     module.walk([&](Release relOp) {
-      if (relOp.getPort() != Port::Consume)
-        return;
       // Recover the paired acquire op from the window SSA operand.
       auto *defOp = relOp.getWindow().getDefiningOp();
       if (!defOp)
@@ -324,49 +319,25 @@ void collectPhase(ConduitToDMAState &state) {
       int64_t relCount = static_cast<int64_t>(relOp.getCount());
       if (acqCount <= relCount)
         return; // Full release — not a sliding window
-      auto &cur = maxConsAcquire[conduitName];
-      if (acqCount > cur)
-        cur = acqCount;
+      if (relOp.getPort() == Port::Consume) {
+        auto &cur = maxConsAcquire[conduitName];
+        if (acqCount > cur)
+          cur = acqCount;
+      } else if (relOp.getPort() == Port::Produce) {
+        auto &cur = maxProdAcquirePartial[conduitName];
+        if (acqCount > cur)
+          cur = acqCount;
+      }
     });
 
     for (auto &[name, info] : state.conduitMap) {
-      auto it = maxConsAcquire.find(name);
-      if (it != maxConsAcquire.end())
-        info.maxConsumerAcquire = it->second;
+      auto consIt = maxConsAcquire.find(name);
+      if (consIt != maxConsAcquire.end())
+        info.maxConsumerAcquire = consIt->second;
+      auto prodIt = maxProdAcquirePartial.find(name);
+      if (prodIt != maxProdAcquirePartial.end())
+        info.maxProduceAcquire = prodIt->second;
     }
-
-    // Hard error: Produce-port sliding windows where maxProdAcquire+1 > depth.
-    // effectiveDepth = min(depth, maxProdAcquire+1). If maxProdAcquire+1 > depth,
-    // the producer tries to simultaneously hold more slots than are allocated.
-    // Partial release where maxProdAcquire+1 <= depth is safe (effectiveDepth
-    // equals depth and all slots are available). Only reject the unsafe case.
-    module.walk([&](Release relOp) {
-      if (relOp.getPort() != Port::Produce)
-        return;
-      auto *defOp = relOp.getWindow().getDefiningOp();
-      if (!defOp)
-        return;
-      auto acqOp = mlir::dyn_cast<Acquire>(defOp);
-      if (!acqOp)
-        return;
-      int64_t acqCount = static_cast<int64_t>(acqOp.getCount());
-      int64_t relCount = static_cast<int64_t>(relOp.getCount());
-      if (acqCount <= relCount)
-        return; // Full release — safe
-      // Partial release: check if maxProdAcquire+1 exceeds depth.
-      llvm::StringRef conduitName = acqOp.getName();
-      ConduitInfo *cinfo = state.lookupConduit(conduitName);
-      if (!cinfo)
-        return;
-      int64_t depth = cinfo->depth > 0 ? cinfo->depth : 1;
-      if (acqCount > depth) {
-        relOp.emitError(
-            "Produce-port sliding windows (acquire > release on Produce port) "
-            "are not yet supported in Pass C when maxProdAcquire > depth; "
-            "use acquire==release on the producer side or increase depth");
-        state.passFailed = true;
-      }
-    });
   }
 
   // -----------------------------------------------------------------------

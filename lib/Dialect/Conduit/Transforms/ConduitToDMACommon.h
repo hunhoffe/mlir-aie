@@ -189,6 +189,16 @@ struct ConduitInfo {
   // (K held by consumer + 1 being filled by DMA). If depth > K+1, use depth.
   int64_t maxConsumerAcquire = 0;
 
+  // maxProduceAcquire: maximum acquire count seen across all Produce-port
+  //   acquire/release pairs where acquireCount > releaseCount (producer
+  //   sliding window). 0 = no producer sliding window.
+  //
+  // nProducerBuffers() uses: max(depth, maxProduceAcquire + 1).
+  // Derivation: same as consumer — a sliding-window producer that holds K
+  // output buffers simultaneously needs K+1 physical slots so the DMA engine
+  // can drain one slot while the core holds the rest.
+  int64_t maxProduceAcquire = 0;
+
   // --- Populated by Phase 3 (allocateBuffersAndLocks). ---
 
   // Shared memory flag: set when producer and consumer are adjacent tiles.
@@ -289,6 +299,19 @@ struct ConduitInfo {
     if (maxConsumerAcquire <= 0)
       return d;
     return std::max(d, maxConsumerAcquire + 1);
+  }
+
+  // Compute the producer-side buffer count for this conduit.
+  // Mirrors nConsumerBuffers() for the Produce port: when a producer acquires
+  // K output slots but releases fewer than K per step, extra slots must be
+  // allocated so the DMA engine can drain one slot while the core holds the rest.
+  // Formula: max(depth, maxProduceAcquire + 1)
+  // maxProduceAcquire = 0 for normal (non-sliding-window) producers.
+  int64_t nProducerBuffers() const {
+    int64_t d = depth > 0 ? depth : 1;
+    if (maxProduceAcquire <= 0)
+      return d;
+    return std::max(d, maxProduceAcquire + 1);
   }
 
   // Result of resolving per-tile resources from the enclosing CoreOp.
@@ -687,7 +710,7 @@ void allocPhase(ConduitToDMAState &state);
 /// Phase 4.5a: Non-adjacent conduit flow emission.
 void routePhase(ConduitToDMAState &state);
 
-/// Phase 5: Lower conduit.link → MemTile DMA BD chain.
+/// Phase 5: Lower conduit.distribute/join/forward → MemTile DMA BD chain.
 /// Phase 5.5: Generate aie.mem BD chains for simple (non-link) conduits.
 /// Phase 5.5 post-pass: Link fused BD chains.
 void linkPhase(ConduitToDMAState &state);
