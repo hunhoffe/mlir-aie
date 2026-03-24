@@ -671,17 +671,25 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
           "without the AIE dialect loaded?");
   }
 
-  // plio verifier: plio=true requires producer_tile row == 0 (shim tile).
+  // plio verifier: plio=true requires at least one shim-row (row == 0) endpoint.
+  // The shim endpoint may be the producer (producer_tile row=0) or a consumer
+  // (shim_consumer_tiles non-empty).  Both directions are valid: a compute→shim
+  // conduit with plio has producer_tile at a compute row and a shim consumer.
   if (auto plioAttr = getPlio()) {
     if (*plioAttr) {
+      bool producerIsShim = false;
       if (auto tileArr = getProducerTile()) {
         auto arr = *tileArr;
-        // producer_tile is encoded as [col, row]; row is index 1.
-        if (arr.size() >= 2 && arr[1] != 0)
-          return emitOpError("plio=true requires a shim tile (row 0) as "
-                             "producer_tile, but row=")
-                 << arr[1];
+        if (arr.size() >= 2 && arr[1] == 0)
+          producerIsShim = true;
       }
+      bool hasShimConsumer = false;
+      if (auto shimCons = getShimConsumerTiles()) {
+        hasShimConsumer = !shimCons->empty();
+      }
+      if (!producerIsShim && !hasShimConsumer)
+        return emitOpError("plio=true requires a shim tile (row 0) as either "
+                           "producer_tile or in shim_consumer_tiles");
     }
   }
 
@@ -1061,7 +1069,8 @@ checkCascadeConduit(mlir::Operation *op, llvm::StringRef name) {
 
   if (found && wrongMode)
     return op->emitOpError("references conduit '")
-           << name << "' which does not have routing_mode = \"cascade\"";
+           << name
+           << "' which does not have routing_mode = #conduit.routing_mode<cascade>";
   // If not found: conduit.create may not be in scope yet (test fragment).
   return ::mlir::success();
 }
