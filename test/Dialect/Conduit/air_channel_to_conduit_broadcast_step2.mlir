@@ -6,7 +6,7 @@
 // air-to-aie lowering pass has run), Pass B can extract the enclosing tile
 // coordinates and emit:
 //   - Per-consumer conduit.create aliases (@bcast_c0, @bcast_c1)
-//   - conduit.link {mode = "distribute", srcs = ["bcast"], dsts = ["bcast_c0", "bcast_c1"]}
+//   - conduit.link {mode = #conduit.link_mode<distribute>, srcs = ["bcast"], dsts = ["bcast_c0", "bcast_c1"]}
 //
 // This test exercises the aie.core enclosure path.
 //
@@ -43,7 +43,7 @@
 // Distribute link.
 // CHECK: conduit.link
 // CHECK-SAME: dsts = ["bcast_c0", "bcast_c1"]
-// CHECK-SAME: mode = "distribute"
+// CHECK-SAME: mode = #conduit.link_mode<distribute>
 // CHECK-SAME: srcs = ["bcast"]
 
 // No residual air.channel declarations.

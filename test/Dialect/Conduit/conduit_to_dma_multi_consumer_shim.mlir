@@ -58,7 +58,7 @@ module @multi_consumer_shim {
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     shim_consumer_tiles = array<i64: 0, 0>,
-                    routing_mode = "circuit"}
+                                        routing_mode = #conduit.routing_mode<circuit>}
 
     aie.shim_dma_allocation @chan_shim_alloc(%shim, S2MM, 0)
 

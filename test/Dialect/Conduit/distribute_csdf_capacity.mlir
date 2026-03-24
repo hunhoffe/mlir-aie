@@ -54,7 +54,7 @@ func.func @distribute_all_pass() {
                   consumer_rates = array<i64: 1>}
   conduit.link {srcs = ["dist_src_ok"],
                 dsts = ["dist_d1_ok", "dist_d2_ok", "dist_d3_ok"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -98,7 +98,7 @@ func.func @distribute_dst2_imbalanced() {
                   consumer_rates = array<i64: 1>}
   conduit.link {srcs = ["dist2_src"],
                 dsts = ["dist2_d1", "dist2_d2_bad", "dist2_d3"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -137,6 +137,6 @@ func.func @distribute_dst1_capacity() {
                   consumer_rates = array<i64: 1>}
   conduit.link {srcs = ["dist3_src"],
                 dsts = ["dist3_d1_small", "dist3_d2"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }

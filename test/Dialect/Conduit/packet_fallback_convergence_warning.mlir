@@ -25,28 +25,28 @@ module @pkt_fallback_convergence_warning {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
     conduit.create {name = "pkt_b", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
 
     // fallback1: circuit exhausted; Step 3.5c finds ch 0; no prior (ch0→(2,3)).
     // Records occupancy. No warning.
     conduit.create {name = "fallback1", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
-                    element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 1 : i64
+                    }
 
     // fallback2: Step 3.5d finds (ch0 → (2,3)) already recorded → hazard.
     // Warning emitted on aie.device op (annotation above).
     conduit.create {name = "fallback2", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
-                    element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 1 : i64
+                    }
 
     %core03 = aie.core(%t03) { aie.end }
     %core23 = aie.core(%t23) { aie.end }

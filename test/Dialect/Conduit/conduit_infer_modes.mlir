@@ -24,7 +24,7 @@
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create
 // CHECK-SAME: name = "adj"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 module @test_adjacent_shared_mem {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
@@ -33,8 +33,8 @@ module @test_adjacent_shared_mem {
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64
+                    }
   }
 }
 
@@ -49,7 +49,7 @@ module @test_adjacent_shared_mem {
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create
 // CHECK-SAME: name = "non_adj"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 module @test_non_adjacent_circuit {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
@@ -58,8 +58,8 @@ module @test_non_adjacent_circuit {
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64
+                    }
   }
 }
 
@@ -73,13 +73,13 @@ module @test_non_adjacent_circuit {
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create
 // CHECK-SAME: name = "already_circuit"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 // CHECK: conduit.create
 // CHECK-SAME: name = "already_packet"
-// CHECK-SAME: routing_mode = "packet"
+// CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
 // CHECK: conduit.create
 // CHECK-SAME: name = "to_infer"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 module @test_already_resolved {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
@@ -91,19 +91,19 @@ module @test_already_resolved {
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    routing_mode = "circuit"}
+                    routing_mode = #conduit.routing_mode<circuit>}
     conduit.create {name = "already_packet", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 4>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
     conduit.create {name = "to_infer", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64
+                    }
   }
 }
 
@@ -117,10 +117,10 @@ module @test_already_resolved {
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create
 // CHECK-SAME: name = "cas"
-// CHECK-SAME: routing_mode = "cascade"
+// CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
 // CHECK: conduit.create
 // CHECK-SAME: name = "dma_any"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 module @test_cascade_unchanged {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
@@ -130,13 +130,13 @@ module @test_cascade_unchanged {
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     depth = 1 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
     conduit.create {name = "dma_any", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64
+                    }
   }
 }
 
@@ -152,13 +152,13 @@ module @test_cascade_unchanged {
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create
 // CHECK-SAME: name = "c1"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 // CHECK: conduit.create
 // CHECK-SAME: name = "c2"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 // CHECK: conduit.create
 // CHECK-SAME: name = "c3_any"
-// CHECK-SAME: routing_mode = "packet"
+// CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
 module @test_packet_fallback {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
@@ -171,20 +171,20 @@ module @test_packet_fallback {
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    routing_mode = "circuit"}
+                    routing_mode = #conduit.routing_mode<circuit>}
     conduit.create {name = "c2", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    routing_mode = "circuit"}
+                    routing_mode = #conduit.routing_mode<circuit>}
     // Third conduit: circuit exhausted → packet fallback.
     conduit.create {name = "c3_any", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64
+                    }
   }
 }
 
@@ -198,10 +198,10 @@ module @test_packet_fallback {
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create
 // CHECK-SAME: name = "a1"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 // CHECK: conduit.create
 // CHECK-SAME: name = "a2"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 module @test_two_any_both_circuit {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
@@ -211,14 +211,14 @@ module @test_two_any_both_circuit {
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64
+                    }
     conduit.create {name = "a2", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64
+                    }
   }
 }
 
@@ -232,7 +232,7 @@ module @test_two_any_both_circuit {
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create
 // CHECK-SAME: name = "forced_dma"
-// CHECK-SAME: routing_mode = "circuit"
+// CHECK-SAME: #conduit.routing_mode<circuit>
 module @test_via_dma_override {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
@@ -242,7 +242,7 @@ module @test_via_dma_override {
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    viaDMA = true,
-                    routing_mode = "any"}
+                    viaDMA = true
+                    }
   }
 }

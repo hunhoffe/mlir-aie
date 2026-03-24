@@ -19,7 +19,7 @@ func.func @bad_distribute_cascade_src() {
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
-                  routing_mode = "cascade"}
+                  routing_mode = #conduit.routing_mode<cascade>}
   conduit.create {name = "out0", capacity = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
@@ -32,7 +32,7 @@ func.func @bad_distribute_cascade_src() {
                   depth = 1 : i64}
   // expected-error@+1 {{'conduit.link' op cascade channel 'casc_src' cannot be used in a 'distribute' link}}
   conduit.link {srcs = ["casc_src"], dsts = ["out0", "out1"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -55,9 +55,9 @@ func.func @bad_join_cascade_dst() {
                   consumer_tiles = array<i64: 0, 5>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
-                  routing_mode = "cascade"}
+                  routing_mode = #conduit.routing_mode<cascade>}
   // expected-error@+1 {{'conduit.link' op cascade channel 'casc_dst' cannot be used in a 'join' link}}
   conduit.link {srcs = ["in0", "in1"], dsts = ["casc_dst"],
-                mode = "join", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<join>, memtile = "tile(0,1)"}
   return
 }

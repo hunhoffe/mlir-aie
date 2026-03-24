@@ -28,7 +28,7 @@
 // by running the pass on a known-good input (Step 3.5 path) and checking the
 // remark that is emitted for packet fallback.
 
-// CHECK: remark: conduit-infer-modes: resolved routing_mode="any" to "packet"
+// CHECK: remark: conduit-infer-modes: resolved unresolved routing_mode to "packet"
 
 module @test_step35_remark {
   aie.device(npu1) {
@@ -42,20 +42,20 @@ module @test_step35_remark {
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    routing_mode = "circuit"}
+                    routing_mode = #conduit.routing_mode<circuit>}
     conduit.create {name = "c2", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    routing_mode = "circuit"}
-    // Third conduit with "any": circuit exhausted, packet fallback emits remark.
-    // expected-remark @+1 {{conduit-infer-modes: resolved routing_mode="any" to "packet" (circuit DMA exhausted on tile (0,2))}}
+                    routing_mode = #conduit.routing_mode<circuit>}
+    // Third conduit with absent routing_mode (unresolved): circuit exhausted,
+    // packet fallback emits remark.
+    // expected-remark @+1 {{conduit-infer-modes: resolved unresolved routing_mode to "packet" (circuit DMA exhausted on tile (0,2))}}
     conduit.create {name = "c3_any", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    routing_mode = "any"}
+                    depth = 1 : i64}
   }
 }

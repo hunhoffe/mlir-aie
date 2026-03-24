@@ -4,7 +4,7 @@
 func.func @bad_distribute_offsets() {
   // expected-error@+1 {{'conduit.link' op distribute mode: offsets count (1) must equal dsts count (2)}}
   conduit.link {srcs = ["in"], dsts = ["out0", "out1"],
-                           mode = "distribute", memtile = "tile(0,1)",
+                           mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)",
                            offsets = array<i64: 0>}
   return
 }
@@ -15,7 +15,7 @@ func.func @bad_distribute_offsets() {
 func.func @bad_join_offsets() {
   // expected-error@+1 {{'conduit.link' op join mode: offsets count (1) must equal srcs count (2)}}
   conduit.link {srcs = ["in0", "in1"], dsts = ["out"],
-                           mode = "join", memtile = "tile(0,1)",
+                           mode = #conduit.link_mode<join>, memtile = "tile(0,1)",
                            offsets = array<i64: 0>}
   return
 }
@@ -65,7 +65,7 @@ func.func @bad_subview_cross_block() {
 func.func @bad_distribute_multiple_srcs() {
   // expected-error@+1 {{'conduit.link' op distribute mode requires exactly 1 src, got 2}}
   conduit.link {srcs = ["in0", "in1"], dsts = ["out0", "out1"],
-                           mode = "distribute", memtile = "tile(0,1)"}
+                           mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -75,15 +75,15 @@ func.func @bad_distribute_multiple_srcs() {
 func.func @bad_join_multiple_dsts() {
   // expected-error@+1 {{'conduit.link' op join mode requires exactly 1 dst, got 2}}
   conduit.link {srcs = ["in0", "in1"], dsts = ["out0", "out1"],
-                           mode = "join", memtile = "tile(0,1)"}
+                           mode = #conduit.link_mode<join>, memtile = "tile(0,1)"}
   return
 }
 
 // -----
 
-// M3: unknown mode
+// M3: unknown mode — rejected by the ODS enum parser before the verifier runs
 func.func @bad_unknown_mode() {
-  // expected-error@+1 {{'conduit.link' op unknown mode 'relay'; expected distribute, join, or forward}}
+  // expected-error@+1 {{attribute 'mode' failed to satisfy constraint: Conduit link mode}}
   conduit.link {srcs = ["in"], dsts = ["out"],
                            mode = "relay", memtile = "tile(0,1)"}
   return
@@ -158,9 +158,9 @@ func.func @bad_csdf_missing_producer_rates() {
 
 // -----
 
-// M5: bad routing_mode value
+// M5: bad routing_mode value — rejected by the ODS enum parser before the verifier runs
 func.func @bad_routing_mode() {
-  // expected-error@+1 {{'conduit.create' op routing_mode must be "circuit", "packet", "cascade", "stream", or "any", got "broadcast"}}
+  // expected-error@+1 {{attribute 'routing_mode' failed to satisfy constraint: Conduit routing mode}}
   conduit.create {name = "bad_mode_ch", capacity = 4 : i64,
                   routing_mode = "broadcast"}
   return
@@ -201,7 +201,7 @@ func.func @bad_wait_with_dma_token() {
 func.func @bad_forward_two_srcs() {
   // expected-error@+1 {{'conduit.link' op forward mode requires exactly 1 src and 1 dst}}
   conduit.link {srcs = ["in0", "in1"], dsts = ["out"],
-                           mode = "forward", memtile = "tile(0,1)"}
+                           mode = #conduit.link_mode<forward>, memtile = "tile(0,1)"}
   return
 }
 
@@ -211,7 +211,7 @@ func.func @bad_forward_two_srcs() {
 func.func @bad_forward_two_dsts() {
   // expected-error@+1 {{'conduit.link' op forward mode requires exactly 1 src and 1 dst}}
   conduit.link {srcs = ["in"], dsts = ["out0", "out1"],
-                           mode = "forward", memtile = "tile(0,1)"}
+                           mode = #conduit.link_mode<forward>, memtile = "tile(0,1)"}
   return
 }
 

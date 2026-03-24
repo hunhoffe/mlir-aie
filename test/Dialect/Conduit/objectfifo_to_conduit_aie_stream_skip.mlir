@@ -7,7 +7,7 @@
 // producer-side buffer/lock allocation.
 //
 // Expected behavior:
-//   - A conduit.create is emitted with routing_mode = "stream".
+//   - A conduit.create is emitted with routing_mode = #conduit.routing_mode<stream>.
 //   - The aie_stream_port generic attribute is set.
 //   - The aie.objectfifo op is erased.
 //
@@ -18,7 +18,7 @@
 // CHECK:     conduit.create {
 // CHECK-SAME:   aie_stream_port = 0
 // CHECK-SAME:   name = "of_stream"
-// CHECK-SAME:   routing_mode = "stream"
+// CHECK-SAME:   routing_mode = #conduit.routing_mode<stream>
 // CHECK-NOT:   aie.objectfifo
 // CHECK:   }
 // CHECK: }

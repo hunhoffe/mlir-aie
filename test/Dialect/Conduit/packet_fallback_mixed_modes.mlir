@@ -32,35 +32,35 @@ module @pkt_fallback_mixed_modes {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "circuit"}
+                                        routing_mode = #conduit.routing_mode<circuit>}
     conduit.create {name = "circuit_b", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "circuit"}
+                                        routing_mode = #conduit.routing_mode<circuit>}
 
     // circuit_overflow: mode=any from (0,3); both circuit-mode channels taken;
     // Step 3.5c fails (no packet-mode channel, no free channel) → Step 4 error.
     conduit.create {name = "circuit_overflow", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
-                    element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 1 : i64
+                    }
 
     // packet_d from (1,3): explicit packet, designates ch 1 as packet-mode.
     conduit.create {name = "packet_d", capacity = 4 : i64,
                     producer_tile = array<i64: 1, 3>,
                     consumer_tiles = array<i64: 2, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
 
     // anymode_e from (1,3): circuit ch 0 is free → mode=any takes it as circuit.
     // (not a fallback — ch 0 is free, so circuit DMA is used directly)
     conduit.create {name = "anymode_e", capacity = 4 : i64,
                     producer_tile = array<i64: 1, 3>,
                     consumer_tiles = array<i64: 3, 5>,
-                    element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 1 : i64
+                    }
 
     %core03 = aie.core(%t03) { aie.end }
     %core13 = aie.core(%t13) { aie.end }

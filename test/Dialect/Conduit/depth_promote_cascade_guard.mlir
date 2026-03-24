@@ -12,12 +12,12 @@
 // depth=2, causing silent hardware incorrectness.
 //
 // Expected output:
-//   - conduit.create has routing_mode = "cascade"
+//   - conduit.create has routing_mode = #conduit.routing_mode<cascade>
 //   - depth stays at 1 (NOT promoted to 2; CHECK-NOT: depth = 2)
 //   - No promotion remark (cascade skip is silent)
 
-// The conduit.create line should contain routing_mode = "cascade" and depth = 1
-// CHECK: conduit.create {capacity = 1 : i64, {{.*}}depth = 1 : i64,{{.*}}routing_mode = "cascade"
+// The conduit.create line should contain routing_mode = #conduit.routing_mode<cascade> and depth = 1
+// CHECK: conduit.create {capacity = 1 : i64, {{.*}}depth = 1 : i64,{{.*}}routing_mode = #conduit.routing_mode<cascade>
 // Depth must NOT be promoted to 2.
 // CHECK-NOT: depth = 2
 
@@ -31,7 +31,7 @@ module {
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
                     depth = 1 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     // Producer core — acquire+compute inside a loop so criteria 3+4 are met.
     // The cascade guard (criterion 0) must still prevent promotion.

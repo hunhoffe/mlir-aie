@@ -18,7 +18,7 @@ module {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     // Producer core: put_cascade matched by get_cascade below.
     aie.core(%tile03) {

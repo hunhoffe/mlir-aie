@@ -1,6 +1,6 @@
 // RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
-// Pass C test: conduit.create with routing_mode = "packet" should produce
+// Pass C test: conduit.create with routing_mode = #conduit.routing_mode<packet> should produce
 // aie.packet_flow instead of aie.flow for the shim → consumer connection.
 //
 // This test exercises the routing_mode attribute added in Step 4 of the
@@ -14,7 +14,7 @@
 //   aie.lock:          4  (cons prod_lock init=1, cons cons_lock init=0 on
 //                          tile_0_2; prod_lock, cons_lock on shim tile_0_0)
 //   aie.packet_flow:   1  (shim DMA:0 → tile_0_2 DMA:0, with packet ID 0)
-//   aie.flow:          0  (must NOT appear — routing_mode = "packet")
+//   aie.flow:          0  (must NOT appear — routing_mode = #conduit.routing_mode<packet>)
 //   aie.mem:           1  (S2MM for tile_0_2)
 
 // CHECK-LABEL: module @packet_routing_mode
@@ -46,14 +46,14 @@ module @packet_routing_mode {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // Conduit channel with routing_mode = "packet".
+    // Conduit channel with routing_mode = #conduit.routing_mode<packet>.
     // Pass C Phase 4 should emit aie.packet_flow instead of aie.flow.
     conduit.create {name = "pkt_fifo", capacity = 10 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<10xi32>,
                     depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
 
     %core_0_2 = aie.core(%tile_0_2) {
       %c0 = arith.constant 0 : index

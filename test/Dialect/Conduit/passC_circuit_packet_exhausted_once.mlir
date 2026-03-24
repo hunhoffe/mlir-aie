@@ -34,13 +34,13 @@ module @passC_circuit_packet_exhausted_once {
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     shim_consumer_tiles = array<i64>,
-                    routing_mode = "circuit"}
+                                        routing_mode = #conduit.routing_mode<circuit>}
     conduit.create {name = "conduit_b", capacity = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     shim_consumer_tiles = array<i64>,
-                    routing_mode = "circuit"}
+                                        routing_mode = #conduit.routing_mode<circuit>}
 
     // conduit_c: routing_mode="any" — circuit exhausted + packet fails.
     // This is the B-3 site (passFailed+continue → passFailed+return).
@@ -48,8 +48,8 @@ module @passC_circuit_packet_exhausted_once {
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,
-                    shim_consumer_tiles = array<i64>,
-                    routing_mode = "any"}
+                    shim_consumer_tiles = array<i64>
+                    }
 
     // conduit_d: would also fail with "no DMA resources" IF the loop continued.
     // CHECK-NOT above verifies the loop returned after conduit_c.
@@ -57,8 +57,8 @@ module @passC_circuit_packet_exhausted_once {
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,
-                    shim_consumer_tiles = array<i64>,
-                    routing_mode = "any"}
+                    shim_consumer_tiles = array<i64>
+                    }
 
     %cprod = aie.core(%prod)  { aie.end }
     %ccons = aie.core(%cons1) { aie.end }

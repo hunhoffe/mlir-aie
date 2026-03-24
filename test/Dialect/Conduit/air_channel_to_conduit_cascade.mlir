@@ -3,7 +3,7 @@
 // Pass B (--air-channel-to-conduit) cascade channel_type test.
 //
 // Verifies that air.channel declarations with channel_type = "cascade" emit
-// a conduit.create with routing_mode = "cascade" (no longer a hard error),
+// a conduit.create with routing_mode = #conduit.routing_mode<cascade> (no longer a hard error),
 // and that put/get ops are rewritten to conduit.put_cascade / conduit.get_cascade.
 //
 // Uses memref<1xvector<16xi32>>: element type vector<16xi32> = 512 bits (AIE2).
@@ -15,10 +15,10 @@
 
 // CHECK-LABEL: module
 
-// --- Cascade channel: routing_mode = "cascade" ---
+// --- Cascade channel: routing_mode = #conduit.routing_mode<cascade> ---
 // CHECK:   conduit.create
 // CHECK-SAME: name = "cas_chan"
-// CHECK-SAME: routing_mode = "cascade"
+// CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
 
 // CHECK-NOT: air.channel
 

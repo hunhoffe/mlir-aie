@@ -61,7 +61,7 @@ void linkPhase(ConduitToDMAState &state) {
     auto srcs = linkOp.getSrcs();
     auto dsts = linkOp.getDsts();
     llvm::StringRef memtileStr = linkOp.getMemtile();
-    llvm::StringRef mode = linkOp.getMode();
+    LinkMode mode = linkOp.getMode();
     auto offsets = linkOp.getOffsets();
 
     AIE::TileOp memtile = state.lookupTile(memtileStr);
@@ -362,7 +362,7 @@ void linkPhase(ConduitToDMAState &state) {
         srcInfo.capacity > 0 ? srcInfo.capacity / linkDepth : 1;
 
     // Per-destination independent lock pairs on the MemTile (distribute).
-    bool isDistribute = (mode == "distribute");
+    bool isDistribute = (mode == LinkMode::Distribute);
     unsigned numDsts = static_cast<unsigned>(dsts.size());
 
     llvm::SmallVector<AIE::LockOp> sliceProdLocks;

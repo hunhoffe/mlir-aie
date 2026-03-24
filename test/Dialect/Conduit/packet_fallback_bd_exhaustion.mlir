@@ -32,28 +32,28 @@ module @pkt_fallback_bd_exhaustion {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
     conduit.create {name = "pkt_b", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
 
     // First mode=any fallback: depth=14 consumes 14 BD slots on (0,3).
     // tileBDUsed[(0,3)] = 14 after this.
     conduit.create {name = "fallback1", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
-                    element_type = memref<4xi32>, depth = 14 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 14 : i64
+                    }
 
     // Second mode=any fallback: depth=3 requires 3 BDs, but only 2 remain.
     // Step 3.5b: prodBDTotal(16) - prodBDUsed(14) = 2 < depth(3) → failure.
     conduit.create {name = "fallback2", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 4>,
-                    element_type = memref<4xi32>, depth = 3 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 3 : i64
+                    }
 
     %core03 = aie.core(%t03) { aie.end }
     %core23 = aie.core(%t23) { aie.end }

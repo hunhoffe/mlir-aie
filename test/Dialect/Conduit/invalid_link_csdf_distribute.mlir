@@ -48,7 +48,7 @@ func.func @distribute_unannotated_skip() {
   // No error: dst conduits lack rate annotations → skip Level 2.
   conduit.link {srcs = ["src_skip"],
                 dsts = ["dst0_skip", "dst1_skip"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -83,7 +83,7 @@ func.func @distribute_symmetric_pass() {
   // No error: composed consume = per-consumer = 1, source capacity sufficient.
   conduit.link {srcs = ["src_sym"],
                 dsts = ["dst0_sym", "dst1_sym"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -109,6 +109,6 @@ func.func @distribute_single_consumer_skip() {
                   consumer_rates = array<i64: 1>}
   // No error: single destination → Level 2 skip (per-edge check only).
   conduit.link {srcs = ["src_one"], dsts = ["dst0_one"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }

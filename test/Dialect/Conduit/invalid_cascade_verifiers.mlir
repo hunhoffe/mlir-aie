@@ -17,11 +17,11 @@
 // (not "cascade"), and emits the error.
 
 conduit.create {name = "circuit_ch", capacity = 4 : i64,
-                routing_mode = "circuit"}
+                routing_mode = #conduit.routing_mode<circuit>}
 
 func.func @put_cascade_wrong_routing_mode() {
   %v = arith.constant dense<0> : vector<16xi32>
-  // expected-error @+1 {{'conduit.put_cascade' op references conduit 'circuit_ch' which does not have routing_mode = "cascade"}}
+  // expected-error @+1 {{'conduit.put_cascade' op references conduit 'circuit_ch' which does not have routing_mode = #conduit.routing_mode<cascade>}}
   conduit.put_cascade "circuit_ch" (%v : vector<16xi32>)
   return
 }
@@ -31,10 +31,10 @@ func.func @put_cascade_wrong_routing_mode() {
 // (b) get_cascade referencing a packet-mode conduit must be rejected.
 
 conduit.create {name = "packet_ch", capacity = 4 : i64,
-                routing_mode = "packet"}
+                routing_mode = #conduit.routing_mode<packet>}
 
 func.func @get_cascade_wrong_routing_mode() {
-  // expected-error @+1 {{'conduit.get_cascade' op references conduit 'packet_ch' which does not have routing_mode = "cascade"}}
+  // expected-error @+1 {{'conduit.get_cascade' op references conduit 'packet_ch' which does not have routing_mode = #conduit.routing_mode<cascade>}}
   %v = conduit.get_cascade "packet_ch" : vector<16xi32>
   return
 }
@@ -46,7 +46,7 @@ func.func @get_cascade_wrong_routing_mode() {
 // or integer vector type" error.
 
 conduit.create {name = "cas_float", capacity = 1 : i64,
-                routing_mode = "cascade"}
+                routing_mode = #conduit.routing_mode<cascade>}
 
 func.func @put_cascade_float_type() {
   %v = arith.constant 0.0 : f32
@@ -62,7 +62,7 @@ func.func @put_cascade_float_type() {
 // 512 (AIE2); emits the "has width N bits; must be 384 bits ... or 512 bits" error.
 
 conduit.create {name = "cas_narrow", capacity = 1 : i64,
-                routing_mode = "cascade"}
+                routing_mode = #conduit.routing_mode<cascade>}
 
 func.func @put_cascade_wrong_width() {
   %v = arith.constant 0 : i64
@@ -73,11 +73,11 @@ func.func @put_cascade_wrong_width() {
 
 // -----
 
-// (e) conduit.link with mode="cascade" must be rejected by Link::verify().
-// The first check in Link::verify() rejects "cascade" with a specific error.
+// (e) conduit.link with mode="cascade" is rejected by the ODS enum parser.
+// "cascade" is not a valid LinkMode enum value (only distribute/join/forward).
 
 func.func @link_cascade_mode() {
-  // expected-error @+1 {{conduit.link: cascade mode not yet supported}}
+  // expected-error @+1 {{attribute 'mode' failed to satisfy constraint: Conduit link mode}}
   conduit.link {srcs = ["src"], dsts = ["dst"],
                 mode = "cascade", memtile = "tile(0,1)"}
   return

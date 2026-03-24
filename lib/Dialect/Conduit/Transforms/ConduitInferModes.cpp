@@ -103,22 +103,20 @@ struct ConduitInferModesPass
 
     module.walk([&](Create op) {
       auto rm = op.getRoutingMode();
-      if (rm && rm->str() == "any")
+      // Absent routing_mode = unresolved (formerly "any").
+      if (!rm.has_value())
         anyConduits.push_back(op);
       else
         otherConduits.push_back(op);
     });
 
-    // Pre-consume MM2S channels already allocated by non-"any" conduits so that
-    // the budget seen by "any" conduits is accurate.  Non-"any" conduits use
-    // circuit mode (or cascade, which uses no DMA channels).
+    // Pre-consume MM2S channels already allocated by already-resolved conduits
+    // so that the budget seen by unresolved conduits is accurate.
     for (Create op : otherConduits) {
       auto rm = op.getRoutingMode();
       // Cascade and shared-memory conduits consume no DMA channels.
-      if (rm && rm->str() == "cascade")
+      if (rm && *rm == RoutingMode::Cascade)
         continue;
-      if (rm && rm->str() == "any")
-        continue; // shouldn't happen (excluded above)
 
       auto pt = op.getProducerTile();
       if (!pt || pt->size() < 2)
@@ -155,20 +153,21 @@ struct ConduitInferModesPass
     mlir::OpBuilder builder(module.getContext());
     bool failed = false;
 
-    // Now resolve each "any" conduit.
+    // Now resolve each unresolved conduit (absent routing_mode).
     for (Create op : anyConduits) {
       auto pt = op.getProducerTile();
       if (!pt || pt->size() < 2) {
         // No producer tile info — cannot determine topology; default to circuit.
-        op->setAttr("routing_mode",
-                    builder.getStringAttr("circuit"));
+        op.setRoutingModeAttr(
+            RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
         continue;
       }
       int64_t prodCol = (*pt)[0], prodRow = (*pt)[1];
 
       // Shim producer: always use circuit mode (shim DMA).
       if (prodRow == 0) {
-        op->setAttr("routing_mode", builder.getStringAttr("circuit"));
+        op.setRoutingModeAttr(
+            RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
         continue;
       }
 
@@ -176,7 +175,8 @@ struct ConduitInferModesPass
       if (!prodTileVal) {
         // Producer tile not in device: cannot route, default to circuit and
         // let Pass C emit the appropriate error.
-        op->setAttr("routing_mode", builder.getStringAttr("circuit"));
+        op.setRoutingModeAttr(
+            RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
         continue;
       }
 
@@ -189,7 +189,7 @@ struct ConduitInferModesPass
       //
       // If there is exactly one consumer tile, it is adjacent to the producer
       // (isLegalMemAffinity in either direction), and via_DMA is not set,
-      // then Pass C will use shared memory.  Assign "circuit" — Pass C Phase 3c
+      // then Pass C will use shared memory.  Assign Circuit — Pass C Phase 3c
       // handles the shared-memory path without consuming a DMA channel.
       // -----------------------------------------------------------------------
       if (!viaDMA && ct && ct->size() == 2) {
@@ -199,7 +199,8 @@ struct ConduitInferModesPass
                    targetModel.isLegalMemAffinity(consCol, consRow,
                                                   prodCol, prodRow);
         if (adj) {
-          op->setAttr("routing_mode", builder.getStringAttr("circuit"));
+          op.setRoutingModeAttr(
+              RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
           continue;
         }
       }
@@ -208,9 +209,9 @@ struct ConduitInferModesPass
       // R3b: Circuit DMA channel available?
       //
       // Query the hardware MM2S channel limit from the target model.
-      // If the next-available slot is within bounds, assign "circuit" and
-      // advance the counter so the next "any" conduit on the same tile sees
-      // the reduced budget.
+      // If the next-available slot is within bounds, assign Circuit and
+      // advance the counter so the next unresolved conduit on the same tile
+      // sees the reduced budget.
       // -----------------------------------------------------------------------
       uint32_t maxMM2S = static_cast<uint32_t>(
           targetModel.getNumSourceSwitchboxConnections(
@@ -225,7 +226,8 @@ struct ConduitInferModesPass
 
       if (static_cast<uint32_t>(nextCh) < maxMM2S) {
         tileNextMM2S[prodTileVal]++;
-        op->setAttr("routing_mode", builder.getStringAttr("circuit"));
+        op.setRoutingModeAttr(
+            RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
         continue;
       }
 
@@ -233,13 +235,14 @@ struct ConduitInferModesPass
       // Step 3.5: Packet DMA fallback.
       //
       // Circuit DMA is exhausted on this tile.  If packet IDs remain, assign
-      // "packet".  Each packet assignment per consumer tile costs one packet ID.
+      // Packet.  Each packet assignment per consumer tile costs one packet ID.
       // -----------------------------------------------------------------------
       unsigned numConsumers = ct ? (ct->size() / 2) : 1;
       if (pktBudget >= numConsumers) {
         pktBudget -= static_cast<uint8_t>(numConsumers);
-        op->setAttr("routing_mode", builder.getStringAttr("packet"));
-        op->emitRemark("conduit-infer-modes: resolved routing_mode=\"any\" "
+        op.setRoutingModeAttr(
+            RoutingModeAttr::get(module.getContext(), RoutingMode::Packet));
+        op->emitRemark("conduit-infer-modes: resolved unresolved routing_mode "
                        "to \"packet\" (circuit DMA exhausted on tile (")
             << prodCol << "," << prodRow << "))";
         continue;
@@ -248,7 +251,7 @@ struct ConduitInferModesPass
       // -----------------------------------------------------------------------
       // Step 4: All modes exhausted — hard error.
       // -----------------------------------------------------------------------
-      op->emitError("conduit-infer-modes: cannot resolve routing_mode=\"any\" "
+      op->emitError("conduit-infer-modes: cannot resolve routing_mode "
                     "for conduit '")
           << op.getName()
           << "': circuit DMA MM2S channels exhausted on tile ("

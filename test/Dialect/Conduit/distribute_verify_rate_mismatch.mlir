@@ -44,7 +44,7 @@ func.func @distribute_dst_imbalanced() {
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
   conduit.link {srcs = ["rm_src"], dsts = ["rm_d1_bad", "rm_d2"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -73,6 +73,6 @@ func.func @distribute_src_imbalanced() {
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
   conduit.link {srcs = ["rm2_src_bad"], dsts = ["rm2_d1"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }

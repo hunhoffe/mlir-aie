@@ -34,7 +34,7 @@
 // Distribute link.
 // CHECK: conduit.link
 // CHECK-SAME: dsts = ["bcast_c0", "bcast_c1"]
-// CHECK-SAME: mode = "distribute"
+// CHECK-SAME: mode = #conduit.link_mode<distribute>
 // CHECK-SAME: srcs = ["bcast"]
 
 // No residual air ops.

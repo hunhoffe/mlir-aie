@@ -101,7 +101,7 @@ func.func @case2_m7_capacity_insufficient() {
 // CHECK: 'conduit.put_cascade' op cascade value type 'i32' has width 32 bits; must be 384 bits
 
 conduit.create {name = "cas_bad_width", capacity = 1 : i64,
-                routing_mode = "cascade"}
+                routing_mode = #conduit.routing_mode<cascade>}
 
 func.func @case3_cascade_wrong_width(%c : i32) {
   conduit.put_cascade "cas_bad_width" (%c : i32)
@@ -134,7 +134,7 @@ module @case4_cascade_depth_gt1 {
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
                     depth = 2 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     aie.core(%tile03) {
       %v = arith.constant dense<0> : vector<16xi32>
@@ -254,7 +254,7 @@ module @case7_unmatched_put_cascade {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     aie.core(%tile03) {
       %v = arith.constant dense<7> : vector<16xi32>
@@ -289,7 +289,7 @@ module @case8_ambiguous_get_cascade {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     aie.core(%tile03) {
       %v = arith.constant dense<5> : vector<16xi32>

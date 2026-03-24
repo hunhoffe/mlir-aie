@@ -80,9 +80,13 @@ void collectPhase(ConduitToDMAState &state) {
         info.accessPattern.push_back(v);
     }
 
-    // Routing mode (enum; absent = unresolved/circuit-default).
+    // Routing mode (enum; absent = unresolved — treated as "any" in Pass C
+    // so that Step 3.5 packet fallback still applies when no explicit mode
+    // has been set via --conduit-infer-modes).
     if (auto rm = op.getRoutingMode())
       info.routingMode = stringifyRoutingMode(*rm).str();
+    else
+      info.routingMode = "any"; // absent = unresolved; let Pass C decide
 
     // Core stream port for routing_mode="stream".
     if (auto aspAttr =

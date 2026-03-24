@@ -2,7 +2,7 @@
 //
 // Pass C (--conduit-to-dma) cascade mode test.
 //
-// Verifies that a conduit.create with routing_mode = "cascade" is lowered to:
+// Verifies that a conduit.create with routing_mode = #conduit.routing_mode<cascade> is lowered to:
 //   - aie.cascade_flow(src_tile, dst_tile) in the device body
 //   - aie.put_cascade(value : type) in the producer core body
 //   - aie.get_cascade() : type in the consumer core body
@@ -36,7 +36,7 @@ module {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     // Producer core: computes a vector and puts it on the cascade stream.
     aie.core(%tile03) {

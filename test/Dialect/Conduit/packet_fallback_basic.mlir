@@ -10,9 +10,9 @@
 // same physical MM2S channel with a new flow ID.
 //
 // Topology (npu1, 4 columns):
-//   pkt_a: (0,3) → (2,3)  routing_mode = "packet"  MM2S ch 0  flow ID 0
-//   pkt_b: (0,3) → (3,3)  routing_mode = "packet"  MM2S ch 1  flow ID 1
-//   fallback: (0,3) → (1,5)  routing_mode = "any"
+//   pkt_a: (0,3) → (2,3)  routing_mode = #conduit.routing_mode<packet>  MM2S ch 0  flow ID 0
+//   pkt_b: (0,3) → (3,3)  routing_mode = #conduit.routing_mode<packet>  MM2S ch 1  flow ID 1
+//   fallback: (0,3) → (1,5)  
 //             → circuit exhausted; ch 0 is packet-mode → shares ch 0
 //             → emits packet_flow(2) with new ID
 //
@@ -42,22 +42,22 @@ module @pkt_fallback_basic {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
 
     // pkt_b: explicit packet mode — MM2S ch 1 designated packet-mode.
     conduit.create {name = "pkt_b", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
 
     // fallback: mode=any; both MM2S channels allocated (packet-mode ch 0 and
     // ch 1); Step 3.5c finds existing packet-mode ch 0, shares it.
     conduit.create {name = "fallback", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
-                    element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 1 : i64
+                    }
 
     %core03 = aie.core(%t03) { aie.end }
     %core23 = aie.core(%t23) { aie.end }

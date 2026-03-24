@@ -44,7 +44,7 @@ func.func @distribute_composed_uniform_pass() {
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
   conduit.link {srcs = ["cc_src"], dsts = ["cc_d1", "cc_d2"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -92,7 +92,7 @@ func.func @distribute_composed_mixed_pass() {
                   producer_rates = array<i64: 3>,
                   consumer_rates = array<i64: 3>}
   conduit.link {srcs = ["mx_src"], dsts = ["mx_d1", "mx_d2", "mx_d3"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }
 
@@ -132,6 +132,6 @@ func.func @distribute_composed_slow_consumer_pass() {
                   producer_rates = array<i64: 1, 1>,
                   consumer_rates = array<i64: 1, 1>}
   conduit.link {srcs = ["sl_src"], dsts = ["sl_d1", "sl_d2"],
-                mode = "distribute", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)"}
   return
 }

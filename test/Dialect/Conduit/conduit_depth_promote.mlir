@@ -80,7 +80,7 @@ func.func @linked_conduit_not_promoted() {
                   depth = 1 : i64}
   // This link causes both "linked_fifo" and "linked_out" to be excluded.
   conduit.link {srcs = ["linked_fifo"], dsts = ["linked_out"],
-                           mode = "forward", memtile = "tile(0,1)"}
+                           mode = #conduit.link_mode<forward>, memtile = "tile(0,1)"}
   return
 }
 

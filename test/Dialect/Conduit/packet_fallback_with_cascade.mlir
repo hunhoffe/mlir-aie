@@ -39,26 +39,26 @@ module @pkt_fallback_with_cascade {
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>, depth = 1 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     // Packet conduits — fill both MM2S channels on (0,3) as packet-mode.
     conduit.create {name = "pkt_a", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
     conduit.create {name = "pkt_b", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "packet"}
+                    routing_mode = #conduit.routing_mode<packet>}
 
     // mode=any: circuit exhausted → Step 3.5 shares packet ch 0.
     conduit.create {name = "fallback", capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
-                    element_type = memref<4xi32>, depth = 1 : i64,
-                    routing_mode = "any"}
+                    element_type = memref<4xi32>, depth = 1 : i64
+                    }
 
     %core03 = aie.core(%t03) {
       %v = arith.constant dense<0> : vector<16xi32>

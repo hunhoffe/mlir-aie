@@ -21,7 +21,7 @@
 // CHECK:     conduit.link
 // CHECK-SAME:   dsts = ["link2", "link3", "link4"]
 // CHECK-SAME:   memtile = "tile(2,1)"
-// CHECK-SAME:   mode = "distribute"
+// CHECK-SAME:   mode = #conduit.link_mode<distribute>
 // CHECK-SAME:   offsets = array<i64: 0, 16, 36>
 // CHECK-SAME:   srcs = ["link1"]
 // CHECK-NOT: aie.objectfifo

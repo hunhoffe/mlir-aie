@@ -3,7 +3,7 @@
 // Pass A test: objectfifo with via_cascade=true.
 //
 // Verifies that aie.objectfifo with via_cascade=true is lowered to:
-//   - conduit.create with routing_mode = "cascade" and depth = 1
+//   - conduit.create with routing_mode = #conduit.routing_mode<cascade> and depth = 1
 //   - conduit.put_cascade in the producer core body
 //     (acquire + memref.store + release → put_cascade with the stored vector)
 //   - conduit.get_cascade in the consumer core body
@@ -20,7 +20,7 @@
 // CHECK:   conduit.create
 // CHECK-SAME: depth = 1 : i64
 // CHECK-SAME: name = "cas_fifo"
-// CHECK-SAME: routing_mode = "cascade"
+// CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
 
 // --- Producer core: acquire+store+release → put_cascade ---
 // CHECK:   aie.core

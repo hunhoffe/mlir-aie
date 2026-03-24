@@ -20,7 +20,7 @@
 func.func @forward_no_srcs() {
   // expected-error @+1 {{'conduit.link' op forward mode requires exactly 1 src and 1 dst, got 0 src(s) and 1 dst(s)}}
   conduit.link {srcs = [], dsts = ["out"],
-                mode = "forward", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<forward>, memtile = "tile(0,1)"}
   return
 }
 
@@ -30,6 +30,6 @@ func.func @forward_no_srcs() {
 func.func @forward_no_dsts() {
   // expected-error @+1 {{'conduit.link' op forward mode requires exactly 1 src and 1 dst, got 1 src(s) and 0 dst(s)}}
   conduit.link {srcs = ["in"], dsts = [],
-                mode = "forward", memtile = "tile(0,1)"}
+                mode = #conduit.link_mode<forward>, memtile = "tile(0,1)"}
   return
 }

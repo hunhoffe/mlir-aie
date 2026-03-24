@@ -3,17 +3,17 @@
 // Pass B (--air-channel-to-conduit) channel_type propagation test.
 //
 // Verifies that air.channel declarations with channel_type = "dma_packet" produce
-// a conduit.create with routing_mode = "packet", while channels without channel_type
+// a conduit.create with routing_mode = #conduit.routing_mode<packet>, while channels without channel_type
 // (dma_stream default) produce a conduit.create with no routing_mode attribute.
 //
 // Sprint item 5a: channel_type → routing_mode propagation.
 
 // CHECK-LABEL: module
 
-// --- Packet channel: routing_mode = "packet" ---
+// --- Packet channel: routing_mode = #conduit.routing_mode<packet> ---
 // CHECK:   conduit.create
 // CHECK-SAME: name = "pkt_chan"
-// CHECK-SAME: routing_mode = "packet"
+// CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
 
 // --- Stream channel: no routing_mode attribute ---
 // CHECK:   conduit.create
@@ -24,7 +24,7 @@
 
 module {
   // air.channel declaration with channel_type = "dma_packet".
-  // Expected: conduit.create with routing_mode = "packet".
+  // Expected: conduit.create with routing_mode = #conduit.routing_mode<packet>.
   "air.channel"() {sym_name = "pkt_chan", size = [1, 1],
                    channel_type = "dma_packet"} : () -> ()
 

@@ -21,7 +21,7 @@ module {
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
                     depth = 2 : i64,
-                    routing_mode = "cascade"}
+                    routing_mode = #conduit.routing_mode<cascade>}
 
     aie.core(%tile03) {
       %v = arith.constant dense<42> : vector<16xi32>

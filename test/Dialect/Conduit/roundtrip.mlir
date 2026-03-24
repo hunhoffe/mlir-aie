@@ -35,9 +35,9 @@ func.func @window_ops() {
 func.func @link_op() {
   // CHECK: conduit.link
   // CHECK-SAME: memtile = "tile(0,1)"
-  // CHECK-SAME: mode = "distribute"
+  // CHECK-SAME: mode = #conduit.link_mode<distribute>
   conduit.link {srcs = ["in"], dsts = ["out0", "out1"],
-                           mode = "distribute", memtile = "tile(0,1)",
+                           mode = #conduit.link_mode<distribute>, memtile = "tile(0,1)",
                            offsets = array<i64: 0, 1024>}
   return
 }
@@ -182,18 +182,18 @@ func.func @csdf_create() {
 }
 
 // CHECK-LABEL: func.func @routing_mode_packet
-// Tests that conduit.create with routing_mode = "packet" roundtrips correctly.
+// Tests that conduit.create with routing_mode = #conduit.routing_mode<packet> roundtrips correctly.
 func.func @routing_mode_packet() {
   // CHECK: conduit.create
   // CHECK-SAME: capacity = 10 : i64
   // CHECK-SAME: name = "pkt_ch"
-  // CHECK-SAME: routing_mode = "packet"
+  // CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
   conduit.create {name = "pkt_ch", capacity = 10 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<10xi32>,
                   depth = 1 : i64,
-                  routing_mode = "packet"}
+                  routing_mode = #conduit.routing_mode<packet>}
   return
 }
 
@@ -266,7 +266,7 @@ func.func @cascade_ops(%v : vector<16xi32>) -> vector<16xi32> {
                   producer_tile = array<i64: 0, 3>,
                   consumer_tiles = array<i64: 1, 3>,
                   depth = 1 : i64,
-                  routing_mode = "cascade"}
+                  routing_mode = #conduit.routing_mode<cascade>}
   // CHECK: conduit.put_cascade "cas"
   // CHECK-SAME: vector<16xi32>
   conduit.put_cascade "cas" (%v : vector<16xi32>)

@@ -238,8 +238,8 @@ struct ConduitDepthPromotePass
     // Pre-populate from existing conduit.create ops.
     module.walk([&](Create op) {
       // Cascade conduits use no buffers, locks, or BDs — skip resource counting.
-      if (auto rm = op->getAttrOfType<mlir::StringAttr>("routing_mode"))
-        if (rm.getValue() == "cascade")
+      if (auto rm = op.getRoutingMode())
+        if (*rm == RoutingMode::Cascade)
           return;
 
       auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
@@ -299,10 +299,10 @@ struct ConduitDepthPromotePass
       // The cascade stream is a hardware register (rendezvous channel), not a FIFO.
       // Promoting to depth-2 would emit an incorrect depth attribute that Pass C
       // cannot implement. Skip silently; do not emit a remark (this is expected).
-      if (auto routingMode =
-              createOp->getAttrOfType<mlir::StringAttr>("routing_mode")) {
-        if (routingMode.getValue() == "cascade")
-          continue;
+      if (auto typedOp = mlir::dyn_cast<Create>(createOp)) {
+        if (auto rm = typedOp.getRoutingMode())
+          if (*rm == RoutingMode::Cascade)
+            continue;
       }
 
       // Criterion 1: CSDF / cyclostatic access pattern.
