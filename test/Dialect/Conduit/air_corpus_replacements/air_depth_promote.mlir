@@ -23,9 +23,8 @@
 // CHECK-LABEL: module
 
 // conduit.create emitted with depth=1.
-// CHECK: conduit.create
+// CHECK: conduit.create @chan
 // CHECK-SAME: depth = 1
-// CHECK-SAME: name = "chan"
 
 // Tier 3 ops inside loop body.
 // CHECK: scf.for

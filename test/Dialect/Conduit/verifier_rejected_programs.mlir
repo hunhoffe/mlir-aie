@@ -52,7 +52,7 @@
 // CHECK: 'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=5 != sum(consumer_rates)*len(producer_rates)=2
 
 func.func @case1_m6_csdf_rate_imbalance() {
-  conduit.create {name = "csdf_imbal", capacity = 5 : i64,
+  conduit.create @csdf_imbal {capacity = 5 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -76,7 +76,7 @@ func.func @case1_m6_csdf_rate_imbalance() {
 // CHECK: M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds capacity=2
 
 func.func @case2_m7_capacity_insufficient() {
-  conduit.create {name = "csdf_cap", capacity = 2 : i64,
+  conduit.create @csdf_cap {capacity = 2 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -100,7 +100,7 @@ func.func @case2_m7_capacity_insufficient() {
 
 // CHECK: 'conduit.put_cascade' op cascade value type 'i32' has width 32 bits; must be 384 bits
 
-conduit.create {name = "cas_bad_width", capacity = 1 : i64,
+conduit.create @cas_bad_width {capacity = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
 
 func.func @case3_cascade_wrong_width(%c : i32) {
@@ -129,7 +129,7 @@ module @case4_cascade_depth_gt1 {
     %tile03 = aie.tile(0, 3)
     %tile13 = aie.tile(1, 3)
 
-    conduit.create {name = "cas_d2", capacity = 2 : i64,
+    conduit.create @cas_d2 {capacity = 2 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
@@ -250,7 +250,7 @@ module @case7_unmatched_put_cascade {
   aie.device(npu1) {
     %tile03 = aie.tile(0, 3)
 
-    conduit.create {name = "cas_unmatched", capacity = 1 : i64,
+    conduit.create @cas_unmatched {capacity = 1 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
@@ -285,7 +285,7 @@ module @case8_ambiguous_get_cascade {
     %tile13 = aie.tile(1, 3)
     %tile23 = aie.tile(2, 3)
 
-    conduit.create {name = "cas_ambig", capacity = 1 : i64,
+    conduit.create @cas_ambig {capacity = 1 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
@@ -335,7 +335,7 @@ module @case9_sharedmem_nonadj_alloc {
     %tile03 = aie.tile(0, 3)
     %tile33 = aie.tile(3, 3)
 
-    conduit.create {name = "shm_bad", capacity = 1 : i64,
+    conduit.create @shm_bad {capacity = 1 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<16xi32>,
@@ -382,7 +382,7 @@ module @case9_sharedmem_nonadj_alloc {
 // CHECK: 'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow
 
 func.func @case10_m8a_double_release() {
-  conduit.create {name = "dbl_rel", capacity = 1 : i64,
+  conduit.create @dbl_rel {capacity = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,

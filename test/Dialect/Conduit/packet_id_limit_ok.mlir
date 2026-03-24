@@ -102,42 +102,42 @@ module @pkt_id_limit_ok {
     // Column 2: 8 packet conduits, each to a unique consumer tile.
     // Packet IDs 0-7.
 
-    conduit.create {name = "p00", capacity = 4 : i64,
+    conduit.create @p00 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 1>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p01", capacity = 4 : i64,
+    conduit.create @p01 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p02", capacity = 4 : i64,
+    conduit.create @p02 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p03", capacity = 4 : i64,
+    conduit.create @p03 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 4>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p04", capacity = 4 : i64,
+    conduit.create @p04 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p05", capacity = 4 : i64,
+    conduit.create @p05 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 6>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p06", capacity = 4 : i64,
+    conduit.create @p06 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 7>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p07", capacity = 4 : i64,
+    conduit.create @p07 {capacity = 4 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 8>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -146,42 +146,42 @@ module @pkt_id_limit_ok {
     // Column 3: 8 packet conduits, each to a unique consumer tile.
     // Packet IDs 8-15.
 
-    conduit.create {name = "p08", capacity = 4 : i64,
+    conduit.create @p08 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 1>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p09", capacity = 4 : i64,
+    conduit.create @p09 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p10", capacity = 4 : i64,
+    conduit.create @p10 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p11", capacity = 4 : i64,
+    conduit.create @p11 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 4>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p12", capacity = 4 : i64,
+    conduit.create @p12 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p13", capacity = 4 : i64,
+    conduit.create @p13 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 6>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p14", capacity = 4 : i64,
+    conduit.create @p14 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 7>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p15", capacity = 4 : i64,
+    conduit.create @p15 {capacity = 4 : i64,
                     producer_tile = array<i64: 3, 0>,
                     consumer_tiles = array<i64: 3, 8>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -190,42 +190,42 @@ module @pkt_id_limit_ok {
     // Column 6: 8 packet conduits, each to a unique consumer tile.
     // Packet IDs 16-23.
 
-    conduit.create {name = "p16", capacity = 4 : i64,
+    conduit.create @p16 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 1>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p17", capacity = 4 : i64,
+    conduit.create @p17 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p18", capacity = 4 : i64,
+    conduit.create @p18 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p19", capacity = 4 : i64,
+    conduit.create @p19 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 4>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p20", capacity = 4 : i64,
+    conduit.create @p20 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p21", capacity = 4 : i64,
+    conduit.create @p21 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 6>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p22", capacity = 4 : i64,
+    conduit.create @p22 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 7>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p23", capacity = 4 : i64,
+    conduit.create @p23 {capacity = 4 : i64,
                     producer_tile = array<i64: 6, 0>,
                     consumer_tiles = array<i64: 6, 8>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -234,42 +234,42 @@ module @pkt_id_limit_ok {
     // Column 7: 8 packet conduits, each to a unique consumer tile.
     // Packet IDs 24-31.
 
-    conduit.create {name = "p24", capacity = 4 : i64,
+    conduit.create @p24 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 1>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p25", capacity = 4 : i64,
+    conduit.create @p25 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p26", capacity = 4 : i64,
+    conduit.create @p26 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p27", capacity = 4 : i64,
+    conduit.create @p27 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 4>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p28", capacity = 4 : i64,
+    conduit.create @p28 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p29", capacity = 4 : i64,
+    conduit.create @p29 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 6>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p30", capacity = 4 : i64,
+    conduit.create @p30 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 7>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "p31", capacity = 4 : i64,
+    conduit.create @p31 {capacity = 4 : i64,
                     producer_tile = array<i64: 7, 0>,
                     consumer_tiles = array<i64: 7, 8>,
                     element_type = memref<4xi32>, depth = 1 : i64,

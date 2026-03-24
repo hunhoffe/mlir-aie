@@ -13,7 +13,7 @@
 
 // wait_all_async with an i32 non-token input must be rejected.
 func.func @wait_all_async_non_token(%bad : i32) {
-  conduit.create {name = "ch_wa", capacity = 64 : i64}
+  conduit.create @ch_wa {capacity = 64 : i64}
   %tok = conduit.put_memref_async {name = "ch_wa", num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -30,7 +30,7 @@ func.func @wait_all_async_non_token(%bad : i32) {
 // WaitAllAsync::verify() calls checkTokenDoesNotEscape() on its result.
 func.func private @consumer(%tok : !conduit.dma.token)
 func.func @wait_all_async_escape_call() {
-  conduit.create {name = "ch_wa2", capacity = 64 : i64}
+  conduit.create @ch_wa2 {capacity = 64 : i64}
   %tok = conduit.put_memref_async {name = "ch_wa2", num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token

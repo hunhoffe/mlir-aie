@@ -51,8 +51,7 @@ module @multi_consumer_shim {
     %tile_3 = aie.tile(0, 3)  // compute consumer
 
     // One conduit: compute producer → both compute and shim consumers.
-    conduit.create {name = "chan",
-                    depth = 1 : i64,
+    conduit.create @chan {depth = 1 : i64,
                     capacity = 16 : i64,
                     element_type = memref<16xi32>,
                     producer_tile = array<i64: 0, 2>,

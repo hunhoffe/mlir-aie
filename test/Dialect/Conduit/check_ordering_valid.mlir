@@ -11,7 +11,7 @@
 // CHECK: module
 
 module {
-  conduit.create {name = "ch_single", capacity = 64 : i64,
+  conduit.create @ch_single {capacity = 64 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 1, 2>,
                   producer_rates = array<i64: 1>,

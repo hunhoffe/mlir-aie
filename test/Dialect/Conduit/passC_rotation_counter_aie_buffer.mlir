@@ -29,12 +29,12 @@ module @passC_rotation_counter_aie_buffer {
 
     // Two depth-2 channels from shim → compute tile.
     // Both need rotation counters (depth=2 requires runtime index tracking).
-    conduit.create {name = "fifoA", capacity = 64 : i64, depth = 2 : i64,
+    conduit.create @fifoA {capacity = 64 : i64, depth = 2 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}
 
-    conduit.create {name = "fifoB", capacity = 64 : i64, depth = 2 : i64,
+    conduit.create @fifoB {capacity = 64 : i64, depth = 2 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}

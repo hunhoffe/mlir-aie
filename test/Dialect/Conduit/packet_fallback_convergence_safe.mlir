@@ -25,19 +25,19 @@ module @pkt_fallback_convergence_safe {
     %t33 = aie.tile(3, 3)
 
     // pkt_a, pkt_b: fill MM2S ch 0 and ch 1 as packet-mode.
-    conduit.create {name = "pkt_a", capacity = 4 : i64,
+    conduit.create @pkt_a {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "pkt_b", capacity = 4 : i64,
+    conduit.create @pkt_b {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // fallback1: mode=any → (2,3); Step 3.5c picks ch 0. Records (ch0→(2,3)).
-    conduit.create {name = "fallback1", capacity = 4 : i64,
+    conduit.create @fallback1 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64
@@ -45,7 +45,7 @@ module @pkt_fallback_convergence_safe {
 
     // fallback2: mode=any → (3,3); Step 3.5c picks ch 0 (same channel).
     // Step 3.5d: (ch0→(2,3)) exists, but (3,3) ≠ (2,3) → no hazard. No warn.
-    conduit.create {name = "fallback2", capacity = 4 : i64,
+    conduit.create @fallback2 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64

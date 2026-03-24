@@ -23,7 +23,7 @@ module @conduit_create_producer_dims_type_check {
 
     // producer_dimensions set to a string attribute — obviously wrong, never a
     // BDDimLayoutArrayAttr. The verifier should catch and reject this.
-    conduit.create {name = "badDims", capacity = 32 : i64, depth = 1 : i64,
+    conduit.create @badDims {capacity = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,

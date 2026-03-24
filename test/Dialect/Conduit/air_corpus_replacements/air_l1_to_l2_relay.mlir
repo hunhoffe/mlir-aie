@@ -18,11 +18,9 @@
 // CHECK-LABEL: module
 
 // Both channels become conduit.create ops.
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch_in"
+// CHECK: conduit.create @ch_in
 
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch_out"
+// CHECK: conduit.create @ch_out
 
 // Put/get converted to conduit Tier 3 ops.
 // CHECK: conduit.put_memref_async

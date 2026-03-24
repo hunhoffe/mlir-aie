@@ -15,7 +15,7 @@
 
 // (a) plio=true with producer_tile=[0,0] (shim row) — valid, no error expected.
 
-conduit.create {name = "plio_shim_producer", capacity = 4 : i64,
+conduit.create @plio_shim_producer {capacity = 4 : i64,
                producer_tile = array<i64: 0, 0>,
                plio = true}
 
@@ -24,7 +24,7 @@ conduit.create {name = "plio_shim_producer", capacity = 4 : i64,
 // (b) plio=true with compute producer and shim consumer — valid, no error expected.
 // Mirrors of_1/of_2 in objectfifo_plio_test.mlir (compute→shim direction).
 
-conduit.create {name = "plio_shim_consumer", capacity = 4 : i64,
+conduit.create @plio_shim_consumer {capacity = 4 : i64,
                producer_tile = array<i64: 0, 2>,
                shim_consumer_tiles = array<i64: 0, 0>,
                plio = true}
@@ -34,7 +34,7 @@ conduit.create {name = "plio_shim_consumer", capacity = 4 : i64,
 // (c) plio=true with no shim endpoint — must be rejected.
 
 // expected-error @+1 {{'conduit.create' op plio=true requires a shim tile (row 0) as either producer_tile or in shim_consumer_tiles}}
-conduit.create {name = "plio_no_shim", capacity = 4 : i64,
+conduit.create @plio_no_shim {capacity = 4 : i64,
                producer_tile = array<i64: 0, 2>,
                consumer_tiles = array<i64: 0, 3>,
                plio = true}

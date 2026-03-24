@@ -18,9 +18,8 @@
 
 // element_type is inferred from the memref<16x16xf32, 2> despite it being
 // defined inside an air.execute region.
-// CHECK: conduit.create
+// CHECK: conduit.create @chan
 // CHECK-SAME: element_type = memref<16x16xf32, 2>
-// CHECK-SAME: name = "chan"
 
 // put and get are lowered correctly.
 // CHECK: conduit.put_memref_async

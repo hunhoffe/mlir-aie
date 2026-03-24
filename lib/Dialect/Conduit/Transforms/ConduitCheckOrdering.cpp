@@ -104,16 +104,14 @@ struct ConduitCheckOrderingPass
     llvm::SmallVector<ChannelInfo> channels;
 
     module.walk([&](Create op) {
-      auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
+      llvm::StringRef name = op.getSymName();
       auto prodRates = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
           "producer_rates");
       auto consRates = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
           "consumer_rates");
 
-      if (!nameAttr || !prodRates || !consRates)
+      if (name.empty() || !prodRates || !consRates)
         return; // no rate annotations — skip
-
-      llvm::StringRef name = nameAttr.getValue();
 
       // Skip non-DMA-only channels (outside CSDFa scope).
       if (!isDMAOnlyChannel(module, name))

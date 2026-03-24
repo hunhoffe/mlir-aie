@@ -157,10 +157,9 @@ struct ConduitInferRatesPass
           op.getConsumerRates().has_value())
         return;
 
-      auto nameAttr = op->getAttrOfType<mlir::StringAttr>("name");
-      if (!nameAttr)
+      llvm::StringRef name = op.getSymName();
+      if (name.empty())
         return;
-      llvm::StringRef name = nameAttr.getValue();
 
       // Skip conduits with dynamic num_elems.
       if (hasDynamicElems.count(name)) {

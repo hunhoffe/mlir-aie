@@ -23,29 +23,24 @@
 // CHECK-LABEL: module
 
 // channel_1x2: capacity=2
-// CHECK: conduit.create
+// CHECK: conduit.create @channel_1x2
 // CHECK-SAME: capacity = 2
-// CHECK-SAME: name = "channel_1x2"
 
 // channel_2x1: capacity=2
-// CHECK: conduit.create
+// CHECK: conduit.create @channel_2x1
 // CHECK-SAME: capacity = 2
-// CHECK-SAME: name = "channel_2x1"
 
 // channel_2x2: capacity=4
-// CHECK: conduit.create
+// CHECK: conduit.create @channel_2x2
 // CHECK-SAME: capacity = 4
-// CHECK-SAME: name = "channel_2x2"
 
 // channel_1x4: capacity=4
-// CHECK: conduit.create
+// CHECK: conduit.create @channel_1x4
 // CHECK-SAME: capacity = 4
-// CHECK-SAME: name = "channel_1x4"
 
 // channel_scalar: no broadcast_shape, capacity=1 default
-// CHECK: conduit.create
+// CHECK: conduit.create @channel_scalar
 // CHECK-SAME: capacity = 1
-// CHECK-SAME: name = "channel_scalar"
 
 // No residual air.channel ops.
 // CHECK-NOT: air.channel

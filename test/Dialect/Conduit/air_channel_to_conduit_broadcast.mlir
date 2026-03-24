@@ -32,9 +32,8 @@
 // CHECK: module {
 
 // 3. conduit.create with correct capacity, name, and routing_mode.
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast_chan
 // CHECK-SAME: capacity = 4
-// CHECK-SAME: name = "bcast_chan"
 // CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
 
 // 4. No further air.channel ops in module body (source echoes already passed).

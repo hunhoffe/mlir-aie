@@ -45,7 +45,8 @@
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_sequential
-// CHECK:       conduit.create @chan_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK:       conduit.create @chan_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @chan_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @chan_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_sequential() {
   // Both conduits on tile [0, 2].
   conduit.create @chan_a {capacity = 8 : i64,
@@ -127,7 +128,9 @@ func.func @no_fuse_interleaved() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_three_sequential
-// CHECK:       conduit.create @c1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// CHECK-NEXT:  conduit.create @c2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// CHECK-NEXT:  conduit.create @c3 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @c1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK-NEXT:  conduit.create @c2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK-NEXT:  conduit.create @c3 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_three_sequential() {
   conduit.create @c1 {capacity = 8 : i64,
                   producer_tile = array<i64: 1, 2>,
@@ -228,7 +231,8 @@ func.func @no_fuse_shim() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @idempotent
-// CHECK:       conduit.create @id_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"// CHECK:       conduit.create @id_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"
+// CHECK:       conduit.create @id_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"
+// CHECK:       conduit.create @id_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"
 func.func @idempotent() {
   conduit.create @id_a {capacity = 8 : i64,
                   producer_tile = array<i64: 2, 2>,
@@ -262,7 +266,8 @@ func.func @idempotent() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_async_path
-// CHECK:       conduit.create @async_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// CHECK:       conduit.create @async_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @async_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @async_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_async_path() {
   conduit.create @async_a {capacity = 8 : i64,
                   producer_tile = array<i64: 3, 2>,
@@ -303,7 +308,8 @@ func.func @fuse_async_path() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_tier3_put_memref
-// CHECK:       conduit.create @dma_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// CHECK:       conduit.create @dma_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @dma_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @dma_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_tier3_put_memref() {
   conduit.create @dma_a {capacity = 8 : i64,
                   producer_tile = array<i64: 4, 2>,
@@ -372,7 +378,10 @@ func.func @no_annotate_no_ops() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_four_sequential
-// CHECK:       conduit.create @p {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK:       conduit.create @q {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK:       conduit.create @r {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK:       conduit.create @s {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @p {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @q {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @r {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @s {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_four_sequential() {
   conduit.create @p {capacity = 8 : i64,
                   producer_tile = array<i64: 6, 2>,
@@ -468,7 +477,10 @@ func.func @no_annotate_singleton() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @two_interleaved_pairs
-// CHECK:       conduit.create @a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK:       conduit.create @b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"// CHECK:       conduit.create @c {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK:       conduit.create @d {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"
+// CHECK:       conduit.create @a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"
+// CHECK:       conduit.create @c {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @d {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"
 func.func @two_interleaved_pairs() {
   conduit.create @a {capacity = 8 : i64,
                   producer_tile = array<i64: 8, 2>,
@@ -538,11 +550,10 @@ func.func @two_interleaved_pairs() {
 
 // CHECK-LABEL: func.func @partial_clique
 // a and c fused; b has no partner so its group is a singleton → not annotated.
-// CHECK:       conduit.create @a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// The b create must not have fused_dma_channel_group.  MLIR prints attrs
-// alphabetically: a group annotation would appear between element_type and
-// name.  The literal transition (no wildcard between them) fails if the
-// attribute is present.  FileCheck substring-matches, so no leading {{.*}}.
-// CHECK:       element_type = memref<8xi32>, name = "b"
+// CHECK:       conduit.create @a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// The b create must not have fused_dma_channel_group.  Use CHECK-NOT to verify absence.
+// CHECK:       conduit.create @b {
+// CHECK-NOT:   fused_dma_channel_group
 // CHECK:       conduit.create @c {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @partial_clique() {
   conduit.create @a {capacity = 8 : i64,
@@ -650,7 +661,8 @@ func.func @full_clique() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_runtime_mode
-// CHECK: conduit.create @if_a {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"// CHECK: conduit.create @if_b {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @if_a {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @if_b {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_runtime_mode(%cond: i1) {
   conduit.create @if_a {capacity = 8 : i64,
                   producer_tile = array<i64: 11, 2>,
@@ -686,7 +698,8 @@ func.func @fuse_runtime_mode(%cond: i1) {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_get_memref
-// CHECK: conduit.create @get_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK: conduit.create @get_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @get_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @get_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_get_memref() {
   conduit.create @get_a {capacity = 8 : i64,
                   producer_tile = array<i64: 12, 2>,
@@ -718,7 +731,8 @@ func.func @fuse_get_memref() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_release_async
-// CHECK: conduit.create @rel_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK: conduit.create @rel_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @rel_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @rel_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_release_async() {
   conduit.create @rel_a {capacity = 8 : i64,
                   producer_tile = array<i64: 13, 2>,
@@ -752,7 +766,8 @@ func.func @fuse_release_async() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @fuse_memtile_producer
-// CHECK: conduit.create @mt_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"// CHECK: conduit.create @mt_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @mt_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @mt_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_memtile_producer() {
   // MemTile tiles (row=1) are NOT excluded from fusion analysis.
   conduit.create @mt_a {capacity = 8 : i64,
@@ -793,7 +808,9 @@ func.func @fuse_memtile_producer() {
 //===----------------------------------------------------------------------===//
 
 // CHECK-LABEL: func.func @cross_block_stable
-// CHECK: conduit.create @cross_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// CHECK: conduit.create @cross_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// Both conduits in same group regardless of which block wins.
+// CHECK: conduit.create @cross_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK: conduit.create @cross_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// Both conduits in same group regardless of which block wins.
 // CHECK-NOT: fuse_mode = "runtime"
 
 func.func @cross_block_stable() {

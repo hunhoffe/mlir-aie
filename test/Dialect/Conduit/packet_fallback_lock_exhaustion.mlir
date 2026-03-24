@@ -29,12 +29,12 @@ module @pkt_fallback_lock_exhaustion {
 
     // 2 explicit packet conduits from (0,3): MM2S ch 0 and ch 1 (packet-mode).
     // Phase 3: 2×2 = 4 locks on (0,3) prod side; 2×2 = 4 on consumer tiles.
-    conduit.create {name = "pkt_a", capacity = 4 : i64,
+    conduit.create @pkt_a {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "pkt_b", capacity = 4 : i64,
+    conduit.create @pkt_b {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -43,32 +43,32 @@ module @pkt_fallback_lock_exhaustion {
     // 6 shared-memory conduits from (0,3)→(0,2) [adjacent, same column].
     // Phase 3c: 2 locks each allocated on producer tile (0,3).
     // 6×2 = 12 locks on (0,3). Total with pkt_a/b: 4+12 = 16 = limit.
-    conduit.create {name = "sm0", capacity = 4 : i64,
+    conduit.create @sm0 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create {name = "sm1", capacity = 4 : i64,
+    conduit.create @sm1 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create {name = "sm2", capacity = 4 : i64,
+    conduit.create @sm2 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create {name = "sm3", capacity = 4 : i64,
+    conduit.create @sm3 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create {name = "sm4", capacity = 4 : i64,
+    conduit.create @sm4 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create {name = "sm5", capacity = 4 : i64,
+    conduit.create @sm5 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -76,7 +76,7 @@ module @pkt_fallback_lock_exhaustion {
 
     // mode=any: (0,3) → (2,5); circuit MM2S exhausted; Step 3.5 fires.
     // Step 3.5b: prodLockTotal(16) - prodLockUsed(16) = 0 < 2 → fail → Step 4.
-    conduit.create {name = "fallback", capacity = 4 : i64,
+    conduit.create @fallback {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64

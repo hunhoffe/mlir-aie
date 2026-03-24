@@ -46,19 +46,19 @@ module @fuse_3member_test {
     %tile_0_5 = aie.tile(0, 5)
     %tile_1_4 = aie.tile(1, 4)
 
-    conduit.create {name = "chan_a", capacity = 8 : i64,
+    conduit.create @chan_a {capacity = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
-    conduit.create {name = "chan_b", capacity = 8 : i64,
+    conduit.create @chan_b {capacity = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
-    conduit.create {name = "chan_c", capacity = 8 : i64,
+    conduit.create @chan_c {capacity = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<8xi32>, depth = 1 : i64,

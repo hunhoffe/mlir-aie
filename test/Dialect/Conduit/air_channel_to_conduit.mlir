@@ -30,11 +30,10 @@
 // --- Channel declaration becomes conduit.create ---
 // Attributes are printed in alphabetical order:
 //   capacity, depth, element_type, name
-// CHECK:   conduit.create
+// CHECK:   conduit.create @chan
 // CHECK-SAME: capacity = 1
 // CHECK-SAME: depth = 1
 // CHECK-SAME: element_type = memref<8x8xi32>
-// CHECK-SAME: name = "chan"
 //
 // --- air.channel.put becomes conduit.put_memref_async ---
 // Static descriptor: offsets=[0,0], sizes=[8,8], strides=[8,1], num_elems=8*8=64

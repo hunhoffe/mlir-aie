@@ -19,8 +19,7 @@
 // CHECK-LABEL: module
 
 // Channel becomes conduit.create.
-// CHECK: conduit.create
-// CHECK-SAME: name = "dma_chan"
+// CHECK: conduit.create @dma_chan
 
 // Async put becomes conduit.put_memref_async with descriptor.
 // CHECK: conduit.put_memref_async

@@ -15,9 +15,8 @@
 
 // CHECK-LABEL: module @aie_stream_convert
 // CHECK:   aie.device(xcve2302) {
-// CHECK:     conduit.create {
+// CHECK:     conduit.create @of_stream {
 // CHECK-SAME:   aie_stream_port = 0
-// CHECK-SAME:   name = "of_stream"
 // CHECK-SAME:   routing_mode = #conduit.routing_mode<stream>
 // CHECK-NOT:   aie.objectfifo
 // CHECK:   }

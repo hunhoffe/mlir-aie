@@ -16,9 +16,8 @@
 // Expected output:
 //   conduit.create with producer_tile = [2, 3] and consumer_tiles = [2, 4]
 
-// CHECK: conduit.create
+// CHECK: conduit.create @channel_0
 // CHECK-SAME: consumer_tiles = array<i64: 2, 4>
-// CHECK-SAME: name = "channel_0"
 // CHECK-SAME: producer_tile = array<i64: 2, 3>
 
 module @test_tile_coords {

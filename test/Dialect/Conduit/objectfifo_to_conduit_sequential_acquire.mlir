@@ -30,9 +30,8 @@
 // CHECK-LABEL: module @seq_acq_test
 // CHECK:   aie.device(xcve2302) {
 
-// CHECK:     conduit.create
+// CHECK:     conduit.create @fifo
 // CHECK-SAME:   depth = 4 : i64
-// CHECK-SAME:   name = "fifo"
 
 // --- Producer core: uniform 1/1 pattern, unchanged ---
 // CHECK:     aie.core(%{{.*}}) {

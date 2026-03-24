@@ -26,12 +26,12 @@
 // CHECK: module
 
 module {
-  conduit.create {name = "chA", capacity = 64 : i64}
-  conduit.create {name = "chB", capacity = 64 : i64}
-  conduit.create {name = "chX", capacity = 32 : i64}
-  conduit.create {name = "chY", capacity = 32 : i64}
-  conduit.create {name = "chP", capacity = 16 : i64}
-  conduit.create {name = "chQ", capacity = 16 : i64}
+  conduit.create @chA {capacity = 64 : i64}
+  conduit.create @chB {capacity = 64 : i64}
+  conduit.create @chX {capacity = 32 : i64}
+  conduit.create @chY {capacity = 32 : i64}
+  conduit.create @chP {capacity = 16 : i64}
+  conduit.create @chQ {capacity = 16 : i64}
 
   // Case 1: linear chain A → B → wait_all_async
   func.func @linear_chain(%bufA : memref<64xi32>, %bufB : memref<64xi32>) {

@@ -11,13 +11,11 @@
 // CHECK-LABEL: module
 
 // --- Packet channel: routing_mode = #conduit.routing_mode<packet> ---
-// CHECK:   conduit.create
-// CHECK-SAME: name = "pkt_chan"
+// CHECK:   conduit.create @pkt_chan
 // CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
 
 // --- Stream channel: no routing_mode attribute ---
-// CHECK:   conduit.create
-// CHECK-SAME: name = "stream_chan"
+// CHECK:   conduit.create @stream_chan
 // CHECK-NOT: routing_mode
 
 // CHECK-NOT: air.channel

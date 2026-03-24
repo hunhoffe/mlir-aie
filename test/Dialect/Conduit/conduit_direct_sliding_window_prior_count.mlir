@@ -35,13 +35,13 @@ module @conduit_direct_sliding_window_prior_count {
     %tile = aie.tile(0, 2)
 
     // Input: shim → tile, depth=4.
-    conduit.create {name = "fifo", capacity = 512 : i64, depth = 4 : i64,
+    conduit.create @fifo {capacity = 512 : i64, depth = 4 : i64,
                     element_type = memref<128xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}
 
     // Output: tile → shim, depth=2.
-    conduit.create {name = "out", capacity = 256 : i64, depth = 2 : i64,
+    conduit.create @out {capacity = 256 : i64, depth = 2 : i64,
                     element_type = memref<64xi32>,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64>,

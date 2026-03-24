@@ -28,12 +28,12 @@ module @pkt_fallback_bd_exhaustion {
     %t15 = aie.tile(1, 5)
 
     // Two packet conduits fill both MM2S channels as packet-mode.
-    conduit.create {name = "pkt_a", capacity = 4 : i64,
+    conduit.create @pkt_a {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create {name = "pkt_b", capacity = 4 : i64,
+    conduit.create @pkt_b {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -41,7 +41,7 @@ module @pkt_fallback_bd_exhaustion {
 
     // First mode=any fallback: depth=14 consumes 14 BD slots on (0,3).
     // tileBDUsed[(0,3)] = 14 after this.
-    conduit.create {name = "fallback1", capacity = 4 : i64,
+    conduit.create @fallback1 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 14 : i64
@@ -49,7 +49,7 @@ module @pkt_fallback_bd_exhaustion {
 
     // Second mode=any fallback: depth=3 requires 3 BDs, but only 2 remain.
     // Step 3.5b: prodBDTotal(16) - prodBDUsed(14) = 2 < depth(3) → failure.
-    conduit.create {name = "fallback2", capacity = 4 : i64,
+    conduit.create @fallback2 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>, depth = 3 : i64

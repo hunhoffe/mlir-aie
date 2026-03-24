@@ -16,8 +16,7 @@
 // CHECK-LABEL: module
 
 // --- Cascade channel: routing_mode = #conduit.routing_mode<cascade> ---
-// CHECK:   conduit.create
-// CHECK-SAME: name = "cas_chan"
+// CHECK:   conduit.create @cas_chan
 // CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
 
 // CHECK-NOT: air.channel

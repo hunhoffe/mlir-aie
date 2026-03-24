@@ -17,15 +17,13 @@
 // Explicit inferRates=true: rates should be attached.
 // MLIR prints attributes alphabetically: consumer_rates, name, producer_rates.
 // CHECK-LABEL: module
-// CHECK: conduit.create
+// CHECK: conduit.create @chan
 // CHECK-SAME: consumer_rates = array<i64: 1>
-// CHECK-SAME: name = "chan"
 // CHECK-SAME: producer_rates = array<i64: 1>
 
 // Default (inferRates=false): rates must NOT be attached.
 // NOINFER-LABEL: module
-// NOINFER: conduit.create
-// NOINFER-SAME: name = "chan"
+// NOINFER: conduit.create @chan
 // NOINFER-NOT: producer_rates
 // NOINFER-NOT: consumer_rates
 

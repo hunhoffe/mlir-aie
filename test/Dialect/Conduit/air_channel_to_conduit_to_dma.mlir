@@ -18,8 +18,7 @@
 //
 // Input:
 //   - aie.device(npu1_1col) with two tiles: shim(0,0) and compute(0,2)
-//   - air.channel declaration @mychan [1, 1]
-//   - conduit.create {name = "mychan"} with tile info (producer_tile=[0,0] shim,
+//   - conduit.create @mychan with tile info (producer_tile=[0,0] shim,
 //     consumer_tiles=[0,2] compute) and element_type=memref<64xi32>
 //   - air.channel.put and air.channel.get with 1-D descriptor:
 //       offsets=[0], sizes=[64], strides=[1] → num_elems=64
@@ -93,13 +92,10 @@ module {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // AIR channel declaration (Pass B converts this to conduit.create without tile info).
-    "air.channel"() {sym_name = "mychan", size = [1, 1]} : () -> ()
-
     // conduit.create with tile placement already filled in (simulates the
     // tile-placement step that runs between Pass B and Pass C).
     // producer_tile=[0,0] = shim tile, consumer_tiles=[0,2] = compute tile.
-    conduit.create {name = "mychan", capacity = 1 : i64, depth = 1 : i64,
+    conduit.create @mychan {capacity = 1 : i64, depth = 1 : i64,
                     element_type = memref<64xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}

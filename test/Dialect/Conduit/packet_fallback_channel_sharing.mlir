@@ -36,13 +36,13 @@ module @pkt_fallback_channel_sharing {
     %t25 = aie.tile(2, 5)
 
     // pkt_a: MM2S ch 0 designated as packet-mode.
-    conduit.create {name = "pkt_a", capacity = 4 : i64,
+    conduit.create @pkt_a {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
     // pkt_b: MM2S ch 1 designated as packet-mode.
-    conduit.create {name = "pkt_b", capacity = 4 : i64,
+    conduit.create @pkt_b {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -50,7 +50,7 @@ module @pkt_fallback_channel_sharing {
 
     // fallback1: circuit exhausted; Step 3.5c finds ch 0 (packet-mode).
     // Shares ch 0 with pkt_a. Flow ID 2.
-    conduit.create {name = "fallback1", capacity = 4 : i64,
+    conduit.create @fallback1 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64
@@ -58,7 +58,7 @@ module @pkt_fallback_channel_sharing {
 
     // fallback2: Step 3.5c finds ch 0 again (first packet-mode channel).
     // Shares ch 0 with pkt_a and fallback1. Flow ID 3. Only 1 MM2S consumed.
-    conduit.create {name = "fallback2", capacity = 4 : i64,
+    conduit.create @fallback2 {capacity = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64

@@ -33,11 +33,10 @@
 //                      leaving 16KB "free", erroneously allowing promotion).
 //
 // With the fix, "light_fifo" stays at depth=1, capacity=128 (32 i32 × 4 bytes = 128B).
-// CHECK-DAG: conduit.create {capacity = 128 : i64, {{.*}} depth = 1 : i64, {{.*}} name = "light_fifo"
+// CHECK-DAG: conduit.create @light_fifo {capacity = 128 : i64, {{.*}} depth = 1 : i64
 //
 // "heavy_conduit" always stays at depth=4 (depth>1 conduits are never candidates).
-// CHECK-DAG: conduit.create {capacity = 65536 : i64, {{.*}} depth = 4 : i64, {{.*}} name = "heavy_conduit"
-
+// CHECK-DAG: conduit.create @heavy_conduit {capacity = 65536 : i64, {{.*}} depth = 4 : i64
 // expected-remark @+1 {{conduit-depth-promote: promoted 0 conduit(s)}}
 module {
 
@@ -45,8 +44,7 @@ module {
 // 4 slots × memref<2048xi32> = 4 × 8192 bytes = 32768 bytes = 32KB.
 // capacity = 4 * 2048 * 4 = 32768.
 func.func @heavy_existing() {
-  conduit.create {name = "heavy_conduit",
-                  capacity = 65536 : i64,
+  conduit.create @heavy_conduit {capacity = 65536 : i64,
                   producer_tile = array<i64: 0, 0>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<2048xi32>,
@@ -61,8 +59,7 @@ func.func @heavy_existing() {
 // light_fifo would be incorrectly promoted to depth=2.
 func.func @light_candidate(%result: memref<32xi32>) {
   // expected-remark @+1 {{conduit-depth-promote: skipping 'light_fifo' -- memory budget}}
-  conduit.create {name = "light_fifo",
-                  capacity = 128 : i64,
+  conduit.create @light_fifo {capacity = 128 : i64,
                   producer_tile = array<i64: 0, 0>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<32xi32>,

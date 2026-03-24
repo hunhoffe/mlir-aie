@@ -18,18 +18,16 @@
 // CHECK-LABEL: module
 
 // SPSC: consumer_rates and producer_rates attached.
-// CHECK: conduit.create
+// CHECK: conduit.create @spsc_chan
 // CHECK-SAME: consumer_rates = array<i64: 1>
-// CHECK-SAME: name = "spsc_chan"
 // CHECK-SAME: producer_rates = array<i64: 1>
 
 // Broadcast: capacity=4 (fan-out), NO producer_rates or consumer_rates.
 // After matching the bcast_chan create line, CHECK-NOT asserts producer_rates
 // does not appear on any remaining line (nothing follows bcast_chan in the
 // module-level IR).
-// CHECK: conduit.create
+// CHECK: conduit.create @bcast_chan
 // CHECK-SAME: capacity = 4
-// CHECK-SAME: name = "bcast_chan"
 // CHECK-NOT: producer_rates
 // CHECK-NOT: consumer_rates
 

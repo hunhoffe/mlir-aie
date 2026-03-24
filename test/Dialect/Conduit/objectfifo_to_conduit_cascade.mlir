@@ -17,9 +17,8 @@
 
 // --- Cascade conduit.create ---
 // Attributes are printed alphabetically by MLIR's attr-dict printer.
-// CHECK:   conduit.create
+// CHECK:   conduit.create @cas_fifo
 // CHECK-SAME: depth = 1 : i64
-// CHECK-SAME: name = "cas_fifo"
 // CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
 
 // --- Producer core: acquire+store+release → put_cascade ---

@@ -24,13 +24,12 @@
 // CHECK-RATES: remark: conduit-objectfifo: skipping CSDF rate annotation for multi-consumer fifo 'multi_consumer'
 
 // Test 1: single_consumer conduit.create gets rates.
-// CHECK-RATES: conduit.create
+// CHECK-RATES: conduit.create @single_consumer
 // CHECK-RATES-SAME: consumer_rates = array<i64: 2>
-// CHECK-RATES-SAME: name = "single_consumer"
 // CHECK-RATES-SAME: producer_rates = array<i64: 2>
 
 // Test 2: multi_consumer conduit.create has no rates (only capacity/consumer_tiles/depth).
-// CHECK-RATES: conduit.create {capacity = 64 : i64, consumer_tiles = array<i64: 2, 2, 4, 2>, depth = 4 : i64, element_type = memref<16xi32>, name = "multi_consumer", producer_tile = array<i64: 3, 2>}
+// CHECK-RATES: conduit.create @multi_consumer {capacity = 64 : i64, consumer_tiles = array<i64: 2, 2, 4, 2>, depth = 4 : i64, element_type = memref<16xi32>, producer_tile = array<i64: 3, 2>}
 
 // ---------------------------------------------------------------------------
 // Default (infer-rates=false): no rate annotations on any conduit.create.

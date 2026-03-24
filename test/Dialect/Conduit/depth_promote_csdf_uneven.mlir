@@ -11,14 +11,13 @@
 // The conduit should be promoted from depth-1 to depth-2.
 // (Rates are balanced per M6; eta > 1.0 forces over-provisioned depth.)
 
-// CHECK: conduit.create {capacity = 12 : i64, {{.*}}depth = 2 : i64, {{.*}}name = "csdf_uneven"
-
+// CHECK: conduit.create @csdf_uneven {capacity = 12 : i64, {{.*}}depth = 2 : i64, 
 // expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s)}}
 module {
 
 func.func @csdf_uneven_rates(%result: memref<6xi32>) {
   // expected-remark @+1 {{conduit-depth-promote: promoted 'csdf_uneven' from depth-1 to depth-2}}
-  conduit.create {name = "csdf_uneven", capacity = 6 : i64,
+  conduit.create @csdf_uneven {capacity = 6 : i64,
                   producer_tile = array<i64: 0, 0>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<6xi32>,

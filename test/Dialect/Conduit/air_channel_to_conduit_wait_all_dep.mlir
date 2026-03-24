@@ -30,8 +30,7 @@
 // After fix: merged is pre-emitted as conduit.wait_all_async before the get,
 // and the get's dep list contains the pre-emitted token.
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "chan1"
+// CHECK: conduit.create @chan1
 
 // put emitted, no deps.
 // CHECK: %[[PUT1:.*]] = conduit.put_memref_async {name = "chan1"
@@ -50,12 +49,9 @@
 // Test 2: two puts, wait_all([tok1, tok2]), get(dep=merged).
 // Pre-emitted wait_all_async collects both put tokens.
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch2a"
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch2b"
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch2c"
+// CHECK: conduit.create @ch2a
+// CHECK: conduit.create @ch2b
+// CHECK: conduit.create @ch2c
 
 // Two puts, no deps.
 // CHECK: %[[P2A:.*]] = conduit.put_memref_async {name = "ch2a"
@@ -74,12 +70,9 @@
 // Test 3: same wait_all result as dep for two gets (deduplication).
 // Only ONE conduit.wait_all_async emitted (preEmittedWaitAll map deduplicates).
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch3put"
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch3a"
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch3b"
+// CHECK: conduit.create @ch3put
+// CHECK: conduit.create @ch3a
+// CHECK: conduit.create @ch3b
 
 // put then pre-emitted wait_all_async.
 // CHECK: %[[P3:.*]] = conduit.put_memref_async {name = "ch3put"
@@ -99,12 +92,9 @@
 // a wait_all fan-in, whose merged token is then used as a dep for a subsequent
 // put. Asserts that put_memref_async carries [%merged : !conduit.dma.token].
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch4a"
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch4b"
-// CHECK: conduit.create
-// CHECK-SAME: name = "ch4c"
+// CHECK: conduit.create @ch4a
+// CHECK: conduit.create @ch4b
+// CHECK: conduit.create @ch4c
 
 // put and get emitted with no deps.
 // CHECK: %[[P4:.*]] = conduit.put_memref_async {name = "ch4a"

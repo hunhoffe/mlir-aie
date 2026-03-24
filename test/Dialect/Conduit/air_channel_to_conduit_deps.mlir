@@ -30,8 +30,7 @@
 // After rewrite: put → conduit.put_memref_async (result %0 : !conduit.dma.token)
 //                get → conduit.get_memref_async[%0 : !conduit.dma.token]
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "putGet"
+// CHECK: conduit.create @putGet
 
 // put emitted first, no deps: no bracket dep list before the attr-dict.
 // CHECK: %[[PUT:.*]] = conduit.put_memref_async {name = "putGet"
@@ -49,10 +48,8 @@
 // After rewrite: get → conduit.get_memref_async (result %0)
 //                put → conduit.put_memref_async[%0 : !conduit.dma.token]
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "inChan"
-// CHECK: conduit.create
-// CHECK-SAME: name = "outChan"
+// CHECK: conduit.create @inChan
+// CHECK: conduit.create @outChan
 
 // get emitted first, no deps.
 // CHECK: %[[GTOK:.*]] = conduit.get_memref_async
@@ -69,8 +66,7 @@
 // Test 3: wait_all fan-in with two conduit deps.
 // wait_all async over [put_tok, get_tok] → conduit.wait_all_async
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "waChan"
+// CHECK: conduit.create @waChan
 
 // CHECK: %[[W0:.*]] = conduit.put_memref_async
 // CHECK-SAME: name = "waChan"
@@ -87,8 +83,7 @@
 // With the fix (preEmittedWaitAll), the wait_all is pre-emitted as a
 // conduit.wait_all_async and the get carries [%merged : !conduit.dma.token].
 // -------------------------------------------------------------------
-// CHECK: conduit.create
-// CHECK-SAME: name = "waDep"
+// CHECK: conduit.create @waDep
 
 // put emitted, no deps.
 // CHECK: %[[WD_PUT:.*]] = conduit.put_memref_async {name = "waDep"

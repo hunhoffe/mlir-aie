@@ -24,7 +24,7 @@ module @runtime_fuse_error {
     %tile_0_4 = aie.tile(0, 4)
 
     // expected-error @+1 {{conduit-to-dma: fuse_mode="runtime" is not yet supported}}
-    conduit.create {name = "chan_a", capacity = 8 : i64,
+    conduit.create @chan_a {capacity = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>,

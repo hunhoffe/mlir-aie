@@ -36,8 +36,8 @@
 // The pass must detect the cycle through the block argument and emit M12.
 
 module {
-  conduit.create {name = "chA", capacity = 64 : i64}
-  conduit.create {name = "chB", capacity = 64 : i64}
+  conduit.create @chA {capacity = 64 : i64}
+  conduit.create @chB {capacity = 64 : i64}
 
   func.func @dep_cycle() {
     %true = arith.constant true
