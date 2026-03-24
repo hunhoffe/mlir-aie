@@ -63,3 +63,12 @@ func.func @invalid_join_empty_srcs() {
   conduit.join {srcs = [], dsts = [@dst], memtile = "tile(0,1)"}
   return
 }
+
+// -----
+
+// Invalid conduit.forward: 2 srcs (requires exactly 1).
+func.func @invalid_forward_two_srcs() {
+  // expected-error@+1 {{'conduit.forward' op forward requires exactly 1 src and 1 dst, got 2 src(s) and 1 dst(s)}}
+  conduit.forward {srcs = [@a, @b], dsts = [@c], memtile = "tile(0,1)"}
+  return
+}

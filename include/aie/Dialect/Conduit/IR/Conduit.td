@@ -278,7 +278,8 @@ def Conduit_RoutingModeAttr : EnumAttr<Conduit_Dialect, Conduit_RoutingMode, "ro
 // ---------------------------------------------------------------------------
 // LinkMode enum — #conduit.link_mode<distribute> / <join> / <forward>
 //
-// Used on conduit.link (required) and conduit.create link_mode (optional).
+// Used on conduit.distribute, conduit.join, conduit.forward (required)
+// and conduit.create link_mode (optional).
 // Replaces StrAttr mode / OptionalAttr<StrAttr> link_mode.
 // ---------------------------------------------------------------------------
 
