@@ -4518,12 +4518,11 @@ generateFullElfArtifact(ArrayRef<DeviceElfInfo> deviceInfos,
     // Arguments - generate based on actual runtime sequence parameter count
     llvm::json::Array arguments;
     for (int i = 0; i < info.argCount; ++i) {
-      char offsetBuf[16];
-      snprintf(offsetBuf, sizeof(offsetBuf), "0x%x", i * 8);
-      arguments.push_back(
-          llvm::json::Object{{"name", ("arg_" + Twine(i)).str()},
-                             {"type", "char *"},
-                             {"offset", std::string(offsetBuf)}});
+      uint64_t offset = static_cast<uint64_t>(i) * 8;
+      std::string offsetHex = llvm::formatv("0x{0}", llvm::utohexstr(offset));
+      arguments.push_back(llvm::json::Object{{"name", ("arg_" + Twine(i)).str()},
+                                             {"type", "char *"},
+                                             {"offset", offsetHex}});
     }
 
     // PDIs - list ALL device PDIs in each kernel entry (matching Python driver
@@ -5370,6 +5369,10 @@ static LogicalResult compileAIEModule(MLIRContext &context, ModuleOp moduleOp,
       }
       info.pdiPath = std::string(pdiFullPath);
 
+      // Collect runtime sequence instruction paths (also absolute).
+      // Also record the argument count from the first non-empty sequence body,
+      // so generateFullElfArtifact can emit the correct number of XRT kernel
+      // argument slots in full_elf_config.json.
       for (auto seqOp : deviceOp.getOps<xilinx::AIE::RuntimeSequenceOp>()) {
         StringRef seqName = seqOp.getSymName();
         std::string instsFileName =

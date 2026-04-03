@@ -124,6 +124,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
+#include <set>
 #include <string>
 
 namespace xilinx::conduit {
@@ -178,6 +179,28 @@ static std::string getChanName(mlir::Operation *op) {
       return strAttr.getValue().str();
   }
   return "";
+}
+
+/// Collapse a rank≥3 MemRefType to rank-2 by folding all leading dimensions
+/// into the first.  For example, memref<2x128x64xbf16> → memref<256x64xbf16>.
+/// Returns the original type unchanged if rank ≤ 2 or any dim is dynamic.
+static mlir::MemRefType collapseToRank2(mlir::MemRefType mt) {
+  if (mt.getRank() <= 2)
+    return mt;
+  // Fold all dims except the last into a single leading dim.
+  int64_t leading = 1;
+  for (int64_t i = 0, e = mt.getRank() - 1; i < e; ++i) {
+    int64_t d = mt.getDimSize(i);
+    if (mlir::ShapedType::isDynamic(d))
+      return mt; // cannot collapse dynamic dims; return as-is
+    leading *= d;
+  }
+  int64_t last = mt.getDimSize(mt.getRank() - 1);
+  // Drop the original layout (its affine map rank won't match the new shape).
+  // Use identity layout (empty MemRefLayoutAttrInterface) for the collapsed type.
+  return mlir::MemRefType::get({leading, last}, mt.getElementType(),
+                               mlir::MemRefLayoutAttrInterface{},
+                               mt.getMemorySpace());
 }
 
 /// Try to extract a compile-time integer value from an SSA value defined by
@@ -247,14 +270,22 @@ static llvm::SmallVector<int64_t> extractStaticInts(mlir::ValueRange vals) {
 //   `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` ...
 //
 // AttrSizedOperandSegments is set, so the op has:
-//   attribute "operand_segment_sizes" : dense<[ndeps, nidx, 1, noffsets, nsizes, nstrides]>
+//   attribute "operandSegmentSizes" : array<i32: ndeps, nidx, 1, noffsets, nsizes, nstrides>
+//
+// MLIR renamed this from "operand_segment_sizes" (old snake_case) to
+// "operandSegmentSizes" (camelCase) as a properties-based inherent attribute.
+// We try both names for forward/backward compatibility.
 //
 // We use this to slice the operand list.
 
-/// Retrieve operand segment sizes from the "operand_segment_sizes" attribute.
+/// Retrieve operand segment sizes from the "operandSegmentSizes" attribute.
 static llvm::SmallVector<int32_t> getOperandSegments(mlir::Operation *op) {
   llvm::SmallVector<int32_t> segs;
-  auto attr = op->getAttrOfType<mlir::DenseI32ArrayAttr>("operand_segment_sizes");
+  // Try current MLIR name first (camelCase, stored as property).
+  auto attr = op->getAttrOfType<mlir::DenseI32ArrayAttr>("operandSegmentSizes");
+  if (!attr)
+    // Fallback: old MLIR name (snake_case, stored in attribute dict).
+    attr = op->getAttrOfType<mlir::DenseI32ArrayAttr>("operand_segment_sizes");
   if (attr) {
     for (int32_t v : attr.asArrayRef())
       segs.push_back(v);
@@ -512,9 +543,16 @@ struct AirChannelToConduitPass
         if (consIt != channelConsumerTiles.end() &&
             !consIt->second.empty()) {
           llvm::SmallVector<int64_t> flat;
+          // Deduplicate consumer tile coordinates: loop-unrolled
+          // air.channel.get ops on the same physical tile produce duplicate
+          // (col, row) entries. Each unique tile gets exactly one S2MM
+          // channel allocation in Pass C.
+          std::set<std::pair<int64_t, int64_t>> seen;
           for (auto &[col, row] : consIt->second) {
-            flat.push_back(col);
-            flat.push_back(row);
+            if (seen.insert({col, row}).second) {
+              flat.push_back(col);
+              flat.push_back(row);
+            }
           }
           createTypedOp.setConsumerTilesAttr(
               mlir::DenseI64ArrayAttr::get(ctx, flat));
@@ -626,18 +664,22 @@ struct AirChannelToConduitPass
         if (static_cast<int32_t>(op->getNumOperands()) > memrefPos) {
           mlir::Value memrefVal = op->getOperand(memrefPos);
           mlir::Type memrefTy = memrefVal.getType();
-          if (mlir::isa<mlir::MemRefType>(memrefTy)) {
-            // Patch element_type on the conduit.create op using typed setter.
-            createTypedOp.setElementTypeAttr(mlir::TypeAttr::get(memrefTy));
+          if (auto mt = mlir::dyn_cast<mlir::MemRefType>(memrefTy)) {
+            // Collapse rank≥3 memrefs to rank-2 before patching element_type
+            // so that Pass C sees a valid rank-2 buffer type.
+            mlir::MemRefType collapsed = collapseToRank2(mt);
+            createTypedOp.setElementTypeAttr(
+                mlir::TypeAttr::get(collapsed));
           }
         }
       } else {
         // Fallback: if no segment sizes, assume first operand is the memref.
         if (op->getNumOperands() >= 1) {
           mlir::Value first = op->getOperand(0);
-          if (mlir::isa<mlir::MemRefType>(first.getType())) {
+          if (auto mt = mlir::dyn_cast<mlir::MemRefType>(first.getType())) {
+            mlir::MemRefType collapsed = collapseToRank2(mt);
             createTypedOp.setElementTypeAttr(
-                mlir::TypeAttr::get(first.getType()));
+                mlir::TypeAttr::get(collapsed));
           }
         }
       }
@@ -761,19 +803,18 @@ struct AirChannelToConduitPass
       // memref
       mlir::ValueRange offsetsRange, sizesRange, stridesRange;
       if (static_cast<int32_t>(allOps.size()) >= base + 1 + noffsets + nsizes + nstrides) {
-        // B-7: Reject rank≥3 memref operands explicitly.
-        // The Conduit BD descriptor supports rank 0, 1, and 2 (flat and 2-D
-        // strides).  Rank≥3 operands are silently truncated to 2-D by the
-        // offset/size/stride extraction, producing incorrect DMA descriptors.
-        // Emit a hard error here instead of producing wrong output.
+        // B-7: Handle rank≥3 memref operands by collapsing leading dimensions.
+        // air.channel uses a flat 1-D view (offsets/sizes/strides are scalar);
+        // the memref shape only matters for element_type patching in Phase 2b.
+        // Collapse memref<A×B×C×T> → memref<(A*B)×C×T> → ... → memref<N×M×T>
+        // so that the element_type stored on conduit.create is rank-2.
         mlir::Value memrefOperand = allOps[base];
         if (auto memrefMT = mlir::dyn_cast<mlir::MemRefType>(memrefOperand.getType())) {
           if (memrefMT.getRank() >= 3) {
-            op->emitError("air-channel-to-conduit: rank-")
-                << memrefMT.getRank() << " memref operand is not supported "
-                   "(maximum rank 2); restructure as rank-2 channels";
-            signalPassFailure();
-            continue;
+            op->emitWarning("air-channel-to-conduit: rank-")
+                << memrefMT.getRank() << " memref operand for @" << chanName
+                << " collapsed to rank-2 for element_type patching "
+                   "(leading dims folded into first dim)";
           }
         }
         base += 1; // skip memref operand itself
@@ -783,7 +824,31 @@ struct AirChannelToConduitPass
       }
 
       // Compute num_elems from static sizes.
+      // When sizesRange is empty (air.channel.get/put with [] [] [] — no
+      // explicit DMA descriptor), fall back to the total element count from the
+      // memref operand's shape (product of all static dims). This covers
+      // packet/broadcast channels where the kernel accesses the full buffer and
+      // the air IR omits offset/size/stride operands.
       int64_t numElems = computeNumElems(sizesRange);
+      if (numElems == 1 && sizesRange.empty()) {
+        // sizesRange empty → computeNumElems returned scalar=1.
+        // Derive total element count from the memref operand type instead.
+        // Memref is at operand position ndeps + nidx.
+        int32_t memrefPos = ndeps + nidx;
+        if (static_cast<int32_t>(op->getNumOperands()) > memrefPos) {
+          mlir::Value mrefOp = op->getOperand(memrefPos);
+          if (auto mrt = mlir::dyn_cast<mlir::MemRefType>(mrefOp.getType())) {
+            int64_t total = 1;
+            bool allStatic = true;
+            for (int64_t d : mrt.getShape()) {
+              if (mlir::ShapedType::isDynamic(d)) { allStatic = false; break; }
+              total *= d;
+            }
+            if (allStatic && total > 1)
+              numElems = total;
+          }
+        }
+      }
       if (numElems == 0) {
         numElems = 1; // fallback for dynamic
         op->emitWarning() << "AirChannelToConduit: channel @" << chanName
@@ -912,50 +977,14 @@ struct AirChannelToConduitPass
       mlir::Operation *newOp = nullptr;
 
       if (isCascade) {
-        // Cascade channels: emit conduit.put_cascade / conduit.get_cascade.
-        // The air.channel.put/get carries a memref operand; for cascade we
-        // need to load/store the value from/to the memref.
-        // Get the memref operand to determine the element type.
-        mlir::Value memrefVal;
-        auto segsLocal = getOperandSegments(op);
-        if (segsLocal.size() >= 3) {
-          int32_t ndepsL = segsLocal[0];
-          int32_t nidxL = segsLocal[1];
-          int32_t memrefPosL = ndepsL + nidxL;
-          if (static_cast<int32_t>(op->getNumOperands()) > memrefPosL)
-            memrefVal = op->getOperand(memrefPosL);
-        } else if (op->getNumOperands() >= 1) {
-          memrefVal = op->getOperand(0);
-        }
-
-        if (!memrefVal || !mlir::isa<mlir::MemRefType>(memrefVal.getType())) {
-          op->emitError()
-              << "air-channel-to-conduit: cascade channel @" << chanName
-              << " put/get has no accessible memref operand; cannot infer "
-                 "cascade value type";
-          signalPassFailure();
-          continue;
-        }
-
-        auto memrefTy = mlir::cast<mlir::MemRefType>(memrefVal.getType());
-        mlir::Type elemTy = memrefTy.getElementType();
-
-        if (isPut) {
-          // Load the value from the memref and put it onto the cascade stream.
-          mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
-          mlir::Value loadedVal = builder.create<mlir::memref::LoadOp>(
-              loc, memrefVal, mlir::ValueRange{c0});
-          newOp = builder.create<AIE::PutCascadeOp>(loc, loadedVal);
-        } else {
-          // Get the cascade value and store it into the memref.
-          auto getCascOp = builder.create<AIE::GetCascadeOp>(loc, elemTy);
-          mlir::Value c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
-          builder.create<mlir::memref::StoreOp>(
-              loc, getCascOp.getCascadeValue(), memrefVal, mlir::ValueRange{c0});
-          newOp = getCascOp;
-        }
-        // Cascade ops have no async token result.
-        // No SSA token replacement needed.
+        // Cascade channels: the kernel (e.g. attn.cc) manages cascade data
+        // movement via C++ intrinsics (get_scd/put_scd loops) — these are not
+        // expressed in MLIR IR at all. The routing connection is established by
+        // routing_mode="cascade" on conduit.create, which Pass C converts to
+        // aie.cascade_flow (zero locks, zero DMA budget). No aie.put_cascade or
+        // aie.get_cascade ops are emitted here; just erase the air.channel op.
+        putGetToErase.push_back(op);
+        continue;
       } else {
         // Normal DMA path: emit conduit put_memref_async or get_memref_async.
         if (isPut) {

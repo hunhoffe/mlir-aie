@@ -1218,7 +1218,9 @@ void linkPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
+      int64_t perBufLen = info.numElems > 0
+                             ? info.numElems
+                             : (info.capacity > 0 ? info.capacity / depth : 1);
       mlir::Value prodTileVal = prodTile.getResult();
 
       // Check for an existing aie.mem for this tile (e.g. created by Phase 5.5
@@ -1595,7 +1597,9 @@ void linkPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
+      int64_t perBufLen = info.numElems > 0
+                             ? info.numElems
+                             : (info.capacity > 0 ? info.capacity / depth : 1);
 
       mlir::Value prodTileVal = dmaHostTile.getResult();
 
@@ -1790,7 +1794,9 @@ void linkPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen = info.capacity > 0 ? info.capacity / depth : 1;
+      int64_t perBufLen = info.numElems > 0
+                             ? info.numElems
+                             : (info.capacity > 0 ? info.capacity / depth : 1);
       // nConsumerBuffers() >= depth; extra slots support sliding-window patterns.
       int64_t nBufs = info.nConsumerBuffers();
 

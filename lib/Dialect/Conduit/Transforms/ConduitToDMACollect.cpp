@@ -242,6 +242,29 @@ void collectPhase(ConduitToDMAState &state) {
       state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
 
+  // Collect numElems from put/get_memref_async ops.
+  // For Tier 3 channels (shim↔compute via DMA), capacity encodes the slot
+  // count (typically 1), but BD length must be the per-transfer element count.
+  // Take the maximum num_elems seen across all puts and gets for each channel.
+  module.walk([&](PutMemrefAsync op) {
+    llvm::StringRef name = op.getName();
+    auto it = state.conduitMap.find(name.str());
+    if (it != state.conduitMap.end()) {
+      int64_t n = static_cast<int64_t>(op.getNumElems());
+      if (n > it->second.numElems)
+        it->second.numElems = n;
+    }
+  });
+  module.walk([&](GetMemrefAsync op) {
+    llvm::StringRef name = op.getName();
+    auto it = state.conduitMap.find(name.str());
+    if (it != state.conduitMap.end()) {
+      int64_t n = static_cast<int64_t>(op.getNumElems());
+      if (n > it->second.numElems)
+        it->second.numElems = n;
+    }
+  });
+
   // Conduit names with at least one Consume-port acquire op (for rotation
   // counter allocation in Phase 3).
   module.walk([&](Acquire acqOp) {

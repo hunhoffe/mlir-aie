@@ -886,26 +886,34 @@ void lowerPhase(ConduitToDMAState &state) {
         auto resolved = cinfo->resolveForTile(op);
         if (resolved.coreOp) {
           // Inside aie.core — emit use_lock pair for producer synchronization.
-          builder.setInsertionPoint(op);
-          int64_t count = 1;
-          if (cinfo->bdChainRepeatCount > 1)
-            count *= cinfo->bdChainRepeatCount;
+          // Skip for shim-producer channels (row==0): the shim DMA is managed
+          // by the host runtime via aiex.npu.dma_memcpy_nd; core-side use_lock
+          // is not needed and the shim lock lives outside the core's region.
+          auto [prodCol, prodRow] = cinfo->producerTileCoord;
+          (void)prodCol;
+          bool shimProducer = (prodRow == 0);
+          if (!shimProducer) {
+            builder.setInsertionPoint(op);
+            int64_t count = 1;
+            if (cinfo->bdChainRepeatCount > 1)
+              count *= cinfo->bdChainRepeatCount;
 
-          // Acquire prodLock: wait for empty buffer slot.
-          if (resolved.prodLock) {
-            int32_t acqVal =
-                state.lockAcqValue(Port::Produce, static_cast<int32_t>(count));
-            builder.create<AIE::UseLockOp>(op.getLoc(),
-                                           resolved.prodLock.getResult(),
-                                           acqAction, acqVal);
-          }
-          // Release consLock: signal data ready for DMA.
-          if (resolved.consLock) {
-            int32_t relVal =
-                state.lockRelValue(Port::Produce, static_cast<int32_t>(count));
-            builder.create<AIE::UseLockOp>(op.getLoc(),
-                                           resolved.consLock.getResult(),
-                                           AIE::LockAction::Release, relVal);
+            // Acquire prodLock: wait for empty buffer slot.
+            if (resolved.prodLock) {
+              int32_t acqVal =
+                  state.lockAcqValue(Port::Produce, static_cast<int32_t>(count));
+              builder.create<AIE::UseLockOp>(op.getLoc(),
+                                             resolved.prodLock.getResult(),
+                                             acqAction, acqVal);
+            }
+            // Release consLock: signal data ready for DMA.
+            if (resolved.consLock) {
+              int32_t relVal =
+                  state.lockRelValue(Port::Produce, static_cast<int32_t>(count));
+              builder.create<AIE::UseLockOp>(op.getLoc(),
+                                             resolved.consLock.getResult(),
+                                             AIE::LockAction::Release, relVal);
+            }
           }
         }
       }
@@ -925,24 +933,31 @@ void lowerPhase(ConduitToDMAState &state) {
         auto resolved = cinfo->resolveForTile(op);
         if (resolved.coreOp) {
           // Inside aie.core — emit use_lock pair for consumer synchronization.
-          builder.setInsertionPoint(op);
-          int64_t count = 1;
+          // Skip for shim-producer channels (row==0): the shim DMA is managed
+          // by the host runtime; the shim lock lives outside the core's region.
+          auto [prodCol, prodRow] = cinfo->producerTileCoord;
+          (void)prodCol;
+          bool shimProducer = (prodRow == 0);
+          if (!shimProducer) {
+            builder.setInsertionPoint(op);
+            int64_t count = 1;
 
-          // Acquire consLock: wait for data to arrive.
-          if (resolved.consLock) {
-            int32_t acqVal =
-                state.lockAcqValue(Port::Consume, static_cast<int32_t>(count));
-            builder.create<AIE::UseLockOp>(op.getLoc(),
-                                           resolved.consLock.getResult(),
-                                           acqAction, acqVal);
-          }
-          // Release prodLock: signal buffer slot is empty.
-          if (resolved.prodLock) {
-            int32_t relVal =
-                state.lockRelValue(Port::Consume, static_cast<int32_t>(count));
-            builder.create<AIE::UseLockOp>(op.getLoc(),
-                                           resolved.prodLock.getResult(),
-                                           AIE::LockAction::Release, relVal);
+            // Acquire consLock: wait for data to arrive.
+            if (resolved.consLock) {
+              int32_t acqVal =
+                  state.lockAcqValue(Port::Consume, static_cast<int32_t>(count));
+              builder.create<AIE::UseLockOp>(op.getLoc(),
+                                             resolved.consLock.getResult(),
+                                             acqAction, acqVal);
+            }
+            // Release prodLock: signal buffer slot is empty.
+            if (resolved.prodLock) {
+              int32_t relVal =
+                  state.lockRelValue(Port::Consume, static_cast<int32_t>(count));
+              builder.create<AIE::UseLockOp>(op.getLoc(),
+                                             resolved.prodLock.getResult(),
+                                             AIE::LockAction::Release, relVal);
+            }
           }
         }
       }

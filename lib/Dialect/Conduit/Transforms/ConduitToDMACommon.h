@@ -154,6 +154,10 @@ struct ConduitInfo {
   llvm::SmallVector<std::pair<int64_t, int64_t>> shimConsumerTileCoords;
   int64_t depth = 1;
   int64_t capacity = 0;
+  // Element count per DMA transfer, from put/get_memref_async {num_elems=N}.
+  // Populated by Phase 1 collect; used by Phase 5.5 BD chain for Tier 3
+  // channels where capacity encodes slot count (not element count).
+  int64_t numElems = 0;
   mlir::Type elemType; // actual element memref type (may be null)
   // Cyclostatic (CSDF) access pattern from conduit.create access_pattern attr.
   // Empty = uniform SDF; non-empty = CSDF per-iteration acquire counts.
