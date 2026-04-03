@@ -824,31 +824,7 @@ struct AirChannelToConduitPass
       }
 
       // Compute num_elems from static sizes.
-      // When sizesRange is empty (air.channel.get/put with [] [] [] — no
-      // explicit DMA descriptor), fall back to the total element count from the
-      // memref operand's shape (product of all static dims). This covers
-      // packet/broadcast channels where the kernel accesses the full buffer and
-      // the air IR omits offset/size/stride operands.
       int64_t numElems = computeNumElems(sizesRange);
-      if (numElems == 1 && sizesRange.empty()) {
-        // sizesRange empty → computeNumElems returned scalar=1.
-        // Derive total element count from the memref operand type instead.
-        // Memref is at operand position ndeps + nidx.
-        int32_t memrefPos = ndeps + nidx;
-        if (static_cast<int32_t>(op->getNumOperands()) > memrefPos) {
-          mlir::Value mrefOp = op->getOperand(memrefPos);
-          if (auto mrt = mlir::dyn_cast<mlir::MemRefType>(mrefOp.getType())) {
-            int64_t total = 1;
-            bool allStatic = true;
-            for (int64_t d : mrt.getShape()) {
-              if (mlir::ShapedType::isDynamic(d)) { allStatic = false; break; }
-              total *= d;
-            }
-            if (allStatic && total > 1)
-              numElems = total;
-          }
-        }
-      }
       if (numElems == 0) {
         numElems = 1; // fallback for dynamic
         op->emitWarning() << "AirChannelToConduit: channel @" << chanName
@@ -1015,9 +991,11 @@ struct AirChannelToConduitPass
       putGetToErase.push_back(op);
     }
 
-    // Erase original put/get ops.
-    for (mlir::Operation *op : putGetToErase)
-      op->erase();
+    // NOTE: putGetToErase erasure is deferred to after Phase 4 (wait_all
+    // processing).  Erasing put/get ops here would crash when an errored op's
+    // async token result is still used by an air.wait_all operand (the
+    // error path skips replaceAllUsesWith, leaving dangling uses).  Phase 4
+    // rewrites and erases the wait_all ops first, which removes those uses.
 
     // Phase 4: rewrite air.wait_all → conduit.wait_all / conduit.wait_all_async.
     //
@@ -1073,6 +1051,12 @@ struct AirChannelToConduitPass
     }
 
     for (mlir::Operation *op : waitAllToErase)
+      op->erase();
+
+    // Erase original put/get ops (deferred from after Phase 3 — see note above).
+    // Reverse order: later ops may reference earlier ops' results as deps.
+    // Erasing later ops first removes those uses before we erase the defining op.
+    for (mlir::Operation *op : llvm::reverse(putGetToErase))
       op->erase();
 
     // Phase 5: erase air.channel declaration ops (after all put/get refs are gone).
