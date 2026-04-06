@@ -111,6 +111,7 @@
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -313,6 +314,90 @@ tryGetEnclosingCoreTile(mlir::Operation *op) {
   return std::nullopt;
 }
 
+/// Find the MemTile in the given column by walking aie.tile ops inside the
+/// enclosing aie.device.  Returns a "tile(col,row)" string for the relay tile,
+/// or "" if no MemTile is found.
+static std::string findMemTileInColumn(mlir::Operation *contextOp,
+                                       int64_t col) {
+  // Walk up to find the enclosing aie.device.
+  auto deviceOp = contextOp->getParentOfType<AIE::DeviceOp>();
+  if (!deviceOp) {
+    // Try walking down from the module.
+    mlir::Operation *parent = contextOp;
+    while (parent) {
+      parent->walk([&](AIE::DeviceOp d) { deviceOp = d; });
+      if (deviceOp)
+        break;
+      parent = parent->getParentOp();
+    }
+  }
+  if (!deviceOp)
+    return "";
+
+  const AIE::AIETargetModel &tm = AIE::getTargetModel(deviceOp);
+  std::string result;
+  deviceOp.walk([&](AIE::TileOp tileOp) {
+    if (result.empty() && (int64_t)tileOp.getCol() == col &&
+        tm.isMemTile(tileOp.getCol(), tileOp.getRow())) {
+      llvm::raw_string_ostream os(result);
+      os << "tile(" << tileOp.getCol() << "," << tileOp.getRow() << ")";
+    }
+  });
+  return result;
+}
+
+/// For an air.channel.put/get op NOT inside aie.core, infer the tile by
+/// examining the memref operand's memory space:
+///   memory space 1 (L2) → MemTile
+///   no memory space / 0 (L3) → shim tile (same col as MemTile, row 0)
+///
+/// Returns {tileCoord, isShim}.  If no MemTile exists, returns {{}, false}.
+static std::pair<std::optional<std::pair<int64_t, int64_t>>, bool>
+inferNonCoreTile(mlir::Operation *op) {
+  auto deviceOp = op->getParentOfType<AIE::DeviceOp>();
+  if (!deviceOp)
+    return {{}, false};
+
+  const AIE::AIETargetModel &tm = AIE::getTargetModel(deviceOp);
+
+  // Check memref operand's memory space.
+  bool hasL2Memref = false;
+  auto segs = getOperandSegments(op);
+  if (segs.size() >= 3) {
+    int32_t ndeps = segs[0];
+    int32_t nidx = segs[1];
+    int32_t memrefPos = ndeps + nidx;
+    if (memrefPos < static_cast<int32_t>(op->getNumOperands())) {
+      mlir::Value memrefVal = op->getOperand(memrefPos);
+      if (auto mt = mlir::dyn_cast<mlir::MemRefType>(memrefVal.getType())) {
+        if (auto memSpace = mt.getMemorySpace()) {
+          if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(memSpace)) {
+            if (intAttr.getInt() == 1)
+              hasL2Memref = true;
+          }
+        }
+      }
+    }
+  }
+
+  // Find first MemTile in the device.
+  std::optional<std::pair<int64_t, int64_t>> memTile;
+  deviceOp.walk([&](AIE::TileOp tileOp) {
+    if (!memTile && tm.isMemTile(tileOp.getCol(), tileOp.getRow()))
+      memTile = {(int64_t)tileOp.getCol(), (int64_t)tileOp.getRow()};
+  });
+
+  if (!memTile)
+    return {{}, false};
+
+  if (hasL2Memref)
+    return {memTile, false}; // MemTile endpoint
+  else
+    return std::make_pair(
+        std::make_optional(std::make_pair(memTile->first, (int64_t)0)),
+        true); // Shim tile endpoint
+}
+
 // ---------------------------------------------------------------------------
 // Main pass struct
 // ---------------------------------------------------------------------------
@@ -338,6 +423,19 @@ struct AirChannelToConduitPass
     // DMA token type for conduit (put/get_memref_async and wait_all_async
     // all return !conduit.dma.token).
     auto conduitTokenTy = DMATokenType::get(ctx);
+
+    // Collect scopes: process each aie.device independently to avoid
+    // channel-name collisions when --air-hierarchy-to-aie emits multiple
+    // device blocks with identically-named channel declarations.
+    llvm::SmallVector<mlir::Operation *> scopes;
+    module.walk([&](AIE::DeviceOp d) {
+      scopes.push_back(d.getOperation());
+    });
+    bool hasDeviceScopes = !scopes.empty();
+    if (scopes.empty())
+      scopes.push_back(module.getOperation());
+
+    for (mlir::Operation *scopeOp : scopes) {
 
     // Phase 1: collect air.channel declarations → build name→create map.
     // We'll emit conduit.create for each; element_type filled in Phase 2.
@@ -369,6 +467,12 @@ struct AirChannelToConduitPass
     llvm::StringMap<llvm::SmallVector<std::pair<int64_t, int64_t>>>
         channelConsumerTiles;
 
+    // Shim endpoint tracking: for channels where put/get ops at device body
+    // level reference L3 (external) buffers, record the external buffer SSA
+    // values and tile coordinates for conduit.register_external_buffers emission.
+    llvm::StringMap<llvm::SmallVector<mlir::Value>> shimExtBufs;
+    llvm::StringMap<std::pair<int64_t, int64_t>> shimTileCoords;
+
     // Broadcast guard for Phase 6 infer-rates: track which channel names were
     // detected as broadcast channels (broadcast_shape attribute present and
     // product > 1).  Phase 6 skips rate annotation for these channels because
@@ -378,7 +482,7 @@ struct AirChannelToConduitPass
     llvm::StringSet<> broadcastChannelNames;
 
     // Walk and collect all ops of interest.
-    module.walk([&](mlir::Operation *op) {
+    scopeOp->walk([&](mlir::Operation *op) {
       if (isAirChannelDecl(op))
         channelDeclsToErase.push_back(op);
       else if (isAirChannelPut(op) || isAirChannelGet(op)) {
@@ -395,6 +499,40 @@ struct AirChannelToConduitPass
               channelConsumerTiles[chanName].push_back(*tileCoord);
               broadcastConsumerTiles[chanName].push_back(*tileCoord);
             }
+          } else if (!op->getParentOfType<mlir::func::FuncOp>()) {
+            // Op not inside aie.core AND not inside func.func — infer tile
+            // from memref memory space.  This handles post-hierarchy IR where
+            // device-body-level ops represent MemTile/shim DMA transfers.
+            // Skip when inside func.func (pre-hierarchy IR lacks the
+            // memory-space annotations needed for reliable inference).
+            // L2 (memory space 1) → MemTile; L3 (no memory space) → shim.
+            auto [inferred, isShim] = inferNonCoreTile(op);
+            if (inferred) {
+              if (isAirChannelPut(op)) {
+                if (!channelProducerTile.count(chanName))
+                  channelProducerTile[chanName] = *inferred;
+              } else {
+                channelConsumerTiles[chanName].push_back(*inferred);
+              }
+              // Track external buffer for shim-level channels.
+              // Only record when the memref operand is an aie.external_buffer
+              // (not a function argument or regular memref.alloc).
+              if (isShim) {
+                auto opSegs = getOperandSegments(op);
+                if (opSegs.size() >= 3) {
+                  int32_t memrefPos = opSegs[0] + opSegs[1];
+                  if (memrefPos < (int32_t)op->getNumOperands()) {
+                    mlir::Value memrefVal = op->getOperand(memrefPos);
+                    if (auto *defOp = memrefVal.getDefiningOp()) {
+                      if (mlir::isa<AIE::ExternalBufferOp>(defOp)) {
+                        shimExtBufs[chanName].push_back(memrefVal);
+                      }
+                    }
+                  }
+                }
+                shimTileCoords[chanName] = *inferred;
+              }
+            }
           }
         }
       } else if (isAirWaitAll(op))
@@ -403,7 +541,7 @@ struct AirChannelToConduitPass
 
     // Phase 1b: pre-scan for existing conduit.create ops so Phase 2 does not
     // emit duplicates when a conduit.create with tile info already exists.
-    module.walk([&](Create existingCreate) {
+    scopeOp->walk([&](Create existingCreate) {
       auto nameAttr = existingCreate.getName();
       if (!nameAttr.empty()) {
         if (channelCreateOps.count(nameAttr.str())) {
@@ -492,8 +630,48 @@ struct AirChannelToConduitPass
                    "tile-placement pre-pass). conduit.create emitted with "
                    "correct capacity; consumer_tiles left empty.";
           }
+        } else if (auto arrayAttr = mlir::dyn_cast<mlir::ArrayAttr>(bsAttr)) {
+          // Handle ArrayAttr of IntegerAttr (e.g., [4 : index, 4 : index]).
+          bool allInts = true;
+          for (auto elem : arrayAttr) {
+            if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(elem))
+              broadcastCapacity *= intAttr.getInt();
+            else {
+              allInts = false;
+              break;
+            }
+          }
+          if (allInts && !arrayAttr.empty()) {
+            isBroadcast = true;
+            broadcastChannelNames.insert(name);
+            auto tileIt = broadcastConsumerTiles.find(name);
+            bool hasTileCoords = (tileIt != broadcastConsumerTiles.end() &&
+                                  !tileIt->second.empty());
+            if (hasTileCoords) {
+              op->emitRemark()
+                  << "air-channel-to-conduit: channel @" << name
+                  << " broadcast_shape=" << bsAttr
+                  << " → conduit capacity=" << broadcastCapacity
+                  << "; found " << tileIt->second.size()
+                  << " consumer tiles from aie.core enclosure; "
+                     "emitting conduit.link{mode=\"distribute\"}.";
+            } else {
+              op->emitRemark()
+                  << "air-channel-to-conduit: channel @" << name
+                  << " broadcast_shape=" << bsAttr
+                  << " → conduit capacity=" << broadcastCapacity
+                  << "; consumer tile coordinates not available (requires "
+                     "tile-placement pre-pass). conduit.create emitted with "
+                     "correct capacity; consumer_tiles left empty.";
+            }
+          } else {
+            op->emitWarning()
+                << "air-channel-to-conduit: channel @" << name
+                << " has broadcast_shape=" << bsAttr
+                << " with non-integer elements; capacity defaulting to 1";
+          }
         } else {
-          // Non-dense broadcast_shape: fall back to warning.
+          // Non-dense, non-array broadcast_shape: fall back to warning.
           op->emitWarning()
               << "air-channel-to-conduit: channel @" << name
               << " has broadcast_shape=" << bsAttr
@@ -570,7 +748,24 @@ struct AirChannelToConduitPass
         auto tileIt = broadcastConsumerTiles.find(name);
         if (tileIt != broadcastConsumerTiles.end() &&
             !tileIt->second.empty()) {
-          auto &consumerCoords = tileIt->second;
+          // Deduplicate consumer tile coordinates before broadcast Step 2.
+          // Post-hierarchy channels (e.g., @channel_XX from
+          // --air-hierarchy-to-aie) often have broadcast_shape > 1 but
+          // all consumers on the SAME physical tile (temporal multiplexing,
+          // not spatial fan-out).  Skip distribute when only 1 unique
+          // consumer tile remains — it's effectively point-to-point.
+          std::set<std::pair<int64_t, int64_t>> uniqueConsumers;
+          for (auto &coord : tileIt->second)
+            uniqueConsumers.insert(coord);
+          llvm::SmallVector<std::pair<int64_t, int64_t>> consumerCoords(
+              uniqueConsumers.begin(), uniqueConsumers.end());
+
+          if (consumerCoords.size() <= 1) {
+            // Single consumer tile — no spatial fan-out needed.
+            // conduit.create already has capacity and consumer_tiles set;
+            // Pass C handles this as a standard DMA channel.
+            continue;
+          }
 
           // Build per-consumer conduit names and conduit.create aliases.
           llvm::SmallVector<std::string> dstNames;
@@ -620,13 +815,23 @@ struct AirChannelToConduitPass
             dstsAttrs.push_back(mlir::FlatSymbolRefAttr::get(ctx, dst));
 
           // Emit conduit.distribute.
-          // memtile is left empty — Pass C will resolve the MemTile from
-          // the conduit.create consumer_tiles if needed.
+          // Determine relay MemTile from consumer tile column.
+          std::string memtileStr;
+          if (!consumerCoords.empty()) {
+            int64_t consCol = consumerCoords[0].first;
+            memtileStr = findMemTileInColumn(createOp, consCol);
+          }
+          if (memtileStr.empty()) {
+            // Fallback: try producer tile column.
+            auto prodIt2 = channelProducerTile.find(name);
+            if (prodIt2 != channelProducerTile.end())
+              memtileStr = findMemTileInColumn(createOp, prodIt2->second.first);
+          }
           builder.create<Distribute>(
               loc,
               mlir::ArrayAttr::get(ctx, srcsAttrs),
               mlir::ArrayAttr::get(ctx, dstsAttrs),
-              /*memtile=*/mlir::StringAttr::get(ctx, ""),
+              /*memtile=*/mlir::StringAttr::get(ctx, memtileStr),
               /*offsets=*/mlir::DenseI64ArrayAttr{},
               /*lock_id=*/mlir::IntegerAttr{});
         }
@@ -685,6 +890,158 @@ struct AirChannelToConduitPass
       }
     }
 
+    // Phase 2c: create shim aie.tile ops and conduit.register_external_buffers
+    // for channels with shim endpoints (producer or consumer at row 0).
+    //
+    // After --air-hierarchy-to-aie, shim tiles (row 0) are NOT created by
+    // that pass — only compute tiles (row >= 2) and MemTiles (row 1) exist.
+    // Pass C needs shim tiles for shim DMA allocation, so we create them here.
+    // We also emit conduit.register_external_buffers to associate the
+    // aie.external_buffer SSA values with the shim tile, enabling Pass C to
+    // build shim DMA BD chains.
+    {
+      AIE::DeviceOp deviceOp;
+      if (auto d = mlir::dyn_cast<AIE::DeviceOp>(scopeOp))
+        deviceOp = d;
+      else
+        scopeOp->walk([&](AIE::DeviceOp d) {
+          if (!deviceOp)
+            deviceOp = d;
+        });
+
+      if (deviceOp && !shimExtBufs.empty()) {
+        // Build existing tile cache.
+        llvm::DenseMap<std::pair<int64_t, int64_t>, AIE::TileOp> tileCache;
+        deviceOp.walk([&](AIE::TileOp t) {
+          tileCache[{t.getCol(), t.getRow()}] = t;
+        });
+
+        // Collect unique shim tile coords needed.
+        std::set<std::pair<int64_t, int64_t>> shimTileCoordsNeeded;
+        for (auto &[name, coord] : shimTileCoords)
+          shimTileCoordsNeeded.insert(coord);
+
+        // Create missing shim tiles.
+        for (auto &[col, row] : shimTileCoordsNeeded) {
+          if (!tileCache.count({col, row})) {
+            // Insert shim tile after existing tiles in the device body.
+            mlir::Operation *insertAfter = nullptr;
+            deviceOp.walk([&](AIE::TileOp t) { insertAfter = t; });
+            if (insertAfter)
+              builder.setInsertionPointAfter(insertAfter);
+            else
+              builder.setInsertionPointToStart(
+                  &deviceOp.getBodyRegion().front());
+            auto shimTile =
+                builder.create<AIE::TileOp>(deviceOp.getLoc(), col, row);
+            tileCache[{col, row}] = shimTile;
+          }
+        }
+
+        // Emit conduit.register_external_buffers for shim channels.
+        for (auto &[name, bufs] : shimExtBufs) {
+          auto coordIt = shimTileCoords.find(name);
+          if (coordIt == shimTileCoords.end() || bufs.empty())
+            continue;
+
+          auto [col, row] = coordIt->second;
+
+          // Deduplicate external buffers (same channel may have multiple
+          // put/get ops referencing the same buffer).
+          llvm::SmallVector<mlir::Value> uniqueBufs;
+          llvm::DenseSet<mlir::Value> seen;
+          for (auto buf : bufs) {
+            if (seen.insert(buf).second)
+              uniqueBufs.push_back(buf);
+          }
+
+          // Insert after the conduit.create for this channel.
+          auto createIt = channelCreateOps.find(name);
+          if (createIt != channelCreateOps.end())
+            builder.setInsertionPointAfter(createIt->second);
+          else
+            builder.setInsertionPointToEnd(
+                &deviceOp.getBodyRegion().front());
+
+          builder.create<RegisterExternalBuffers>(
+              deviceOp.getLoc(),
+              mlir::FlatSymbolRefAttr::get(ctx, name),
+              mlir::DenseI64ArrayAttr::get(ctx, {col, row}), uniqueBufs);
+        }
+      }
+    }
+
+    // Phase 2d: merge shim relay channels.
+    //
+    // After --air-hierarchy-to-aie, a single L3→L2 channel array (e.g.,
+    // L3ToL2Chan1 [1,4]) gets expanded into multiple individual channels
+    // (channel_34, channel_36, channel_38, channel_40).  Each maps to the
+    // same shim→MemTile endpoint pair.  With 4 K channels + 4 V channels,
+    // the MemTile needs 8 S2MM channels, exceeding the AIE2 limit of 6.
+    //
+    // Fix: merge channels that share the same (shim producer tile,
+    // external buffer) into one canonical channel.  The surviving channel
+    // accumulates all put/get ops, which Pass C lowers into a BD chain
+    // on a single physical DMA channel.
+    llvm::StringMap<std::string> channelMergeMap;
+    {
+      // Group merge candidates by external buffer SSA value.
+      // Only consider channels where the producer is a shim tile (row 0).
+      llvm::DenseMap<mlir::Value, llvm::SmallVector<std::string>> extBufGroups;
+      for (auto &[name, bufs] : shimExtBufs) {
+        auto coordIt = shimTileCoords.find(name);
+        if (coordIt == shimTileCoords.end() || coordIt->second.second != 0)
+          continue; // Not a shim producer.
+        // Also verify this channel has a MemTile consumer (row 1).
+        auto consIt = channelConsumerTiles.find(name);
+        if (consIt == channelConsumerTiles.end() ||
+            consIt->second.empty() ||
+            consIt->second[0].second != 1)
+          continue; // Consumer is not a MemTile.
+        if (bufs.empty())
+          continue;
+        extBufGroups[bufs[0]].push_back(name.str());
+      }
+
+      for (auto &[extBuf, names] : extBufGroups) {
+        if (names.size() <= 1)
+          continue;
+        std::sort(names.begin(), names.end());
+        std::string canonical = names[0];
+
+        for (size_t i = 1; i < names.size(); ++i) {
+          channelMergeMap[names[i]] = canonical;
+
+          // Erase duplicate conduit.create.
+          auto createIt = channelCreateOps.find(names[i]);
+          if (createIt != channelCreateOps.end()) {
+            createIt->second->erase();
+            channelCreateOps.erase(createIt);
+          }
+        }
+
+        scopeOp->emitRemark()
+            << "air-channel-to-conduit: merged shim relay channels ["
+            << llvm::join(names, ", ")
+            << "] into canonical @" << canonical
+            << " (reduces MemTile S2MM from " << names.size() << " to 1)";
+      }
+
+      // Erase duplicate conduit.register_external_buffers ops.
+      if (!channelMergeMap.empty()) {
+        llvm::SmallVector<mlir::Operation *> toErase;
+        scopeOp->walk([&](RegisterExternalBuffers regOp) {
+          auto nameAttr =
+              mlir::cast<mlir::FlatSymbolRefAttr>(
+                  regOp->getAttr("name"));
+          if (channelMergeMap.count(nameAttr.getValue()))
+            toErase.push_back(regOp);
+        });
+        for (auto *op : toErase)
+          op->erase();
+      }
+    }
+
     // Phase 3: rewrite air.channel.put / air.channel.get → conduit put/get_memref_async.
     //
     // SSA threading:
@@ -716,6 +1073,10 @@ struct AirChannelToConduitPass
 
     for (mlir::Operation *op : putGetToRewrite) {
       std::string chanName = getChanName(op);
+      // Apply merge map: redirect merged channel names to canonical.
+      auto mergeIt = channelMergeMap.find(chanName);
+      if (mergeIt != channelMergeMap.end())
+        chanName = mergeIt->second;
       if (chanName.empty()) {
         // Cannot identify channel — skip.
         op->emitWarning(
@@ -1064,7 +1425,7 @@ struct AirChannelToConduitPass
       if (auto symOp = mlir::dyn_cast<mlir::SymbolOpInterface>(op)) {
         llvm::StringRef name = symOp.getNameAttr().getValue();
         bool symbolKnownUseEmpty = mlir::SymbolTable::symbolKnownUseEmpty(
-            symOp.getNameAttr(), module);
+            symOp.getNameAttr(), scopeOp);
         if (!symbolKnownUseEmpty) {
           op->emitError("air-channel-to-conduit: channel decl '")
               << name
@@ -1093,7 +1454,7 @@ struct AirChannelToConduitPass
       llvm::StringMap<llvm::SmallVector<int64_t>> getElemsMap;
       llvm::StringMap<bool> hasDynElems;
 
-      module.walk([&](PutMemrefAsync op) {
+      scopeOp->walk([&](PutMemrefAsync op) {
         auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         if (!nameAttr) return;
         llvm::StringRef name = nameAttr.getValue();
@@ -1103,7 +1464,7 @@ struct AirChannelToConduitPass
         putElemsMap[name].push_back(ne.getInt());
       });
 
-      module.walk([&](GetMemrefAsync op) {
+      scopeOp->walk([&](GetMemrefAsync op) {
         auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
         if (!nameAttr) return;
         llvm::StringRef name = nameAttr.getValue();
@@ -1113,7 +1474,7 @@ struct AirChannelToConduitPass
         getElemsMap[name].push_back(ne.getInt());
       });
 
-      module.walk([&](Create op) {
+      scopeOp->walk([&](Create op) {
         if (op.getProducerRates().has_value() || op.getConsumerRates().has_value())
           return;
         llvm::StringRef name = op.getSymName();
@@ -1150,6 +1511,28 @@ struct AirChannelToConduitPass
                     mlir::DenseI64ArrayAttr::get(ctx, gIt->second));
       });
     }
+
+    } // end for (scopeOp : scopes)
+
+    // After all device scopes: erase module-level air.channel decls.
+    // These are the original high-level names (e.g., @L3ToL2Chan1) that
+    // --air-hierarchy-to-aie leaves at module body level with no put/get users.
+    if (hasDeviceScopes) {
+      llvm::SmallVector<mlir::Operation *> moduleLevelDecls;
+      for (auto &op : module.getBody()->getOperations()) {
+        if (isAirChannelDecl(&op))
+          moduleLevelDecls.push_back(&op);
+      }
+      for (auto *op : moduleLevelDecls) {
+        if (auto symOp = mlir::dyn_cast<mlir::SymbolOpInterface>(op)) {
+          if (!mlir::SymbolTable::symbolKnownUseEmpty(
+                  symOp.getNameAttr(), module.getOperation()))
+            continue;
+        }
+        op->erase();
+      }
+    }
+
   }
 };
 

@@ -646,7 +646,84 @@ void routePhase(ConduitToDMAState &state) {
         auto key = std::make_pair(prodTile.getOperation(),
                                   static_cast<int>(mm2sChannel));
         state.pktChannelState.isPacketChannel[key] = true;
+        // NOTE: usedPacketFallback is NOT set here; explicit packet-mode
+        // broadcast is handled below (single multi-dest packet flow).
       }
+    }
+
+    // ---- Explicit packet-mode broadcast: single multi-dest flow. ----
+    // For routing_mode="packet", emit one aie.packet_flow with all consumer
+    // destinations and a single packet ID.  The switchbox hardware broadcasts
+    // each packet to all destinations.  This matches the oracle's behavior
+    // (AIEObjectFifoStatefulTransform) where one bdPacket ID is used for all
+    // producer MM2S BDs and one packet_flow carries multiple packet_dest ops.
+    if (info.routingMode == "packet" && mm2sChannel >= 0 &&
+        !info.consumerTileCoords.empty()) {
+      if (!state.packetIDAllocator) {
+        state.module.emitError(
+            "internal error: packetIDAllocator not initialized");
+        state.passFailed = true;
+        return;
+      }
+      std::optional<uint8_t> pktID = state.packetIDAllocator->allocate();
+      if (!pktID) {
+        state.passFailed = true;
+        return;
+      }
+      state.conduitPacketID[name] = *pktID;
+
+      auto pktFlow = builder.create<AIE::PacketFlowOp>(
+          state.deviceOp.getLoc(),
+          static_cast<int8_t>(*pktID),
+          /*keep_pkt_header=*/mlir::BoolAttr{},
+          /*priority_route=*/mlir::BoolAttr{});
+      mlir::Region &region = pktFlow.getPorts();
+      mlir::Block *pktBlock = builder.createBlock(&region);
+      builder.setInsertionPointToStart(pktBlock);
+      builder.create<AIE::PacketSourceOp>(
+          state.deviceOp.getLoc(), prodTileVal,
+          AIE::WireBundle::DMA, static_cast<int32_t>(mm2sChannel));
+
+      for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
+           ++consIdx) {
+        auto [consCol, consRow] = info.consumerTileCoords[consIdx];
+        if (consRow == 0)
+          continue;
+
+        AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
+        if (!consTile)
+          continue;
+        mlir::Value consTileVal = consTile.getResult();
+
+        // Allocate S2MM channel on the consumer tile.
+        uint32_t maxS2MM_pkt = 2;
+        if (state.targetModel)
+          maxS2MM_pkt = state.targetModel->getNumDestSwitchboxConnections(
+              static_cast<int>(consCol), static_cast<int>(consRow),
+              AIE::WireBundle::DMA);
+        int32_t nextS2MM_pkt = state.tileNextS2MMChannel.count(consTileVal)
+                                   ? state.tileNextS2MMChannel[consTileVal]
+                                   : 0;
+        if (static_cast<uint32_t>(nextS2MM_pkt) >= maxS2MM_pkt) {
+          state.deviceOp.emitError(
+              llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
+                          "tile (")
+              + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
+              + "): all " + llvm::Twine(maxS2MM_pkt) + " channels in use");
+          state.passFailed = true;
+          return;
+        }
+        int32_t s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
+        state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
+
+        builder.create<AIE::PacketDestOp>(
+            state.deviceOp.getLoc(), consTileVal,
+            AIE::WireBundle::DMA, static_cast<int32_t>(s2mmChannel));
+      }
+
+      builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+      builder.setInsertionPointAfter(pktFlow);
+      continue; // skip per-consumer circuit/fallback flow loop
     }
 
     // ---- Emit flows per consumer. ----

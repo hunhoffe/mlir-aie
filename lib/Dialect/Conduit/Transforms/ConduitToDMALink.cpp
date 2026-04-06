@@ -601,11 +601,23 @@ void linkPhase(ConduitToDMAState &state) {
     }
 
     // Distribute: per-destination MM2S channels on the memtile.
+    // If Phase 4b already assigned an MM2S channel for a destination (e.g.,
+    // a shim consumer flow), reuse it instead of allocating a new one.
+    // Without this, the DMA start uses a freshly allocated channel that
+    // does not match the flow emitted by Phase 4b.
     llvm::SmallVector<int32_t> distMM2SChannels;
     if (isDistribute) {
-      for (unsigned i = 0; i < numDsts; ++i)
-        distMM2SChannels.push_back(
-            state.tileNextMM2SChannel[memtileVal]++);
+      for (unsigned i = 0; i < numDsts; ++i) {
+        std::string dstName =
+            mlir::cast<mlir::FlatSymbolRefAttr>(dsts[i]).getValue().str();
+        auto chIt = state.conduitMM2SChannel.find(dstName);
+        if (chIt != state.conduitMM2SChannel.end()) {
+          distMM2SChannels.push_back(chIt->second);
+        } else {
+          distMM2SChannels.push_back(
+              state.tileNextMM2SChannel[memtileVal]++);
+        }
+      }
     }
 
     // Join: per-source S2MM channels on the memtile.
@@ -669,32 +681,80 @@ void linkPhase(ConduitToDMAState &state) {
         if (!dstInfo || dstInfo->consumerTileCoords.empty())
           continue;
 
-        // Emit one flow per consumer tile of this dst conduit.
-        // For simple distribute (1 consumer per dst), this is one flow.
-        // For broadcast distribute (N consumers per dst), this emits N flows
-        // from the same MemTile MM2S channel to each consumer — matching the
-        // stateful transform which emits one aie.flow per consumer tile.
         int32_t mm2sCh = dstIdx < distMM2SChannels.size()
                              ? distMM2SChannels[dstIdx] : 0;
-        for (unsigned consIdx = 0;
-             consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
-          auto [dstConsCol, dstConsRow] =
-              dstInfo->consumerTileCoords[consIdx];
-          AIE::TileOp dstConsTile =
-              state.lookupTileByCoord(dstConsCol, dstConsRow);
-          if (!dstConsTile)
-            continue;
 
-          // S2MM channel on the consumer tile: assigned independently per
-          // consumer tile (broadcast consumers each use their own S2MM).
-          mlir::Value consTileVal = dstConsTile.getResult();
-          int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
-          state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+        // Determine routing mode for this dst conduit.
+        std::string dstRoutingMode =
+            dstInfo ? dstInfo->routingMode : std::string("circuit");
 
-          builder.create<AIE::FlowOp>(
-              state.deviceOp.getLoc(), memtileVal, AIE::WireBundle::DMA,
-              mm2sCh, dstConsTile.getResult(),
-              AIE::WireBundle::DMA, static_cast<int32_t>(s2mmCh));
+        if (dstRoutingMode == "packet") {
+          // Packet-mode broadcast: emit ONE multi-dest aie.packet_flow.
+          // Allocate S2MM channels per consumer first, then build the flow.
+          if (!state.packetIDAllocator) {
+            state.module.emitError(
+                "internal error: packetIDAllocator not initialized");
+            state.passFailed = true;
+            return;
+          }
+          std::optional<uint8_t> pktID =
+              state.packetIDAllocator->allocate();
+          if (!pktID) {
+            state.passFailed = true;
+            return;
+          }
+          state.conduitPacketID[dstName] = *pktID;
+
+          auto pktFlow = builder.create<AIE::PacketFlowOp>(
+              state.deviceOp.getLoc(),
+              static_cast<int8_t>(*pktID),
+              /*keep_pkt_header=*/mlir::BoolAttr{},
+              /*priority_route=*/mlir::BoolAttr{});
+          mlir::Region &region = pktFlow.getPorts();
+          mlir::Block *pktBlock = builder.createBlock(&region);
+          builder.setInsertionPointToStart(pktBlock);
+          builder.create<AIE::PacketSourceOp>(
+              state.deviceOp.getLoc(), memtileVal,
+              AIE::WireBundle::DMA, static_cast<int32_t>(mm2sCh));
+
+          for (unsigned consIdx = 0;
+               consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
+            auto [dstConsCol, dstConsRow] =
+                dstInfo->consumerTileCoords[consIdx];
+            AIE::TileOp dstConsTile =
+                state.lookupTileByCoord(dstConsCol, dstConsRow);
+            if (!dstConsTile)
+              continue;
+            mlir::Value consTileVal = dstConsTile.getResult();
+            int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
+            state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+
+            builder.create<AIE::PacketDestOp>(
+                state.deviceOp.getLoc(), dstConsTile.getResult(),
+                AIE::WireBundle::DMA, static_cast<int32_t>(s2mmCh));
+          }
+          builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+          builder.setInsertionPointAfter(pktFlow);
+        } else {
+          // Circuit or other routing: emit one flow per consumer tile.
+          for (unsigned consIdx = 0;
+               consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
+            auto [dstConsCol, dstConsRow] =
+                dstInfo->consumerTileCoords[consIdx];
+            AIE::TileOp dstConsTile =
+                state.lookupTileByCoord(dstConsCol, dstConsRow);
+            if (!dstConsTile)
+              continue;
+
+            mlir::Value consTileVal = dstConsTile.getResult();
+            int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
+            state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+
+            state.emitFlow(dstRoutingMode, memtileVal, AIE::WireBundle::DMA,
+                           mm2sCh, dstConsTile.getResult(),
+                           AIE::WireBundle::DMA,
+                           static_cast<int32_t>(s2mmCh));
+          }
         }
       }
 
@@ -1016,9 +1076,10 @@ void linkPhase(ConduitToDMAState &state) {
           mm2sRelLock = sliceProdLocks[dstIdx];
         }
 
-        // Look up dst fifo's producerDimensions and repeat_count.
+        // Look up dst fifo's producerDimensions, repeat_count, and packet ID.
         AIE::BDDimLayoutArrayAttr dstProdDims;
         int64_t mm2sDstRepeat = 1;
+        int dstPktID = -1;
         {
           std::string dstName2 =
               mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
@@ -1027,6 +1088,9 @@ void linkPhase(ConduitToDMAState &state) {
             if (dstInfo->bdChainRepeatCount > 1)
               mm2sDstRepeat = dstInfo->bdChainRepeatCount;
           }
+          auto pktIt = state.conduitPacketID.find(dstName2);
+          if (pktIt != state.conduitPacketID.end())
+            dstPktID = static_cast<int>(pktIt->second);
         }
         // Unroll by repeat_count: each source buffer is sent repeat times.
         int64_t thisDstEffective = thisDstDepth * mm2sDstRepeat;
@@ -1059,7 +1123,8 @@ void linkPhase(ConduitToDMAState &state) {
               state.lockAcqValue(Port::Consume, 1),
               buf, dstOffset, dstLen,
               mm2sRelLock ? mm2sRelLock.getResult() : mlir::Value{},
-              state.lockRelValue(Port::Consume), dstProdDims);
+              state.lockRelValue(Port::Consume), dstProdDims,
+              dstPktID);
           builder.create<AIE::NextBDOp>(loc, sendBDBlocks[(i + 1) % thisDstEffective]);
         }
         prevChainBlock = nextChainBlock;
@@ -1189,6 +1254,163 @@ void linkPhase(ConduitToDMAState &state) {
     builder.create<AIE::EndOp>(state.deviceOp.getLoc());
   }
 
+  // -----------------------------------------------------------------------
+  // Phase 5.5a: Emit aie.mem MM2S BD chains for distribute/forward link
+  // source conduits whose producer is a compute tile.
+  //
+  // Phase 3 allocates producer-side buffers and locks for these conduits
+  // in consumerTileBuffers/consumerTileLocks (keyed by the producer tile
+  // value), but does NOT set the top-level info.prodLock/consLock.  The
+  // generic Phase 5.5 loop below guards on info.prodLock/consLock being
+  // non-null, so distribute/forward sources are filtered out.  Handle
+  // them in a dedicated loop here.
+  // -----------------------------------------------------------------------
+  for (auto &[name, info] : state.conduitMap) {
+    if (!state.linkSrcNamesEarly.count(name))
+      continue;
+    // Stream conduits: producer uses Core AXI stream port, no DMA needed.
+    if (info.routingMode == "stream")
+      continue;
+    auto [prodCol, prodRow] = info.producerTileCoord;
+    if (prodCol < 0 || prodRow < 2)
+      continue; // only compute tiles (row >= 2) need aie.mem MM2S
+
+    AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
+    if (!prodTile)
+      continue;
+    mlir::Value prodTileVal = prodTile.getResult();
+
+    // Look up producer-side buffers and locks from consumerTileBuffers/Locks.
+    auto bufIt = info.consumerTileBuffers.find(prodTileVal);
+    if (bufIt == info.consumerTileBuffers.end() || bufIt->second.empty())
+      continue;
+    auto &prodBufs = bufIt->second;
+
+    AIE::LockOp pProdLock, pConsLock;
+    if (!info.disableSynchronization) {
+      auto lockIt = info.consumerTileLocks.find(prodTileVal);
+      if (lockIt == info.consumerTileLocks.end())
+        continue; // no locks allocated — cannot emit BD chain
+      pProdLock = lockIt->second.first;
+      pConsLock = lockIt->second.second;
+    }
+
+    int64_t depth = info.depth > 0 ? info.depth : 1;
+    int64_t perBufLen = info.numElems > 0
+                           ? info.numElems
+                           : (info.capacity > 0 ? info.capacity / depth : 1);
+    int64_t nBufs = static_cast<int64_t>(prodBufs.size());
+
+    // Acquire the MM2S channel index (channel 0 unless pre-used).
+    int32_t mm2sChannel = 0;
+    {
+      auto &usedCh = state.preUsedMM2SChannels[prodTileVal];
+      while (usedCh.count(mm2sChannel))
+        ++mm2sChannel;
+      usedCh.insert(mm2sChannel);
+    }
+
+    // Check for an existing aie.mem for this tile.
+    mlir::Region *existingRegion = nullptr;
+    {
+      auto it = tileToDMARegion.find(prodTileVal);
+      if (it != tileToDMARegion.end())
+        existingRegion = it->second;
+    }
+
+    if (existingRegion) {
+      // Append MM2S into existing aie.mem.
+      mlir::Region &memRegion = *existingRegion;
+      mlir::Block *endBlock = nullptr;
+      for (mlir::Block &blk : memRegion)
+        for (mlir::Operation &op : blk)
+          if (mlir::isa<AIE::EndOp>(op))
+            endBlock = &blk;
+
+      if (!endBlock) {
+        state.deviceOp.emitError(
+            "conduit-to-dma: distribute-source append: existing aie.mem has no "
+            "aie.end block — region is malformed");
+        state.passFailed = true;
+        return;
+      }
+
+      auto addBlock = [&]() -> mlir::Block * {
+        return builder.createBlock(&memRegion);
+      };
+      llvm::SmallVector<mlir::Block *> bdBlocks;
+      for (int64_t i = 0; i < nBufs; ++i)
+        bdBlocks.push_back(addBlock());
+      mlir::Block *newEndBlock = addBlock();
+
+      endBlock->back().erase(); // remove old aie.end
+      builder.setInsertionPointToEnd(endBlock);
+      builder.create<AIE::DMAStartOp>(
+          state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
+          mm2sChannel, static_cast<int32_t>(0),
+          bdBlocks[0], newEndBlock);
+
+      for (int64_t i = 0; i < nBufs; ++i) {
+        mlir::Value acqLock = isAIE2
+            ? (pConsLock ? pConsLock.getResult() : mlir::Value{})
+            : (pConsLock ? pConsLock.getResult() : mlir::Value{});
+        mlir::Value relLock = isAIE2
+            ? (pProdLock ? pProdLock.getResult() : mlir::Value{})
+            : acqLock;
+        state.emitBDBlock(
+            state.deviceOp.getLoc(), bdBlocks[i],
+            acqLock, state.lockAcqValue(Port::Consume, 1),
+            prodBufs[i % prodBufs.size()].getResult(), 0, perBufLen,
+            relLock, state.lockRelValue(Port::Consume));
+        builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                      bdBlocks[(i + 1) % nBufs]);
+      }
+      builder.setInsertionPointToEnd(newEndBlock);
+      builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+    } else {
+      // No existing aie.mem — create one and register it.
+      builder.setInsertionPoint(state.deviceBody->getTerminator());
+      auto memOp = builder.create<AIE::MemOp>(
+          state.deviceOp.getLoc(), prodTileVal);
+      mlir::Region *memRegion = &memOp.getBody();
+      tileToDMARegion[prodTileVal] = memRegion;
+
+      auto addMemBlock = [&]() -> mlir::Block * {
+        return builder.createBlock(memRegion);
+      };
+      mlir::Block *dmaStartBlock = addMemBlock();
+      llvm::SmallVector<mlir::Block *> bdBlocks;
+      for (int64_t i = 0; i < nBufs; ++i)
+        bdBlocks.push_back(addMemBlock());
+      mlir::Block *endMemBlock = addMemBlock();
+
+      builder.setInsertionPointToEnd(dmaStartBlock);
+      builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(),
+                                      AIE::DMAChannelDir::MM2S,
+                                      mm2sChannel,
+                                      static_cast<int32_t>(0),
+                                      bdBlocks[0], endMemBlock);
+
+      for (int64_t i = 0; i < nBufs; ++i) {
+        mlir::Value acqLock = isAIE2
+            ? (pConsLock ? pConsLock.getResult() : mlir::Value{})
+            : (pConsLock ? pConsLock.getResult() : mlir::Value{});
+        mlir::Value relLock = isAIE2
+            ? (pProdLock ? pProdLock.getResult() : mlir::Value{})
+            : acqLock;
+        state.emitBDBlock(
+            state.deviceOp.getLoc(), bdBlocks[i],
+            acqLock, state.lockAcqValue(Port::Consume, 1),
+            prodBufs[i % prodBufs.size()].getResult(), 0, perBufLen,
+            relLock, state.lockRelValue(Port::Consume));
+        builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                      bdBlocks[(i + 1) % nBufs]);
+      }
+      builder.setInsertionPointToEnd(endMemBlock);
+      builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+    }
+  }
+
   for (auto &[name, info] : state.conduitMap) {
     // For disable_synchronization conduits, locks are null by design — skip the
     // lock check. Still skip if buffers are empty (no allocation happened).
@@ -1200,10 +1422,9 @@ void linkPhase(ConduitToDMAState &state) {
     // Handle link source conduits: emit aie.mem MM2S on producer compute tile.
     // Stream conduits: skip entirely — the producer uses a Core stream port,
     // not a DMA engine. No aie.mem or BD chain on the producer tile.
-    // Distribute sources (linkSrcNamesEarly) are unreachable here: Phase 3
-    // skips top-level prodLock/consLock for distribute sources (they use
-    // per-tile consumerTileLocks instead), so line 913 guards above fires and
-    // the loop body is never reached for distribute link sources.
+    // Distribute/forward sources (linkSrcNamesEarly) are handled by Phase 5.5a
+    // above — they have null info.prodLock/consLock (locks are stored in
+    // consumerTileLocks keyed by the producer tile value).
     if (state.linkSrcNames.count(name)) {
       // Join sources: compute producer sending to memtile.
       if (!state.linkJoinSrcNames.count(name))
@@ -1365,6 +1586,16 @@ void linkPhase(ConduitToDMAState &state) {
             int64_t perBufLen =
                 info.capacity > 0 ? info.capacity / depth : 1;
 
+            // Look up packet flow ID for packet-mode channels.
+            // When set, each MM2S BD emits aie.dma_bd_packet so the switchbox
+            // routes the data to the correct packet_flow destination(s).
+            int pktID = -1;
+            {
+              auto pktIt = state.conduitPacketID.find(name);
+              if (pktIt != state.conduitPacketID.end())
+                pktID = static_cast<int>(pktIt->second);
+            }
+
             AIE::LockOp mm2sAcqLock, mm2sRelLock;
             llvm::SmallVector<AIE::LockOp> *prodAIE1Locks = nullptr;
             {
@@ -1487,7 +1718,8 @@ void linkPhase(ConduitToDMAState &state) {
                         prodBuffers[(i / bdRepeat) % prodBuffers.size()].getResult(),
                         0, perBufLen,
                         blockRel, state.lockRelValue(Port::Consume),
-                        info.producerDimensions);
+                        info.producerDimensions,
+                        pktID);
                     // Non-circular when iter_count > 0: last BD → bdTermBlock (aie.end).
                     bool isLast = (i == effectiveBDs - 1) && (info.iterCount > 0);
                     if (isLast)
@@ -1559,7 +1791,8 @@ void linkPhase(ConduitToDMAState &state) {
                       prodBuffers[(i / bdRepeat) % prodBuffers.size()].getResult(),
                       0, perBufLen,
                       blockRel, state.lockRelValue(Port::Consume),
-                      info.producerDimensions);
+                      info.producerDimensions,
+                      pktID);
                   // Non-circular when iter_count > 0.
                   bool isLast = (i == effectiveBDs - 1) && (info.iterCount > 0);
                   if (isLast)

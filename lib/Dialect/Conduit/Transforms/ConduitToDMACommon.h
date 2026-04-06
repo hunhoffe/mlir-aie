@@ -515,6 +515,13 @@ struct ConduitToDMAState {
   // BD range tracking for fused channel groups (Phase 5.5 post-pass).
   llvm::StringMap<std::pair<mlir::Block *, mlir::Block *>> conduitBDRange;
 
+  // Per-conduit packet flow ID for MM2S BD packet headers (aie.dma_bd_packet).
+  // For packet-mode channels, each MM2S BD needs a packet header matching the
+  // packet flow ID so the switchbox can route data to the correct destination.
+  // Key: conduit name; Value: packet ID (0-31).
+  // Populated by routePhase. Read by linkPhase for Phase 5.5 BD emission.
+  llvm::StringMap<uint8_t> conduitPacketID;
+
   // Async acquire metadata for Phase 8.
   llvm::DenseMap<mlir::Value, AsyncAcquireInfo> asyncAcquireMap;
 
@@ -642,15 +649,18 @@ struct ConduitToDMAState {
 
   /// Emit DMA BD block content into an existing block:
   ///   1. UseLockOp (acquire) — skipped if acqLock is null
-  ///   2. DMABDOp — skipped if buffer is null; emits BDDimLayout if dims
+  ///   2. DMABDPACKETOp — skipped if pktID < 0; sets packet header for
+  ///      packet-switched DMA routing
+  ///   3. DMABDOp — skipped if buffer is null; emits BDDimLayout if dims
   ///   non-empty
-  ///   3. UseLockOp (release) — skipped if relLock is null
+  ///   4. UseLockOp (release) — skipped if relLock is null
   /// Sets the builder insertion point to the end of the block.
   /// NextBDOp is NOT emitted; the caller controls ring linkage.
   void emitBDBlock(mlir::Location loc, mlir::Block *block, mlir::Value acqLock,
                    int32_t acqVal, mlir::Value buffer, int64_t offset,
                    int64_t len, mlir::Value relLock, int32_t relVal,
-                   AIE::BDDimLayoutArrayAttr dims = {}) {
+                   AIE::BDDimLayoutArrayAttr dims = {},
+                   int pktID = -1) {
     if (!buffer) {
       mlir::emitError(loc,
           "conduit-to-dma: emitBDBlock called with null buffer — "
@@ -660,6 +670,8 @@ struct ConduitToDMAState {
     builder->setInsertionPointToEnd(block);
     if (acqLock)
       builder->create<AIE::UseLockOp>(loc, acqLock, acqAction, acqVal);
+    if (pktID >= 0)
+      builder->create<AIE::DMABDPACKETOp>(loc, /*pkt_type=*/0, pktID);
     if (buffer) {
       if (dims && !dims.getValue().empty())
         builder->create<AIE::DMABDOp>(loc, buffer, static_cast<int>(offset),

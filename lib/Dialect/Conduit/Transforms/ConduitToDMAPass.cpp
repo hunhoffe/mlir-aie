@@ -25,6 +25,8 @@
 #include "ConduitToDMACommon.h"
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+
 namespace xilinx::conduit {
 
 #define GEN_PASS_DEF_CONDUITTODMA
@@ -280,6 +282,45 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // Phase 6-8: Acquire/release lowering, op erasure, async path.
     lowerPhase(state);
     if (state.passFailed) { signalPassFailure(); return; }
+
+    // Post-pass: Propagate link_with from func.func declarations to aie.core.
+    //
+    // ObjectFIFO-based MLIR stores the link_with attribute on func.func
+    // declarations (e.g., `func.func private @kernel(...) attributes
+    // {link_with = "kernels.a"}`).  The AIE linker script generator
+    // (AIETargetLdScript.cpp) and aiecc read link_with from aie.core, not
+    // func.func.  Without propagation, the linker script omits the INPUT()
+    // directive and ld.lld fails with "undefined symbol" errors.
+    //
+    // Walk all func.func with link_with, then for each aie.core that calls
+    // one of those functions, set link_with on the aie.core op.
+    if (state.deviceOp) {
+      // Collect func.func declarations with link_with attribute.
+      llvm::StringMap<std::string> funcLinkWith;
+      module.walk([&](mlir::func::FuncOp funcOp) {
+        if (auto attr = funcOp->getAttrOfType<mlir::StringAttr>("link_with"))
+          funcLinkWith[funcOp.getName()] = attr.getValue().str();
+      });
+
+      if (!funcLinkWith.empty()) {
+        state.deviceOp.walk([&](AIE::CoreOp coreOp) {
+          // Skip cores that already have link_with set.
+          if (coreOp.getLinkWith())
+            return;
+          // Check if any func.call inside this core references a function
+          // with link_with.
+          std::string linkWithValue;
+          coreOp.walk([&](mlir::func::CallOp callOp) {
+            auto it = funcLinkWith.find(callOp.getCallee());
+            if (it != funcLinkWith.end() && linkWithValue.empty())
+              linkWithValue = it->second;
+          });
+          if (!linkWithValue.empty())
+            coreOp.setLinkWithAttr(
+                mlir::StringAttr::get(module.getContext(), linkWithValue));
+        });
+      }
+    }
   }
 };
 
