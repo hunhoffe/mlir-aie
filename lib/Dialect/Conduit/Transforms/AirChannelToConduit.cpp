@@ -424,16 +424,14 @@ struct AirChannelToConduitPass
     // all return !conduit.dma.token).
     auto conduitTokenTy = DMATokenType::get(ctx);
 
-    // Collect scopes: process each aie.device independently to avoid
+    // Collect aie.device scopes: process each independently to avoid
     // channel-name collisions when --air-hierarchy-to-aie emits multiple
     // device blocks with identically-named channel declarations.
+    // Post-hierarchy IR (with aie.device blocks) is the only production input.
     llvm::SmallVector<mlir::Operation *> scopes;
     module.walk([&](AIE::DeviceOp d) {
       scopes.push_back(d.getOperation());
     });
-    bool hasDeviceScopes = !scopes.empty();
-    if (scopes.empty())
-      scopes.push_back(module.getOperation());
 
     for (mlir::Operation *scopeOp : scopes) {
 
@@ -1517,7 +1515,7 @@ struct AirChannelToConduitPass
     // After all device scopes: erase module-level air.channel decls.
     // These are the original high-level names (e.g., @L3ToL2Chan1) that
     // --air-hierarchy-to-aie leaves at module body level with no put/get users.
-    if (hasDeviceScopes) {
+    {
       llvm::SmallVector<mlir::Operation *> moduleLevelDecls;
       for (auto &op : module.getBody()->getOperations()) {
         if (isAirChannelDecl(&op))

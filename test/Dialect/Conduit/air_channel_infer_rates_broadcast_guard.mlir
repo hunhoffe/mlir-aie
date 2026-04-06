@@ -32,46 +32,26 @@
 // CHECK-NOT: consumer_rates
 
 module {
-  // SPSC channel: scalar, no broadcast_shape.
-  "air.channel"() {sym_name = "spsc_chan", size = [1, 1]} : () -> ()
-
-  // Broadcast channel: broadcast_shape=[1,4] → capacity=4 (fan-out count).
-  "air.channel"() {sym_name = "bcast_chan", size = [1, 1],
-                   broadcast_shape = array<i64: 1, 4>} : () -> ()
-
-  func.func @producer_spsc(%buf : memref<64xi32>) {
-    // Scalar transfer: no offsets/sizes/strides → num_elems = 1.
-    "air.channel.put"(%buf)
-        {chan_name = @spsc_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
-        : (memref<64xi32>) -> ()
-    return
-  }
-
-  func.func @consumer_spsc(%buf : memref<64xi32>) {
-    // Scalar transfer: no offsets/sizes/strides → num_elems = 1.
-    "air.channel.get"(%buf)
-        {chan_name = @spsc_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
-        : (memref<64xi32>) -> ()
-    return
-  }
-
-  func.func @producer_bcast(%buf : memref<64xi32>) {
-    // Scalar transfer on broadcast channel.
-    "air.channel.put"(%buf)
-        {chan_name = @bcast_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
-        : (memref<64xi32>) -> ()
-    return
-  }
-
-  func.func @consumer_bcast(%buf : memref<64xi32>) {
-    // Scalar transfer on broadcast channel (one of N consumers).
-    "air.channel.get"(%buf)
-        {chan_name = @bcast_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
-        : (memref<64xi32>) -> ()
-    return
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
+    "air.channel"() {sym_name = "spsc_chan", size = [1, 1]} : () -> ()
+    "air.channel"() {sym_name = "bcast_chan", size = [1, 1],
+                     broadcast_shape = array<i64: 1, 4>} : () -> ()
+    aie.core(%tile_0_3) {
+      %buf = memref.alloca() : memref<64xi32>
+      "air.channel.put"(%buf)
+          {chan_name = @spsc_chan, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+          : (memref<64xi32>) -> ()
+      "air.channel.get"(%buf)
+          {chan_name = @spsc_chan, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+          : (memref<64xi32>) -> ()
+      "air.channel.put"(%buf)
+          {chan_name = @bcast_chan, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+          : (memref<64xi32>) -> ()
+      "air.channel.get"(%buf)
+          {chan_name = @bcast_chan, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+          : (memref<64xi32>) -> ()
+      aie.end
+    }
   }
 }

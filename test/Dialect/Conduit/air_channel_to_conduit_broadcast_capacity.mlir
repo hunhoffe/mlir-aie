@@ -46,49 +46,37 @@
 // CHECK-NOT: air.channel
 
 module {
-  // 1×2 broadcast (column broadcast in a 2-row herd)
-  "air.channel"() {sym_name = "channel_1x2", size = [1, 1],
-                   broadcast_shape = array<i64: 1, 2>} : () -> ()
-
-  // 2×1 broadcast (row broadcast in a 2-column herd)
-  "air.channel"() {sym_name = "channel_2x1", size = [1, 1],
-                   broadcast_shape = array<i64: 2, 1>} : () -> ()
-
-  // 2×2 broadcast (full 2×2 herd broadcast)
-  "air.channel"() {sym_name = "channel_2x2", size = [1, 1],
-                   broadcast_shape = array<i64: 2, 2>} : () -> ()
-
-  // 1×4 broadcast (4-wide column broadcast)
-  "air.channel"() {sym_name = "channel_1x4", size = [1, 1],
-                   broadcast_shape = array<i64: 1, 4>} : () -> ()
-
-  // Scalar channel: no broadcast_shape, should produce capacity=1.
-  "air.channel"() {sym_name = "channel_scalar", size = [1, 1]} : () -> ()
-
-  func.func @test(%buf : memref<16xi32>) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    // A put on each channel to populate element_type.
-    "air.channel.put"(%buf, %c0, %c1, %c1)
-        {chan_name = @channel_1x2,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<16xi32>, index, index, index) -> ()
-    "air.channel.put"(%buf, %c0, %c1, %c1)
-        {chan_name = @channel_2x1,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<16xi32>, index, index, index) -> ()
-    "air.channel.put"(%buf, %c0, %c1, %c1)
-        {chan_name = @channel_2x2,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<16xi32>, index, index, index) -> ()
-    "air.channel.put"(%buf, %c0, %c1, %c1)
-        {chan_name = @channel_1x4,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<16xi32>, index, index, index) -> ()
-    "air.channel.put"(%buf, %c0, %c1, %c1)
-        {chan_name = @channel_scalar,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<16xi32>, index, index, index) -> ()
-    return
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
+    "air.channel"() {sym_name = "channel_1x2", size = [1, 1],
+                     broadcast_shape = array<i64: 1, 2>} : () -> ()
+    "air.channel"() {sym_name = "channel_2x1", size = [1, 1],
+                     broadcast_shape = array<i64: 2, 1>} : () -> ()
+    "air.channel"() {sym_name = "channel_2x2", size = [1, 1],
+                     broadcast_shape = array<i64: 2, 2>} : () -> ()
+    "air.channel"() {sym_name = "channel_1x4", size = [1, 1],
+                     broadcast_shape = array<i64: 1, 4>} : () -> ()
+    "air.channel"() {sym_name = "channel_scalar", size = [1, 1]} : () -> ()
+    aie.core(%tile_0_3) {
+      %buf = memref.alloca() : memref<16xi32>
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      "air.channel.put"(%buf, %c0, %c1, %c1)
+          {chan_name = @channel_1x2, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<16xi32>, index, index, index) -> ()
+      "air.channel.put"(%buf, %c0, %c1, %c1)
+          {chan_name = @channel_2x1, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<16xi32>, index, index, index) -> ()
+      "air.channel.put"(%buf, %c0, %c1, %c1)
+          {chan_name = @channel_2x2, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<16xi32>, index, index, index) -> ()
+      "air.channel.put"(%buf, %c0, %c1, %c1)
+          {chan_name = @channel_1x4, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<16xi32>, index, index, index) -> ()
+      "air.channel.put"(%buf, %c0, %c1, %c1)
+          {chan_name = @channel_scalar, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<16xi32>, index, index, index) -> ()
+      aie.end
+    }
   }
 }

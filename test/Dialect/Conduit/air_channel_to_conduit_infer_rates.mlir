@@ -28,23 +28,18 @@
 // NOINFER-NOT: consumer_rates
 
 module {
-  "air.channel"() {sym_name = "chan", size = [1, 1]} : () -> ()
-
-  func.func @producer(%buf : memref<64xi32>) {
-    // Scalar transfer: no offsets/sizes/strides → num_elems = 1.
-    "air.channel.put"(%buf)
-        {chan_name = @chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
-        : (memref<64xi32>) -> ()
-    return
-  }
-
-  func.func @consumer(%buf : memref<64xi32>) {
-    // Scalar transfer: no offsets/sizes/strides → num_elems = 1.
-    "air.channel.get"(%buf)
-        {chan_name = @chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
-        : (memref<64xi32>) -> ()
-    return
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
+    "air.channel"() {sym_name = "chan", size = [1, 1]} : () -> ()
+    aie.core(%tile_0_3) {
+      %buf = memref.alloca() : memref<64xi32>
+      "air.channel.put"(%buf)
+          {chan_name = @chan, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+          : (memref<64xi32>) -> ()
+      "air.channel.get"(%buf)
+          {chan_name = @chan, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>}
+          : (memref<64xi32>) -> ()
+      aie.end
+    }
   }
 }

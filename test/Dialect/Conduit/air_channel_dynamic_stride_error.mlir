@@ -14,20 +14,20 @@
 // CHECK: error:{{.*}}dynamic offset/size/stride operands
 
 module {
-  "air.channel"() {sym_name = "dyn_chan", size = [1, 1]} : () -> ()
-
-  func.func @test_dynamic_stride(%src : memref<8x8xi32>, %dyn_stride : index) {
-    %c0 = arith.constant 0 : index
-    %c8 = arith.constant 8 : index
-
-    // air.channel.put with a dynamic stride operand (%dyn_stride).
-    // This cannot be statically extracted, so Pass B must emit an error.
-    %tok0 = "air.channel.put"(%src, %c0, %c0, %c8, %c8, %c8, %dyn_stride)
-        {chan_name = @dyn_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
-        : (memref<8x8xi32>, index, index, index, index, index, index)
-        -> !air.async.token
-
-    return
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
+    "air.channel"() {sym_name = "dyn_chan", size = [1, 1]} : () -> ()
+    aie.core(%tile_0_3) {
+      %c0 = arith.constant 0 : index
+      %c8 = arith.constant 8 : index
+      %dyn_buf = memref.alloca() : memref<1xindex>
+      %dyn_stride = memref.load %dyn_buf[%c0] : memref<1xindex>
+      %src = memref.alloca() : memref<8x8xi32>
+      %tok0 = "air.channel.put"(%src, %c0, %c0, %c8, %c8, %c8, %dyn_stride)
+          {chan_name = @dyn_chan, operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
+          : (memref<8x8xi32>, index, index, index, index, index, index)
+          -> !air.async.token
+      aie.end
+    }
   }
 }

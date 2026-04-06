@@ -29,33 +29,24 @@
 // CHECK-NOT: aie.get_cascade
 
 module {
-  // air.channel declaration with channel_type = "cascade".
-  "air.channel"() {sym_name = "cas_chan", size = [1, 1],
-                   channel_type = "cascade"} : () -> ()
-
-  // Static-offset put: erased by Pass B (kernel-managed cascade).
-  func.func @test_cascade_put(%src : memref<1xvector<16xi32>>) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-
-    "air.channel.put"(%src, %c0, %c1, %c1)
-        {chan_name = @cas_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<1xvector<16xi32>>, index, index, index)
-        -> ()
-    return
-  }
-
-  // Static-offset get: erased by Pass B (kernel-managed cascade).
-  func.func @test_cascade_get(%dst : memref<1xvector<16xi32>>) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-
-    "air.channel.get"(%dst, %c0, %c1, %c1)
-        {chan_name = @cas_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<1xvector<16xi32>>, index, index, index)
-        -> ()
-    return
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
+    "air.channel"() {sym_name = "cas_chan", size = [1, 1],
+                     channel_type = "cascade"} : () -> ()
+    aie.core(%tile_0_3) {
+      %src = memref.alloca() : memref<1xvector<16xi32>>
+      %dst = memref.alloca() : memref<1xvector<16xi32>>
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      "air.channel.put"(%src, %c0, %c1, %c1)
+          {chan_name = @cas_chan,
+           operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<1xvector<16xi32>>, index, index, index) -> ()
+      "air.channel.get"(%dst, %c0, %c1, %c1)
+          {chan_name = @cas_chan,
+           operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<1xvector<16xi32>>, index, index, index) -> ()
+      aie.end
+    }
   }
 }

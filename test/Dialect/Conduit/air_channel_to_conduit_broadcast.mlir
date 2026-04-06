@@ -40,27 +40,22 @@
 // CHECK-NOT: air.channel
 
 module {
-  // air.channel with broadcast_shape = [1, 4] and channel_type = "dma_packet".
-  // This is a typical 1-to-4 packet broadcast pattern from the mlir-air corpus
-  // (e.g., L2ToL1 channels in matmul workloads).
-  "air.channel"() {sym_name = "bcast_chan", size = [1, 1],
-                   broadcast_shape = array<i64: 1, 4>,
-                   channel_type = "dma_packet"} : () -> ()
-
-  func.func @test_broadcast_channel(
-      %src : memref<8x8xi32>,
-      %dst : memref<8x8xi32>) {
-
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c8 = arith.constant 8 : index
-
-    %tok0 = "air.channel.put"(%src, %c0, %c0, %c8, %c8, %c8, %c1)
-        {chan_name = @bcast_chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
-        : (memref<8x8xi32>, index, index, index, index, index, index)
-        -> !air.async.token
-
-    return
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
+    "air.channel"() {sym_name = "bcast_chan", size = [1, 1],
+                     broadcast_shape = array<i64: 1, 4>,
+                     channel_type = "dma_packet"} : () -> ()
+    aie.core(%tile_0_3) {
+      %src = memref.alloca() : memref<8x8xi32>
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c8 = arith.constant 8 : index
+      %tok0 = "air.channel.put"(%src, %c0, %c0, %c8, %c8, %c8, %c1)
+          {chan_name = @bcast_chan,
+           operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
+          : (memref<8x8xi32>, index, index, index, index, index, index)
+          -> !air.async.token
+      aie.end
+    }
   }
 }

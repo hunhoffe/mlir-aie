@@ -14,83 +14,46 @@
 // produce no diagnostic (tested in air_channel_to_conduit_cascade.mlir).
 
 module {
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
+    "air.channel"() {sym_name = "cas_nonzero_off", size = [1, 1], channel_type = "cascade"} : () -> ()
+    "air.channel"() {sym_name = "cas_nonunit_sz",  size = [1, 1], channel_type = "cascade"} : () -> ()
+    "air.channel"() {sym_name = "cas_nonunit_st",  size = [1, 1], channel_type = "cascade"} : () -> ()
+    "air.channel"() {sym_name = "cas_dyn_off",     size = [1, 1], channel_type = "cascade"} : () -> ()
+    aie.core(%tile_0_3) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c4 = arith.constant 4 : index
 
-  // -----------------------------------------------------------------------
-  // Scenario 1: constant non-zero offset → warning
-  // -----------------------------------------------------------------------
-  "air.channel"() {sym_name = "cas_nonzero_off", size = [1, 1],
-                   channel_type = "cascade"} : () -> ()
+      %src1 = memref.alloca() : memref<1xvector<16xi32>>
+      // expected-warning @+1 {{non-zero offset}}
+      "air.channel.put"(%src1, %c4, %c1, %c1)
+          {chan_name = @cas_nonzero_off, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<1xvector<16xi32>>, index, index, index) -> ()
 
-  func.func @test_nonzero_offset(%src : memref<1xvector<16xi32>>) {
-    %c4 = arith.constant 4 : index  // non-zero offset
-    %c1 = arith.constant 1 : index
+      %src2 = memref.alloca() : memref<4xvector<16xi32>>
+      // expected-warning @+1 {{non-unit size}}
+      "air.channel.put"(%src2, %c0, %c4, %c1)
+          {chan_name = @cas_nonunit_sz, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<4xvector<16xi32>>, index, index, index) -> ()
 
-    // expected-warning @+1 {{non-zero offset}}
-    "air.channel.put"(%src, %c4, %c1, %c1)
-        {chan_name = @cas_nonzero_off,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<1xvector<16xi32>>, index, index, index)
-        -> ()
-    return
+      %src3 = memref.alloca() : memref<1xvector<16xi32>>
+      // expected-warning @+1 {{non-unit stride}}
+      "air.channel.put"(%src3, %c0, %c1, %c2)
+          {chan_name = @cas_nonunit_st, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<1xvector<16xi32>>, index, index, index) -> ()
+
+      // Scenario 4: dynamic offset via memref.load
+      %dyn_buf = memref.alloca() : memref<1xindex>
+      %dyn = memref.load %dyn_buf[%c0] : memref<1xindex>
+      %src4 = memref.alloca() : memref<1xvector<16xi32>>
+      // expected-error @+1 {{fully dynamic offset operand}}
+      "air.channel.put"(%src4, %dyn, %c1, %c1)
+          {chan_name = @cas_dyn_off, operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
+          : (memref<1xvector<16xi32>>, index, index, index) -> ()
+
+      aie.end
+    }
   }
-
-  // -----------------------------------------------------------------------
-  // Scenario 2: constant non-unit size → warning
-  // -----------------------------------------------------------------------
-  "air.channel"() {sym_name = "cas_nonunit_sz", size = [1, 1],
-                   channel_type = "cascade"} : () -> ()
-
-  func.func @test_nonunit_size(%src : memref<4xvector<16xi32>>) {
-    %c0 = arith.constant 0 : index
-    %c4 = arith.constant 4 : index  // non-unit size
-    %c1 = arith.constant 1 : index
-
-    // expected-warning @+1 {{non-unit size}}
-    "air.channel.put"(%src, %c0, %c4, %c1)
-        {chan_name = @cas_nonunit_sz,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<4xvector<16xi32>>, index, index, index)
-        -> ()
-    return
-  }
-
-  // -----------------------------------------------------------------------
-  // Scenario 3: constant non-unit stride → warning
-  // -----------------------------------------------------------------------
-  "air.channel"() {sym_name = "cas_nonunit_st", size = [1, 1],
-                   channel_type = "cascade"} : () -> ()
-
-  func.func @test_nonunit_stride(%src : memref<1xvector<16xi32>>) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c2 = arith.constant 2 : index  // non-unit stride
-
-    // expected-warning @+1 {{non-unit stride}}
-    "air.channel.put"(%src, %c0, %c1, %c2)
-        {chan_name = @cas_nonunit_st,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<1xvector<16xi32>>, index, index, index)
-        -> ()
-    return
-  }
-
-  // -----------------------------------------------------------------------
-  // Scenario 4: fully dynamic (non-constant) offset → hard error
-  // -----------------------------------------------------------------------
-  "air.channel"() {sym_name = "cas_dyn_off", size = [1, 1],
-                   channel_type = "cascade"} : () -> ()
-
-  func.func @test_dynamic_offset(%src : memref<1xvector<16xi32>>,
-                                  %dyn : index) {
-    %c1 = arith.constant 1 : index
-
-    // expected-error @+1 {{fully dynamic offset operand}}
-    "air.channel.put"(%src, %dyn, %c1, %c1)
-        {chan_name = @cas_dyn_off,
-         operand_segment_sizes = array<i32: 0, 0, 1, 1, 1, 1>}
-        : (memref<1xvector<16xi32>>, index, index, index)
-        -> ()
-    return
-  }
-
 }

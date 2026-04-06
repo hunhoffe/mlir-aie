@@ -2,20 +2,15 @@
 //
 // Pass B (--air-channel-to-conduit) basic test: lowers air.channel.put/get to Conduit Tier 3 ops.
 //
-// Pass B test: lower air.channel.put / air.channel.get to Conduit Tier 3 ops.
-//
-// Input: a minimal AIR channel program in generic MLIR notation (because the
-// AIR dialect is not registered in aie-opt; --allow-unregistered-dialect is
-// used to parse the unregistered ops).
+// Input: post-hierarchy IR (air.channel inside aie.device, put/get inside aie.core).
+// This matches the format produced by --air-hierarchy-to-aie, which is the
+// only production input Pass B ever receives.
 //
 // The program contains:
-//   - one air.channel declaration @chan [1, 1]
-//   - one air.channel.put (async) with 8x8 descriptor: offsets=[0,0], sizes=[8,8], strides=[8,1]
-//   - one air.channel.get (async) with matching descriptor
+//   - one air.channel declaration @chan [1, 1] inside aie.device
+//   - one air.channel.put (async) with 8x8 descriptor inside aie.core
+//   - one air.channel.get (async) with matching descriptor inside aie.core
 //   - one air.wait_all (async)
-//
-// This is the SPMD-specialized form that Pass B receives (Task #32):
-// channels are [1,1] scalars, no multi-dimensional indices.
 //
 // Expected output after --air-channel-to-conduit:
 //   - conduit.create {name="chan", capacity=1, depth=1}
@@ -63,47 +58,40 @@
 // CHECK-NOT: air.wait_all
 
 module {
-  // Air channel declaration: sym_name="chan", size=[1,1].
-  // Generic notation so aie-opt (with --allow-unregistered-dialect) accepts it.
-  "air.channel"() {sym_name = "chan", size = [1, 1]} : () -> ()
+  aie.device(xcve2802) {
+    %tile_0_3 = aie.tile(0, 3)
 
-  func.func @test_air_channel_put_get(
-      %src : memref<8x8xi32>,
-      %dst : memref<8x8xi32>) {
+    // Air channel declaration inside aie.device (post-hierarchy format).
+    "air.channel"() {sym_name = "chan", size = [1, 1]} : () -> ()
 
-    // Static constants for the memref descriptor.
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c8 = arith.constant 8 : index
+    aie.core(%tile_0_3) {
+      %src = memref.alloca() : memref<8x8xi32>
+      %dst = memref.alloca() : memref<8x8xi32>
 
-    // air.channel.put async: push a 8x8 tile from %src into @chan.
-    //
-    // The operand_segment_sizes attribute encodes the segmentation:
-    //   [ndeps=0, nidx=0, nmemref=1, noffsets=2, nsizes=2, nstrides=2]
-    //
-    // Operands in order:
-    //   (src, off0, off1, size0, size1, stride0, stride1)
-    //    = (%src, %c0, %c0, %c8, %c8, %c8, %c1)
-    //
-    // So offsets=[0,0], sizes=[8,8], strides=[8,1], num_elems=8*8=64.
-    %tok0 = "air.channel.put"(%src, %c0, %c0, %c8, %c8, %c8, %c1)
-        {chan_name = @chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
-        : (memref<8x8xi32>, index, index, index, index, index, index)
-        -> !air.async.token
+      // Static constants for the memref descriptor.
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c8 = arith.constant 8 : index
 
-    // air.channel.get async: pull a 8x8 tile from @chan into %dst.
-    // Same descriptor shape as the put.
-    %tok1 = "air.channel.get"(%dst, %c0, %c0, %c8, %c8, %c8, %c1)
-        {chan_name = @chan,
-         operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
-        : (memref<8x8xi32>, index, index, index, index, index, index)
-        -> !air.async.token
+      // air.channel.put async: offsets=[0,0], sizes=[8,8], strides=[8,1], num_elems=64.
+      %tok0 = "air.channel.put"(%src, %c0, %c0, %c8, %c8, %c8, %c1)
+          {chan_name = @chan,
+           operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
+          : (memref<8x8xi32>, index, index, index, index, index, index)
+          -> !air.async.token
 
-    // air.wait_all async: fan-in over both tokens.
-    %merged = "air.wait_all"(%tok0, %tok1)
-        : (!air.async.token, !air.async.token) -> !air.async.token
+      // air.channel.get async: same descriptor shape.
+      %tok1 = "air.channel.get"(%dst, %c0, %c0, %c8, %c8, %c8, %c1)
+          {chan_name = @chan,
+           operand_segment_sizes = array<i32: 0, 0, 1, 2, 2, 2>}
+          : (memref<8x8xi32>, index, index, index, index, index, index)
+          -> !air.async.token
 
-    return
+      // air.wait_all async: fan-in over both tokens.
+      %merged = "air.wait_all"(%tok0, %tok1)
+          : (!air.async.token, !air.async.token) -> !air.async.token
+
+      aie.end
+    }
   }
 }
