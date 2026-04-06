@@ -451,15 +451,15 @@ void linkPhase(ConduitToDMAState &state) {
     if (isDistribute && numDsts > 0 && !srcInfo.disableSynchronization) {
       builder.setInsertionPoint(lockInsertionPoint);
       for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx) {
-        // Scale per-slice lock init by the destination fifo's repeat_count.
+        // Scale per-slice lock init by the destination fifo's bd_repeat.
         // The MemTile MM2S fires linkDepth×repeat times before releasing.
         int64_t dstRepeat = 1;
         {
           std::string dstNameR =
               mlir::cast<mlir::FlatSymbolRefAttr>(dsts[sliceIdx]).getValue().str();
           if (ConduitInfo *dstInfoR = state.lookupConduit(dstNameR))
-            if (dstInfoR->bdChainRepeatCount > 1)
-              dstRepeat = dstInfoR->bdChainRepeatCount;
+            if (dstInfoR->bdRepeat > 1)
+              dstRepeat = dstInfoR->bdRepeat;
         }
         int64_t sliceProdInit = linkDepth * dstRepeat;
 
@@ -1076,7 +1076,7 @@ void linkPhase(ConduitToDMAState &state) {
           mm2sRelLock = sliceProdLocks[dstIdx];
         }
 
-        // Look up dst fifo's producerDimensions, repeat_count, and packet ID.
+        // Look up dst fifo's producerDimensions, bd_repeat, and packet ID.
         AIE::BDDimLayoutArrayAttr dstProdDims;
         int64_t mm2sDstRepeat = 1;
         int dstPktID = -1;
@@ -1085,14 +1085,14 @@ void linkPhase(ConduitToDMAState &state) {
               mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
           if (ConduitInfo *dstInfo = state.lookupConduit(dstName2)) {
             dstProdDims = dstInfo->producerDimensions;
-            if (dstInfo->bdChainRepeatCount > 1)
-              mm2sDstRepeat = dstInfo->bdChainRepeatCount;
+            if (dstInfo->bdRepeat > 1)
+              mm2sDstRepeat = dstInfo->bdRepeat;
           }
           auto pktIt = state.conduitPacketID.find(dstName2);
           if (pktIt != state.conduitPacketID.end())
             dstPktID = static_cast<int>(pktIt->second);
         }
-        // Unroll by repeat_count: each source buffer is sent repeat times.
+        // Unroll by bd_repeat: each source buffer is sent repeat times.
         int64_t thisDstEffective = thisDstDepth * mm2sDstRepeat;
 
         llvm::SmallVector<mlir::Block *> sendBDBlocks;
@@ -1644,12 +1644,12 @@ void linkPhase(ConduitToDMAState &state) {
                                    members.front() != name);
               }
 
-              // Compute DMAStartOp repeat_count from iter_count.
-              int32_t dmaRepeatCount = (info.iterCount > 0) ?
-                  static_cast<int32_t>(info.iterCount - 1) : 0;
-              // BD chain repeat factor for objectfifo repeat_count.
-              int64_t bdRepeat = info.bdChainRepeatCount > 1 ?
-                  info.bdChainRepeatCount : 1;
+              // Compute DMAStartOp repeat_count from dma_repeat.
+              int32_t dmaRepeatCount = (info.dmaRepeat > 0) ?
+                  static_cast<int32_t>(info.dmaRepeat - 1) : 0;
+              // BD chain repeat factor for objectfifo bd_repeat.
+              int64_t bdRepeat = info.bdRepeat > 1 ?
+                  info.bdRepeat : 1;
               int64_t effectiveBDs = depth * bdRepeat;
 
               if (existingDMARegion) {
@@ -1675,7 +1675,7 @@ void linkPhase(ConduitToDMAState &state) {
                   for (int64_t i = 0; i < effectiveBDs; ++i)
                     bdBlocks.push_back(addBlock());
 
-                  // For finite chains (iter_count > 0), create a dedicated BD
+                  // For finite chains (dma_repeat > 0), create a dedicated BD
                   // terminal block BEFORE newEndBlock.  The scan for the next
                   // channel's "endBlock" iterates blocks in insertion order and
                   // returns the LAST block with aie.end; since bdTermBlock is
@@ -1684,7 +1684,7 @@ void linkPhase(ConduitToDMAState &state) {
                   // aie.end permanently, satisfying the AIEAssignBufferDescriptorIDs
                   // assertion: "bb that's not in blockMap can only have aie.end".
                   mlir::Block *bdTermBlock =
-                      (info.iterCount > 0) ? addBlock() : nullptr;
+                      (info.dmaRepeat > 0) ? addBlock() : nullptr;
                   mlir::Block *newEndBlock = addBlock();
 
                   if (isFusedNonFirst) {
@@ -1720,8 +1720,8 @@ void linkPhase(ConduitToDMAState &state) {
                         blockRel, state.lockRelValue(Port::Consume),
                         info.producerDimensions,
                         pktID);
-                    // Non-circular when iter_count > 0: last BD → bdTermBlock (aie.end).
-                    bool isLast = (i == effectiveBDs - 1) && (info.iterCount > 0);
+                    // Non-circular when dma_repeat > 0: last BD → bdTermBlock (aie.end).
+                    bool isLast = (i == effectiveBDs - 1) && (info.dmaRepeat > 0);
                     if (isLast)
                       builder.create<AIE::NextBDOp>(
                           state.deviceOp.getLoc(), bdTermBlock);
@@ -1793,8 +1793,8 @@ void linkPhase(ConduitToDMAState &state) {
                       blockRel, state.lockRelValue(Port::Consume),
                       info.producerDimensions,
                       pktID);
-                  // Non-circular when iter_count > 0.
-                  bool isLast = (i == effectiveBDs - 1) && (info.iterCount > 0);
+                  // Non-circular when dma_repeat > 0.
+                  bool isLast = (i == effectiveBDs - 1) && (info.dmaRepeat > 0);
                   if (isLast)
                     builder.create<AIE::NextBDOp>(
                         state.deviceOp.getLoc(), endBlock);
@@ -1850,10 +1850,10 @@ void linkPhase(ConduitToDMAState &state) {
       // producer_dimensions are NOT applied here: for shim consumers, the
       // DMA descriptor on the shim side (runtime-programmed) carries dims.
       // The compute tile MM2S BD uses the raw buffer without transforms.
-      int32_t caseBDmaRepeatCount = (info.iterCount > 0) ?
-          static_cast<int32_t>(info.iterCount - 1) : 0;
-      int64_t caseBBdRepeat = info.bdChainRepeatCount > 1 ?
-          info.bdChainRepeatCount : 1;
+      int32_t caseBDmaRepeatCount = (info.dmaRepeat > 0) ?
+          static_cast<int32_t>(info.dmaRepeat - 1) : 0;
+      int64_t caseBBdRepeat = info.bdRepeat > 1 ?
+          info.bdRepeat : 1;
       int64_t caseBEffectiveBDs = info.nConsumerBuffers() * caseBBdRepeat;
 
       if (existingDMARegion) {
@@ -1935,7 +1935,7 @@ void linkPhase(ConduitToDMAState &state) {
                 info.buffers[(i / caseBBdRepeat) % info.buffers.size()].getResult(),
                 0, perBufLen,
                 blockRelVal, state.lockRelValue(Port::Consume));
-            bool caseBIsLast = (i == caseBEffectiveBDs - 1) && (info.iterCount > 0);
+            bool caseBIsLast = (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
             if (caseBIsLast)
               builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), newEndBlock);
             else
@@ -2010,7 +2010,7 @@ void linkPhase(ConduitToDMAState &state) {
               info.buffers[(i / caseBBdRepeat) % info.buffers.size()].getResult(),
               0, perBufLen,
               blockRelVal, state.lockRelValue(Port::Consume));
-          bool caseBIsLast = (i == caseBEffectiveBDs - 1) && (info.iterCount > 0);
+          bool caseBIsLast = (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
           if (caseBIsLast)
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), endMemBlock);
           else
@@ -2118,9 +2118,9 @@ void linkPhase(ConduitToDMAState &state) {
                 existingEndBlock = &block;
         }
 
-        // Compute DMAStartOp repeat_count from iter_count.
-        int32_t dmaRepeatCount = (info.iterCount > 0) ?
-            static_cast<int32_t>(info.iterCount - 1) : 0;
+        // Compute DMAStartOp repeat_count from dma_repeat.
+        int32_t dmaRepeatCount = (info.dmaRepeat > 0) ?
+            static_cast<int32_t>(info.dmaRepeat - 1) : 0;
 
         llvm::SmallVector<mlir::Block *> bdBlocks;
         for (int64_t i = 0; i < nBufs; ++i)
@@ -2129,13 +2129,18 @@ void linkPhase(ConduitToDMAState &state) {
         // bdTermBlock strategy: when adding a channel to an existing DMA region
         // (existingEndBlock != null), the "next-channel" scan finds the LAST
         // aie.end block and replaces it with a DMAStartOp.  For finite chains
-        // (iter_count > 0), we need a dedicated bdTermBlock (placed BEFORE
+        // (dma_repeat > 0), we need a dedicated bdTermBlock (placed BEFORE
         // endMemBlock) whose aie.end stays permanent so the scan correctly
         // targets only endMemBlock.  When creating a fresh DMA region (no
         // existing channels), no scan occurs, so the last BD can point directly
         // to endMemBlock — no extra terminal block needed.
+        // Linear chain condition: either dma_repeat>0 (finite DMA task queue),
+        // or putCount>1 with no dmaRepeat (N sequential puts merged by
+        // --conduit-fuse-channels; annotation-free temporal multiplexing).
+        bool isLinearChain = (info.dmaRepeat > 0)
+                          || (info.putCount > 1 && info.dmaRepeat == 0);
         mlir::Block *bdTermBlock =
-            (info.iterCount > 0 && existingEndBlock) ? addMemBlock() : nullptr;
+            (isLinearChain && existingEndBlock) ? addMemBlock() : nullptr;
         mlir::Block *endMemBlock = addMemBlock();
 
         if (existingEndBlock) {
@@ -2180,9 +2185,9 @@ void linkPhase(ConduitToDMAState &state) {
               blockLockAcq, state.lockAcqValue(Port::Produce, 1),
               (*tileBuffers)[i % tileBuffers->size()].getResult(), 0, perBufLen,
               blockLockRel, state.lockRelValue(Port::Produce), consDims);
-          // Non-circular chain when iter_count > 0: last BD → bdTermBlock (if
-          // existingEndBlock) or endMemBlock (fresh region, no extra block needed).
-          bool isLast = (i == nBufs - 1) && (info.iterCount > 0);
+          // Non-circular chain when iter_count > 0 or putCount > 1:
+          // last BD → bdTermBlock (if existingEndBlock) or endMemBlock (fresh region).
+          bool isLast = (i == nBufs - 1) && isLinearChain;
           if (isLast)
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdTermBlock ? bdTermBlock : endMemBlock);

@@ -135,10 +135,12 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto plioAttr = op.getPlio())
       if (*plioAttr)
         info.plio = true;
-    if (auto attr = op.getIterCount())
-      info.iterCount = static_cast<int64_t>(*attr);
-    if (auto attr = op.getRepeatCount())
-      info.bdChainRepeatCount = static_cast<int64_t>(*attr);
+    if (auto attr = op.getDmaRepeat())
+      info.dmaRepeat = static_cast<int64_t>(*attr);
+    if (auto attr = op.getBdRepeat())
+      info.bdRepeat = static_cast<int64_t>(*attr);
+    // Note: time_multiplex_count has been removed from conduit.create.
+    // Pass C infers BD chain length from putCount (Phase 1 put_memref_async walk).
     if (auto attr = op.getProducerDimensions()) {
       if (auto typed = mlir::dyn_cast<AIE::BDDimLayoutArrayAttr>(*attr))
         info.producerDimensions = typed;
@@ -254,6 +256,15 @@ void collectPhase(ConduitToDMAState &state) {
       if (n > it->second.numElems)
         it->second.numElems = n;
     }
+  });
+  // Count put_memref_async ops per channel for annotation-free BD chain
+  // length inference. Tier-3 channels with N sequential token-chained puts
+  // (after --conduit-fuse-channels TM merge) need an N-entry linear chain.
+  module.walk([&](PutMemrefAsync op) {
+    llvm::StringRef name = op.getName();
+    auto it = state.conduitMap.find(name.str());
+    if (it != state.conduitMap.end())
+      ++it->second.putCount;
   });
   module.walk([&](GetMemrefAsync op) {
     llvm::StringRef name = op.getName();

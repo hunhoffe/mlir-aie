@@ -277,11 +277,11 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
-      // Scale release count by repeat_count for Produce port: the producer
+      // Scale release count by bd_repeat for Produce port: the producer
       // core releases N lock units per buffer (one per DMA repetition).
       int64_t effectiveCount = count;
-      if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
-        effectiveCount *= cinfo->bdChainRepeatCount;
+      if (cinfo->bdRepeat > 1 && port == Port::Produce)
+        effectiveCount *= cinfo->bdRepeat;
       int32_t relVal =
           state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
@@ -500,10 +500,10 @@ void lowerPhase(ConduitToDMAState &state) {
         // delta == 0 means the window is already satisfied by a dominating
         // acquire — no additional lock grant needed.
         if (lock && delta > 0) {
-          // Scale delta by repeat_count for Produce acquires.
+          // Scale delta by bd_repeat for Produce acquires.
           int64_t effectiveDelta = delta;
-          if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
-            effectiveDelta *= cinfo->bdChainRepeatCount;
+          if (cinfo->bdRepeat > 1 && port == Port::Produce)
+            effectiveDelta *= cinfo->bdRepeat;
           int32_t acqVal =
               state.lockAcqValue(port, static_cast<int32_t>(effectiveDelta));
           builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
@@ -792,10 +792,10 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp lock =
         (port == Port::Consume) ? resolvedProdLock : resolvedConsLock;
     if (lock) {
-      // Scale release count by repeat_count for Produce port (async).
+      // Scale release count by bd_repeat for Produce port (async).
       int64_t effectiveCount = count;
-      if (cinfo->bdChainRepeatCount > 1 && port == Port::Produce)
-        effectiveCount *= cinfo->bdChainRepeatCount;
+      if (cinfo->bdRepeat > 1 && port == Port::Produce)
+        effectiveCount *= cinfo->bdRepeat;
       int32_t relVal =
           state.lockRelValue(port, static_cast<int32_t>(effectiveCount));
       builder.create<AIE::UseLockOp>(op.getLoc(), lock.getResult(),
@@ -895,8 +895,8 @@ void lowerPhase(ConduitToDMAState &state) {
           if (!shimProducer) {
             builder.setInsertionPoint(op);
             int64_t count = 1;
-            if (cinfo->bdChainRepeatCount > 1)
-              count *= cinfo->bdChainRepeatCount;
+            if (cinfo->bdRepeat > 1)
+              count *= cinfo->bdRepeat;
 
             // Acquire prodLock: wait for empty buffer slot.
             if (resolved.prodLock) {

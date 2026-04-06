@@ -78,7 +78,7 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
 
       air.channel @name [1, 1]
         → conduit.create {name, capacity=1, element_type=<inferred>,
-                          depth=1, link_mode=<empty>}
+                          depth=1}
 
       air.channel.put async [%deps] @chan(%buf[offsets][sizes][strides])
         → conduit.put_memref_async {name, num_elems, offsets, sizes, strides}
@@ -646,20 +646,20 @@ def ConduitCheckOrdering : Pass<"conduit-check-ordering", "::mlir::ModuleOp"> {
 //===----------------------------------------------------------------------===//
 
 def ConduitCheckLoopBalance : Pass<"conduit-check-loop-balance", "::mlir::ModuleOp"> {
-  let summary = "Check that consumer loop trip counts do not exceed conduit iter_count";
+  let summary = "Check that consumer loop trip counts do not exceed conduit dma_repeat";
   let description = [{
     Emits a warning when a conduit.create channel has a finite total DMA send
-    count (iter_count attribute) and a consumer-side conduit.acquire for that
+    count (dma_repeat attribute) and a consumer-side conduit.acquire for that
     channel is inside a statically bounded scf.for whose trip count exceeds
-    iter_count.
+    dma_repeat.
 
     Background:
-      iter_count=N on conduit.create means the DMA fires exactly N times total
+      dma_repeat=N on conduit.create means the DMA fires exactly N times total
       (maps to DMAStartOp.repeat_count = N-1 with a non-circular BD chain).
       If the consumer loop iterates T > N times, it will stall after N
       iterations waiting for tokens that never arrive — hardware deadlock.
 
-      Note: repeat_count (per-BD repeat factor) is NOT checked here because it
+      Note: bd_repeat (per-BD unroll factor) is NOT checked here because it
       is not the total send count; its effect depends on depth and BD structure.
 
     The check is conservative: only statically bounded loops (constant lb, ub,

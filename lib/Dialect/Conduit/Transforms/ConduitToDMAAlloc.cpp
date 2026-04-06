@@ -414,9 +414,9 @@ void allocPhase(ConduitToDMAState &state) {
 
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
       if (!info.disableSynchronization) {
-        // repeat_count > 1 scales prod lock init: each buffer is DMA'd N times.
+        // bd_repeat > 1 scales prod lock init: each buffer is DMA'd N times.
         int64_t repeatN =
-            info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+            info.bdRepeat > 1 ? info.bdRepeat : 1;
         int64_t prodInit = prodDepth * repeatN;
         auto locks =
             state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
@@ -540,7 +540,7 @@ void allocPhase(ConduitToDMAState &state) {
             AIE::LockOp sharedProdLock, sharedConsLock;
             if (!info.disableSynchronization) {
               int64_t repeatN =
-                  info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+                  info.bdRepeat > 1 ? info.bdRepeat : 1;
               int64_t prodInit = nBufs * repeatN;
               auto locks =
                   state.allocateLockPair(allocTileVal, name, nBufs, prodInit);
@@ -614,7 +614,7 @@ void allocPhase(ConduitToDMAState &state) {
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
       if (!info.disableSynchronization) {
         int64_t repeatN =
-            info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+            info.bdRepeat > 1 ? info.bdRepeat : 1;
         int64_t prodInit = prodDepth * repeatN;
         auto locks =
             state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
@@ -735,9 +735,9 @@ void allocPhase(ConduitToDMAState &state) {
       // disable_synchronization).
       //
       // Consumer-tile prod_lock init = nBufs (number of buffer slots, including
-      // any extra for sliding-window partial release). repeat_count does NOT
-      // multiply here: the DMA BD chain fires repeat_count times per buffer
-      // slot, but the repeat_count scaling belongs only on the producer-side
+      // any extra for sliding-window partial release). bd_repeat does NOT
+      // multiply here: the DMA BD chain fires bd_repeat times per buffer
+      // slot, but the bd_repeat scaling belongs only on the producer-side
       // lock (allocated in Phase 3d below).
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.disableSynchronization) {
@@ -844,7 +844,7 @@ void allocPhase(ConduitToDMAState &state) {
     AIE::LockOp prodLockProd, prodLockCons;
     if (!info.disableSynchronization) {
       int64_t repeatN =
-          info.bdChainRepeatCount > 1 ? info.bdChainRepeatCount : 1;
+          info.bdRepeat > 1 ? info.bdRepeat : 1;
       int64_t prodInit = prodDepth * repeatN;
       auto prodLocks =
           state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);

@@ -668,22 +668,6 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
     }
   }
 
-  // M7-window: sliding-window buffer capacity check.
-  // When window_size is set, the channel is a sliding-window channel where the
-  // consumer holds up to window_size slots simultaneously.  The depth must be
-  // at least window_size to avoid deadlock (the DMA ring must have enough
-  // physical slots to satisfy the maximum concurrent hold).
-  if (auto ws = getWindowSize()) {
-    int64_t wsize = static_cast<int64_t>(*ws);
-    if (auto d = getDepth()) {
-      int64_t depth = static_cast<int64_t>(*d);
-      if (depth < wsize)
-        return emitOpError(
-            "depth must be >= window_size for sliding-window channel (depth=")
-               << depth << ", window_size=" << wsize << ")";
-    }
-  }
-
   // M6: CSDF balance check (necessary condition).
   // producer_rates and consumer_rates must appear together.  When both are
   // present, the Lee-Messerschmitt consistency equation must hold:
@@ -959,6 +943,24 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   if (failed(checkWindowReleaseCumulativeCount(getOperation(), getWindow())))
     return ::mlir::failure();
 
+  // M7-window: sliding-window buffer capacity check.
+  // When window_size is set, the channel depth must be >= window_size to avoid
+  // deadlock (the DMA ring must have enough physical slots to satisfy the
+  // maximum concurrent hold).
+  if (auto ws = getWindowSize()) {
+    int64_t wsize = static_cast<int64_t>(*ws);
+    Create createOp = findConduitCreateByName(getOperation(), getName());
+    if (createOp) {
+      if (auto d = createOp.getDepth()) {
+        int64_t depth = static_cast<int64_t>(*d);
+        if (depth < wsize)
+          return emitOpError(
+              "depth must be >= window_size for sliding-window channel (depth=")
+                 << depth << ", window_size=" << wsize << ")";
+      }
+    }
+  }
+
   // M9 Phase 2 (same-block acquire-release pairing) is implemented in the
   // separate --conduit-check-pairing analysis pass (ConduitPairingCheck.cpp).
   // Moved out of verify() to avoid MLIR diagnostic infinite recursion and to
@@ -974,6 +976,21 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
     return ::mlir::failure();
   if (failed(checkWindowTokenLinear(getOperation(), getToken())))
     return ::mlir::failure();
+
+  // M7-window: sliding-window buffer capacity check.
+  if (auto ws = getWindowSize()) {
+    int64_t wsize = static_cast<int64_t>(*ws);
+    Create createOp = findConduitCreateByName(getOperation(), getName());
+    if (createOp) {
+      if (auto d = createOp.getDepth()) {
+        int64_t depth = static_cast<int64_t>(*d);
+        if (depth < wsize)
+          return emitOpError(
+              "depth must be >= window_size for sliding-window channel (depth=")
+                 << depth << ", window_size=" << wsize << ")";
+      }
+    }
+  }
 
   // M9 Phase 2 (same-block pairing via wait_window) is implemented in the
   // separate --conduit-check-pairing analysis pass (ConduitPairingCheck.cpp).

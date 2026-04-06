@@ -15,20 +15,20 @@
 // Background:
 //   `conduit.create` carries two attributes that bound the total DMA sends:
 //
-//   - `iter_count` (OptionalAttr<I64Attr>): the total number of DMA task-queue
-//     iterations.  Maps to DMAStartOp.repeat_count = iter_count - 1 with a
-//     non-circular BD chain.  iter_count=N means the DMA fires exactly N times
-//     total, then stops.  This is the primary signal for finite-send channels.
+//   - `dma_repeat` (OptionalAttr<I64Attr>): the total number of times the DMA
+//     engine runs the whole BD chain.  Maps to DMAStartOp.repeat_count =
+//     dma_repeat - 1 with a non-circular BD chain.  dma_repeat=N means the DMA
+//     fires exactly N times total, then stops.  Primary signal for finite-send.
 //
-//   - `repeat_count` (OptionalAttr<I64Attr>): a per-BD repeat count.  Each BD
-//     in the chain fires repeat_count times before advancing.  This is NOT the
-//     total send count; it depends on depth (chain length) and BD structure.
-//     Checking repeat_count alone for finite-send detection is unsound.
+//   - `bd_repeat` (OptionalAttr<I64Attr>): a per-BD unroll factor within one
+//     chain pass.  Each BD in the chain fires bd_repeat times before advancing.
+//     This is NOT the total send count; it depends on depth and BD structure.
+//     Checking bd_repeat alone for finite-send detection is unsound.
 //
-// This pass checks ONLY `iter_count`, which is the unambiguous total send count.
+// This pass checks ONLY `dma_repeat`, which is the unambiguous total send count.
 //
 // Check:
-//   For each conduit.create with iter_count=N:
+//   For each conduit.create with dma_repeat=N:
 //     For each conduit.acquire on the Consume port referencing that channel:
 //       Walk the acquire's parent op chain upward to find an enclosing scf.for.
 //       If the scf.for has statically constant bounds (lb, ub, step):
@@ -36,7 +36,7 @@
 //         If T > N: emit warning on the conduit.create.
 //
 // The Exp C deadlock pattern:
-//   conduit.create @weights {iter_count = 64 : i64, depth = 1, ...}
+//   conduit.create @weights {dma_repeat = 64 : i64, depth = 1, ...}
 //   aie.core { scf.for %i = 0 to 128 step 1 {  // T=128 > N=64 → DEADLOCK
 //     conduit.acquire {name = @weights, ...}
 //   }}
@@ -101,23 +101,23 @@ struct ConduitCheckLoopBalancePass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
-    // Build a map from channel name → total DMA send count (iter_count only).
-    // iter_count=N means the DMA fires exactly N times total.  repeat_count
-    // is a per-BD repeat factor and is NOT the total send count; it is not
-    // checked here.  Only channels with iter_count set are candidates.
+    // Build a map from channel name → total DMA send count (dma_repeat only).
+    // dma_repeat=N means the DMA fires exactly N times total.  bd_repeat
+    // is a per-BD unroll factor and is NOT the total send count; it is not
+    // checked here.  Only channels with dma_repeat set are candidates.
     // ODS generates std::optional<uint64_t> for I64Attr optional accessors.
-    llvm::StringMap<int64_t> channelIterCount;
+    llvm::StringMap<int64_t> channelDmaRepeat;
 
     module.walk([&](Create createOp) {
-      if (auto ic = createOp.getIterCount())
-        channelIterCount[createOp.getSymName()] = static_cast<int64_t>(*ic);
+      if (auto ic = createOp.getDmaRepeat())
+        channelDmaRepeat[createOp.getSymName()] = static_cast<int64_t>(*ic);
     });
 
-    if (channelIterCount.empty())
+    if (channelDmaRepeat.empty())
       return;
 
     // For each conduit.acquire on the Consume port, check whether it is inside
-    // a statically bounded scf.for with trip count exceeding iter_count.
+    // a statically bounded scf.for with trip count exceeding dma_repeat.
     // getName() on Acquire returns FlatSymbolRefAttr::getValue() — the root
     // reference string (e.g. "ch" for @ch), matching getSymName() on Create.
     module.walk([&](Acquire acqOp) {
@@ -126,11 +126,11 @@ struct ConduitCheckLoopBalancePass
         return;
 
       llvm::StringRef chanName = acqOp.getName();
-      auto it = channelIterCount.find(chanName);
-      if (it == channelIterCount.end())
-        return; // channel has no iter_count — skip
+      auto it = channelDmaRepeat.find(chanName);
+      if (it == channelDmaRepeat.end())
+        return; // channel has no dma_repeat — skip
 
-      int64_t iterCount = it->second;
+      int64_t dmaRepeat = it->second;
 
       // Walk upward to find an enclosing scf.for.
       mlir::scf::ForOp forOp = findEnclosingForOp(acqOp);
@@ -141,17 +141,17 @@ struct ConduitCheckLoopBalancePass
       if (tripCount < 0)
         return; // dynamic bounds — cannot check statically
 
-      if (tripCount > iterCount) {
+      if (tripCount > dmaRepeat) {
         // Find the conduit.create to attach the warning to the declaration.
         module.walk([&](Create createOp) {
           if (createOp.getSymName() != chanName)
             return;
           createOp.emitWarning()
               << "conduit-check-loop-balance: channel '@" << chanName
-              << "' has iter_count " << iterCount
+              << "' has dma_repeat " << dmaRepeat
               << " (total DMA sends) but consumer acquire is inside a loop"
               << " with trip count " << tripCount
-              << " — consumer will stall after " << iterCount
+              << " — consumer will stall after " << dmaRepeat
               << " iterations (token deficit)";
         });
       }

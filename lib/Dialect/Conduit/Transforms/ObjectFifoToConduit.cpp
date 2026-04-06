@@ -120,10 +120,6 @@ struct FifoInfo {
   // fifo.  If all acquires use the same count the pattern is absent (uniform SDF).
   // If acquires vary, this holds the sequence of counts in program order.
   llvm::SmallVector<int64_t> accessPattern;
-  // Per-consumer depths, when the source ObjectFIFO uses an ArrayAttr
-  // elemNumber (e.g., {2 : i32, 4 : i32} meaning producer depth=2,
-  // consumer 0 depth=4).  Empty when all consumers share the uniform depth.
-  llvm::SmallVector<int64_t> consumerDepths;
   // CSDF rates inferred from Phase 1.5 acquire/release scans (infer-rates=true).
   // Only populated for single-consumer fifos.  For multi-consumer fifos,
   // rate annotation is skipped (per-consumer rates differ; no single merged rate
@@ -226,16 +222,6 @@ struct ObjectFifoToConduitPass
       // Depth — producer depth is always index 0.
       info.depth = op.size(0);
 
-      // P2-9: Per-consumer depths.  When elemNumber is an ArrayAttr,
-      // indices 1..N are per-consumer depths (one per consumer tile).
-      if (auto arrAttr = mlir::dyn_cast<mlir::ArrayAttr>(op.getElemNumber())) {
-        // Index 0 = producer depth; indices 1..N = consumer depths.
-        for (unsigned i = 1; i < arrAttr.size(); ++i) {
-          auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(arrAttr[i]);
-          if (intAttr)
-            info.consumerDepths.push_back(intAttr.getInt());
-        }
-      }
       // Element type — must be a MemRefType for window semantics.
       auto objfifoTy = mlir::cast<AIE::AIEObjectFifoType>(op.getElemType());
       mlir::Type elemTy = objfifoTy.getElementType();
@@ -502,7 +488,7 @@ struct ObjectFifoToConduitPass
 
       // Extract repeat_count from the source objectfifo, if present.
       // Propagated unconditionally (any value including >1) so Pass C can set
-      // DMAStartOp repeat_count accordingly.
+      // effectiveBDs = depth * bd_repeat accordingly.
       mlir::IntegerAttr repeatCountAttr;
       if (op.getRepeatCount().has_value()) {
         repeatCountAttr = mlir::IntegerAttr::get(
@@ -510,18 +496,12 @@ struct ObjectFifoToConduitPass
             static_cast<int64_t>(op.getRepeatCount().value()));
       }
 
-      // P2-9: Build consumer_depths attribute if per-consumer depths differ.
-      mlir::DenseI64ArrayAttr consumerDepthsAttr;
-      if (!info.consumerDepths.empty())
-        consumerDepthsAttr =
-            mlir::DenseI64ArrayAttr::get(ctx, info.consumerDepths);
-
       // Propagate disable_synchronization.
       mlir::BoolAttr disableSyncAttr;
       if (op.getDisableSynchronization())
         disableSyncAttr = mlir::BoolAttr::get(ctx, true);
 
-      // Propagate iter_count.
+      // Propagate dma_repeat (from objectfifo iter_count).
       mlir::IntegerAttr iterCountAttr;
       if (op.getIterCount().has_value()) {
         iterCountAttr = mlir::IntegerAttr::get(
@@ -564,12 +544,12 @@ struct ObjectFifoToConduitPass
       //       shared-memory path skips DMA BDs entirely, silently dropping N-D
       //       transforms. Forcing DMA ensures BDDimLayout attributes are applied
       //       at the hardware level.
-      //   (b) repeat_count > 1: the BD chain is replayed N times by the DMA
+      //   (b) bd_repeat > 1: the BD chain is replayed N times by the DMA
       //       engine. Shared-memory has no BD replay mechanism — the hardware
       //       lock protocol would need the core to re-acquire N times, but with
-      //       no consumer core body (the common repeat_count pattern) no one
+      //       no consumer core body (the common bd_repeat pattern) no one
       //       drives the lock. Forcing DMA ensures the BD chain is emitted and
-      //       the repeat_count is applied via DMAStartOp.
+      //       the bd_repeat is applied via DMAStartOp.
       mlir::BoolAttr viaDMAAttr;
       bool hasRepeat = op.getRepeatCount().has_value() &&
                        op.getRepeatCount().value() > 1;
@@ -639,20 +619,17 @@ struct ObjectFifoToConduitPass
           shimConsAttr,
           mlir::TypeAttr::get(info.elemType),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
-          /*link_mode=*/LinkModeAttr{},
           accessPatternAttr,
           routingModeAttr,
           /*producer_rates=*/inferredPRAttr,
           /*consumer_rates=*/inferredCRAttr,
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
           repeatCountAttr,
-          consumerDepthsAttr,
           disableSyncAttr,
           viaDMAAttr,
           /*plio=*/op.getPlio() ? mlir::BoolAttr::get(ctx, true)
                                 : mlir::BoolAttr{},
           iterCountAttr,
-          /*window_size=*/mlir::IntegerAttr{},
           prodDimsAttr,
           consDimsAttr);
 

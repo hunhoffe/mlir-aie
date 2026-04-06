@@ -222,6 +222,14 @@ struct ConduitFuseChannelsPass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
+    // -----------------------------------------------------------------------
+    // MM2S Live-Interval Fusion
+    //
+    // Groups conduit.create ops by producer_tile and fuses them using greedy
+    // interval coloring when their live intervals are non-overlapping in a
+    // basic block.
+    // -----------------------------------------------------------------------
+
     // Step 1: collect conduit.create ops grouped by producer_tile [col, row].
     // DenseMapInfo for std::pair<int64_t,int64_t> is provided by LLVM.
     llvm::DenseMap<std::pair<int64_t, int64_t>,
@@ -377,6 +385,7 @@ struct ConduitFuseChannelsPass
                              mlir::StringAttr::get(ctx, fuseMode));
       }
     }
+
   }
 };
 

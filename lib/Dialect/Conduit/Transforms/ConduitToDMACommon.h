@@ -175,6 +175,14 @@ struct ConduitInfo {
   // DMA channel fusion group label (from --conduit-fuse-channels annotation).
   std::string fuseGroup;
 
+  // Number of put_memref_async ops referencing this channel, inferred by
+  // Phase 1 (collectPhase).  When putCount > 1 and dmaRepeat == 0, Pass C
+  // uses putCount as the BD chain length and emits a linear (one-shot) chain.
+  // The --conduit-fuse-channels pass rewrites all non-canonical put/get ops
+  // to the canonical channel name, so putCount naturally equals N for an
+  // N-way temporal-multiplex group.  No explicit annotation is needed.
+  int64_t putCount = 0;
+
   // --- Populated by Phase 2.5 (computeEffectiveDepth). ---
 
   // Producer-side effective depth: min(depth, maxProdAcquire+1).
@@ -277,12 +285,12 @@ struct ConduitInfo {
   // plio: when true, the shim endpoint uses Platform I/O instead of DMA.
   // Flows use WireBundle::PLIO and shim_dma_allocation carries {plio = true}.
   bool plio = false;
-  // iter_count: number of DMA iterations (> 0 → DMAStartOp repeat_count = K-1,
-  // non-circular BD chain with terminal aie.end).
-  int64_t iterCount = 0;
-  // bdChainRepeatCount: from objectfifo repeat_count.  Number of times each BD
-  // fires before advancing to the next buffer.  0/1 = once (no unrolling).
-  int64_t bdChainRepeatCount = 0;
+  // dma_repeat: number of times the DMA engine runs the whole BD chain
+  // (> 0 → DMAStartOp repeat_count = K-1, non-circular BD chain with terminal aie.end).
+  int64_t dmaRepeat = 0;
+  // bdRepeat: from objectfifo bd_repeat (formerly repeat_count).  BD-level
+  // unroll factor: number of times each BD fires before advancing.  0/1 = once.
+  int64_t bdRepeat = 0;
   // Producer-side BDDimLayout descriptor (may be null/empty).
   AIE::BDDimLayoutArrayAttr producerDimensions;
   // Per-consumer BDDimLayout descriptors (parallel to consumerTileCoords).
@@ -299,6 +307,11 @@ struct ConduitInfo {
   // (K held by consumer + 1 for DMA). If depth > K+1, depth is used.
   // maxConsumerAcquire = 0 for normal SDF/CSDF (full release per step).
   int64_t nConsumerBuffers() const {
+    // Annotation-free inference: putCount > 1 with no dma_repeat means N
+    // sequential puts were merged (by --conduit-fuse-channels or Pass B Phase 2d).
+    // dma_repeat wins if set (ObjectFIFO task-queue loops have putCount=1).
+    if (putCount > 1 && dmaRepeat == 0)
+      return putCount;
     int64_t d = depth > 0 ? depth : 1;
     if (maxConsumerAcquire <= 0)
       return d;

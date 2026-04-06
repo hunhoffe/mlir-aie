@@ -694,13 +694,12 @@ struct AirChannelToConduitPass
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
-          /*repeat_count=*/mlir::IntegerAttr{},
+          /*bd_repeat=*/mlir::IntegerAttr{},
           /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
           /*disable_synchronization=*/mlir::BoolAttr{},
           /*viaDMA=*/mlir::BoolAttr{},
           /*plio=*/mlir::BoolAttr{},
-          /*iter_count=*/mlir::IntegerAttr{},
-          /*window_size=*/mlir::IntegerAttr{},
+          /*dma_repeat=*/mlir::IntegerAttr{},
           /*producer_dimensions=*/mlir::Attribute{},
           /*consumer_dimensions=*/mlir::Attribute{});
 
@@ -793,13 +792,12 @@ struct AirChannelToConduitPass
                 /*producer_rates=*/mlir::DenseI64ArrayAttr{},
                 /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
                 /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
-                /*repeat_count=*/mlir::IntegerAttr{},
+                /*bd_repeat=*/mlir::IntegerAttr{},
                 /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
                 /*disable_synchronization=*/mlir::BoolAttr{},
                 /*viaDMA=*/mlir::BoolAttr{},
                 /*plio=*/mlir::BoolAttr{},
-                /*iter_count=*/mlir::IntegerAttr{},
-                /*window_size=*/mlir::IntegerAttr{},
+                /*dma_repeat=*/mlir::IntegerAttr{},
                 /*producer_dimensions=*/mlir::Attribute{},
                 /*consumer_dimensions=*/mlir::Attribute{});
             channelCreateOps[dstName] = consCreate.getOperation();

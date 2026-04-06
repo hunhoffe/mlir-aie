@@ -276,26 +276,6 @@ def Conduit_RoutingModeAttr : EnumAttr<Conduit_Dialect, Conduit_RoutingMode, "ro
 }
 
 // ---------------------------------------------------------------------------
-// LinkMode enum — #conduit.link_mode<distribute> / <join> / <forward>
-//
-// Used on conduit.distribute, conduit.join, conduit.forward (required)
-// and conduit.create link_mode (optional).
-// Replaces StrAttr mode / OptionalAttr<StrAttr> link_mode.
-// ---------------------------------------------------------------------------
-
-def Conduit_LinkMode : I32EnumAttr<"LinkMode", "Conduit link mode", [
-  I32EnumAttrCase<"Distribute", 0, "distribute">,
-  I32EnumAttrCase<"Join",       1, "join">,
-  I32EnumAttrCase<"Forward",    2, "forward">
-]> {
-  let cppNamespace = "::xilinx::conduit";
-  let genSpecializedAttr = 0;
-}
-def Conduit_LinkModeAttr : EnumAttr<Conduit_Dialect, Conduit_LinkMode, "link_mode"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
-// ---------------------------------------------------------------------------
 // Window type — !conduit.window<T>
 // ---------------------------------------------------------------------------
 
@@ -351,7 +331,6 @@ def Conduit_Create : Conduit_Op<"create"> {
     - element_type    : TypeAttr — actual element memref type (e.g. memref<10xi32>)
                         Pass C uses this for aie.buffer allocation; never defaults to i32.
     - depth           : I64Attr — double-buffering depth
-    - link_mode       : optional StringAttr "distribute", "join", or "forward"
     - routing_mode    : optional StringAttr "circuit" (default) or "packet".
                         When "packet", Pass C emits aie.packet_flow instead of
                         aie.flow for the circuit-switched routing of this conduit.
@@ -436,7 +415,6 @@ def Conduit_Create : Conduit_Op<"create"> {
                        OptionalAttr<DenseI64ArrayAttr>:$shim_consumer_tiles,
                        OptionalAttr<TypeAttr>:$element_type,
                        OptionalAttr<I64Attr>:$depth,
-                       OptionalAttr<Conduit_LinkModeAttr>:$link_mode,
                        OptionalAttr<DenseI64ArrayAttr>:$access_pattern,
                        OptionalAttr<Conduit_RoutingModeAttr>:$routing_mode,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_rates,
@@ -446,21 +424,12 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // Pass A guarantees a valid MemTile coordinate; Pass C will
                        // fail at lookupTileByCoord if wrong.
                        OptionalAttr<DenseI64ArrayAttr>:$alloc_tile,
-                       // repeat_count: optional DMA repeat count.  When present,
-                       // Pass C must set DMAStartOp repeat_count to this value
-                       // instead of hardcoded 0.  Each BD fires repeat_count times
-                       // before advancing to the next BD in the chain.
+                       // bd_repeat: BD-level unroll factor within one chain pass.
+                       // When present, Pass C sets effectiveBDs = depth * bd_repeat;
+                       // each BD in the chain fires bd_repeat times before advancing.
                        // Pass A propagates this from aie.objectfifo.create's
                        // repeat_count attribute.
-                       OptionalAttr<I64Attr>:$repeat_count,
-                       // consumer_depths: optional per-consumer depth array.
-                       // When present, consumer i uses consumer_depths[i] instead
-                       // of the uniform 'depth' attribute.  This handles
-                       // ObjectFIFOs with per-consumer depth arrays (ArrayAttr
-                       // elemNumber in aie.objectfifo).  Pass C should allocate
-                       // consumer-side buffers using these depths.
-                       // When absent, all consumers use 'depth'.
-                       OptionalAttr<DenseI64ArrayAttr>:$consumer_depths,
+                       OptionalAttr<I64Attr>:$bd_repeat,
                        // disable_synchronization: when true, suppress all lock
                        // allocation and use_lock emission for this conduit.
                        // Producer and consumer run without synchronization
@@ -478,19 +447,11 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // plio=true on shim_dma_allocation ops.  Requires producer_tile
                        // to be a shim tile (row == 0).
                        OptionalAttr<BoolAttr>:$plio,
-                       // iter_count: number of DMA task-queue iterations.
-                       // Maps to DMAStartOp.repeat_count = iter_count - 1 with a
-                       // non-circular BD chain (last BD → aie.end).
+                       // dma_repeat: number of times the DMA engine runs the whole
+                       // BD chain.  Maps to DMAStartOp.repeat_count = dma_repeat - 1
+                       // with a non-circular BD chain (last BD → aie.end).
                        // Pass A propagates from objectfifo.create iter_count.
-                       OptionalAttr<I64Attr>:$iter_count,
-                       // window_size: maximum number of buffer slots held simultaneously
-                       // by a sliding-window consumer (acquire_count > release_count).
-                       // When set, M7 checks depth >= window_size instead of running
-                       // CSDF hyper-period simulation (which is inappropriate for
-                       // sliding-window channels).  This attribute is independent of
-                       // producer_rates/consumer_rates — it may be set with or without
-                       // rate annotations.
-                       OptionalAttr<I64Attr>:$window_size,
+                       OptionalAttr<I64Attr>:$dma_repeat,
                        // producer_dimensions: BDDimLayout traversal descriptor for
                        // the producer (MM2S) DMA BD chain. Stored as AnyAttr
                        // (AIE::BDDimLayoutArrayAttr at runtime) to avoid a cross-dialect
@@ -515,7 +476,8 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // consumer_dimensions: per-consumer BDDimLayout array.
                        // Stored as AnyAttr (AIE::BDDimLayoutArrayArrayAttr at runtime).
                        // Same AnyAttr limitation as producer_dimensions above.
-                       OptionalAttr<AnyAttr>:$consumer_dimensions);
+                       OptionalAttr<AnyAttr>:$consumer_dimensions
+  );
   // Print as: conduit.create @sym_name { capacity = ..., ... }
   // sym_name is consumed by $sym_name so attr-dict omits it automatically.
   let assemblyFormat = "$sym_name attr-dict";
@@ -613,7 +575,11 @@ def Conduit_Acquire : Conduit_Op<"acquire"> {
   // Pass C infers the AcquireGreaterEqual lock delta automatically from
   // the live-window state it tracks during lowering.  count=N means
   // "I need a window of N elements total" — no compiler annotation needed.
-  let arguments = (ins FlatSymbolRefAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
+  let arguments = (ins FlatSymbolRefAttr:$name, I64Attr:$count, Conduit_PortAttr:$port,
+                       // window_size: maximum number of buffer slots held simultaneously
+                       // by a sliding-window consumer (acquire_count > release_count).
+                       // M7-window check: the channel depth must be >= window_size.
+                       OptionalAttr<I64Attr>:$window_size);
   let results   = (outs Conduit_WindowType:$window);
   let assemblyFormat = "attr-dict `:` type($window)";
   let hasVerifier = 1;
@@ -673,7 +639,11 @@ def Conduit_AcquireAsync : Conduit_Op<"acquire_async"> {
       aie.use_lock(consLock, AcquireGreaterEqual, count)  // non-blocking poll
       The token is complete when the lock is granted.
   }];
-  let arguments = (ins FlatSymbolRefAttr:$name, I64Attr:$count, Conduit_PortAttr:$port);
+  let arguments = (ins FlatSymbolRefAttr:$name, I64Attr:$count, Conduit_PortAttr:$port,
+                       // window_size: maximum number of buffer slots held simultaneously
+                       // by a sliding-window consumer (acquire_count > release_count).
+                       // M7-window check: the channel depth must be >= window_size.
+                       OptionalAttr<I64Attr>:$window_size);
   let results   = (outs Conduit_WindowTokenType:$token);
   let assemblyFormat = "attr-dict `:` type($token)";
   let hasVerifier = 1;
