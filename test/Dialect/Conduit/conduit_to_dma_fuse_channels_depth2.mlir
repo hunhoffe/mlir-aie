@@ -66,14 +66,14 @@ module @fuse_depth2_nocore {
     %tile_0_4 = aie.tile(0, 4)
     %tile_0_5 = aie.tile(0, 5)
 
-    conduit.create @chan_a {capacity = 8 : i64,
+    conduit.create @chan_a {slot_elems = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<4xi32>,
                     depth = 2 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
-    conduit.create @chan_b {capacity = 8 : i64,
+    conduit.create @chan_b {slot_elems = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<4xi32>,

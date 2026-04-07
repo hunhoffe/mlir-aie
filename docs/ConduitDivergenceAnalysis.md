@@ -125,7 +125,7 @@ atomic copy; no partial-release semantics).
 **Conduit**: can express the full program today at the dialect level:
 
 ```mlir
-conduit.create {name = "weights", capacity = 18 : i64}  // 2 windows × 9 elems
+conduit.create {name = "weights", slot_elems = 18 : i64}  // 2 windows × 9 elems
 
 // Non-blocking: DMA fills next weight window from DDR (Tier 3 / AIR strength)
 %dma = conduit.put_memref_async {name = "weights",

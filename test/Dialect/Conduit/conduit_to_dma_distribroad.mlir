@@ -117,7 +117,7 @@ module @distribroad {
 
     // Conduit 1: shim DMA (MM2S) → tile(2,2).
     // Carries a unique input slice (distribute: each consumer gets different data).
-    conduit.create @input_slice {capacity = 16 : i64,
+    conduit.create @input_slice {slot_elems = 16 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 2>,
                     element_type = memref<16xi32>,
@@ -125,7 +125,7 @@ module @distribroad {
 
     // Conduit 2: shim DMA (MM2S) → tile(2,2).
     // Carries broadcast shared weights (all consumers receive the same data).
-    conduit.create @shared_weights {capacity = 8 : i64,
+    conduit.create @shared_weights {slot_elems = 8 : i64,
                     producer_tile = array<i64: 2, 0>,
                     consumer_tiles = array<i64: 2, 2>,
                     element_type = memref<8xi32>,

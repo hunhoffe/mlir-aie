@@ -29,13 +29,13 @@ module @passC_circuit_packet_exhausted_once {
     %cons1 = aie.tile(1, 3)
 
     // conduit_a and conduit_b: circuit-mode, each consume one MM2S channel.
-    conduit.create @conduit_a {capacity = 32 : i64, depth = 1 : i64,
+    conduit.create @conduit_a {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     shim_consumer_tiles = array<i64>,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @conduit_b {capacity = 32 : i64, depth = 1 : i64,
+    conduit.create @conduit_b {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,
@@ -44,7 +44,7 @@ module @passC_circuit_packet_exhausted_once {
 
     // conduit_c: routing_mode="any" — circuit exhausted + packet fails.
     // This is the B-3 site (passFailed+continue → passFailed+return).
-    conduit.create @conduit_c {capacity = 32 : i64, depth = 1 : i64,
+    conduit.create @conduit_c {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,
@@ -53,7 +53,7 @@ module @passC_circuit_packet_exhausted_once {
 
     // conduit_d: would also fail with "no DMA resources" IF the loop continued.
     // CHECK-NOT above verifies the loop returned after conduit_c.
-    conduit.create @conduit_d {capacity = 32 : i64, depth = 1 : i64,
+    conduit.create @conduit_d {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 3, 3>,
                     consumer_tiles = array<i64: 1, 3>,

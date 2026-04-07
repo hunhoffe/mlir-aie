@@ -12,7 +12,7 @@
 // but declaring the result as memref<10xi16>.
 
 func.func @subview_type_mismatch() {
-  conduit.create @typed_fifo {capacity = 10 : i64,
+  conduit.create @typed_fifo {slot_elems = 10 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<10xi32>,

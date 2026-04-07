@@ -18,7 +18,7 @@ Usage:
 Output JSON schema:
   {
     "input": "<path>",
-    "tiles": [{"id": "tile_0_1", "capacity": 65536, "used": 2048, "conduits": ["c1","c2"]}],
+    "tiles": [{"id": "tile_0_1", "slot_elems": 65536, "used": 2048, "conduits": ["c1","c2"]}],
     "placement_assign": {"c1": "tile_0_1", ...},
     "conflicts": [{"type": "overflow", "tile": "tile_0_1", "over_by": 512}],
     "link_utilization": {"tile_0_1": 0.03},
@@ -38,7 +38,7 @@ CREATE_RE  = re.compile(r'conduit\.objectfifo_link\s+.*?memtile="([^"]+)"', re.D
 # For air.channel, group(4) captures all bracket dimension groups, e.g. "[2][4]".
 COND_RE    = re.compile(
     r'(?:'
-    r'(?:CREATE|conduit\.create)\s+@?(\w+)\s+(?:capacity=)?(\d+)'  # DSL/conduit form
+    r'(?:CREATE|conduit\.create)\s+@?(\w+)\s+(?:slot_elems =)?(\d+)'  # DSL/conduit form
     r'|'
     r'air\.channel\s+@(\w+)((?:\s*\[\d+\])*)'                      # AIR channel decl
     r')'
@@ -58,20 +58,20 @@ ANNOT_RE   = re.compile(
 
 def parse_conduit_file(path):
     text = Path(path).read_text(errors='replace')
-    conduits = {}  # name -> {"capacity": N, "lower_to": "objectfifo"|"channel"}
+    conduits = {}  # name -> {"slot_elems": N, "lower_to": "objectfifo"|"channel"}
     for m in COND_RE.finditer(text):
         if m.group(1) is not None:
             # DSL/conduit.create form: groups 1 (name) and 2 (capacity)
-            conduits[m.group(1)] = {"capacity": int(m.group(2)), "lower_to": "objectfifo"}
+            conduits[m.group(1)] = {"slot_elems": int(m.group(2)), "lower_to": "objectfifo"}
         elif m.group(3) is not None:
             # air.channel @name [D0][D1]... form: group 3 (name), group 4 (bracket dims).
             # Compute capacity as the product of all dimension values.
             dims_str = m.group(4) or ""
             dims = [int(d) for d in re.findall(r'\[(\d+)\]', dims_str)]
-            capacity = 1
+            slot_elems = 1
             for d in dims:
                 capacity *= d
-            conduits[m.group(3)] = {"capacity": capacity, "lower_to": "channel"}
+            conduits[m.group(3)] = {"slot_elems": capacity, "lower_to": "channel"}
     for m in ANNOT_RE.finditer(text):
         if m.group(1) is not None:
             # DSL form: groups 1 (name) and 2 (lower_to value)
@@ -90,7 +90,7 @@ def parse_conduit_file(path):
 
 
 def make_tiles(n, capacity):
-    return [{"id": f"tile_0_{i+1}", "capacity": capacity, "used": 0, "conduits": []}
+    return [{"id": f"tile_0_{i+1}", "slot_elems": capacity, "used": 0, "conduits": []}
             for i in range(n)]
 
 
@@ -118,7 +118,7 @@ def greedy_assign(conduits, links, tiles):
             if t:
                 return t
         # Prefer AIE tiles (odd index) for objectfifo, AIR tiles (even) for channel
-        candidates = sorted(tiles, key=lambda t: -( t["capacity"] - t["used"]))
+        candidates = sorted(tiles, key=lambda t: -( t["slot_elems"] - t["used"]))
         for t in candidates:
             if lower_to == "objectfifo" and int(t["id"].split('_')[-1]) % 2 == 1:
                 return t
@@ -127,7 +127,7 @@ def greedy_assign(conduits, links, tiles):
         return candidates[0] if candidates else None
 
     for cname, info in conduits.items():
-        cap = info["capacity"] * 4  # bytes (assume i32 elements)
+        cap = info["slot_elems"] * 4  # bytes (assume i32 elements)
         t = best_tile(cname, info.get("lower_to", "objectfifo"))
         if t is None:
             assignment[cname] = "unassigned"
@@ -142,19 +142,19 @@ def greedy_assign(conduits, links, tiles):
 def detect_conflicts(tiles):
     conflicts = []
     for t in tiles:
-        if t["used"] > t["capacity"]:
+        if t["used"] > t["slot_elems"]:
             conflicts.append({
                 "type": "overflow",
                 "tile": t["id"],
-                "capacity": t["capacity"],
+                "slot_elems": t["slot_elems"],
                 "used": t["used"],
-                "over_by": t["used"] - t["capacity"],
+                "over_by": t["used"] - t["slot_elems"],
             })
     return conflicts
 
 
 def compute_utilization(tiles):
-    return {t["id"]: round(t["used"] / t["capacity"], 4) if t["capacity"] else 0 for t in tiles}
+    return {t["id"]: round(t["used"] / t["slot_elems"], 4) if t["slot_elems"] else 0 for t in tiles}
 
 
 def main():
@@ -169,7 +169,7 @@ def main():
 
     if args.input_json:
         data = json.loads(Path(args.input_json).read_text())
-        conduits = {c["name"]: {"capacity": c["capacity"], "lower_to": c.get("lower_to","objectfifo")}
+        conduits = {c["name"]: {"slot_elems": c["slot_elems"], "lower_to": c.get("lower_to","objectfifo")}
                     for c in data.get("conduits", [])}
         links = data.get("links", [])
         input_label = args.input_json
@@ -179,10 +179,10 @@ def main():
     else:
         # No input: synthesize minimal demo conduits
         conduits = {
-            "c_in":   {"capacity": 2048, "lower_to": "objectfifo"},
-            "c_mid":  {"capacity": 1024, "lower_to": "objectfifo"},
-            "c_out0": {"capacity": 1024, "lower_to": "channel"},
-            "c_out1": {"capacity": 1024, "lower_to": "channel"},
+            "c_in":   {"slot_elems": 2048, "lower_to": "objectfifo"},
+            "c_mid":  {"slot_elems": 1024, "lower_to": "objectfifo"},
+            "c_out0": {"slot_elems": 1024, "lower_to": "channel"},
+            "c_out1": {"slot_elems": 1024, "lower_to": "channel"},
         }
         links = [{"srcs": ["c_in"], "dsts": ["c_mid"], "memtile": "tile_0_1"}]
         input_label = "<synthetic>"

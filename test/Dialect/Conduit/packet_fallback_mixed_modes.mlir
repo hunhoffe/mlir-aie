@@ -28,12 +28,12 @@ module @pkt_fallback_mixed_modes {
     %t35 = aie.tile(3, 5)
 
     // circuit_a and circuit_b from (0,3): consume both MM2S channels as circuit.
-    conduit.create @circuit_a {capacity = 4 : i64,
+    conduit.create @circuit_a {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @circuit_b {capacity = 4 : i64,
+    conduit.create @circuit_b {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -41,14 +41,14 @@ module @pkt_fallback_mixed_modes {
 
     // circuit_overflow: mode=any from (0,3); both circuit-mode channels taken;
     // Step 3.5c fails (no packet-mode channel, no free channel) → Step 4 error.
-    conduit.create @circuit_overflow {capacity = 4 : i64,
+    conduit.create @circuit_overflow {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     // packet_d from (1,3): explicit packet, designates ch 1 as packet-mode.
-    conduit.create @packet_d {capacity = 4 : i64,
+    conduit.create @packet_d {slot_elems = 4 : i64,
                     producer_tile = array<i64: 1, 3>,
                     consumer_tiles = array<i64: 2, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -56,7 +56,7 @@ module @pkt_fallback_mixed_modes {
 
     // anymode_e from (1,3): circuit ch 0 is free → mode=any takes it as circuit.
     // (not a fallback — ch 0 is free, so circuit DMA is used directly)
-    conduit.create @anymode_e {capacity = 4 : i64,
+    conduit.create @anymode_e {slot_elems = 4 : i64,
                     producer_tile = array<i64: 1, 3>,
                     consumer_tiles = array<i64: 3, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64

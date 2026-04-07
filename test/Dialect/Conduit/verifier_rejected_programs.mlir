@@ -53,7 +53,7 @@
 // PAIR: 'conduit.create' op CSDF rate imbalance
 
 func.func @case1_m6_csdf_rate_imbalance() {
-  conduit.create @csdf_imbal {capacity = 5 : i64,
+  conduit.create @csdf_imbal {slot_elems = 5 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -71,13 +71,13 @@ func.func @case1_m6_csdf_rate_imbalance() {
 // producer_rates = [3, 1] (sum=4, len=2); consumer_rates = [2] (sum=2, len=1)
 // M6 balance: 4*1 == 2*2  PASS
 // Hyper-period H=2: t=0: produce 3 (occ=3), consume 2 (occ=1); t=1: produce 1,
-// consume 2.  Peak occupancy = 3 > capacity = 2 → ERROR
+// consume 2.  Peak occupancy = 3 > slot_elems = 2 → ERROR
 // ============================================================================
 
-// CHECK: M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds capacity=2
+// CHECK: M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2
 
 func.func @case2_m7_capacity_insufficient() {
-  conduit.create @csdf_cap {capacity = 2 : i64,
+  conduit.create @csdf_cap {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -103,11 +103,11 @@ func.func @case2_m7_capacity_insufficient() {
 // CHECK: 'conduit.distribute' op cascade channel 'cas_c3_src' cannot be used in a distribute src
 
 func.func @case3_cascade_distribute_src() {
-  conduit.create @cas_c3_src {capacity = 1 : i64, depth = 1 : i64,
+  conduit.create @cas_c3_src {slot_elems = 1 : i64, depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>}
-  conduit.create @cas_c3_dst {capacity = 1 : i64, depth = 1 : i64,
+  conduit.create @cas_c3_dst {slot_elems = 1 : i64, depth = 1 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>}
   conduit.distribute {srcs = [@cas_c3_src], dsts = [@cas_c3_dst], memtile = "tile(0,1)"}
@@ -135,7 +135,7 @@ module @case4_cascade_depth_gt1 {
     %tile03 = aie.tile(0, 3)
     %tile13 = aie.tile(1, 3)
 
-    conduit.create @cas_d2 {capacity = 2 : i64,
+    conduit.create @cas_d2 {slot_elems = 2 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
@@ -258,7 +258,7 @@ module @case7_unmatched_put_cascade {
   aie.device(npu1) {
     %tile03 = aie.tile(0, 3)
 
-    conduit.create @cas_unmatched {capacity = 1 : i64,
+    conduit.create @cas_unmatched {slot_elems = 1 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
@@ -290,7 +290,7 @@ module @case8_ambiguous_get_cascade {
     %tile13 = aie.tile(1, 3)
     %tile23 = aie.tile(2, 3)
 
-    conduit.create @cas_ambig {capacity = 1 : i64,
+    conduit.create @cas_ambig {slot_elems = 1 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
@@ -341,7 +341,7 @@ module @case9_sharedmem_nonadj_alloc {
     %tile03 = aie.tile(0, 3)
     %tile33 = aie.tile(3, 3)
 
-    conduit.create @shm_bad {capacity = 1 : i64,
+    conduit.create @shm_bad {slot_elems = 1 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<16xi32>,
@@ -388,7 +388,7 @@ module @case9_sharedmem_nonadj_alloc {
 // CHECK: 'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow
 
 func.func @case10_m8a_double_release() {
-  conduit.create @dbl_rel {capacity = 1 : i64,
+  conduit.create @dbl_rel {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,

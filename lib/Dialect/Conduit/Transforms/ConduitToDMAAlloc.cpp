@@ -400,7 +400,7 @@ void allocPhase(ConduitToDMAState &state) {
                               : effDepth;
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
-        int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
+        int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
         bufTy =
             mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
@@ -515,7 +515,7 @@ void allocPhase(ConduitToDMAState &state) {
             int64_t nBufs = info.nConsumerBuffers();
             mlir::Type bufTy = info.elemType;
             if (!bufTy) {
-              int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
+              int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
               bufTy = mlir::MemRefType::get({bufSize},
                                             mlir::IntegerType::get(ctx, 32));
             }
@@ -599,7 +599,7 @@ void allocPhase(ConduitToDMAState &state) {
                               : effDepth;
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
-        int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
+        int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
         bufTy =
             mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
@@ -637,7 +637,7 @@ void allocPhase(ConduitToDMAState &state) {
     int64_t nBufs = info.nConsumerBuffers();
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
-      int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
+      int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
       bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
     }
 
@@ -829,7 +829,7 @@ void allocPhase(ConduitToDMAState &state) {
         : effDepth;
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
-      int64_t bufSize = info.capacity > 0 ? info.capacity / depth : 1;
+      int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
       bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
     }
 

@@ -23,21 +23,21 @@
 // M6-join also passes (each edge individually balanced).
 
 func.func @join_all_balanced() {
-  conduit.create @j_src1 {capacity = 4 : i64,
+  conduit.create @j_src1 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create @j_src2 {capacity = 4 : i64,
+  conduit.create @j_src2 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 1, 1>,
                   consumer_rates = array<i64: 1, 1>}
-  conduit.create @j_dst {capacity = 8 : i64,
+  conduit.create @j_dst {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<8xi32>,
@@ -66,14 +66,14 @@ func.func @join_all_balanced() {
 // not on the conduit.link, because MLIR verifies ops in order.
 
 func.func @join_dst_rates_imbalanced() {
-  conduit.create @j2_src1 {capacity = 2 : i64,
+  conduit.create @j2_src1 {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.create @j2_src2 {capacity = 2 : i64,
+  conduit.create @j2_src2 {slot_elems = 2 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
@@ -81,7 +81,7 @@ func.func @join_dst_rates_imbalanced() {
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=3}}
-  conduit.create @j2_dst {capacity = 3 : i64,
+  conduit.create @j2_dst {slot_elems = 3 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<i32>,
@@ -100,25 +100,25 @@ func.func @join_dst_rates_imbalanced() {
 //   M6: 4*1 == 2*2 ✓  (passes M6)
 //   M7: hyper-period H=2: t=0: produce 3 (occ=3), consume 2 (occ=1) — peak=3
 //                          t=1: produce 1 (occ=2), consume 2 (occ=0)
-//   peak=3 > capacity=2 → M7 error on conduit.create (Create::verify fires first).
+//   peak=3 > slot_elems =2 → M7 error on conduit.create (Create::verify fires first).
 
 func.func @join_dst_buffer_undersized() {
-  conduit.create @j3_src1 {capacity = 2 : i64,
+  conduit.create @j3_src1 {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.create @j3_src2 {capacity = 2 : i64,
+  conduit.create @j3_src2 {slot_elems = 2 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds capacity=2}}
-  conduit.create @j3_dst {capacity = 2 : i64,
+  // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2}}
+  conduit.create @j3_dst {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<i32>,

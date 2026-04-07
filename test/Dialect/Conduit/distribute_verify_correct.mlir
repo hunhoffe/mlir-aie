@@ -22,21 +22,21 @@
 //   Peak=0 <= srcCap=4 ✓
 
 func.func @distribute_composed_uniform_pass() {
-  conduit.create @cc_src {capacity = 4 : i64,
+  conduit.create @cc_src {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create @cc_d1 {capacity = 4 : i64,
+  conduit.create @cc_d1 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<4xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create @cc_d2 {capacity = 4 : i64,
+  conduit.create @cc_d2 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>,
                   element_type = memref<4xi32>,
@@ -62,28 +62,28 @@ func.func @distribute_composed_uniform_pass() {
 //   Peak=3 <= srcCap=6 ✓
 
 func.func @distribute_composed_mixed_pass() {
-  conduit.create @mx_src {capacity = 6 : i64,
+  conduit.create @mx_src {slot_elems = 6 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<6xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 3>,
                   consumer_rates = array<i64: 3>}
-  conduit.create @mx_d1 {capacity = 6 : i64,
+  conduit.create @mx_d1 {slot_elems = 6 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<6xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 3>,
                   consumer_rates = array<i64: 3>}
-  conduit.create @mx_d2 {capacity = 6 : i64,
+  conduit.create @mx_d2 {slot_elems = 6 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>,
                   element_type = memref<6xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 1, 2>,
                   consumer_rates = array<i64: 1, 2>}
-  conduit.create @mx_d3 {capacity = 6 : i64,
+  conduit.create @mx_d3 {slot_elems = 6 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 2, 2>,
                   element_type = memref<6xi32>,
@@ -108,21 +108,21 @@ func.func @distribute_composed_mixed_pass() {
 //   Peak=2 <= srcCap=4 ✓
 
 func.func @distribute_composed_slow_consumer_pass() {
-  conduit.create @sl_src {capacity = 4 : i64,
+  conduit.create @sl_src {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create @sl_d1 {capacity = 4 : i64,
+  conduit.create @sl_d1 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<4xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create @sl_d2 {capacity = 4 : i64,
+  conduit.create @sl_d2 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>,
                   element_type = memref<4xi32>,

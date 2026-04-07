@@ -35,7 +35,7 @@ module {
     // CASE 1: Violation — dma_repeat(4) < loop trip count(64).
     // Expected: warning emitted on @short_dma.
     // -----------------------------------------------------------------------
-    conduit.create @short_dma {capacity = 16 : i64,
+    conduit.create @short_dma {slot_elems = 16 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<16xi32>,
@@ -45,7 +45,7 @@ module {
     // -----------------------------------------------------------------------
     // CASE 2: Valid — dma_repeat(64) == loop trip count(64). No warning.
     // -----------------------------------------------------------------------
-    conduit.create @long_dma {capacity = 16 : i64,
+    conduit.create @long_dma {slot_elems = 16 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<16xi32>,
@@ -57,7 +57,7 @@ module {
     // bd_repeat alone is not the total send count; not checked.
     // Expected: no warning even though the acquire is inside the loop.
     // -----------------------------------------------------------------------
-    conduit.create @no_iter {capacity = 16 : i64,
+    conduit.create @no_iter {slot_elems = 16 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<16xi32>,

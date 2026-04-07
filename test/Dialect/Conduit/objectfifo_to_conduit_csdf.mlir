@@ -18,8 +18,8 @@
 // --- conduit.create must carry access_pattern=[1,2,1] ---
 // CHECK:     conduit.create @fifo
 // CHECK-SAME:   access_pattern = array<i64: 1, 2, 1>
-// CHECK-SAME:   capacity = 4 : i64
 // CHECK-SAME:   depth = 4 : i64
+// CHECK-SAME:   slot_elems = 4 : i64
 
 // --- Producer core: three acquire(Produce,1) / release(Produce,1) pairs ---
 // CHECK:     aie.core(%{{.*}}) {

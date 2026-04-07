@@ -20,7 +20,7 @@ module {
     %tile_3_3 = aie.tile(3, 3)
 
     // expected-error @+1 {{shared-memory conduit requires adjacent tiles}}
-    conduit.create @shm_chan {capacity = 1 : i64,
+    conduit.create @shm_chan {slot_elems = 1 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<16xi32>,

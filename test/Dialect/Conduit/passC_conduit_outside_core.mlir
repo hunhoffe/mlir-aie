@@ -23,7 +23,7 @@ module @passC_conduit_outside_core {
     %shim = aie.tile(0, 0)
     %tile = aie.tile(0, 2)
 
-    conduit.create @myChan {capacity = 32 : i64, depth = 1 : i64,
+    conduit.create @myChan {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,

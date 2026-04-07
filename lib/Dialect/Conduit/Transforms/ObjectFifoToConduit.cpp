@@ -25,7 +25,7 @@
 //    map (producer tile, consumer tiles, element type, depth).
 //
 // 2. For each aie.objectfifo:
-//      emits  conduit.create {name, capacity=depth*numElems,
+//      emits  conduit.create {name, slot_elems =depth*numElems,
 //                             producer_tile=[col,row],
 //                             consumer_tiles=[col0,row0,...],
 //                             element_type=<memref type>,
@@ -56,7 +56,7 @@
 // Limitations (documented honestly)
 // ----------------------------------
 // - The memtile heuristic in link rewriting is approximate.
-// - capacity = depth * numElems uses 1 as numElems when the memref element
+// - slot_elems = depth * numElems uses 1 as numElems when the memref element
 //   count cannot be statically determined from the type.
 // - The pass currently operates on the whole module; nested device ops are
 //   handled one level deep only.
@@ -433,7 +433,7 @@ struct ObjectFifoToConduitPass
 
       auto &info = fifoInfoMap[op.getSymNameAttr()];
       std::string name = op.getSymName().str();
-      int64_t capacity = info.depth * info.numElems;
+      int64_t slot_elems = info.depth * info.numElems;
 
       // conduit.create with typed attributes — no conduit.annotate ops.
       // shim_consumer_tiles carries shim (row==0) consumer tiles separately;
@@ -613,7 +613,7 @@ struct ObjectFifoToConduitPass
       auto createOp = builder.create<Create>(
           loc,
           mlir::StringAttr::get(ctx, name),
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), capacity),
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), slot_elems),
           mlir::DenseI64ArrayAttr::get(ctx, info.producerTileArr),
           mlir::DenseI64ArrayAttr::get(ctx, info.consumerTilesArr),
           shimConsAttr,
@@ -1145,7 +1145,7 @@ struct ObjectFifoToConduitPass
                   loc, winTy, mlir::FlatSymbolRefAttr::get(ctx, name),
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
                                          effectiveCount),
-                  PortAttr::get(ctx, port));
+                  PortAttr::get(ctx, port), /*window_size=*/mlir::IntegerAttr{});
               // Record as the group leader window.
               blockGroupWindow[nameAttr] = winVal;
             }
@@ -1341,7 +1341,7 @@ struct ObjectFifoToConduitPass
             winVal = builder.create<Acquire>(
                 loc, winTy, mlir::FlatSymbolRefAttr::get(ctx, name),
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), count),
-                PortAttr::get(ctx, port));
+                PortAttr::get(ctx, port), /*window_size=*/mlir::IntegerAttr{});
             blockWindowMap[nameAttr].push_back(winVal);
           }
 

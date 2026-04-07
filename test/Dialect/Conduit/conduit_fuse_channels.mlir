@@ -49,12 +49,12 @@
 // CHECK:       conduit.create @chan_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_sequential() {
   // Both conduits on tile [0, 2].
-  conduit.create @chan_a {capacity = 8 : i64,
+  conduit.create @chan_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  conduit.create @chan_b {capacity = 8 : i64,
+  conduit.create @chan_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<8xi32>,
@@ -85,12 +85,12 @@ func.func @fuse_sequential() {
 // CHECK-NOT:   fuse_mode
 
 func.func @no_fuse_interleaved() {
-  conduit.create @chan_a {capacity = 8 : i64,
+  conduit.create @chan_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  conduit.create @chan_b {capacity = 8 : i64,
+  conduit.create @chan_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<8xi32>,
@@ -132,15 +132,15 @@ func.func @no_fuse_interleaved() {
 // CHECK-NEXT:  conduit.create @c2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 // CHECK-NEXT:  conduit.create @c3 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_three_sequential() {
-  conduit.create @c1 {capacity = 8 : i64,
+  conduit.create @c1 {slot_elems = 8 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 1, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @c2 {capacity = 8 : i64,
+  conduit.create @c2 {slot_elems = 8 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 1, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @c3 {capacity = 8 : i64,
+  conduit.create @c3 {slot_elems = 8 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 1, 5>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -175,11 +175,11 @@ func.func @fuse_three_sequential() {
 
 func.func @no_fuse_different_tiles() {
   // tile [0,2] and tile [1,2] are different — no grouping.
-  conduit.create @tile0_chan {capacity = 8 : i64,
+  conduit.create @tile0_chan {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @tile1_chan {capacity = 8 : i64,
+  conduit.create @tile1_chan {slot_elems = 8 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 1, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -208,11 +208,11 @@ func.func @no_fuse_different_tiles() {
 
 func.func @no_fuse_shim() {
   // Both conduits on shim tile [0,0] (row=0 → excluded).
-  conduit.create @shim_a {capacity = 8 : i64,
+  conduit.create @shim_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 0>,
                   shim_consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @shim_b {capacity = 8 : i64,
+  conduit.create @shim_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 0>,
                   shim_consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -234,11 +234,11 @@ func.func @no_fuse_shim() {
 // CHECK:       conduit.create @id_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"
 // CHECK:       conduit.create @id_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"
 func.func @idempotent() {
-  conduit.create @id_a {capacity = 8 : i64,
+  conduit.create @id_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 2, 2>,
                   consumer_tiles = array<i64: 2, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @id_b {capacity = 8 : i64,
+  conduit.create @id_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 2, 2>,
                   consumer_tiles = array<i64: 2, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -269,11 +269,11 @@ func.func @idempotent() {
 // CHECK:       conduit.create @async_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 // CHECK:       conduit.create @async_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_async_path() {
-  conduit.create @async_a {capacity = 8 : i64,
+  conduit.create @async_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 3, 2>,
                   consumer_tiles = array<i64: 3, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @async_b {capacity = 8 : i64,
+  conduit.create @async_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 3, 2>,
                   consumer_tiles = array<i64: 3, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -311,11 +311,11 @@ func.func @fuse_async_path() {
 // CHECK:       conduit.create @dma_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 // CHECK:       conduit.create @dma_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_tier3_put_memref() {
-  conduit.create @dma_a {capacity = 8 : i64,
+  conduit.create @dma_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 4, 2>,
                   consumer_tiles = array<i64: 4, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @dma_b {capacity = 8 : i64,
+  conduit.create @dma_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 4, 2>,
                   consumer_tiles = array<i64: 4, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -347,11 +347,11 @@ func.func @fuse_tier3_put_memref() {
 func.func @no_annotate_no_ops() {
   // Two conduits on the same tile, but neither has any acquire/release ops.
   // No intervals are found → no blockConduits entries → no annotation.
-  conduit.create @unused_a {capacity = 8 : i64,
+  conduit.create @unused_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 5, 2>,
                   consumer_tiles = array<i64: 5, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @unused_b {capacity = 8 : i64,
+  conduit.create @unused_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 5, 2>,
                   consumer_tiles = array<i64: 5, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -383,19 +383,19 @@ func.func @no_annotate_no_ops() {
 // CHECK:       conduit.create @r {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK:       conduit.create @s {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_four_sequential() {
-  conduit.create @p {capacity = 8 : i64,
+  conduit.create @p {slot_elems = 8 : i64,
                   producer_tile = array<i64: 6, 2>,
                   consumer_tiles = array<i64: 6, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @q {capacity = 8 : i64,
+  conduit.create @q {slot_elems = 8 : i64,
                   producer_tile = array<i64: 6, 2>,
                   consumer_tiles = array<i64: 6, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @r {capacity = 8 : i64,
+  conduit.create @r {slot_elems = 8 : i64,
                   producer_tile = array<i64: 6, 2>,
                   consumer_tiles = array<i64: 6, 5>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @s {capacity = 8 : i64,
+  conduit.create @s {slot_elems = 8 : i64,
                   producer_tile = array<i64: 6, 2>,
                   consumer_tiles = array<i64: 6, 6>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -436,7 +436,7 @@ func.func @fuse_four_sequential() {
 
 func.func @no_annotate_singleton() {
   // Only one conduit on tile [7, 2] — no peer to fuse with.
-  conduit.create @solo {capacity = 8 : i64,
+  conduit.create @solo {slot_elems = 8 : i64,
                   producer_tile = array<i64: 7, 2>,
                   consumer_tiles = array<i64: 7, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -482,19 +482,19 @@ func.func @no_annotate_singleton() {
 // CHECK:       conduit.create @c {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK:       conduit.create @d {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"
 func.func @two_interleaved_pairs() {
-  conduit.create @a {capacity = 8 : i64,
+  conduit.create @a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 8, 2>,
                   consumer_tiles = array<i64: 8, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @b {capacity = 8 : i64,
+  conduit.create @b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 8, 2>,
                   consumer_tiles = array<i64: 8, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @c {capacity = 8 : i64,
+  conduit.create @c {slot_elems = 8 : i64,
                   producer_tile = array<i64: 8, 2>,
                   consumer_tiles = array<i64: 8, 5>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @d {capacity = 8 : i64,
+  conduit.create @d {slot_elems = 8 : i64,
                   producer_tile = array<i64: 8, 2>,
                   consumer_tiles = array<i64: 8, 6>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -556,15 +556,15 @@ func.func @two_interleaved_pairs() {
 // CHECK-NOT:   fused_dma_channel_group
 // CHECK:       conduit.create @c {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @partial_clique() {
-  conduit.create @a {capacity = 8 : i64,
+  conduit.create @a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 9, 2>,
                   consumer_tiles = array<i64: 9, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @b {capacity = 8 : i64,
+  conduit.create @b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 9, 2>,
                   consumer_tiles = array<i64: 9, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @c {capacity = 8 : i64,
+  conduit.create @c {slot_elems = 8 : i64,
                   producer_tile = array<i64: 9, 2>,
                   consumer_tiles = array<i64: 9, 5>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -618,15 +618,15 @@ func.func @partial_clique() {
 // CHECK-NOT:   fuse_mode
 
 func.func @full_clique() {
-  conduit.create @a {capacity = 8 : i64,
+  conduit.create @a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 10, 2>,
                   consumer_tiles = array<i64: 10, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @b {capacity = 8 : i64,
+  conduit.create @b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 10, 2>,
                   consumer_tiles = array<i64: 10, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @c {capacity = 8 : i64,
+  conduit.create @c {slot_elems = 8 : i64,
                   producer_tile = array<i64: 10, 2>,
                   consumer_tiles = array<i64: 10, 5>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -664,11 +664,11 @@ func.func @full_clique() {
 // CHECK: conduit.create @if_a {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"
 // CHECK: conduit.create @if_b {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_runtime_mode(%cond: i1) {
-  conduit.create @if_a {capacity = 8 : i64,
+  conduit.create @if_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 11, 2>,
                   consumer_tiles = array<i64: 11, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @if_b {capacity = 8 : i64,
+  conduit.create @if_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 11, 2>,
                   consumer_tiles = array<i64: 11, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -701,11 +701,11 @@ func.func @fuse_runtime_mode(%cond: i1) {
 // CHECK: conduit.create @get_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK: conduit.create @get_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_get_memref() {
-  conduit.create @get_a {capacity = 8 : i64,
+  conduit.create @get_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 12, 2>,
                   consumer_tiles = array<i64: 12, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @get_b {capacity = 8 : i64,
+  conduit.create @get_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 12, 2>,
                   consumer_tiles = array<i64: 12, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -734,11 +734,11 @@ func.func @fuse_get_memref() {
 // CHECK: conduit.create @rel_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK: conduit.create @rel_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_release_async() {
-  conduit.create @rel_a {capacity = 8 : i64,
+  conduit.create @rel_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 13, 2>,
                   consumer_tiles = array<i64: 13, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @rel_b {capacity = 8 : i64,
+  conduit.create @rel_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 13, 2>,
                   consumer_tiles = array<i64: 13, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -770,11 +770,11 @@ func.func @fuse_release_async() {
 // CHECK: conduit.create @mt_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 func.func @fuse_memtile_producer() {
   // MemTile tiles (row=1) are NOT excluded from fusion analysis.
-  conduit.create @mt_a {capacity = 8 : i64,
+  conduit.create @mt_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @mt_b {capacity = 8 : i64,
+  conduit.create @mt_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}
@@ -814,11 +814,11 @@ func.func @fuse_memtile_producer() {
 // CHECK-NOT: fuse_mode = "runtime"
 
 func.func @cross_block_stable() {
-  conduit.create @cross_a {capacity = 8 : i64,
+  conduit.create @cross_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 14, 2>,
                   consumer_tiles = array<i64: 14, 3>,
                   element_type = memref<8xi32>, depth = 1 : i64}
-  conduit.create @cross_b {capacity = 8 : i64,
+  conduit.create @cross_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 14, 2>,
                   consumer_tiles = array<i64: 14, 4>,
                   element_type = memref<8xi32>, depth = 1 : i64}

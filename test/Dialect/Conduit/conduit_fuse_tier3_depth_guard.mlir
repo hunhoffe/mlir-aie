@@ -30,12 +30,12 @@
 // CHECK-LABEL: func.func @fuse_tier3_depth1
 // CHECK:       conduit.create @shallow_dma {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// CHECK:       conduit.create @tier2_shallow {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_tier3_depth1() {
-  conduit.create @shallow_dma {capacity = 8 : i64,
+  conduit.create @shallow_dma {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  conduit.create @tier2_shallow {capacity = 8 : i64,
+  conduit.create @tier2_shallow {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<8xi32>,
@@ -73,12 +73,12 @@ func.func @fuse_tier3_depth1() {
 
 func.func @skip_tier3_depth2() {
   // expected-remark @+1 {{conduit-fuse-channels: skipping 'deep_tier3' — Tier 3 channel with depth>1 not supported in fuse groups}}
-  conduit.create @deep_tier3 {capacity = 16 : i64,
+  conduit.create @deep_tier3 {slot_elems = 16 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 1, 3>,
                   element_type = memref<8xi32>,
                   depth = 2 : i64}
-  conduit.create @tier2_partner {capacity = 8 : i64,
+  conduit.create @tier2_partner {slot_elems = 8 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 1, 4>,
                   element_type = memref<8xi32>,
@@ -110,12 +110,12 @@ func.func @skip_tier3_depth2() {
 // CHECK-LABEL: func.func @fuse_tier2_only
 // CHECK:       conduit.create @t2_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group// CHECK:       conduit.create @t2_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
 func.func @fuse_tier2_only() {
-  conduit.create @t2_a {capacity = 8 : i64,
+  conduit.create @t2_a {slot_elems = 8 : i64,
                   producer_tile = array<i64: 2, 2>,
                   consumer_tiles = array<i64: 2, 3>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
-  conduit.create @t2_b {capacity = 8 : i64,
+  conduit.create @t2_b {slot_elems = 8 : i64,
                   producer_tile = array<i64: 2, 2>,
                   consumer_tiles = array<i64: 2, 4>,
                   element_type = memref<8xi32>,

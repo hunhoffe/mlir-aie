@@ -41,8 +41,8 @@ module @passC_crossblock_tail_release {
     %tile = aie.tile(0, 2)
 
     // depth=4 to accommodate acquire=3 + 1 spare slot.
-    // capacity = 4 * 32 = 128; perBufLen = 32.
-    conduit.create @fifo {capacity = 128 : i64, depth = 4 : i64,
+    // slot_elems = 4 * 32 = 128; perBufLen = 32.
+    conduit.create @fifo {slot_elems = 128 : i64, depth = 4 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}

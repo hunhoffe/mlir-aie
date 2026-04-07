@@ -259,7 +259,7 @@ static ::mlir::LogicalResult checkCSDF1x1(mlir::Operation *diagnosticOp,
            << edgeLabel
            << ": CSDF buffer capacity insufficient: "
               "peak token occupancy over one hyper-period="
-           << peakOccupancy << " exceeds capacity=" << capacity
+           << peakOccupancy << " exceeds slot_elems =" << capacity
            << " (producer_rates=" << psum << "/phase"
            << ", consumer_rates=" << csum << "/phase"
            << ", hyper-period=" << hyperPeriod << " steps)";
@@ -373,7 +373,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
                "M7-dist composed-consume (Denolf Eq. 48): "
                "source buffer capacity insufficient for multi-consumer "
                "distribute: peak occupancy=")
-           << peakOccupancy << " exceeds source capacity=" << srcCapacity
+           << peakOccupancy << " exceeds source slot_elems =" << srcCapacity
            << " (bottleneck consumer: '" << dstNames[bottleneck]
            << "', hyper-period=" << H << " steps"
            << "; a container can only be freed after ALL "
@@ -437,7 +437,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
       srcCreate.getConsumerRates().has_value()) {
     auto pRates = *srcCreate.getProducerRates();
     auto cRates = *srcCreate.getConsumerRates();
-    int64_t cap = srcCreate.getCapacity();
+    int64_t cap = srcCreate.getSlotElems();
     std::string label = "distribute source '" + srcName.str() + "'";
     if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
       return ::mlir::failure();
@@ -451,7 +451,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
       continue;
     auto pRates = *dstCreate.getProducerRates();
     auto cRates = *dstCreate.getConsumerRates();
-    int64_t cap = dstCreate.getCapacity();
+    int64_t cap = dstCreate.getSlotElems();
     std::string label = "distribute destination '" + dstName.str() + "'";
     if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
       return ::mlir::failure();
@@ -479,7 +479,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
       auto srcPRates = *srcCreate.getProducerRates();
       llvm::SmallVector<int64_t> srcPR(srcPRates.begin(), srcPRates.end());
       if (failed(checkDistributeComposedConsume(
-              getOperation(), srcPR, srcCreate.getCapacity(),
+              getOperation(), srcPR, srcCreate.getSlotElems(),
               allDstConsRates, allDstNames)))
         return ::mlir::failure();
     }
@@ -542,7 +542,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
       continue;
     auto pRates = *srcCreate.getProducerRates();
     auto cRates = *srcCreate.getConsumerRates();
-    int64_t cap = srcCreate.getCapacity();
+    int64_t cap = srcCreate.getSlotElems();
     std::string label = "join source '" + srcName.str() + "'";
     if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
       return ::mlir::failure();
@@ -554,7 +554,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
       dstCreate.getConsumerRates().has_value()) {
     auto pRates = *dstCreate.getProducerRates();
     auto cRates = *dstCreate.getConsumerRates();
-    int64_t cap = dstCreate.getCapacity();
+    int64_t cap = dstCreate.getSlotElems();
     std::string label = "join destination '" + dstName.str() + "'";
     if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
       return ::mlir::failure();
@@ -729,7 +729,7 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
     // reject the program.  Only capacity overflow (peakOccupancy > capacity) is a
     // hard error, because no interleaving can hide that constraint.
     {
-      int64_t capacity = getCapacity();
+      int64_t slot_elems = getSlotElems();
       // Compute gcd(plen, clen) via Euclid's algorithm.
       int64_t a = plen, b = clen;
       while (b) { int64_t tmp = b; b = a % b; a = tmp; }
@@ -771,10 +771,10 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
               occupancy = 0; // reset to prevent cascading underflow reports
             }
           }
-          if (peakOccupancy > capacity)
+          if (peakOccupancy > slot_elems)
             return emitOpError("M7: CSDF buffer capacity insufficient: "
                                "peak token occupancy over one hyper-period=")
-                   << peakOccupancy << " exceeds capacity=" << capacity
+                   << peakOccupancy << " exceeds slot_elems =" << slot_elems
                    << " (producer_rates=" << psum << "/phase, "
                    << "consumer_rates=" << csum << "/phase, "
                    << "hyper-period=" << hyperPeriod << " steps)";

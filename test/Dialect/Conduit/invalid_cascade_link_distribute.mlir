@@ -14,18 +14,18 @@
 
 // distribute mode referencing a cascade source channel — must error.
 func.func @bad_distribute_cascade_src() {
-  conduit.create @casc_src {capacity = 1 : i64,
+  conduit.create @casc_src {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>}
-  conduit.create @out0 {capacity = 1 : i64,
+  conduit.create @out0 {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
-  conduit.create @out1 {capacity = 1 : i64,
+  conduit.create @out1 {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 5>,
                   element_type = memref<4xi32>,
@@ -39,17 +39,17 @@ func.func @bad_distribute_cascade_src() {
 
 // join mode referencing a cascade destination channel — must error.
 func.func @bad_join_cascade_dst() {
-  conduit.create @in0 {capacity = 1 : i64,
+  conduit.create @in0 {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
-  conduit.create @in1 {capacity = 1 : i64,
+  conduit.create @in1 {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 3>,
                   consumer_tiles = array<i64: 0, 4>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
-  conduit.create @casc_dst {capacity = 1 : i64,
+  conduit.create @casc_dst {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 4>,
                   consumer_tiles = array<i64: 0, 5>,
                   element_type = memref<4xi32>,

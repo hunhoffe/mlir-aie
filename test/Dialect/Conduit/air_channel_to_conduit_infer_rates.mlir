@@ -9,7 +9,7 @@
 // When inferRates=false (the default), rates are NOT attached.
 //
 // This test uses scalar transfers (no sizes → num_elems=1) so that the
-// inferred rates [1] are compatible with capacity=1 (M7 requires
+// inferred rates [1] are compatible with slot_elems =1 (M7 requires
 // peak_occupancy ≤ capacity).
 //
 // Topology: scalar channel @chan with one scalar put and one scalar get.

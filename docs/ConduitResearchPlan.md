@@ -205,7 +205,7 @@ for each conduit.create with conduit.annotate {key="depth", value="1"}:
     check: at least one non-conduit op between acquire and release?
     if all pass:
         update conduit.annotate {key="depth", value="2"}
-        update conduit.create capacity = capacity * 2
+        update conduit.create slot_elems = capacity * 2
 ```
 
 This is ~150 lines. Register it as `--conduit-depth-promote` in `Passes.td`.

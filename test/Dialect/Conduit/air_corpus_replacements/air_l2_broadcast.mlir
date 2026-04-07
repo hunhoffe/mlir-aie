@@ -17,9 +17,9 @@
 
 // CHECK-LABEL: module
 
-// Source conduit.create with capacity=2 (broadcast fan-out).
+// Source conduit.create with slot_elems =2 (broadcast fan-out).
 // CHECK: conduit.create @bcast
-// CHECK-SAME: capacity = 2
+// CHECK-SAME: slot_elems = 2
 
 // Per-consumer aliases from broadcast Step 2.
 // CHECK: conduit.create @bcast_c0

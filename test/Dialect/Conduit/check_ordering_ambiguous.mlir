@@ -9,7 +9,7 @@
 
 module {
   // expected-warning @+1 {{conduit-check-ordering: ambiguous DMA event ordering}}
-  conduit.create @ch_a {capacity = 64 : i64,
+  conduit.create @ch_a {slot_elems = 64 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 1, 2>,
                   producer_rates = array<i64: 1>,
@@ -17,7 +17,7 @@ module {
                   element_type = memref<64xi32>,
                   depth = 1 : i64}
 
-  conduit.create @ch_b {capacity = 64 : i64,
+  conduit.create @ch_b {slot_elems = 64 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 2, 2>,
                   producer_rates = array<i64: 1>,

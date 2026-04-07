@@ -5,42 +5,42 @@
 // Verifies that broadcast_shape dimensions are multiplied to produce the
 // correct capacity on conduit.create for several common fan-out shapes:
 //
-//   channel_1x2: broadcast_shape=[1,2] → capacity=2
-//   channel_2x1: broadcast_shape=[2,1] → capacity=2
-//   channel_2x2: broadcast_shape=[2,2] → capacity=4
-//   channel_1x4: broadcast_shape=[1,4] → capacity=4
-//   channel_scalar: no broadcast_shape → capacity=1 (default)
+//   channel_1x2: broadcast_shape=[1,2] → slot_elems = 2
+//   channel_2x1: broadcast_shape=[2,1] → slot_elems = 2
+//   channel_2x2: broadcast_shape=[2,2] → slot_elems = 4
+//   channel_1x4: broadcast_shape=[1,4] → slot_elems = 4
+//   channel_scalar: no broadcast_shape → slot_elems = 1 (default)
 //
 // Consumer tile coordinates are not available at Pass B time; conduit.create
 // is emitted with correct capacity and empty consumer_tiles.
 // Full wiring requires a tile-placement pre-pass to populate consumer_tiles.
 
-// CHECK: remark{{.*}}channel_1x2{{.*}}capacity=2
-// CHECK: remark{{.*}}channel_2x1{{.*}}capacity=2
-// CHECK: remark{{.*}}channel_2x2{{.*}}capacity=4
-// CHECK: remark{{.*}}channel_1x4{{.*}}capacity=4
+// CHECK: remark{{.*}}channel_1x2{{.*}}slot_elems = 2
+// CHECK: remark{{.*}}channel_2x1{{.*}}slot_elems = 2
+// CHECK: remark{{.*}}channel_2x2{{.*}}slot_elems = 4
+// CHECK: remark{{.*}}channel_1x4{{.*}}slot_elems = 4
 
 // CHECK-LABEL: module
 
-// channel_1x2: capacity=2
+// channel_1x2: slot_elems = 2
 // CHECK: conduit.create @channel_1x2
-// CHECK-SAME: capacity = 2
+// CHECK-SAME: slot_elems = 2
 
-// channel_2x1: capacity=2
+// channel_2x1: slot_elems = 2
 // CHECK: conduit.create @channel_2x1
-// CHECK-SAME: capacity = 2
+// CHECK-SAME: slot_elems = 2
 
-// channel_2x2: capacity=4
+// channel_2x2: slot_elems = 4
 // CHECK: conduit.create @channel_2x2
-// CHECK-SAME: capacity = 4
+// CHECK-SAME: slot_elems = 4
 
-// channel_1x4: capacity=4
+// channel_1x4: slot_elems = 4
 // CHECK: conduit.create @channel_1x4
-// CHECK-SAME: capacity = 4
+// CHECK-SAME: slot_elems = 4
 
-// channel_scalar: no broadcast_shape, capacity=1 default
+// channel_scalar: no broadcast_shape, slot_elems = 1 default
 // CHECK: conduit.create @channel_scalar
-// CHECK-SAME: capacity = 1
+// CHECK-SAME: slot_elems = 1
 
 // No residual air.channel ops.
 // CHECK-NOT: air.channel

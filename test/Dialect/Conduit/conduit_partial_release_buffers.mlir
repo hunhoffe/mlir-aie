@@ -64,8 +64,8 @@ module @conduit_partial_release_buffers {
 
     // depth=2: user-specified ring depth. With acquire=3/release=1,
     // Pass C must allocate 2 + (3-1) = 4 physical buffers.
-    // capacity = 64 = 32 elements * depth(2); perBufLen = 64/2 = 32.
-    conduit.create @fifo {capacity = 64 : i64, depth = 2 : i64,
+    // slot_elems = 64 = 32 elements * depth(2); perBufLen = 64/2 = 32.
+    conduit.create @fifo {slot_elems = 64 : i64, depth = 2 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}

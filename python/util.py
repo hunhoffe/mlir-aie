@@ -28,7 +28,7 @@ def build_graph(max_cols, max_rows, target_model):
                         this_switchbox,
                         southern_neighbor,
                         bundle=WireBundle.South,
-                        capacity=max_capacity,
+                        slot_elems =max_capacity,
                     )
                 # Get the number of incoming connections on the south side - incoming
                 # because they correspond to connections on the southside that are then
@@ -41,7 +41,7 @@ def build_graph(max_cols, max_rows, target_model):
                         southern_neighbor,
                         this_switchbox,
                         bundle=WireBundle.North,
-                        capacity=max_capacity,
+                        slot_elems =max_capacity,
                     )
             if c > 0:
                 western_neighbor = Switchbox(c - 1, r)
@@ -52,7 +52,7 @@ def build_graph(max_cols, max_rows, target_model):
                         western_neighbor,
                         this_switchbox,
                         bundle=WireBundle.East,
-                        capacity=max_capacity,
+                        slot_elems =max_capacity,
                     )
                 if max_capacity := target_model.get_num_dest_switchbox_connections(
                     c, r, WireBundle.West
@@ -61,7 +61,7 @@ def build_graph(max_cols, max_rows, target_model):
                         this_switchbox,
                         western_neighbor,
                         bundle=WireBundle.West,
-                        capacity=max_capacity,
+                        slot_elems =max_capacity,
                     )
 
     return DG
@@ -123,7 +123,7 @@ def route_using_cp(
 
     for i, j, attrs in DG.edges(data=True):
         model.Add(total_demand[i, j] == sum(f[i, j] for f in flat_flow_vars))
-        model.Add(total_demand[i, j] <= attrs["capacity"])
+        model.Add(total_demand[i, j] <= attrs["slot_elems"])
 
         if min_edges:
             # counts whether an edge is used by any flow
@@ -222,7 +222,7 @@ def route_using_ilp(
     # Add demand/flow relationship
     for i, j, attrs in DG.edges(data=True):
         m.addConstr(total_demand[i, j] == gp.quicksum(f[i, j] for f in flat_flow_vars))
-        m.addConstr(total_demand[i, j] <= attrs["capacity"])
+        m.addConstr(total_demand[i, j] <= attrs["slot_elems"])
         # See above for this counts up overlapping demands (gurobi just has a nicer API).
         m.addConstr(
             overlapping_demands[i, j]
@@ -426,7 +426,7 @@ class Router:
         if len(matching_outgoing_edges):
             assert len(matching_outgoing_edges) == 1
             u, v, e = matching_outgoing_edges[0]
-            e["capacity"] -= 1
+            e["slot_elems"] -= 1
             self.used_channels[u, rhs_port.bundle].add(rhs_port.channel)
             return True
 
@@ -440,7 +440,7 @@ class Router:
         if len(matching_incoming_edges):
             assert len(matching_incoming_edges) == 1
             u, v, e = matching_incoming_edges[0]
-            e["capacity"] -= 1
+            e["slot_elems"] -= 1
             # this is where the assumption that connection ports across
             # tiles use the same channel comes in
             assert e["bundle"] == get_connecting_bundle(lhs_port.bundle)

@@ -212,7 +212,7 @@ void linkPhase(ConduitToDMAState &state) {
       }
 
       int64_t relayPerBufLen =
-          coreRelaySrc.capacity > 0 ? coreRelaySrc.capacity / relayDepth : 1;
+          coreRelaySrc.slotElems > 0 ? coreRelaySrc.slotElems / relayDepth : 1;
 
       // Retrieve the S2MM channel pre-assigned by Phase 4a.
       int32_t relaySrcS2MMCh = -1;
@@ -421,7 +421,7 @@ void linkPhase(ConduitToDMAState &state) {
 
     int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
     int64_t perBufLen =
-        srcInfo.capacity > 0 ? srcInfo.capacity / linkDepth : 1;
+        srcInfo.slotElems > 0 ? srcInfo.slotElems / linkDepth : 1;
 
     // Per-destination independent lock pairs on the MemTile (distribute/forward).
     bool isDistribute = linkOp.isDistribute;
@@ -520,7 +520,7 @@ void linkPhase(ConduitToDMAState &state) {
             << jDstName << "' not found — BD lengths defaulting to 1";
       } else {
         int64_t jDstDepth = jDstInfo->depth > 0 ? jDstInfo->depth : 1;
-        joinDstPerBufForLen = jDstInfo->capacity > 0 ? jDstInfo->capacity / jDstDepth : 1;
+        joinDstPerBufForLen = jDstInfo->slotElems > 0 ? jDstInfo->slotElems / jDstDepth : 1;
 
         mlir::Type intBufTy = jDstInfo->elemType;
         if (!intBufTy)
@@ -1298,7 +1298,7 @@ void linkPhase(ConduitToDMAState &state) {
     int64_t depth = info.depth > 0 ? info.depth : 1;
     int64_t perBufLen = info.numElems > 0
                            ? info.numElems
-                           : (info.capacity > 0 ? info.capacity / depth : 1);
+                           : (info.slotElems > 0 ? info.slotElems / depth : 1);
     int64_t nBufs = static_cast<int64_t>(prodBufs.size());
 
     // Acquire the MM2S channel index (channel 0 unless pre-used).
@@ -1441,7 +1441,7 @@ void linkPhase(ConduitToDMAState &state) {
       int64_t depth = info.depth > 0 ? info.depth : 1;
       int64_t perBufLen = info.numElems > 0
                              ? info.numElems
-                             : (info.capacity > 0 ? info.capacity / depth : 1);
+                             : (info.slotElems > 0 ? info.slotElems / depth : 1);
       mlir::Value prodTileVal = prodTile.getResult();
 
       // Check for an existing aie.mem for this tile (e.g. created by Phase 5.5
@@ -1584,7 +1584,7 @@ void linkPhase(ConduitToDMAState &state) {
             llvm::SmallVector<AIE::BufferOp> &prodBuffers = bufIt->second;
             int64_t depth = info.depth > 0 ? info.depth : 1;
             int64_t perBufLen =
-                info.capacity > 0 ? info.capacity / depth : 1;
+                info.slotElems > 0 ? info.slotElems / depth : 1;
 
             // Look up packet flow ID for packet-mode channels.
             // When set, each MM2S BD emits aie.dma_bd_packet so the switchbox
@@ -1832,7 +1832,7 @@ void linkPhase(ConduitToDMAState &state) {
       int64_t depth = info.depth > 0 ? info.depth : 1;
       int64_t perBufLen = info.numElems > 0
                              ? info.numElems
-                             : (info.capacity > 0 ? info.capacity / depth : 1);
+                             : (info.slotElems > 0 ? info.slotElems / depth : 1);
 
       mlir::Value prodTileVal = dmaHostTile.getResult();
 
@@ -2029,7 +2029,7 @@ void linkPhase(ConduitToDMAState &state) {
       int64_t depth = info.depth > 0 ? info.depth : 1;
       int64_t perBufLen = info.numElems > 0
                              ? info.numElems
-                             : (info.capacity > 0 ? info.capacity / depth : 1);
+                             : (info.slotElems > 0 ? info.slotElems / depth : 1);
       // nConsumerBuffers() >= depth; extra slots support sliding-window patterns.
       int64_t nBufs = info.nConsumerBuffers();
 

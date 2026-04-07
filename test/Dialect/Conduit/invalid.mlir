@@ -22,7 +22,7 @@ func.func @bad_join_offsets() {
 
 // M2: subview_access index out of bounds for acquire count
 func.func @bad_subview_index() {
-  conduit.create @fifo {capacity = 8 : i64,
+  conduit.create @fifo {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<8xi32>,
@@ -41,7 +41,7 @@ func.func @bad_subview_index() {
 
 // M2: subview_access index out of bounds for acquire count — conduit.create at
 // module level, acquire in nested func body (the common case for real programs).
-conduit.create @xblock {capacity = 16 : i64,
+conduit.create @xblock {slot_elems = 16 : i64,
                 producer_tile = array<i64: 1, 2>,
                 consumer_tiles = array<i64: 1, 3>,
                 element_type = memref<16xi32>,
@@ -91,7 +91,7 @@ func.func @bad_distribute_zero_dsts() {
 // CSDF check: 3*2 != 5*2 → 6 != 10
 func.func @bad_csdf_imbalanced_rates() {
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=10}}
-  conduit.create @csdf_bad {capacity = 8 : i64,
+  conduit.create @csdf_bad {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -113,7 +113,7 @@ func.func @bad_csdf_imbalanced_rates() {
 // vs 1 consumer firing (3 tokens): 6 != 3 → imbalanced.
 func.func @bad_csdf_sum_equal_period_imbalanced() {
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=3}}
-  conduit.create @csdf_sum_equal_bad {capacity = 6 : i64,
+  conduit.create @csdf_sum_equal_bad {slot_elems = 6 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -128,7 +128,7 @@ func.func @bad_csdf_sum_equal_period_imbalanced() {
 // M6: CSDF — only producer_rates provided (missing consumer_rates)
 func.func @bad_csdf_missing_consumer_rates() {
   // expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
-  conduit.create @csdf_incomplete {capacity = 4 : i64,
+  conduit.create @csdf_incomplete {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -142,7 +142,7 @@ func.func @bad_csdf_missing_consumer_rates() {
 // M6: CSDF — only consumer_rates provided (missing producer_rates)
 func.func @bad_csdf_missing_producer_rates() {
   // expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
-  conduit.create @csdf_incomplete2 {capacity = 4 : i64,
+  conduit.create @csdf_incomplete2 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -156,7 +156,7 @@ func.func @bad_csdf_missing_producer_rates() {
 // M5: bad routing_mode value — rejected by the ODS enum parser before the verifier runs
 func.func @bad_routing_mode() {
   // expected-error@+1 {{attribute 'routing_mode' failed to satisfy constraint: Conduit routing mode}}
-  conduit.create @bad_mode_ch {capacity = 4 : i64,
+  conduit.create @bad_mode_ch {slot_elems = 4 : i64,
                   routing_mode = "broadcast"}
   return
 }
@@ -167,7 +167,7 @@ func.func @bad_routing_mode() {
 // passing !conduit.window.token must fail type checking.
 // (Type enforcement is TableGen-generated; this tests that the type system rejects it.)
 func.func @bad_wait_window_token() {
-  conduit.create @w {capacity = 1 : i64}
+  conduit.create @w {slot_elems = 1 : i64}
   %tok = conduit.acquire_async {name = @w, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
@@ -181,7 +181,7 @@ func.func @bad_wait_window_token() {
 // Token type mismatch: conduit.wait_window requires !conduit.window.token;
 // passing !conduit.dma.token must fail type checking.
 func.func @bad_wait_with_dma_token() {
-  conduit.create @ch {capacity = 64 : i64}
+  conduit.create @ch {slot_elems = 64 : i64}
   %tok = conduit.put_memref_async {name = @ch, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -217,10 +217,10 @@ func.func @bad_forward_two_dsts() {
 // M7 hyper-period simulation (H=lcm(2,1)=2 steps, produce-then-consume each step):
 //   t=0: produce 3 (occ=3), consume 2 (occ=1) — peak=3
 //   t=1: produce 1 (occ=2), consume 2 (occ=0) — peak still 3
-// Peak occupancy = 3 > capacity = 2 → M7 error.
+// Peak occupancy = 3 > slot_elems = 2 → M7 error.
 func.func @bad_csdf_capacity_insufficient() {
-  // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds capacity=2}}
-  conduit.create @csdf_cap_bad {capacity = 2 : i64,
+  // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2}}
+  conduit.create @csdf_cap_bad {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -238,13 +238,13 @@ func.func @bad_csdf_capacity_insufficient() {
 // M7 hyper-period simulation (H=lcm(2,2)=2 steps, produce-before-consume each step):
 //   t=0: produce 1 (occ=1), consume 3 → occ=-2 → underflow warning at step 0
 //   t=1: produce 3 (occ=1, after reset), consume 1 → occ=0
-// Peak occupancy = 3 (at t=1 after produce), capacity=4 → no capacity error.
+// Peak occupancy = 3 (at t=1 after produce), slot_elems =4 → no capacity error.
 // This tests that underflow emits emitWarning (not emitOpError): the program is
 // accepted (M6 guarantees feasibility) but the user is warned that the
 // produce-before-consume simulation interleaving hits underflow.
 func.func @warn_csdf_underflow() {
   // expected-warning@+1 {{M7: CSDF hyper-period simulation: momentary underflow at step 0}}
-  conduit.create @csdf_underflow {capacity = 4 : i64,
+  conduit.create @csdf_underflow {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<i32>,
@@ -259,7 +259,7 @@ func.func @warn_csdf_underflow() {
 // M8a: double release — acquire(count=1) + release(count=1) + release(count=1)
 // = cumulative 2 > acquired 1 → hardware lock-counter overflow.
 func.func @m8a_double_release() {
-  conduit.create @dbl {capacity = 1 : i64,
+  conduit.create @dbl {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,
@@ -278,7 +278,7 @@ func.func @m8a_double_release() {
 
 // M8c: !conduit.window<T> is not a token type — rejected by wait_all.
 func.func @m8c_wait_all_window_value() {
-  conduit.create @unx {capacity = 1 : i64,
+  conduit.create @unx {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,
@@ -294,7 +294,7 @@ func.func @m8c_wait_all_window_value() {
 
 // M8b: two wait_window on same token → double-materialization, deadlock.
 func.func @m8b_double_wait_window() {
-  conduit.create @dbl_tok {capacity = 1 : i64,
+  conduit.create @dbl_tok {slot_elems = 1 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<1xi32>,
@@ -318,7 +318,7 @@ func.func @m8b_double_wait_window() {
 
 // M8c: i32 operand in wait_all is not a token type.
 func.func @m8c_wait_all_non_token(%bad : i32) {
-  conduit.create @ntok {capacity = 1 : i64}
+  conduit.create @ntok {slot_elems = 1 : i64}
   %tok = conduit.put_memref_async {name = @ntok, num_elems = 1 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 1>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -331,7 +331,7 @@ func.func @m8c_wait_all_non_token(%bad : i32) {
 
 // M10: window.token escapes via return — hardware state is not portable.
 func.func @m10_window_token_escape_return() -> !conduit.window.token {
-  conduit.create @esc {capacity = 1 : i64}
+  conduit.create @esc {slot_elems = 1 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via return}}
   %tok = conduit.acquire_async {name = @esc, count = 1 : i64,
              port = #conduit.port<Consume>}
@@ -343,7 +343,7 @@ func.func @m10_window_token_escape_return() -> !conduit.window.token {
 
 // M10: dma.token escapes via return — hardware state is not portable.
 func.func @m10_dma_token_escape_return() -> !conduit.dma.token {
-  conduit.create @esc_dma {capacity = 64 : i64}
+  conduit.create @esc_dma {slot_elems = 64 : i64}
   // expected-error@+1 {{'conduit.put_memref_async' op M10: token escapes function scope via return}}
   %tok = conduit.put_memref_async {name = @esc_dma, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
@@ -356,7 +356,7 @@ func.func @m10_dma_token_escape_return() -> !conduit.dma.token {
 // M10: window.token escapes via call argument.
 func.func private @callee(%tok : !conduit.window.token)
 func.func @m10_token_escape_call() {
-  conduit.create @esc_call {capacity = 1 : i64}
+  conduit.create @esc_call {slot_elems = 1 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via call argument}}
   %tok = conduit.acquire_async {name = @esc_call, count = 1 : i64,
              port = #conduit.port<Consume>}
@@ -371,7 +371,7 @@ func.func @m10_token_escape_call() {
 // wait_all_async merges completion tokens into a single dma.token result;
 // that result must not escape function scope.
 func.func @m10_wait_all_async_token_escape() -> !conduit.dma.token {
-  conduit.create @wa_esc {capacity = 64 : i64}
+  conduit.create @wa_esc {slot_elems = 64 : i64}
   %tok = conduit.put_memref_async {name = @wa_esc, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token

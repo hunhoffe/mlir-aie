@@ -8,7 +8,7 @@
 // that as the BD length instead.
 //
 // Setup:
-//   conduit.create with capacity=1, depth=1, element_type=memref<128xi32>
+//   conduit.create with slot_elems =1, depth=1, element_type=memref<128xi32>
 //   put_memref_async/get_memref_async with num_elems=128
 //
 // Expected: aie.dma_bd emits length 128 (from num_elems), not 1.
@@ -38,10 +38,10 @@ module @tier3_bd_length {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // capacity=1 (slot count from air.channel), depth=1 (single-buffered).
+    // slot_elems =1 (slot count from air.channel), depth=1 (single-buffered).
     // element_type=memref<128xi32> determines the buffer allocation size.
     // Without the numElems fix, perBufLen = capacity/depth = 1/1 = 1.
-    conduit.create @t3_bd {capacity = 1 : i64,
+    conduit.create @t3_bd {slot_elems = 1 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<128xi32>,

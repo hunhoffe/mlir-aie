@@ -14,7 +14,7 @@
 // (Row 2 = core tiles on xcve2302; row 0 = shim, row 1 = memtile.)
 //
 // Expected IR after --air-channel-to-conduit:
-//   conduit.create with name="bcast", capacity=2  (source)
+//   conduit.create with name="bcast", slot_elems =2  (source)
 //   conduit.create with name="bcast_c0", consumer_tiles=[2,2]
 //   conduit.create with name="bcast_c1", consumer_tiles=[3,2]
 //   conduit.distribute with srcs=["bcast"], dsts=["bcast_c0","bcast_c1"]
@@ -25,9 +25,9 @@
 
 // CHECK-LABEL: module
 
-// Source conduit.create with capacity=2.
+// Source conduit.create with slot_elems =2.
 // CHECK: conduit.create @bcast
-// CHECK-SAME: capacity = 2
+// CHECK-SAME: slot_elems = 2
 
 // Consumer alias for tile (2,2).
 // CHECK: conduit.create @bcast_c0

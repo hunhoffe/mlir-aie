@@ -16,11 +16,11 @@
 // Cascade is incompatible with distribute fan-out.
 
 func.func @bad_distribute_cascade_src() {
-  conduit.create @src {capacity = 1 : i64, depth = 1 : i64,
+  conduit.create @src {slot_elems = 1 : i64, depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>}
-  conduit.create @dst {capacity = 1 : i64, depth = 1 : i64,
+  conduit.create @dst {slot_elems = 1 : i64, depth = 1 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>}
   // expected-error @+1 {{'conduit.distribute' op cascade channel 'src' cannot be used in a distribute src}}

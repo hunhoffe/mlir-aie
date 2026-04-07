@@ -305,17 +305,17 @@ def Conduit_WindowType : TypeDef<Conduit_Dialect, "Window"> {
 // ---------------------------------------------------------------------------
 
 def Conduit_Create : Conduit_Op<"create"> {
-  let summary = "declare a named conduit channel with a given element capacity";
+  let summary = "declare a named conduit channel with a given slot_elems count";
   let description = [{
-    Declares a named FIFO channel with a given element capacity.
+    Declares a named FIFO channel (slot_elems elements per slot).
     Must appear before any Tier 2 or Tier 3 ops that reference the same name.
 
     Name-based linkage is used (string attribute, not SSA value) because
     channels are referenced across IsolatedFromAbove region boundaries.
 
-    The meaning of 'capacity' is tier-specific:
+    The meaning of 'slot_elems' is tier-specific:
     - Tier 2: total number of buffer element slots (depth * elemCount)
-    - Tier 3: not directly enforced; channel capacity is implicitly the
+    - Tier 3: not directly enforced; channel slot_elems is implicitly the
               memref allocation size on the consumer tile
 
     Typed lowering attributes (emitted by Pass A, consumed by Pass C).
@@ -345,7 +345,7 @@ def Conduit_Create : Conduit_Op<"create"> {
                         (it guarantees equal average production and consumption
                         rates).  The SUFFICIENT condition (deadlock freedom: buffer
                         never underflows or overflows during one hyper-period) is
-                        also statically computable from these rates + the capacity
+                        also statically computable from these rates + the slot_elems
                         and depth attributes via hyper-period simulation — see TODO
                         M7 in the work queue.
     - consumer_rates  : optional DenseI64Array — CSDF consumer token-count per
@@ -362,14 +362,14 @@ def Conduit_Create : Conduit_Op<"create"> {
                         + consumer_rates for full CSDF semantics.
 
     Example:
-      conduit.create @c1 {capacity = 10 : i64,
+      conduit.create @c1 {slot_elems = 10 : i64,
                           producer_tile = array<i64: 0, 2>,
                           shim_consumer_tiles = array<i64: 0, 0>,
                           element_type = memref<10xi32>,
                           depth = 1 : i64}
 
     Cyclostatic (CSDF) example — consumer alternates between acquiring 1 then 2:
-      conduit.create @csdf_fifo {capacity = 4 : i64,
+      conduit.create @csdf_fifo {slot_elems = 4 : i64,
                                  producer_tile = array<i64: 2, 2>,
                                  consumer_tiles = array<i64: 2, 3>,
                                  element_type = memref<i32>,
@@ -382,10 +382,10 @@ def Conduit_Create : Conduit_Op<"create"> {
     generate lock acquire/release sequences with the correct varying counts
     rather than the uniform count used in the SDF case.
     When access_pattern is absent the conduit is treated as uniform SDF with
-    count = capacity / depth per iteration.
+    count = slot_elems / depth per iteration.
 
     Full CSDF example with explicit producer and consumer rates:
-      conduit.create @csdf_full {capacity = 6 : i64,
+      conduit.create @csdf_full {slot_elems = 6 : i64,
                                  producer_tile = array<i64: 0, 2>,
                                  consumer_tiles = array<i64: 0, 3>,
                                  element_type = memref<i32>,
@@ -396,7 +396,7 @@ def Conduit_Create : Conduit_Op<"create"> {
       // (same-period case q=r=2, average rate = 1.5 tokens/firing for both)
 
     Different-period balanced example (producer bursts 3 then 1; consumer uniform 2):
-      conduit.create @csdf_diff_period {capacity = 4 : i64, ...,
+      conduit.create @csdf_diff_period {slot_elems = 4 : i64, ...,
                                         producer_rates = array<i64: 3, 1>,
                                         consumer_rates = array<i64: 2>}
       // P=[3,1] sum=4 q=2; C=[2] sum=2 r=1
@@ -409,7 +409,7 @@ def Conduit_Create : Conduit_Op<"create"> {
       // Producer avg rate = 3/1 = 3; consumer avg rate = 3/2 = 1.5 — mismatch.
   }];
   let arguments = (ins SymbolNameAttr:$sym_name,
-                       I64Attr:$capacity,
+                       I64Attr:$slot_elems,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_tile,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_tiles,
                        OptionalAttr<DenseI64ArrayAttr>:$shim_consumer_tiles,
@@ -478,7 +478,7 @@ def Conduit_Create : Conduit_Op<"create"> {
                        // Same AnyAttr limitation as producer_dimensions above.
                        OptionalAttr<AnyAttr>:$consumer_dimensions
   );
-  // Print as: conduit.create @sym_name { capacity = ..., ... }
+  // Print as: conduit.create @sym_name { slot_elems = ..., ... }
   // sym_name is consumed by $sym_name so attr-dict omits it automatically.
   let assemblyFormat = "$sym_name attr-dict";
   let hasVerifier = 1;

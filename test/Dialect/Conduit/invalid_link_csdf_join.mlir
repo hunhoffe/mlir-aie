@@ -26,12 +26,12 @@
 // Unannotated conduits are silently skipped.
 
 func.func @join_unannotated_srcs_pass() {
-  conduit.create @j_src_norates {capacity = 4 : i64,
+  conduit.create @j_src_norates {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
-  conduit.create @j_dst_norates {capacity = 4 : i64,
+  conduit.create @j_dst_norates {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,
@@ -51,14 +51,14 @@ func.func @join_unannotated_srcs_pass() {
 // Link::verify M6-join: both pass → no error.
 
 func.func @join_all_balanced_link_check() {
-  conduit.create @j2_src {capacity = 4 : i64,
+  conduit.create @j2_src {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create @j2_dst {capacity = 4 : i64,
+  conduit.create @j2_dst {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,

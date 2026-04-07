@@ -16,7 +16,7 @@ describe additional ops whose lowering is planned but not yet implemented.
 These ops declare channels and attach lowering metadata.  Used by all programs.
 
 ```mlir
-conduit.create {name = "c1", capacity = 64 : i64}
+conduit.create {name = "c1", slot_elems = 64 : i64}
 
 conduit.annotate {name = "c1", key = "producer_tile", value = "tile(0,0)"}
 
@@ -171,9 +171,9 @@ destination conduits through a MemTile relay buffer, enabling:
 
 **Conduit DSL:**
 ```
-CREATE of_in  capacity=2048
-CREATE of_out0 capacity=1024
-CREATE of_out1 capacity=1024
+CREATE of_in  slot_elems =2048
+CREATE of_out0 slot_elems =1024
+CREATE of_out1 slot_elems =1024
 ANNOTATE of_in   lower_to=objectfifo tile="(0,0)"
 ANNOTATE of_out0 lower_to=objectfifo tile="(0,2)"
 ANNOTATE of_out1 lower_to=objectfifo tile="(1,2)"
@@ -197,9 +197,9 @@ aie.objectfifo.link [@of_in] -> [@of_out0, @of_out1] ([] [0, 1024])
 
 **Conduit DSL:**
 ```
-CREATE of_src0 capacity=16
-CREATE of_src1 capacity=16
-CREATE of_dst  capacity=32
+CREATE of_src0 slot_elems =16
+CREATE of_src1 slot_elems =16
+CREATE of_dst  slot_elems =32
 ANNOTATE of_src0 lower_to=objectfifo tile="(0,0)"
 ANNOTATE of_src1 lower_to=objectfifo tile="(1,0)"
 ANNOTATE of_dst  lower_to=objectfifo tile="(0,2)"
@@ -294,7 +294,7 @@ Extension 3).
 
 **Conduit DSL:**
 ```
-CREATE ch0 capacity=4
+CREATE ch0 slot_elems =4
 ANNOTATE ch0 lower_to=channel dims=[2,2]
 
 // Transfer a 32x32 tile starting at offset (r*32, 0) with column-major stride:

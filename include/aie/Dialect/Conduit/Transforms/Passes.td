@@ -77,7 +77,7 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
     Converts the AIR Channel abstraction layer into Conduit IR Tier 3 ops:
 
       air.channel @name [1, 1]
-        → conduit.create {name, capacity=1, element_type=<inferred>,
+        → conduit.create {name, slot_elems =1, element_type=<inferred>,
                           depth=1}
 
       air.channel.put async [%deps] @chan(%buf[offsets][sizes][strides])
@@ -116,7 +116,7 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
            "Run --conduit-infer-rates automatically at the end of the pass "
            "to attach CSDF producer_rates/consumer_rates to conduit.create "
            "ops, enabling M6/M7 verification. Default is false because "
-           "air.channel capacity (broadcast fan-out) does not match the CSDF "
+           "air.channel slot_elems (broadcast fan-out) does not match the CSDF "
            "buffer-slot semantics that M7 checks; enabling rates on most "
            "air.channel programs triggers spurious M7 failures.">,
   ];
@@ -364,7 +364,7 @@ def ConduitFuseChannels : Pass<"conduit-fuse-channels", "::mlir::ModuleOp"> {
 def ConduitCheckChannels : Pass<"conduit-check-channels", "::mlir::ModuleOp"> {
   let summary = "Validate that no tile exceeds its hardware DMA channel limit";
   let description = [{
-    Validation pass that checks hardware DMA channel capacity constraints.
+    Validation pass that checks hardware DMA channel slot_elems constraints.
 
     Each AIE tile has a fixed number of DMA channels:
       - AIE2 compute tiles: 2 MM2S + 2 S2MM

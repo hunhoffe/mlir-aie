@@ -18,11 +18,11 @@
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
 // CHECK:     conduit.create @input_fifo
-// CHECK-SAME:   capacity = 10 : i64
 // CHECK-SAME:   consumer_tiles = array<i64: 0, 2>
 // CHECK-SAME:   depth = 1 : i64
 // CHECK-SAME:   element_type = memref<10xi32>
 // CHECK-SAME:   producer_tile = array<i64: 0, 0>
+// CHECK-SAME:   slot_elems = 10 : i64
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       scf.for
 // CHECK:         conduit.acquire

@@ -249,7 +249,7 @@ struct ConduitDepthPromotePass
           "consumer_tiles");
       auto prodTile = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
           "producer_tile");
-      auto capAttr = op->getAttrOfType<mlir::IntegerAttr>("capacity");
+      auto capAttr = op->getAttrOfType<mlir::IntegerAttr>("slot_elems");
       auto elemTypeAttr = op->getAttrOfType<mlir::TypeAttr>("element_type");
 
       // Estimate per-consumer resources.
@@ -443,7 +443,7 @@ struct ConduitDepthPromotePass
       // Criterion 6: memory budget.
       auto consTiles = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
           "consumer_tiles");
-      auto capAttr = createOp->getAttrOfType<mlir::IntegerAttr>("capacity");
+      auto capAttr = createOp->getAttrOfType<mlir::IntegerAttr>("slot_elems");
       auto elemTypeAttr = createOp->getAttrOfType<mlir::TypeAttr>(
           "element_type");
       bool memOverBudget = false;
@@ -504,9 +504,9 @@ struct ConduitDepthPromotePass
       createOp->setAttr("depth",
           builder.getI64IntegerAttr(targetDepth));
 
-      // Scale capacity proportionally (capacity = depth * elemCount).
+      // Scale capacity proportionally (slot_elems = depth * elemCount).
       if (capAttr) {
-        createOp->setAttr("capacity",
+        createOp->setAttr("slot_elems",
             builder.getI64IntegerAttr(capAttr.getInt() * targetDepth));
       }
 

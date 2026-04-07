@@ -3,7 +3,7 @@
 
 Supported commands:
   CREATE <name> <capacity>         — create a named FIFO (capacity ignored for overflow)
-  CREATE <name> capacity=<N>       — same, key=value form
+  CREATE <name> slot_elems =<N>       — same, key=value form
   PUT    <name> <val> [<val> ...]  — enqueue one or more integer tokens
   GET    <name>                    — dequeue and print the front token
   PREFILL <name> <val> [...]       — enqueue tokens before streaming begins
@@ -21,7 +21,7 @@ from collections import deque
 
 class Conduit:
     def __init__(self, capacity):
-        self.capacity = capacity
+        self.slot_elems = capacity
         self.q = deque()
         # Tracks tokens currently held under an ACQUIRE (not yet released)
         self._acquired = 0

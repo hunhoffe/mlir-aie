@@ -9,7 +9,7 @@
 //   - Pass infers producer_rates = [64], consumer_rates = [64].
 //   - M6 balance check: sum(P)*len(C) = 64*1 == sum(C)*len(P) = 64*1 → passes.
 //   - M7 hyper-period simulation: H=lcm(1,1)=1 step.
-//       t=0: produce 64 (occ=64), consume 64 (occ=0). Peak=64 <= capacity=64. Passes.
+//       t=0: produce 64 (occ=64), consume 64 (occ=0). Peak=64 <= slot_elems =64. Passes.
 //   - A remark is emitted by the pass on the conduit.create op.
 //   - Output IR has producer_rates = array<i64: 64> and consumer_rates = array<i64: 64>.
 //
@@ -24,7 +24,7 @@
 
 module @infer_rates_match {
   // expected-remark@+1 {{conduit-infer-rates: attached producer_rates=[64] consumer_rates=[64] to conduit 'chan'}}
-  conduit.create @chan {capacity = 64 : i64,
+  conduit.create @chan {slot_elems = 64 : i64,
                   depth = 1 : i64,
                   element_type = memref<64xi32>}
 

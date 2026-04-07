@@ -95,7 +95,7 @@ module {
     // conduit.create with tile placement already filled in (simulates the
     // tile-placement step that runs between Pass B and Pass C).
     // producer_tile=[0,0] = shim tile, consumer_tiles=[0,2] = compute tile.
-    conduit.create @mychan {capacity = 1 : i64, depth = 1 : i64,
+    conduit.create @mychan {slot_elems = 1 : i64, depth = 1 : i64,
                     element_type = memref<64xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}

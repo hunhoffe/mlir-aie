@@ -27,7 +27,7 @@ module @passC_no_index_switch {
     %tile = aie.tile(0, 2)
 
     // depth=2: triggers dynamic rotation counter + buffer selection
-    conduit.create @fifo {capacity = 64 : i64, depth = 2 : i64,
+    conduit.create @fifo {slot_elems = 64 : i64, depth = 2 : i64,
                     element_type = memref<32xi32>,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>}

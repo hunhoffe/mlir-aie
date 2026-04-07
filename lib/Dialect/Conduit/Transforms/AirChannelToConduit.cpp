@@ -34,7 +34,7 @@
 //
 // 1. air.channel declaration (Symbol op, no operands):
 //      air.channel @name [1, 1]
-//    → conduit.create {name="name", capacity=1, depth=1}
+//    → conduit.create {name="name", slot_elems = 1, depth=1}
 //      The element_type is left unset (unknown until a put/get is seen).
 //      A second pass fills element_type from the memref operand of the
 //      first put/get that references this channel.
@@ -474,7 +474,7 @@ struct AirChannelToConduitPass
     // Broadcast guard for Phase 6 infer-rates: track which channel names were
     // detected as broadcast channels (broadcast_shape attribute present and
     // product > 1).  Phase 6 skips rate annotation for these channels because
-    // their conduit.create capacity = product(broadcast_shape) represents fan-out
+    // their conduit.create slot_elems = product(broadcast_shape) represents fan-out
     // count, not buffer slots.  M7 would misinterpret the inflated capacity as
     // buffer capacity and produce wrong CSDF occupancy checks.
     llvm::StringSet<> broadcastChannelNames;
@@ -587,7 +587,7 @@ struct AirChannelToConduitPass
       // 5b: Propagate broadcast_shape → conduit capacity.
       //
       // broadcast_shape = [d0, d1, ...] describes the fan-out topology:
-      //   capacity = product(broadcast_shape)  (total number of consumers)
+      //   slot_elems = product(broadcast_shape)  (total number of consumers)
       //
       // Step 2 (broadcast topology):
       //   If consumer tile coordinates are available (i.e., air.channel.get
@@ -614,7 +614,7 @@ struct AirChannelToConduitPass
             op->emitRemark()
                 << "air-channel-to-conduit: channel @" << name
                 << " broadcast_shape=" << bsAttr
-                << " → conduit capacity=" << broadcastCapacity
+                << " → conduit slot_elems = " << broadcastCapacity
                 << "; found " << tileIt->second.size()
                 << " consumer tiles from aie.core enclosure; "
                    "emitting conduit.link{mode=\"distribute\"}.";
@@ -623,7 +623,7 @@ struct AirChannelToConduitPass
             op->emitRemark()
                 << "air-channel-to-conduit: channel @" << name
                 << " broadcast_shape=" << bsAttr
-                << " → conduit capacity=" << broadcastCapacity
+                << " → conduit slot_elems = " << broadcastCapacity
                 << "; consumer tile coordinates not available (requires "
                    "tile-placement pre-pass). conduit.create emitted with "
                    "correct capacity; consumer_tiles left empty.";
@@ -649,7 +649,7 @@ struct AirChannelToConduitPass
               op->emitRemark()
                   << "air-channel-to-conduit: channel @" << name
                   << " broadcast_shape=" << bsAttr
-                  << " → conduit capacity=" << broadcastCapacity
+                  << " → conduit slot_elems = " << broadcastCapacity
                   << "; found " << tileIt->second.size()
                   << " consumer tiles from aie.core enclosure; "
                      "emitting conduit.link{mode=\"distribute\"}.";
@@ -657,7 +657,7 @@ struct AirChannelToConduitPass
               op->emitRemark()
                   << "air-channel-to-conduit: channel @" << name
                   << " broadcast_shape=" << bsAttr
-                  << " → conduit capacity=" << broadcastCapacity
+                  << " → conduit slot_elems = " << broadcastCapacity
                   << "; consumer tile coordinates not available (requires "
                      "tile-placement pre-pass). conduit.create emitted with "
                      "correct capacity; consumer_tiles left empty.";
@@ -688,14 +688,12 @@ struct AirChannelToConduitPass
           /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
           /*element_type=*/mlir::TypeAttr{},
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
-          /*link_mode=*/LinkModeAttr{},
           /*access_pattern=*/mlir::DenseI64ArrayAttr{},
           /*routing_mode=*/routingMode,
           /*producer_rates=*/mlir::DenseI64ArrayAttr{},
           /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
           /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
           /*bd_repeat=*/mlir::IntegerAttr{},
-          /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
           /*disable_synchronization=*/mlir::BoolAttr{},
           /*viaDMA=*/mlir::BoolAttr{},
           /*plio=*/mlir::BoolAttr{},
@@ -774,7 +772,7 @@ struct AirChannelToConduitPass
             std::string dstName = name + "_c" + std::to_string(i);
             dstNames.push_back(dstName);
 
-            // Per-consumer conduit.create with capacity=1 (each consumer
+            // Per-consumer conduit.create with slot_elems = 1 (each consumer
             // gets its own independent BD chain).
             auto consCreate = builder.create<Create>(
                 loc,
@@ -786,14 +784,12 @@ struct AirChannelToConduitPass
                 /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
                 /*element_type=*/mlir::TypeAttr{},
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
-                /*link_mode=*/LinkModeAttr{},
                 /*access_pattern=*/mlir::DenseI64ArrayAttr{},
                 /*routing_mode=*/routingMode,
                 /*producer_rates=*/mlir::DenseI64ArrayAttr{},
                 /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
                 /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
                 /*bd_repeat=*/mlir::IntegerAttr{},
-                /*consumer_depths=*/mlir::DenseI64ArrayAttr{},
                 /*disable_synchronization=*/mlir::BoolAttr{},
                 /*viaDMA=*/mlir::BoolAttr{},
                 /*plio=*/mlir::BoolAttr{},
@@ -1476,7 +1472,7 @@ struct AirChannelToConduitPass
         llvm::StringRef name = op.getSymName();
         if (name.empty()) return;
         // Broadcast guard: skip rate annotation for broadcast channels.
-        // Their capacity = product(broadcast_shape) is a fan-out count, not
+        // Their slot_elems = product(broadcast_shape) is a fan-out count, not
         // buffer slots; M7 would misinterpret it.
         if (broadcastChannelNames.count(name)) return;
         if (hasDynElems.count(name)) return;

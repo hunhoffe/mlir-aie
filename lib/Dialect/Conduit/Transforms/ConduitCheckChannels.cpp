@@ -21,7 +21,7 @@
 // invalid — Pass C cannot assign unique channels and the hardware will
 // malfunction silently.
 //
-// This pass validates that no tile exceeds its DMA channel capacity.  It runs
+// This pass validates that no tile exceeds its DMA channel slot_elems.  It runs
 // AFTER Pass A or Pass B (which populate conduit.create attributes) and can
 // run either before or after --conduit-fuse-channels.  When fusion annotations
 // are present (fused_dma_channel_group attribute), the pass accounts for them:

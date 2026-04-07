@@ -18,7 +18,7 @@ module {
   aie.device(npu2) {
     %tile03 = aie.tile(0, 3)
 
-    conduit.create @cas {capacity = 1 : i64,
+    conduit.create @cas {slot_elems = 1 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,

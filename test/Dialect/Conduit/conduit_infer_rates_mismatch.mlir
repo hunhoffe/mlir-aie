@@ -19,7 +19,7 @@
 module @infer_rates_mismatch {
   // expected-remark@+2 {{conduit-infer-rates: attached producer_rates=[64] consumer_rates=[128] to conduit 'chan'}}
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=64 != sum(consumer_rates)*len(producer_rates)=128}}
-  conduit.create @chan {capacity = 128 : i64,
+  conduit.create @chan {slot_elems = 128 : i64,
                   depth = 1 : i64,
                   element_type = memref<128xi32>}
 

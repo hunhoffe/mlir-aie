@@ -20,7 +20,7 @@ module {
     %prod = aie.tile(0, 0)
     %cons = aie.tile(0, 2)
 
-    conduit.create @foo {capacity = 32 : i64,
+    conduit.create @foo {slot_elems = 32 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<32xi32>,
@@ -58,7 +58,7 @@ module {
     %prod = aie.tile(0, 0)
     %cons = aie.tile(0, 2)
 
-    conduit.create @bar {capacity = 16 : i64,
+    conduit.create @bar {slot_elems = 16 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<16xi32>,
@@ -96,7 +96,7 @@ module {
     %prod = aie.tile(0, 2)
     %cons = aie.tile(0, 3)
 
-    conduit.create @baz {capacity = 8 : i64,
+    conduit.create @baz {slot_elems = 8 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<8xi32>,
@@ -134,7 +134,7 @@ module {
     %shim = aie.tile(0, 0)
     %core = aie.tile(0, 2)
 
-    conduit.create @input {capacity = 32 : i64,
+    conduit.create @input {slot_elems = 32 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<32xi32>,
@@ -170,7 +170,7 @@ module {
     %coreA = aie.tile(0, 2)
     %coreB = aie.tile(1, 2)
 
-    conduit.create @shared {capacity = 16 : i64,
+    conduit.create @shared {slot_elems = 16 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 2>,
                     element_type = memref<16xi32>,
@@ -206,7 +206,7 @@ module {
   aie.device(npu1) {
     %t = aie.tile(0, 2)
 
-    conduit.create @only_t2 {capacity = 8 : i64,
+    conduit.create @only_t2 {slot_elems = 8 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<8xi32>,
@@ -233,7 +233,7 @@ module {
   aie.device(npu1) {
     %t = aie.tile(0, 2)
 
-    conduit.create @only_t3 {capacity = 8 : i64,
+    conduit.create @only_t3 {slot_elems = 8 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<8xi32>,

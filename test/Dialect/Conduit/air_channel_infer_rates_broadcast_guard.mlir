@@ -6,7 +6,7 @@
 //
 // 1. SPSC channel (@spsc_chan): no broadcast_shape → rates ARE annotated.
 // 2. Broadcast channel (@bcast_chan, broadcast_shape=[1,4]): rates are NOT
-//    annotated even with infer-rates=true, because capacity=4 is a fan-out
+//    annotated even with infer-rates=true, because slot_elems =4 is a fan-out
 //    count (not buffer slots) and M7 would misinterpret it.
 //
 // MLIR prints attributes alphabetically; conduit.create for spsc_chan appears
@@ -22,12 +22,12 @@
 // CHECK-SAME: consumer_rates = array<i64: 1>
 // CHECK-SAME: producer_rates = array<i64: 1>
 
-// Broadcast: capacity=4 (fan-out), NO producer_rates or consumer_rates.
+// Broadcast: slot_elems =4 (fan-out), NO producer_rates or consumer_rates.
 // After matching the bcast_chan create line, CHECK-NOT asserts producer_rates
 // does not appear on any remaining line (nothing follows bcast_chan in the
 // module-level IR).
 // CHECK: conduit.create @bcast_chan
-// CHECK-SAME: capacity = 4
+// CHECK-SAME: slot_elems = 4
 // CHECK-NOT: producer_rates
 // CHECK-NOT: consumer_rates
 

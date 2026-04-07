@@ -14,10 +14,10 @@
 
 // --- Cascade channel: conduit.create with routing_mode = cascade ---
 // CHECK: conduit.create @cas_chan
-// CHECK-SAME: capacity = 1 : i64
 // CHECK-SAME: depth = 1 : i64
 // CHECK-SAME: element_type = memref<1xvector<16xi32>>
 // CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
+// CHECK-SAME: slot_elems = 1 : i64
 
 // --- air.channel declaration is erased ---
 // CHECK-NOT: air.channel

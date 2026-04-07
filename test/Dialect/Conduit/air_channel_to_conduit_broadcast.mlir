@@ -4,10 +4,10 @@
 //
 // Verifies that air.channel declarations with a broadcast_shape attribute:
 //   1. Emit a remark (not a warning) naming the computed capacity.
-//   2. Emit conduit.create with capacity = product(broadcast_shape) = 4.
+//   2. Emit conduit.create with slot_elems = product(broadcast_shape) = 4.
 //   3. Retain routing_mode = #conduit.routing_mode<packet> from channel_type = "dma_packet".
 //
-// broadcast_shape = [1, 4] → capacity = 1 × 4 = 4.
+// broadcast_shape = [1, 4] → slot_elems = 1 × 4 = 4.
 //
 // Consumer tile coordinates are NOT available at this stage (no tile-placement
 // pre-pass). conduit.create is emitted with correct capacity but empty
@@ -17,24 +17,24 @@
 // the remark emitted by mlir's diagnostic system.
 
 // Output order (stderr+stdout combined):
-//   line 1: remark: ... broadcast_shape ... capacity=4 ...
+//   line 1: remark: ... broadcast_shape ... slot_elems = 4 ...
 //   line 2-3: source echo + note
 //   line 4: module {
-//   line 5: conduit.create {...capacity = 4...name = @bcast_chan...routing_mode = #conduit.routing_mode<packet>}
+//   line 5: conduit.create {...slot_elems = 4...name = @bcast_chan...routing_mode = #conduit.routing_mode<packet>}
 //
 // Checks must follow the output order.
 
-// 1. Remark contains "broadcast_shape" and "capacity=4".
+// 1. Remark contains "broadcast_shape" and "slot_elems = 4".
 // CHECK: remark{{.*}}broadcast_shape
-// CHECK-SAME: capacity=4
+// CHECK-SAME: slot_elems = 4
 
 // 2. Module opens (comes before conduit.create in output).
 // CHECK: module {
 
 // 3. conduit.create with correct capacity, name, and routing_mode.
 // CHECK: conduit.create @bcast_chan
-// CHECK-SAME: capacity = 4
 // CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
+// CHECK-SAME: slot_elems = 4
 
 // 4. No further air.channel ops in module body (source echoes already passed).
 // CHECK-NOT: air.channel

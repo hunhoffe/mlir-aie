@@ -28,7 +28,7 @@ module @test_adjacent_shared_mem {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
-    conduit.create @adj {capacity = 4 : i64,
+    conduit.create @adj {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
@@ -52,7 +52,7 @@ module @test_non_adjacent_circuit {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t14 = aie.tile(1, 4)
-    conduit.create @non_adj {capacity = 4 : i64,
+    conduit.create @non_adj {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
@@ -81,19 +81,19 @@ module @test_already_resolved {
     %t03 = aie.tile(0, 3)
     %t04 = aie.tile(0, 4)
     %t14 = aie.tile(1, 4)
-    conduit.create @already_circuit {capacity = 4 : i64,
+    conduit.create @already_circuit {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @already_packet {capacity = 4 : i64,
+    conduit.create @already_packet {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 4>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create @to_infer {capacity = 4 : i64,
+    conduit.create @to_infer {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
@@ -119,12 +119,12 @@ module @test_cascade_unchanged {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
     %t14 = aie.tile(1, 4)
-    conduit.create @cas {capacity = 1 : i64,
+    conduit.create @cas {slot_elems = 1 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
-    conduit.create @dma_any {capacity = 4 : i64,
+    conduit.create @dma_any {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
@@ -156,20 +156,20 @@ module @test_packet_fallback {
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
     // Two circuit conduits consuming both MM2S channels on tile(0,2).
-    conduit.create @c1 {capacity = 4 : i64,
+    conduit.create @c1 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @c2 {capacity = 4 : i64,
+    conduit.create @c2 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
     // Third conduit: circuit exhausted → packet fallback.
-    conduit.create @c3_any {capacity = 4 : i64,
+    conduit.create @c3_any {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>,
@@ -195,13 +195,13 @@ module @test_two_any_both_circuit {
     %t02 = aie.tile(0, 2)
     %t13 = aie.tile(1, 3)
     %t14 = aie.tile(1, 4)
-    conduit.create @a1 {capacity = 4 : i64,
+    conduit.create @a1 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64
                     }
-    conduit.create @a2 {capacity = 4 : i64,
+    conduit.create @a2 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
@@ -224,7 +224,7 @@ module @test_via_dma_override {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
-    conduit.create @forced_dma {capacity = 4 : i64,
+    conduit.create @forced_dma {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,

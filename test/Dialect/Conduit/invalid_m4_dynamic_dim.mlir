@@ -11,7 +11,7 @@
 // Use expected-warning annotation with -verify-diagnostics.
 
 // expected-warning @+1 {{conduit.create: element_type has dynamic dimensions; capacity is approximate}}
-conduit.create @dyn_fifo {capacity = 16 : i64,
+conduit.create @dyn_fifo {slot_elems = 16 : i64,
                 producer_tile = array<i64: 0, 2>,
                 consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<?xi32>,

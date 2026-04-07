@@ -34,7 +34,7 @@ void collectPhase(ConduitToDMAState &state) {
 
   module.walk([&](Create op) {
     ConduitInfo info;
-    info.capacity = op.getCapacity();
+    info.slotElems = op.getSlotElems();
 
     if (auto depthOpt = op.getDepth())
       info.depth = static_cast<int64_t>(*depthOpt);
@@ -245,7 +245,7 @@ void collectPhase(ConduitToDMAState &state) {
   });
 
   // Collect numElems from put/get_memref_async ops.
-  // For Tier 3 channels (shim↔compute via DMA), capacity encodes the slot
+  // For Tier 3 channels (shim↔compute via DMA), slotElems encodes the slot
   // count (typically 1), but BD length must be the per-transfer element count.
   // Take the maximum num_elems seen across all puts and gets for each channel.
   module.walk([&](PutMemrefAsync op) {

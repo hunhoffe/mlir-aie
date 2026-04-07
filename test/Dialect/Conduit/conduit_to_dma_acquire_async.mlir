@@ -75,7 +75,7 @@ module @async_window_path {
 
     // Hand-written Conduit IR that the async path would produce.
     // conduit.create declares the channel metadata for Pass C.
-    conduit.create @fifo_async {capacity = 8 : i64,
+    conduit.create @fifo_async {slot_elems = 8 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<8xi32>,

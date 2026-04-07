@@ -31,28 +31,28 @@
 // verifies each conduit in isolation.
 
 func.func @join_three_sources_pass() {
-  conduit.create @js_s1 {capacity = 4 : i64,
+  conduit.create @js_s1 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 2>,
                   consumer_rates = array<i64: 2>}
-  conduit.create @js_s2 {capacity = 4 : i64,
+  conduit.create @js_s2 {slot_elems = 4 : i64,
                   producer_tile = array<i64: 1, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<4xi32>,
                   depth = 2 : i64,
                   producer_rates = array<i64: 1, 1>,
                   consumer_rates = array<i64: 1, 1>}
-  conduit.create @js_s3 {capacity = 8 : i64,
+  conduit.create @js_s3 {slot_elems = 8 : i64,
                   producer_tile = array<i64: 2, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 4>,
                   consumer_rates = array<i64: 4>}
-  conduit.create @js_dst {capacity = 16 : i64,
+  conduit.create @js_dst {slot_elems = 16 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<16xi32>,
@@ -72,14 +72,14 @@ func.func @join_three_sources_pass() {
 
 func.func @join_src_imbalanced() {
   // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=2}}
-  conduit.create @ji_s1_bad {capacity = 4 : i64,
+  conduit.create @ji_s1_bad {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64,
                   producer_rates = array<i64: 3>,
                   consumer_rates = array<i64: 1, 1>}
-  conduit.create @ji_dst {capacity = 4 : i64,
+  conduit.create @ji_dst {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<i32>,
@@ -97,17 +97,17 @@ func.func @join_src_imbalanced() {
 // M3 structural invariant violation: join mode can only have 1 destination.
 
 func.func @join_multiple_dsts() {
-  conduit.create @jm_s1 {capacity = 2 : i64,
+  conduit.create @jm_s1 {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 2>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<i32>,
                   depth = 1 : i64}
-  conduit.create @jm_d1 {capacity = 2 : i64,
+  conduit.create @jm_d1 {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 0>,
                   element_type = memref<i32>,
                   depth = 1 : i64}
-  conduit.create @jm_d2 {capacity = 2 : i64,
+  conduit.create @jm_d2 {slot_elems = 2 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 0>,
                   element_type = memref<i32>,

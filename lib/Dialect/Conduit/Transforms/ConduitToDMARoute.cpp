@@ -591,7 +591,7 @@ void routePhase(ConduitToDMAState &state) {
 
     builder.setInsertionPoint(state.deviceBody->getTerminator());
 
-    // ---- Determine hardware MM2S channel capacity for this tile. ----
+    // ---- Determine hardware MM2S channel slotElems for this tile. ----
     // Used by the mode=any exhaustion check (Step 3.5).
     uint32_t maxMM2S = 2; // hardware default: 2 MM2S per compute tile
     if (state.targetModel)

@@ -14,9 +14,9 @@
 //
 // This test verifies:
 //   (a) "loop_fifo" — depth-1 with acquire inside scf.for + real compute:
-//       PROMOTED from depth=1,capacity=8 to depth=2,capacity=16
+//       PROMOTED from depth=1,slot_elems =8 to depth=2,slot_elems =16
 //   (b) "linked_fifo" — depth-1 but referenced in conduit.link:
-//       NOT promoted (stays at depth=1,capacity=8)
+//       NOT promoted (stays at depth=1,slot_elems =8)
 //   (c) "passthrough_fifo" — depth-1 but acquire→release with no compute:
 //       NOT promoted (passthrough-only)
 
@@ -24,11 +24,11 @@
 // Each conduit.create is on one line so CHECK-DAG matching works.
 
 // (a) loop_fifo: promoted — capacity doubles 8→16, depth 1→2
-// CHECK-DAG: conduit.create @loop_fifo {capacity = 16 : i64, {{.*}} depth = 2 : i64
+// CHECK-DAG: conduit.create @loop_fifo {{{.*}}depth = 2 : i64, {{.*}}slot_elems = 16 : i64
 // (b) linked_fifo: NOT promoted — capacity stays 8, depth stays 1
-// CHECK-DAG: conduit.create @linked_fifo {capacity = 8 : i64, {{.*}} depth = 1 : i64
+// CHECK-DAG: conduit.create @linked_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 8 : i64
 // (c) passthrough_fifo: NOT promoted — capacity stays 4, depth stays 1
-// CHECK-DAG: conduit.create @passthrough_fifo {capacity = 4 : i64, {{.*}} depth = 1 : i64
+// CHECK-DAG: conduit.create @passthrough_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 4 : i64
 // conduit.forward must survive unchanged (also CHECK-DAG to allow any order)
 // CHECK-DAG: conduit.forward
 
@@ -36,10 +36,10 @@
 module {
 
 // (a) Eligible: depth-1 with loop-enclosed acquire and compute.
-// Pass must promote to depth=2, capacity=16.
+// Pass must promote to depth=2, slot_elems =16.
 func.func @eligible_loop_fifo(%result: memref<8xi32>) {
   // expected-remark @+1 {{conduit-depth-promote: promoted 'loop_fifo' from depth-1 to depth-2}}
-  conduit.create @loop_fifo {capacity = 8 : i64,
+  conduit.create @loop_fifo {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 0>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<8xi32>,
@@ -64,13 +64,13 @@ func.func @eligible_loop_fifo(%result: memref<8xi32>) {
 // Pass must skip it (exclusion criterion #2).
 func.func @linked_conduit_not_promoted() {
   // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_fifo' -- linked conduit}}
-  conduit.create @linked_fifo {capacity = 8 : i64,
+  conduit.create @linked_fifo {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 0>,
                   consumer_tiles = array<i64: 0, 1>,
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_out' -- linked conduit}}
-  conduit.create @linked_out {capacity = 8 : i64,
+  conduit.create @linked_out {slot_elems = 8 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 0, 2>,
                   element_type = memref<8xi32>,
@@ -84,7 +84,7 @@ func.func @linked_conduit_not_promoted() {
 // Pass must skip it (exclusion criterion #4).
 func.func @passthrough_not_promoted() {
   // expected-remark @+1 {{conduit-depth-promote: skipping 'passthrough_fifo' -- passthrough-only (no compute)}}
-  conduit.create @passthrough_fifo {capacity = 4 : i64,
+  conduit.create @passthrough_fifo {slot_elems = 4 : i64,
                   producer_tile = array<i64: 0, 0>,
                   consumer_tiles = array<i64: 0, 3>,
                   element_type = memref<4xi32>,

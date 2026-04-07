@@ -38,14 +38,14 @@ module @pkt_fallback_basic {
     %t15 = aie.tile(1, 5)
 
     // pkt_a: explicit packet mode — MM2S ch 0 designated packet-mode.
-    conduit.create @pkt_a {capacity = 4 : i64,
+    conduit.create @pkt_a {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // pkt_b: explicit packet mode — MM2S ch 1 designated packet-mode.
-    conduit.create @pkt_b {capacity = 4 : i64,
+    conduit.create @pkt_b {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
@@ -53,7 +53,7 @@ module @pkt_fallback_basic {
 
     // fallback: mode=any; both MM2S channels allocated (packet-mode ch 0 and
     // ch 1); Step 3.5c finds existing packet-mode ch 0, shares it.
-    conduit.create @fallback {capacity = 4 : i64,
+    conduit.create @fallback {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 3>,
                     consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64

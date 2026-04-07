@@ -12,12 +12,12 @@ module @check_channels_pass {
     %tile_0_3 = aie.tile(0, 3)
     %tile_0_4 = aie.tile(0, 4)
 
-    conduit.create @c1 {capacity = 4 : i64,
+    conduit.create @c1 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {capacity = 4 : i64,
+    conduit.create @c2 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<4xi32>,
@@ -38,17 +38,17 @@ module @check_channels_mm2s_fail {
     %tile_0_5 = aie.tile(0, 5)
 
     // expected-error @+1 {{DMA channel limit exceeded on tile (0, 2): 3 conduits require 3 MM2S channels, hardware supports 2}}
-    conduit.create @c1 {capacity = 4 : i64,
+    conduit.create @c1 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {capacity = 4 : i64,
+    conduit.create @c2 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c3 {capacity = 4 : i64,
+    conduit.create @c3 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<4xi32>,
@@ -69,17 +69,17 @@ module @check_channels_s2mm_fail {
     %tile_0_5 = aie.tile(0, 5)
 
     // expected-error @+1 {{DMA channel limit exceeded on tile (0, 3): 3 conduits require 3 S2MM channels, hardware supports 2}}
-    conduit.create @c1 {capacity = 4 : i64,
+    conduit.create @c1 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {capacity = 4 : i64,
+    conduit.create @c2 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 4>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c3 {capacity = 4 : i64,
+    conduit.create @c3 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 5>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
@@ -100,19 +100,19 @@ module @check_channels_fused_pass {
     %tile_0_4 = aie.tile(0, 4)
     %tile_0_5 = aie.tile(0, 5)
 
-    conduit.create @c1 {capacity = 4 : i64,
+    conduit.create @c1 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     fused_dma_channel_group = "grp0"}
-    conduit.create @c2 {capacity = 4 : i64,
+    conduit.create @c2 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     fused_dma_channel_group = "grp0"}
-    conduit.create @c3 {capacity = 4 : i64,
+    conduit.create @c3 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 2>,
                     consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<4xi32>,
@@ -133,17 +133,17 @@ module @check_channels_shim_excluded {
     %tile_0_3 = aie.tile(0, 3)
     %tile_0_4 = aie.tile(0, 4)
 
-    conduit.create @c1 {capacity = 4 : i64,
+    conduit.create @c1 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {capacity = 4 : i64,
+    conduit.create @c2 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c3 {capacity = 4 : i64,
+    conduit.create @c3 {slot_elems = 4 : i64,
                     producer_tile = array<i64: 0, 0>,
                     consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<4xi32>,
