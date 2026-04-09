@@ -126,22 +126,24 @@ void linkPhase(ConduitToDMAState &state) {
     a.op = scatterOp.getOperation();
     a.srcs = builder.getArrayAttr({scatterOp.getSrcAttr()});
     a.dsts = scatterOp.getDsts();
-    // Infer memtile from the src conduit's producer tile: same column, row=1.
-    {
+    // Read memtile from the op's explicit memtile attr (set by Sprint 1
+    // verifier; format "tile(col,row)"). Fall back to producer-tile inference
+    // for Scatter ops that predate the attr addition.
+    if (!scatterOp.getMemtile().empty()) {
+      a.memtileStr = scatterOp.getMemtile();
+    } else {
       llvm::StringRef srcName = scatterOp.getSrc();
       ConduitInfo *srcInfo = state.lookupConduit(srcName);
       if (srcInfo && srcInfo->producerTileCoord.first >= 0) {
         int64_t col = srcInfo->producerTileCoord.first;
-        std::string tileStr =
-            "tile(" + std::to_string(col) + ",1)";
-        a.memtileStr =
-            mlir::StringAttr::get(ctx, tileStr).getValue();
+        std::string tileStr = "tile(" + std::to_string(col) + ",1)";
+        a.memtileStr = mlir::StringAttr::get(ctx, tileStr).getValue();
       } else {
         a.memtileStr = "";
       }
     }
     a.isDistribute = true; // scatter = 1→N distribute
-    a.offsets = std::nullopt;
+    a.offsets = scatterOp.getOffsets();
     linkAdapters.push_back(a);
   });
   state.module.walk([&](GatherOp gatherOp) {
@@ -149,8 +151,10 @@ void linkPhase(ConduitToDMAState &state) {
     a.op = gatherOp.getOperation();
     a.srcs = gatherOp.getSrcs();
     a.dsts = builder.getArrayAttr({gatherOp.getDstAttr()});
-    // Infer memtile from the first src conduit's producer tile: same col, row=1.
-    {
+    // Read memtile from the op's explicit attr; fall back to inference.
+    if (!gatherOp.getMemtile().empty()) {
+      a.memtileStr = gatherOp.getMemtile();
+    } else {
       llvm::StringRef memStr;
       for (auto s : gatherOp.getSrcs()) {
         llvm::StringRef sName =
@@ -158,8 +162,7 @@ void linkPhase(ConduitToDMAState &state) {
         ConduitInfo *sInfo = state.lookupConduit(sName);
         if (sInfo && sInfo->producerTileCoord.first >= 0) {
           int64_t col = sInfo->producerTileCoord.first;
-          std::string tileStr =
-              "tile(" + std::to_string(col) + ",1)";
+          std::string tileStr = "tile(" + std::to_string(col) + ",1)";
           memStr = mlir::StringAttr::get(ctx, tileStr).getValue();
           break;
         }
@@ -167,7 +170,7 @@ void linkPhase(ConduitToDMAState &state) {
       a.memtileStr = memStr;
     }
     a.isDistribute = false; // gather = N→1 join
-    a.offsets = std::nullopt;
+    a.offsets = gatherOp.getOffsets();
     linkAdapters.push_back(a);
   });
 
