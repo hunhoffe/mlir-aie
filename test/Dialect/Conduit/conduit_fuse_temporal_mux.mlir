@@ -66,8 +66,8 @@ func.func @no_dep_no_merge() {
   %tb = conduit.put_memref_async {name = @nd2, num_elems = 4096 : i64,
             offsets = array<i64: 4096>, sizes = array<i64: 4096>,
             strides = array<i64: 1>} : !conduit.dma.token
-  conduit.wait %ta : !conduit.dma.token
-  conduit.wait %tb : !conduit.dma.token
+  conduit.wait_all %ta : !conduit.dma.token
+  conduit.wait_all %tb : !conduit.dma.token
   return
 }
 
@@ -122,8 +122,8 @@ func.func @partial_dep() {
   %tc = conduit.put_memref_async {name = @pd3, num_elems = 4096 : i64,
             offsets = array<i64: 8192>, sizes = array<i64: 4096>,
             strides = array<i64: 1>} : !conduit.dma.token
-  conduit.wait %tb : !conduit.dma.token
-  conduit.wait %tc : !conduit.dma.token
+  conduit.wait_all %tb : !conduit.dma.token
+  conduit.wait_all %tc : !conduit.dma.token
   return
 }
 
@@ -163,7 +163,7 @@ func.func @different_consumer_tile() {
             {name = @de2, num_elems = 4096 : i64,
              offsets = array<i64: 4096>, sizes = array<i64: 4096>,
              strides = array<i64: 1>} : !conduit.dma.token
-  conduit.wait %tb : !conduit.dma.token
+  conduit.wait_all %tb : !conduit.dma.token
   return
 }
 
@@ -206,7 +206,7 @@ func.func @packet_mode_excluded() {
             {name = @pkt2, num_elems = 4096 : i64,
              offsets = array<i64: 4096>, sizes = array<i64: 4096>,
              strides = array<i64: 1>} : !conduit.dma.token
-  conduit.wait %tb : !conduit.dma.token
+  conduit.wait_all %tb : !conduit.dma.token
   return
 }
 
@@ -246,7 +246,7 @@ func.func @depth2_excluded() {
             {name = @d2b, num_elems = 4096 : i64,
              offsets = array<i64: 4096>, sizes = array<i64: 4096>,
              strides = array<i64: 1>} : !conduit.dma.token
-  conduit.wait %tb : !conduit.dma.token
+  conduit.wait_all %tb : !conduit.dma.token
   return
 }
 
@@ -298,6 +298,6 @@ func.func @link_src_excluded() {
             {name = @lk2, num_elems = 4096 : i64,
              offsets = array<i64: 4096>, sizes = array<i64: 4096>,
              strides = array<i64: 1>} : !conduit.dma.token
-  conduit.wait %tb : !conduit.dma.token
+  conduit.wait_all %tb : !conduit.dma.token
   return
 }

@@ -60,7 +60,7 @@ module @tier3_bd_length {
                        sizes = array<i64: 128>,
                        strides = array<i64: 1>}
                        : !conduit.dma.token
-        conduit.wait %put_tok : !conduit.dma.token
+        conduit.wait_all %put_tok : !conduit.dma.token
 
         // Tier 3 DMA receive: num_elems=128 is the actual transfer size.
         %get_tok = conduit.get_memref_async {name = @t3_bd,
@@ -69,7 +69,7 @@ module @tier3_bd_length {
                        sizes = array<i64: 128>,
                        strides = array<i64: 1>}
                        : !conduit.dma.token
-        conduit.wait %get_tok : !conduit.dma.token
+        conduit.wait_all %get_tok : !conduit.dma.token
       }
       aie.end
     } {dynamic_objfifo_lowering = true}

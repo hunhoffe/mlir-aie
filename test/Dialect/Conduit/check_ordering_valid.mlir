@@ -23,7 +23,7 @@ module {
     %tok = conduit.put_memref_async {name = @ch_single, num_elems = 1 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 1>,
                  strides = array<i64: 1>} : !conduit.dma.token
-    conduit.wait %tok : !conduit.dma.token
+    conduit.wait_all %tok : !conduit.dma.token
     return
   }
 }

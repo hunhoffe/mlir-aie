@@ -169,6 +169,21 @@ class Conduit_Op<string mnemonic, list<Trait> traits = []>
     : Op<Conduit_Dialect, mnemonic, traits>;
 
 // ---------------------------------------------------------------------------
+// Dialect-scoped typed array attribute for flat symbol references.
+//
+// FlatSymbolRefArrayAttr already exists in mlir/IR/CommonAttrConstraints.td,
+// but we define a dialect-scoped alias here to (1) make the origin explicit
+// in Conduit.td, and (2) allow future per-element constraints without
+// touching the generic MLIR definition.
+//
+// Used by: conduit.scatter ($dsts), conduit.gather ($srcs),
+//          conduit.transpose ($srcs, $dsts).
+// ---------------------------------------------------------------------------
+def Conduit_FlatSymbolRefArrayAttr
+    : TypedArrayAttrBase<FlatSymbolRefAttr,
+                         "flat symbol reference array attribute">;
+
+// ---------------------------------------------------------------------------
 // Async token types — !conduit.dma.token and !conduit.window.token
 //
 // Two separate types (simpler and more idiomatic than a parameterized type):
@@ -915,7 +930,10 @@ def Conduit_ScatterOp : Conduit_Op<"scatter", []> {
   let summary = "1:N fan-out relay — routes one source channel to N destination channels";
   let arguments = (ins
     FlatSymbolRefAttr:$src,
-    SymbolRefArrayAttr:$dsts,
+    Conduit_FlatSymbolRefArrayAttr:$dsts,
+    StrAttr:$memtile,
+    OptionalAttr<DenseI64ArrayAttr>:$offsets,
+    OptionalAttr<I64Attr>:$lock_id,
     OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
   );
   let assemblyFormat = [{
@@ -927,8 +945,11 @@ def Conduit_ScatterOp : Conduit_Op<"scatter", []> {
 def Conduit_GatherOp : Conduit_Op<"gather", []> {
   let summary = "N:1 fan-in relay — collects N source channels into one destination channel";
   let arguments = (ins
-    SymbolRefArrayAttr:$srcs,
+    Conduit_FlatSymbolRefArrayAttr:$srcs,
     FlatSymbolRefAttr:$dst,
+    StrAttr:$memtile,
+    OptionalAttr<DenseI64ArrayAttr>:$offsets,
+    OptionalAttr<I64Attr>:$lock_id,
     OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
   );
   let assemblyFormat = [{
@@ -940,8 +961,11 @@ def Conduit_GatherOp : Conduit_Op<"gather", []> {
 def Conduit_TransposeOp : Conduit_Op<"transpose", []> {
   let summary = "N:M static redistribution relay using time-multiplexed DMA";
   let arguments = (ins
-    SymbolRefArrayAttr:$srcs,
-    SymbolRefArrayAttr:$dsts,
+    Conduit_FlatSymbolRefArrayAttr:$srcs,
+    Conduit_FlatSymbolRefArrayAttr:$dsts,
+    StrAttr:$memtile,
+    DenseI64ArrayAttr:$offsets,
+    OptionalAttr<I64Attr>:$lock_id,
     OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
   );
   let assemblyFormat = [{
@@ -953,11 +977,11 @@ def Conduit_TransposeOp : Conduit_Op<"transpose", []> {
 def Conduit_RegisterBuffersOp : Conduit_Op<"register_buffers", []> {
   let summary = "register pre-allocated buffers (aie.buffer / aie.external_buffer) with a conduit channel";
   let arguments = (ins
-    FlatSymbolRefAttr:$channel,
+    FlatSymbolRefAttr:$name,
     Variadic<AnyMemRef>:$buffers
   );
   let assemblyFormat = [{
-    `{` `channel` `=` $channel `,` `buffers` `=` `[` $buffers `]` attr-dict `}` `:` type($buffers)
+    `{` `name` `=` $name `,` `buffers` `=` `[` $buffers `]` attr-dict `}` `:` type($buffers)
   }];
   let hasVerifier = 1;
 }
@@ -1075,22 +1099,6 @@ def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
 // (combine Tier 2 and Tier 3 tokens in conduit.wait_all for cross-tier use)
 // ---------------------------------------------------------------------------
 
-def Conduit_Wait : Conduit_Op<"wait"> {
-  let summary = "blocking wait on a single !conduit.dma.token";
-  let description = [{
-    Blocks the current thread until the DMA transfer represented by %token
-    is complete.  Accepts only !conduit.dma.token (DMA transfers from
-    put_memref_async / get_memref_async / wait_all_async).
-
-    For !conduit.window.token from acquire_async, use conduit.wait_window
-    instead — it resolves the lock grant into a !conduit.window<T> SSA value
-    needed by conduit.subview_access.
-
-    Maps to: air.wait_all [%tok] (blocking, no result) on the AIR backend.
-  }];
-  let arguments = (ins Conduit_DMATokenType:$token);
-  let assemblyFormat = "operands attr-dict `:` type(operands)";
-}
 
 def Conduit_WaitWindow : Conduit_Op<"wait_window"> {
   let summary = "[Tier 2+3 bridge] blocking wait on a !conduit.window.token, returning the granted !conduit.window<T>";

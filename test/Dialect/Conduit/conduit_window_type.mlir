@@ -19,7 +19,7 @@
 
 // CHECK-LABEL: func.func @blocking_acquire_roundtrip
 func.func @blocking_acquire_roundtrip() {
-  conduit.create @input {slot_elems = 10 : i64}
+  conduit.create @input {slot_elems = 10 : i64, depth = 0 : i64}
 
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 1
@@ -43,7 +43,7 @@ func.func @blocking_acquire_roundtrip() {
 
 // CHECK-LABEL: func.func @sliding_window_partial_release
 func.func @sliding_window_partial_release() {
-  conduit.create @weights {slot_elems = 4 : i64}
+  conduit.create @weights {slot_elems = 4 : i64, depth = 0 : i64}
 
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 4
@@ -70,9 +70,9 @@ func.func @sliding_window_partial_release() {
 }
 
 // CHECK-LABEL: func.func @async_acquire_wait_window
-// conduit.wait_window: dedicated op for acquire tokens; conduit.wait is void.
+// conduit.wait_window: dedicated op for acquire tokens; conduit.wait_all is void.
 func.func @async_acquire_wait_window() {
-  conduit.create @async_input {slot_elems = 16 : i64}
+  conduit.create @async_input {slot_elems = 16 : i64, depth = 0 : i64}
 
   // CHECK: conduit.acquire_async
   // CHECK-SAME: name = @async_input
@@ -102,8 +102,8 @@ func.func @async_acquire_wait_window() {
 // CHECK-LABEL: func.func @async_acquire_with_overlap
 // Overlapping DMA and acquire — the canonical double-buffer usage.
 func.func @async_acquire_with_overlap() {
-  conduit.create @in {slot_elems = 9 : i64}
-  conduit.create @out {slot_elems = 1 : i64}
+  conduit.create @in {slot_elems = 9 : i64, depth = 0 : i64}
+  conduit.create @out {slot_elems = 1 : i64, depth = 0 : i64}
 
   // CHECK: conduit.put_memref_async
   %dma_tok = conduit.put_memref_async {name = @in, num_elems = 9 : i64,
@@ -116,8 +116,8 @@ func.func @async_acquire_with_overlap() {
                  : !conduit.window.token
 
   // DMA wait is void — does NOT return a window.
-  // CHECK: conduit.wait
-  conduit.wait %dma_tok : !conduit.dma.token
+  // CHECK: conduit.wait_all
+  conduit.wait_all %dma_tok : !conduit.dma.token
 
   // Acquire wait returns the window handle via the dedicated op.
   // CHECK: conduit.wait_window

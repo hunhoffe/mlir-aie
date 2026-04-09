@@ -132,7 +132,7 @@ module @tm_count2 {
                 offsets = array<i64: 0>,
                 sizes = array<i64: 64>,
                 strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %g1 : !conduit.dma.token
+      conduit.wait_all %g1 : !conduit.dma.token
 
       %g2 = conduit.get_memref_async [%g1 : !conduit.dma.token]
                 {name = @kv,
@@ -140,7 +140,7 @@ module @tm_count2 {
                  offsets = array<i64: 0>,
                  sizes = array<i64: 64>,
                  strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %g2 : !conduit.dma.token
+      conduit.wait_all %g2 : !conduit.dma.token
       aie.end
     } {dynamic_objfifo_lowering = true}
 
@@ -158,7 +158,7 @@ module @tm_count2 {
                  offsets = array<i64: 64>,
                  sizes = array<i64: 64>,
                  strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %t2 : !conduit.dma.token
+      conduit.wait_all %t2 : !conduit.dma.token
       return
     }
   }
@@ -250,7 +250,7 @@ module @tm_count3 {
                 offsets = array<i64: 0>,
                 sizes = array<i64: 32>,
                 strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %g1 : !conduit.dma.token
+      conduit.wait_all %g1 : !conduit.dma.token
 
       %g2 = conduit.get_memref_async [%g1 : !conduit.dma.token]
                 {name = @kvs,
@@ -258,7 +258,7 @@ module @tm_count3 {
                  offsets = array<i64: 0>,
                  sizes = array<i64: 32>,
                  strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %g2 : !conduit.dma.token
+      conduit.wait_all %g2 : !conduit.dma.token
 
       %g3 = conduit.get_memref_async [%g2 : !conduit.dma.token]
                 {name = @kvs,
@@ -266,7 +266,7 @@ module @tm_count3 {
                  offsets = array<i64: 0>,
                  sizes = array<i64: 32>,
                  strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %g3 : !conduit.dma.token
+      conduit.wait_all %g3 : !conduit.dma.token
       aie.end
     } {dynamic_objfifo_lowering = true}
 
@@ -289,7 +289,7 @@ module @tm_count3 {
                  offsets = array<i64: 64>,
                  sizes = array<i64: 32>,
                  strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %t3 : !conduit.dma.token
+      conduit.wait_all %t3 : !conduit.dma.token
       return
     }
   }
@@ -381,7 +381,7 @@ module @tm_baseline_depth1 {
                   offsets = array<i64: 0>,
                   sizes = array<i64: 64>,
                   strides = array<i64: 1>} : !conduit.dma.token
-        conduit.wait %g : !conduit.dma.token
+        conduit.wait_all %g : !conduit.dma.token
       }
       aie.end
     } {dynamic_objfifo_lowering = true}
@@ -393,7 +393,7 @@ module @tm_baseline_depth1 {
                 offsets = array<i64: 0>,
                 sizes = array<i64: 64>,
                 strides = array<i64: 1>} : !conduit.dma.token
-      conduit.wait %t : !conduit.dma.token
+      conduit.wait_all %t : !conduit.dma.token
       return
     }
   }

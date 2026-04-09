@@ -32,10 +32,8 @@ func.func @scatter_packet_4tile_parses() {
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @A_src
   // CHECK-SAME: dsts = [@A_tile0, @A_tile1, @A_tile2, @A_tile3]
-  conduit.scatter {
-    src = @A_src,
-    dsts = [@A_tile0, @A_tile1, @A_tile2, @A_tile3]
-  }
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.scatter{src = @A_src, dsts = [@A_tile0, @A_tile1, @A_tile2, @A_tile3] {memtile = "tile(0,1)"}}
   return
 }
 
@@ -47,10 +45,8 @@ func.func @scatter_packet_relay_parses() {
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @in_src
   // CHECK-SAME: dsts = [@out_dst]
-  conduit.scatter {
-    src = @in_src,
-    dsts = [@out_dst]
-  }
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.scatter{src = @in_src, dsts = [@out_dst] {memtile = "tile(0,1)"}}
   return
 }
 

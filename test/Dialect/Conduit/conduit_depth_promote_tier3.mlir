@@ -39,14 +39,14 @@ func.func @tier3_eligible(%buf: memref<32xi32>) {
     %tok = conduit.put_memref_async {name = @tier3_loop, num_elems = 32 : i64,
                offsets = array<i64: 0>, sizes = array<i64: 32>,
                strides = array<i64: 1>} : !conduit.dma.token
-    conduit.wait %tok : !conduit.dma.token
+    conduit.wait_all %tok : !conduit.dma.token
     // Real compute between put and get.
     %c42 = arith.constant 42 : i32
     memref.store %c42, %buf[%c0] : memref<32xi32>
     %tok2 = conduit.get_memref_async {name = @tier3_loop, num_elems = 32 : i64,
                offsets = array<i64: 0>, sizes = array<i64: 32>,
                strides = array<i64: 1>} : !conduit.dma.token
-    conduit.wait %tok2 : !conduit.dma.token
+    conduit.wait_all %tok2 : !conduit.dma.token
   }
   return
 }
@@ -62,7 +62,7 @@ func.func @tier3_no_loop(%buf: memref<32xi32>) {
   %tok = conduit.put_memref_async {name = @tier3_no_loop, num_elems = 32 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 32>,
              strides = array<i64: 1>} : !conduit.dma.token
-  conduit.wait %tok : !conduit.dma.token
+  conduit.wait_all %tok : !conduit.dma.token
   return
 }
 

@@ -34,10 +34,8 @@ func.func @scatter_multicast_4tile_parses() {
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @B_src
   // CHECK-SAME: dsts = [@B_tile0, @B_tile1, @B_tile2, @B_tile3]
-  conduit.scatter {
-    src = @B_src,
-    dsts = [@B_tile0, @B_tile1, @B_tile2, @B_tile3]
-  }
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.scatter{src = @B_src, dsts = [@B_tile0, @B_tile1, @B_tile2, @B_tile3] {memtile = "tile(0,1)"}}
   return
 }
 
@@ -49,10 +47,8 @@ func.func @scatter_multicast_2tile_parses() {
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @bcast
   // CHECK-SAME: dsts = [@c0, @c1]
-  conduit.scatter {
-    src = @bcast,
-    dsts = [@c0, @c1]
-  }
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.scatter{src = @bcast, dsts = [@c0, @c1] {memtile = "tile(0,1)"}}
   return
 }
 

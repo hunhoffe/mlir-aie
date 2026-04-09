@@ -1111,12 +1111,47 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 }
 
 //===----------------------------------------------------------------------===//
+// parseTileCoordForVerifier — helper for relay op memtile format validation
+//===----------------------------------------------------------------------===//
+
+/// Parse a tile coordinate string of the form "tile(col,row)" and return
+/// {col, row}. Returns {-1, -1} on any parse failure.
+static std::pair<int64_t, int64_t>
+parseTileCoordForVerifier(llvm::StringRef s) {
+  if (!s.starts_with("tile(") || !s.ends_with(")"))
+    return {-1, -1};
+  auto inner = s.drop_front(5).drop_back(1); // "COL,ROW"
+  auto [colStr, rowStr] = inner.split(',');
+  int64_t col, row;
+  if (colStr.trim().getAsInteger(10, col) || rowStr.trim().getAsInteger(10, row))
+    return {-1, -1};
+  return {col, row};
+}
+
+//===----------------------------------------------------------------------===//
 // ScatterOp
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult ScatterOp::verify() {
-  // TODO Sprint 2: verify src exists as conduit.create, all dsts exist,
-  //               N >= 1, no cascade channels in src/dsts.
+  // ScatterOp has a singular $src (FlatSymbolRefAttr) — no size-1 check needed.
+  auto dsts = getDsts();
+
+  // dsts must contain at least 1 entry.
+  if (dsts.empty())
+    return emitOpError("scatter requires at least 1 dst, got 0");
+
+  // MemTile DMA budget: 1 S2MM (source) + N MM2S (destinations) <= 12
+  // (MemTile has 6 MM2S + 6 S2MM channels; using 1 S2MM leaves 11 MM2S max).
+  if (1 + dsts.size() > 12)
+    return emitOpError("scatter DMA budget exceeded: 1 src + ")
+           << dsts.size() << " dsts = " << (1 + dsts.size())
+           << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
+
+  // memtile attribute must be of the form "tile(col,row)".
+  if (parseTileCoordForVerifier(getMemtile()).first == -1)
+    return emitOpError("memtile attribute must be of the form 'tile(col,row)', got '")
+           << getMemtile() << "'";
+
   return ::mlir::success();
 }
 
@@ -1125,8 +1160,24 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult GatherOp::verify() {
-  // TODO Sprint 2: verify dst exists as conduit.create, all srcs exist,
-  //               N >= 1, no cascade channels in srcs/dst.
+  auto srcs = getSrcs();
+
+  // srcs must contain at least 1 entry.
+  if (srcs.empty())
+    return emitOpError("gather requires at least 1 src, got 0");
+
+  // GatherOp has a singular $dst (FlatSymbolRefAttr) — no size-1 check needed.
+  // MemTile DMA budget: N S2MM (sources) + 1 MM2S (destination) <= 12.
+  if (srcs.size() + 1 > 12)
+    return emitOpError("gather DMA budget exceeded: ")
+           << srcs.size() << " srcs + 1 dst = " << (srcs.size() + 1)
+           << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
+
+  // memtile attribute must be of the form "tile(col,row)".
+  if (parseTileCoordForVerifier(getMemtile()).first == -1)
+    return emitOpError("memtile attribute must be of the form 'tile(col,row)', got '")
+           << getMemtile() << "'";
+
   return ::mlir::success();
 }
 
@@ -1135,7 +1186,39 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult TransposeOp::verify() {
-  // TODO Sprint 2: verify N*M <= 32 (packet ID budget), static shapes only.
+  auto srcs = getSrcs();
+  auto dsts = getDsts();
+  auto offsets = getOffsets();
+
+  if (srcs.empty())
+    return emitOpError("transpose requires at least 1 src, got 0");
+  if (dsts.empty())
+    return emitOpError("transpose requires at least 1 dst, got 0");
+
+  // MemTile DMA budget: N S2MM (sources) + M MM2S (destinations) <= 12.
+  if (srcs.size() + dsts.size() > 12)
+    return emitOpError("transpose DMA budget exceeded: ")
+           << srcs.size() << " srcs + " << dsts.size() << " dsts = "
+           << (srcs.size() + dsts.size())
+           << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
+
+  // offsets.size() must equal srcs.size() * dsts.size().
+  size_t expectedOffsets = srcs.size() * dsts.size();
+  if (offsets.size() != expectedOffsets)
+    return emitOpError("offsets size must equal srcs.size() * dsts.size() = ")
+           << expectedOffsets << ", got " << offsets.size();
+
+  // Packet ID budget: N*M <= 32.
+  if (expectedOffsets > 32)
+    return emitOpError("transpose packet ID budget exceeded: srcs.size() * dsts.size() = ")
+           << srcs.size() << " * " << dsts.size() << " = " << expectedOffsets
+           << ", maximum is 32 (AIE2 packet ID space)";
+
+  // memtile attribute must be of the form "tile(col,row)".
+  if (parseTileCoordForVerifier(getMemtile()).first == -1)
+    return emitOpError("memtile attribute must be of the form 'tile(col,row)', got '")
+           << getMemtile() << "'";
+
   return ::mlir::success();
 }
 
@@ -1146,6 +1229,7 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 ::mlir::LogicalResult RegisterBuffersOp::verify() {
   // TODO Sprint 2: verify buffers are aie.buffer or aie.external_buffer,
   //               channel exists as conduit.create, count matches depth.
+  // Deferred: provenance check requires AIE dialect headers (dependency issue).
   return ::mlir::success();
 }
 

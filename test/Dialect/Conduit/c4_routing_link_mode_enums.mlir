@@ -18,7 +18,7 @@
 // CHECK-LABEL: func.func @routing_mode_circuit
 func.func @routing_mode_circuit() {
   // CHECK: routing_mode = #conduit.routing_mode<circuit>
-  conduit.create @rm_circuit {slot_elems = 4 : i64,
+  conduit.create @rm_circuit {slot_elems = 4 : i64, depth = 0 : i64,
                   routing_mode = #conduit.routing_mode<circuit>}
   return
 }
@@ -26,7 +26,7 @@ func.func @routing_mode_circuit() {
 // CHECK-LABEL: func.func @routing_mode_packet
 func.func @routing_mode_packet() {
   // CHECK: routing_mode = #conduit.routing_mode<packet>
-  conduit.create @rm_packet {slot_elems = 4 : i64,
+  conduit.create @rm_packet {slot_elems = 4 : i64, depth = 0 : i64,
                   routing_mode = #conduit.routing_mode<packet>}
   return
 }
@@ -42,7 +42,7 @@ func.func @routing_mode_cascade() {
 // CHECK-LABEL: func.func @routing_mode_stream
 func.func @routing_mode_stream() {
   // CHECK: routing_mode = #conduit.routing_mode<stream>
-  conduit.create @rm_stream {slot_elems = 4 : i64,
+  conduit.create @rm_stream {slot_elems = 4 : i64, depth = 0 : i64,
                   routing_mode = #conduit.routing_mode<stream>}
   return
 }
@@ -53,9 +53,9 @@ func.func @routing_mode_stream() {
 
 // CHECK-LABEL: func.func @link_mode_distribute
 func.func @link_mode_distribute() {
-  conduit.create @src {slot_elems = 4 : i64}
-  conduit.create @dst0 {slot_elems = 2 : i64}
-  conduit.create @dst1 {slot_elems = 2 : i64}
+  conduit.create @src {slot_elems = 4 : i64, depth = 0 : i64}
+  conduit.create @dst0 {slot_elems = 2 : i64, depth = 0 : i64}
+  conduit.create @dst1 {slot_elems = 2 : i64, depth = 0 : i64}
   // CHECK: conduit.distribute
   // CHECK-SAME: memtile = "tile(0,1)"
   conduit.distribute {srcs = [@src], dsts = [@dst0, @dst1],
@@ -65,9 +65,9 @@ func.func @link_mode_distribute() {
 
 // CHECK-LABEL: func.func @link_mode_join
 func.func @link_mode_join() {
-  conduit.create @src0 {slot_elems = 2 : i64}
-  conduit.create @src1 {slot_elems = 2 : i64}
-  conduit.create @dst {slot_elems = 4 : i64}
+  conduit.create @src0 {slot_elems = 2 : i64, depth = 0 : i64}
+  conduit.create @src1 {slot_elems = 2 : i64, depth = 0 : i64}
+  conduit.create @dst {slot_elems = 4 : i64, depth = 0 : i64}
   // CHECK: conduit.join
   // CHECK-SAME: memtile = "tile(0,1)"
   conduit.join {srcs = [@src0, @src1], dsts = [@dst],
@@ -77,8 +77,8 @@ func.func @link_mode_join() {
 
 // CHECK-LABEL: func.func @link_mode_forward
 func.func @link_mode_forward() {
-  conduit.create @in_fwd {slot_elems = 4 : i64}
-  conduit.create @out_fwd {slot_elems = 4 : i64}
+  conduit.create @in_fwd {slot_elems = 4 : i64, depth = 0 : i64}
+  conduit.create @out_fwd {slot_elems = 4 : i64, depth = 0 : i64}
   // CHECK: conduit.forward
   // CHECK-SAME: memtile = "tile(0,1)"
   conduit.forward {srcs = [@in_fwd], dsts = [@out_fwd],
@@ -96,6 +96,6 @@ func.func @link_mode_forward() {
 func.func @absent_routing_mode() {
   // CHECK: conduit.create @unresolved
   // CHECK-NOT: routing_mode
-  conduit.create @unresolved {slot_elems = 4 : i64}
+  conduit.create @unresolved {slot_elems = 4 : i64, depth = 0 : i64}
   return
 }

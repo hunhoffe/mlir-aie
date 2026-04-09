@@ -156,23 +156,8 @@ func.func @bad_csdf_missing_producer_rates() {
 // M5: bad routing_mode value — rejected by the ODS enum parser before the verifier runs
 func.func @bad_routing_mode() {
   // expected-error@+1 {{attribute 'routing_mode' failed to satisfy constraint: Conduit routing mode}}
-  conduit.create @bad_mode_ch {slot_elems = 4 : i64,
+  conduit.create @bad_mode_ch {slot_elems = 4 : i64, depth = 0 : i64,
                   routing_mode = "broadcast"}
-  return
-}
-
-// -----
-
-// Token type mismatch: conduit.wait requires !conduit.dma.token;
-// passing !conduit.window.token must fail type checking.
-// (Type enforcement is TableGen-generated; this tests that the type system rejects it.)
-func.func @bad_wait_window_token() {
-  conduit.create @w {slot_elems = 1 : i64}
-  %tok = conduit.acquire_async {name = @w, count = 1 : i64,
-             port = #conduit.port<Consume>}
-             : !conduit.window.token
-  // expected-error@+1 {{operand #0 must be}}
-  conduit.wait %tok : !conduit.window.token
   return
 }
 
@@ -181,7 +166,7 @@ func.func @bad_wait_window_token() {
 // Token type mismatch: conduit.wait_window requires !conduit.window.token;
 // passing !conduit.dma.token must fail type checking.
 func.func @bad_wait_with_dma_token() {
-  conduit.create @ch {slot_elems = 64 : i64}
+  conduit.create @ch {slot_elems = 64 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @ch, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -318,7 +303,7 @@ func.func @m8b_double_wait_window() {
 
 // M8c: i32 operand in wait_all is not a token type.
 func.func @m8c_wait_all_non_token(%bad : i32) {
-  conduit.create @ntok {slot_elems = 1 : i64}
+  conduit.create @ntok {slot_elems = 1 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @ntok, num_elems = 1 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 1>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -331,7 +316,7 @@ func.func @m8c_wait_all_non_token(%bad : i32) {
 
 // M10: window.token escapes via return — hardware state is not portable.
 func.func @m10_window_token_escape_return() -> !conduit.window.token {
-  conduit.create @esc {slot_elems = 1 : i64}
+  conduit.create @esc {slot_elems = 1 : i64, depth = 0 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via return}}
   %tok = conduit.acquire_async {name = @esc, count = 1 : i64,
              port = #conduit.port<Consume>}
@@ -343,7 +328,7 @@ func.func @m10_window_token_escape_return() -> !conduit.window.token {
 
 // M10: dma.token escapes via return — hardware state is not portable.
 func.func @m10_dma_token_escape_return() -> !conduit.dma.token {
-  conduit.create @esc_dma {slot_elems = 64 : i64}
+  conduit.create @esc_dma {slot_elems = 64 : i64, depth = 0 : i64}
   // expected-error@+1 {{'conduit.put_memref_async' op M10: token escapes function scope via return}}
   %tok = conduit.put_memref_async {name = @esc_dma, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
@@ -356,7 +341,7 @@ func.func @m10_dma_token_escape_return() -> !conduit.dma.token {
 // M10: window.token escapes via call argument.
 func.func private @callee(%tok : !conduit.window.token)
 func.func @m10_token_escape_call() {
-  conduit.create @esc_call {slot_elems = 1 : i64}
+  conduit.create @esc_call {slot_elems = 1 : i64, depth = 0 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via call argument}}
   %tok = conduit.acquire_async {name = @esc_call, count = 1 : i64,
              port = #conduit.port<Consume>}
@@ -371,7 +356,7 @@ func.func @m10_token_escape_call() {
 // wait_all_async merges completion tokens into a single dma.token result;
 // that result must not escape function scope.
 func.func @m10_wait_all_async_token_escape() -> !conduit.dma.token {
-  conduit.create @wa_esc {slot_elems = 64 : i64}
+  conduit.create @wa_esc {slot_elems = 64 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @wa_esc, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token

@@ -32,10 +32,8 @@ func.func @gather_4tile_parses() {
   // CHECK: conduit.gather
   // CHECK-SAME: srcs = [@C_tile0, @C_tile1, @C_tile2, @C_tile3]
   // CHECK-SAME: dst = @C_dst
-  conduit.gather {
-    srcs = [@C_tile0, @C_tile1, @C_tile2, @C_tile3],
-    dst = @C_dst
-  }
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.gather{srcs = [@C_tile0, @C_tile1, @C_tile2, @C_tile3], dst = @C_dst {memtile = "tile(0,1)"}}
   return
 }
 
@@ -47,10 +45,8 @@ func.func @gather_2tile_parses() {
   // CHECK: conduit.gather
   // CHECK-SAME: srcs = [@out0, @out1]
   // CHECK-SAME: dst = @result
-  conduit.gather {
-    srcs = [@out0, @out1],
-    dst = @result
-  }
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.gather{srcs = [@out0, @out1], dst = @result {memtile = "tile(0,1)"}}
   return
 }
 
@@ -64,10 +60,8 @@ func.func @gather_single_src_parses() {
   // CHECK: conduit.gather
   // CHECK-SAME: srcs = [@single_src]
   // CHECK-SAME: dst = @single_dst
-  conduit.gather {
-    srcs = [@single_src],
-    dst = @single_dst
-  }
+  // CHECK-SAME: memtile = "tile(0,1)"
+  conduit.gather{srcs = [@single_src], dst = @single_dst {memtile = "tile(0,1)"}}
   return
 }
 

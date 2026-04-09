@@ -36,8 +36,8 @@
 // The pass must detect the cycle through the block argument and emit M12.
 
 module {
-  conduit.create @chA {slot_elems = 64 : i64}
-  conduit.create @chB {slot_elems = 64 : i64}
+  conduit.create @chA {slot_elems = 64 : i64, depth = 0 : i64}
+  conduit.create @chB {slot_elems = 64 : i64, depth = 0 : i64}
 
   func.func @dep_cycle() {
     %true = arith.constant true
@@ -73,7 +73,7 @@ module {
       scf.yield %iter_tok2 : !conduit.dma.token
     }
 
-    conduit.wait %_ : !conduit.dma.token
+    conduit.wait_all %_ : !conduit.dma.token
     return
   }
 }

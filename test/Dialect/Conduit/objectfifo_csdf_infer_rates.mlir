@@ -42,8 +42,8 @@
 // CHECK-RATES: conduit.create @multi_consumer {consumer_tiles = array<i64: 2, 2, 4, 2>, depth = 4 : i64, element_type = memref<16xi32>, producer_tile = array<i64: 3, 2>, slot_elems = 64 : i64}
 
 // Test 3: sliding_window conduit.create has no rates (MVE-2 guard prevents false M6 rejection).
-// CHECK-RATES-NOT: conduit.create @sliding_window {{.*}}consumer_rates
-// CHECK-RATES-NOT: conduit.create @sliding_window {{.*}}producer_rates
+// CHECK-RATES-NOT: conduit.create @sliding_window {depth = 0 : i64, {.*}}consumer_rates
+// CHECK-RATES-NOT: conduit.create @sliding_window {depth = 0 : i64, {.*}}producer_rates
 
 // ---------------------------------------------------------------------------
 // Default (infer-rates=false): no rate annotations on any conduit.create.

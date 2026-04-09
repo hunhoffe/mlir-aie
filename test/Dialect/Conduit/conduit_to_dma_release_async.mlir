@@ -7,32 +7,20 @@
 // "conduit-to-dma: unimplemented — conduit.release_async lowering not yet
 // supported".
 //
-// Also verifies that conduit.wait_all_async (Phase 7 fix) is erased without
-// emitting any hardware op — its ordering semantics are captured by the
-// surrounding lock sequences.
+// The test uses a consumer core (tile_0_2) that calls release_async after
+// acquiring data. The consumer endpoint uses conduit.acquire (blocking)
+// and conduit.release_async (non-blocking release, token dropped via wait_all).
 //
-// The test uses a producer core (tile_0_2) that calls release_async after
-// writing data, and a wait_all_async that fans-in the resulting token.
-// The consumer side uses the standard acquire/release blocking path.
-//
-// Resources expected (depth=1, tile_0_2 → shim tile_0_0):
+// Resources expected (depth=1, shim tile_0_0 → compute tile_0_2):
 //   aie.buffer:   1  (fifo_rel_cons_buff_0 on tile_0_2, consumer side)
 //   aie.lock:     4  (prod_lock init=1, cons_lock init=0 on tile_0_2;
 //                     prod_lock, cons_lock on shim tile_0_0)
 //   aie.flow:     1  (tile_0_2 DMA:0 → shim tile_0_0 DMA:0)
 //
 // In the producer core body:
-//   aie.use_lock(prodLock, AcquireGreaterEqual, 1)  from conduit.acquire
+//   aie.use_lock(consLock, AcquireGreaterEqual, 1)  from conduit.acquire
 //   (write data to buffer)
-//   aie.use_lock(consLock, Release, 1)               from conduit.release_async
-//   (no op for conduit.wait_all_async — erased)
-//
-// NOTE: release_async always releases prodLock (same semantics as a
-// consumer-side blocking release: signal to producer that slots are free).
-// In this test, the producer tile IS tile_0_2 (col=0,row=2) and the shim
-// is tile_0_0 — so the consumer_tile is the shim, meaning buffers/locks are
-// on the shim side.  For simplicity we use a non-shim producer so that
-// aie.buffer + aie.lock are allocated on tile_0_2 (consumer of the fifo).
+//   aie.use_lock(prodLock, Release, 1)               from conduit.release_async
 
 // CHECK-LABEL: module @release_async_lowering
 // CHECK:   aie.device(npu1_1col) {
@@ -52,9 +40,8 @@
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
 // --- release_async emits use_lock on prod_lock (release slot to producer) ---
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
-// --- wait_all_async has no hardware op (erased in Phase 7) ---
+// --- no surviving conduit ops ---
 // CHECK-NOT: conduit.release_async
-// CHECK-NOT: conduit.wait_all_async
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.create
 
@@ -87,13 +74,8 @@ module @release_async_lowering {
         %rel_tok = conduit.release_async {name = @fifo_rel, count = 1 : i64, port = #conduit.port<Consume>}
                        : !conduit.window.token
 
-        // wait_all_async: fan-in of the release token.  No hardware op —
-        // must be erased in Phase 7 without emitting anything.
-        %merged = conduit.wait_all_async %rel_tok :
-            (!conduit.window.token) -> !conduit.dma.token
-
-        // conduit.wait consumes the merged token (already erased in Phase 7).
-        conduit.wait %merged : !conduit.dma.token
+        // wait_all consumes the window token directly.
+        conduit.wait_all %rel_tok : !conduit.window.token
       }
       aie.end
     } {dynamic_objfifo_lowering = true}

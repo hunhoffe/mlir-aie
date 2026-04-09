@@ -10,7 +10,7 @@
 // Dep graph tested here (all acyclic):
 //
 //   Case 1 — linear chain:
-//     put_A → get_B → wait_all_async → (consumed by conduit.wait)
+//     put_A → get_B → wait_all_async → (consumed by conduit.wait_all)
 //
 //   Case 2 — fan-in (diamond):
 //     put_X ──┐
@@ -26,12 +26,12 @@
 // CHECK: module
 
 module {
-  conduit.create @chA {slot_elems = 64 : i64}
-  conduit.create @chB {slot_elems = 64 : i64}
-  conduit.create @chX {slot_elems = 32 : i64}
-  conduit.create @chY {slot_elems = 32 : i64}
-  conduit.create @chP {slot_elems = 16 : i64}
-  conduit.create @chQ {slot_elems = 16 : i64}
+  conduit.create @chA {slot_elems = 64 : i64, depth = 0 : i64}
+  conduit.create @chB {slot_elems = 64 : i64, depth = 0 : i64}
+  conduit.create @chX {slot_elems = 32 : i64, depth = 0 : i64}
+  conduit.create @chY {slot_elems = 32 : i64, depth = 0 : i64}
+  conduit.create @chP {slot_elems = 16 : i64, depth = 0 : i64}
+  conduit.create @chQ {slot_elems = 16 : i64, depth = 0 : i64}
 
   // Case 1: linear chain A → B → wait_all_async
   func.func @linear_chain(%bufA : memref<64xi32>, %bufB : memref<64xi32>) {
@@ -46,7 +46,7 @@ module {
                  strides = array<i64: 1>} : !conduit.dma.token
     // wait_all_async depends on tok_b (tok_b → tok_merged)
     %tok_merged = conduit.wait_all_async %tok_b : (!conduit.dma.token) -> !conduit.dma.token
-    conduit.wait %tok_merged : !conduit.dma.token
+    conduit.wait_all %tok_merged : !conduit.dma.token
     return
   }
 
@@ -62,7 +62,7 @@ module {
     // Both fan into wait_all_async — tok_x and tok_y are both predecessors
     %tok_merged = conduit.wait_all_async %tok_x, %tok_y
                       : (!conduit.dma.token, !conduit.dma.token) -> !conduit.dma.token
-    conduit.wait %tok_merged : !conduit.dma.token
+    conduit.wait_all %tok_merged : !conduit.dma.token
     return
   }
 

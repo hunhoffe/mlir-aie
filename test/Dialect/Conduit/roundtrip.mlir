@@ -56,10 +56,10 @@ func.func @memref_ops() {
 // Tests the token synchronization ops using the split token types.
 // put_memref_async → !conduit.dma.token
 // acquire_async    → !conduit.window.token
-// wait accepts dma.token; wait_all accepts AnyType (mixed); wait_all_async result is dma.token
+// wait_all accepts AnyType variadic (dma or window tokens); wait_all_async result is dma.token
 func.func @async_ops() {
-  conduit.create @ch_a {slot_elems = 64 : i64}
-  conduit.create @ch_b {slot_elems = 1 : i64}
+  conduit.create @ch_a {slot_elems = 64 : i64, depth = 0 : i64}
+  conduit.create @ch_b {slot_elems = 1 : i64, depth = 0 : i64}
   // CHECK: conduit.put_memref_async
   // CHECK-SAME: !conduit.dma.token
   %tok0 = conduit.put_memref_async {name = @ch_a, num_elems = 64 : i64,
@@ -70,9 +70,9 @@ func.func @async_ops() {
   %tok1 = conduit.acquire_async {name = @ch_b, count = 1 : i64,
                port = #conduit.port<Consume>}
                : !conduit.window.token
-  // CHECK: conduit.wait
+  // CHECK: conduit.wait_all
   // CHECK-SAME: !conduit.dma.token
-  conduit.wait %tok0 : !conduit.dma.token
+  conduit.wait_all %tok0 : !conduit.dma.token
   // CHECK: conduit.wait_all
   conduit.wait_all %tok0, %tok1 : !conduit.dma.token, !conduit.window.token
   // CHECK: conduit.wait_all_async
@@ -84,7 +84,7 @@ func.func @async_ops() {
 
 // CHECK-LABEL: func.func @subview_op
 func.func @subview_op() {
-  conduit.create @buf {slot_elems = 8 : i64}
+  conduit.create @buf {slot_elems = 8 : i64, depth = 0 : i64}
   %win = conduit.acquire {name = @buf, count = 2 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // CHECK: conduit.subview_access
@@ -101,8 +101,8 @@ func.func @subview_op() {
 // and produces the window when the buffer is ready.
 // Cross-tier: mix the window.token with a dma.token in wait_all.
 func.func @acquire_async_op() {
-  conduit.create @output {slot_elems = 1 : i64}
-  conduit.create @input {slot_elems = 64 : i64}
+  conduit.create @output {slot_elems = 1 : i64, depth = 0 : i64}
+  conduit.create @input {slot_elems = 64 : i64, depth = 0 : i64}
   // Non-blocking window acquisition (Tier 2 bridge) — returns !conduit.window.token
   // CHECK: conduit.acquire_async
   // CHECK-SAME: !conduit.window.token
@@ -135,9 +135,9 @@ func.func @acquire_async_op() {
 
 // CHECK-LABEL: func.func @release_async_op
 // release_async returns !conduit.window.token (it is a lock op, not a DMA op).
-// conduit.wait accepts !conduit.dma.token only; use wait_all for window tokens.
+// conduit.wait_all accepts both !conduit.dma.token and !conduit.window.token.
 func.func @release_async_op() {
-  conduit.create @out {slot_elems = 2 : i64}
+  conduit.create @out {slot_elems = 2 : i64, depth = 0 : i64}
   %win = conduit.acquire {name = @out, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<2xi32>>
   // CHECK: conduit.release_async

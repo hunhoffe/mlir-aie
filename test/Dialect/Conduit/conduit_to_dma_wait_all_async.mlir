@@ -1,28 +1,25 @@
 // RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
-// Pass C test: conduit.wait_all_async Phase 7 erasure, plus erasure of
+// Pass C test: conduit.release_async Phase 7 erasure, plus erasure of
 // put_memref_async / get_memref_async / put_memref / get_memref.
 //
-// This test exercises five patterns to verify that Phase 7 erases all
+// This test exercises patterns to verify that Phase 7 erases all
 // Conduit token-carrying ops cleanly:
 //
-//   Pattern 1 (simple wait_all_async): release_async → wait_all_async →
-//     conduit.wait.  All three ops erased; release_async still emits
-//     aie.use_lock via Step 8d.
+//   Pattern 1: release_async → conduit.wait_all.
+//     release_async emits aie.use_lock via Step 8d.
+//     conduit.wait_all is erased.
 //
-//   Pattern 2 (chained wait_all_async): release_async → waa_A → waa_B →
-//     conduit.wait.  MLIR walk() visits ops in pre-order (defs before uses),
-//     so inline-erasing waa_A leaves waa_B holding a deleted SSA value.
-//     The collect-then-erase fix avoids this crash.
+//   Pattern 2: second release_async in same loop body (regression for
+//     Phase 7 walk correctness: multiple erased ops in same block).
 //
-//   Pattern 3 (put_memref_async → conduit.wait): put_memref_async produces a
-//     !conduit.dma.token consumed by conduit.wait.  Phase 7 erases wait first
+//   Pattern 3 (put_memref_async → conduit.wait_all): put_memref_async produces a
+//     !conduit.dma.token consumed by conduit.wait_all.  Phase 7 erases wait first
 //     (leaving put_memref_async result dead), then erases put_memref_async.
-//     Proper erasure order: consumers before producers.
 //
 //   Pattern 4 (get_memref_async, dead result): get_memref_async whose result
 //     token has no consumer (never waited on).  Phase 7 must erase the op
-//     even though no conduit.wait references it.
+//     even though no conduit.wait_all references it.
 //
 //   Pattern 5 (blocking put_memref / get_memref): blocking DMA ops with no
 //     result token.  Phase 7 must erase them.
@@ -50,11 +47,11 @@
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       scf.for
 //
-// --- Pattern 1: release_async emits use_lock; wait_all_async + wait erased ---
+// --- Pattern 1: release_async emits use_lock; wait_all erased ---
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
 //
-// --- Pattern 2: chained wait_all_async; both chains erased without crash ---
+// --- Pattern 2: second release_async in same loop body ---
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
 //
@@ -62,8 +59,7 @@
 // put_memref, get_memref are all erased without emitting aie hardware ops.
 //
 // --- No surviving Conduit ops of any kind ---
-// CHECK-NOT: conduit.wait_all_async
-// CHECK-NOT: conduit.wait
+// CHECK-NOT: conduit.wait_all
 // CHECK-NOT: conduit.release_async
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.put_memref_async
@@ -93,7 +89,7 @@ module @wait_all_async_erasure {
       scf.for %arg0 = %c0 to %c4 step %c1 {
 
         // ----------------------------------------------------------------
-        // Pattern 1: simple wait_all_async — result feeds conduit.wait.
+        // Pattern 1: release_async → conduit.wait_all.
         //
         // acquire emits use_lock(consLock, AcquireGreaterEqual, 1).
         %win1 = conduit.acquire {name = @fifo_waa, count = 1 : i64,
@@ -104,22 +100,13 @@ module @wait_all_async_erasure {
         %rel_tok1 = conduit.release_async {name = @fifo_waa, count = 1 : i64, port = #conduit.port<Consume>}
                         : !conduit.window.token
 
-        // wait_all_async: fan-in of a single window token.
-        // No hardware op — erased in Phase 7.
-        %merged1 = conduit.wait_all_async %rel_tok1 :
-            (!conduit.window.token) -> !conduit.dma.token
-
-        // conduit.wait: no hardware op — erased in Phase 7 before WaitAllAsync.
-        conduit.wait %merged1 : !conduit.dma.token
+        // conduit.wait_all: erased in Phase 7.
+        conduit.wait_all %rel_tok1 : !conduit.window.token
 
         // ----------------------------------------------------------------
-        // Pattern 2: chained wait_all_async.
+        // Pattern 2: second acquire/release_async in same loop body.
         //
-        // Second iteration in same loop body exercises chaining:
-        //   waa_A's result feeds waa_B, whose result feeds conduit.wait.
-        // All three Conduit ops must be erased without use-after-erase.
-        //
-        // acquire emits use_lock(consLock, AcquireGreaterEqual, 1).
+        // Verifies Phase 7 handles multiple ops in a single block correctly.
         %win2 = conduit.acquire {name = @fifo_waa, count = 1 : i64,
                                  port = #conduit.port<Consume>}
                     : !conduit.window<memref<8xi32>>
@@ -128,24 +115,12 @@ module @wait_all_async_erasure {
         %rel_tok2 = conduit.release_async {name = @fifo_waa, count = 1 : i64, port = #conduit.port<Consume>}
                         : !conduit.window.token
 
-        // First wait_all_async: erased in Phase 7 walk.
-        %merged2a = conduit.wait_all_async %rel_tok2 :
-            (!conduit.window.token) -> !conduit.dma.token
-
-        // Second (chained) wait_all_async: consumes merged2a.
-        // MLIR walk() visits in pre-order; merged2a's defining op is erased
-        // first.  The implementation must not crash on a dangling use here —
-        // collecting ops then erasing in a second pass avoids this.
-        %merged2b = conduit.wait_all_async %merged2a :
-            (!conduit.dma.token) -> !conduit.dma.token
-
-        // conduit.wait on the chained result — also erased in Phase 7.
-        conduit.wait %merged2b : !conduit.dma.token
+        conduit.wait_all %rel_tok2 : !conduit.window.token
 
         // ----------------------------------------------------------------
-        // Pattern 3: put_memref_async → conduit.wait.
+        // Pattern 3: put_memref_async → conduit.wait_all.
         //
-        // Phase 7 must erase conduit.wait FIRST (it uses the token), then
+        // Phase 7 must erase conduit.wait_all FIRST (it uses the token), then
         // erase put_memref_async (now its result has no users).  Erasing in
         // the wrong order — put_memref_async first — would try to erase an
         // op that still has live SSA uses and crash in debug builds.
@@ -158,13 +133,13 @@ module @wait_all_async_erasure {
                        strides = array<i64: 1>}
                        : !conduit.dma.token
 
-        conduit.wait %dma_tok : !conduit.dma.token
+        conduit.wait_all %dma_tok : !conduit.dma.token
 
         // ----------------------------------------------------------------
         // Pattern 4: get_memref_async with unused (dead) result.
         //
         // The result token has no consumers — Phase 7 must erase the op
-        // even though no conduit.wait holds a reference to it.
+        // even though no conduit.wait_all references it.
         %_unused = conduit.get_memref_async {name = @fifo_waa,
                        num_elems = 8 : i64,
                        offsets = array<i64: 0>,

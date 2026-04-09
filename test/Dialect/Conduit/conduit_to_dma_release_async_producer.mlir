@@ -96,10 +96,8 @@ module @release_async_producer_block2 {
                                           port = #conduit.port<Produce>}
                        : !conduit.window.token
 
-        // wait_all_async + wait: no hardware op (erased in Phase 7).
-        %merged = conduit.wait_all_async %rel_tok :
-            (!conduit.window.token) -> !conduit.dma.token
-        conduit.wait %merged : !conduit.dma.token
+        // wait_all consumes the window token directly.
+        conduit.wait_all %rel_tok : !conduit.window.token
       }
       aie.end
     } {dynamic_objfifo_lowering = true}

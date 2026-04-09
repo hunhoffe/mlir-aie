@@ -30,7 +30,7 @@ module @infer_rates_mismatch {
                                        sizes   = array<i64: 64>,
                                        strides = array<i64: 1>}
                                       : !conduit.dma.token
-      conduit.wait %tok : !conduit.dma.token
+      conduit.wait_all %tok : !conduit.dma.token
       return
     }
 
@@ -40,7 +40,7 @@ module @infer_rates_mismatch {
                                        sizes   = array<i64: 128>,
                                        strides = array<i64: 1>}
                                       : !conduit.dma.token
-      conduit.wait %tok : !conduit.dma.token
+      conduit.wait_all %tok : !conduit.dma.token
       return
     }
   }

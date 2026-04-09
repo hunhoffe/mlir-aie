@@ -670,13 +670,8 @@ void lowerPhase(ConduitToDMAState &state) {
       op.erase();
   }
 
-  // Collect-then-erase for Wait and Create ops.
-  {
-    llvm::SmallVector<Wait> waitsToErase;
-    module.walk([&](Wait op) { waitsToErase.push_back(op); });
-    for (auto op : llvm::reverse(waitsToErase))
-      op.erase();
-  }
+  // Collect-then-erase Create ops.
+  // Note: conduit.wait was removed from the dialect (absorbed into wait_all).
   {
     llvm::SmallVector<Create> createsToErase;
     module.walk([&](Create op) { createsToErase.push_back(op); });

@@ -109,7 +109,7 @@ module {
                                        sizes = array<i64: 8>,
                                        strides = array<i64: 1>}
                  : !conduit.dma.token
-      conduit.wait %dma : !conduit.dma.token
+      conduit.wait_all %dma : !conduit.dma.token
 
       // Tier 2 async release on SAME channel — error fires here (T3 seen first).
       // expected-error @+1 {{conduit channel 'baz' mixed Tier 2}}
