@@ -352,6 +352,11 @@ void allocPhase(ConduitToDMAState &state) {
     if (info.routingMode == "cascade")
       continue;
 
+    // Phase 5b: track whether buffers were pre-materialized.
+    // When true, buffer allocation calls are skipped but lock allocation
+    // and all other per-channel work continues normally.
+    const bool preMaterialized = !info.buffers.empty();
+
     if (info.consumerTileCoords.empty() &&
         info.shimConsumerTileCoords.empty()) {
       // Producer-only conduit (shim DMA source) — handled in Phase 4.
@@ -682,12 +687,20 @@ void allocPhase(ConduitToDMAState &state) {
                                   : "_cons";
 
       std::string consPrefix = name + bufSuffix;
-      llvm::SmallVector<AIE::BufferOp> consBuffers =
-          state.allocateBuffers(consTileVal, consPrefix, bufTy, nBufs);
-      // Intentionally assigned before the linkSrcNamesEarly branch so the
-      // branch's continue does not skip it.
-      if (consIdx == 0)
-        info.buffers = consBuffers;
+      // Allocate consumer buffers, unless --conduit-materialize-buffers already
+      // did so (pre-materialized case: info.buffers populated in Phase 1.5).
+      llvm::SmallVector<AIE::BufferOp> consBuffers;
+      if (!preMaterialized) {
+        consBuffers = state.allocateBuffers(consTileVal, consPrefix, bufTy, nBufs);
+        // Intentionally assigned before the linkSrcNamesEarly branch so the
+        // branch's continue does not skip it.
+        if (consIdx == 0)
+          info.buffers = consBuffers;
+      } else {
+        // Re-use pre-materialized buffers for the per-consumer buffer vector.
+        for (auto bufOp : info.buffers)
+          consBuffers.push_back(bufOp);
+      }
 
       // Link source conduits: register MemTile-side buffers but skip
       // MemTile-side lock allocation (Phase 5 handles those for distribute).

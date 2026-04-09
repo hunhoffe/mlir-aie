@@ -145,6 +145,17 @@ createConduitCheckLoopBalancePass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitFuseOperatorsPass();
 
+/// Buffer materialization: emit aie.buffer × max(depth, window_size+1) on
+/// each consumer tile and conduit.register_buffers linking them to the channel.
+/// Enables --conduit-place-buffers to run before --conduit-to-dma.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitMaterializeBuffersPass();
+
+/// Buffer placement: assign mem_bank = i % 4 on aie.buffer ops emitted by
+/// --conduit-materialize-buffers for DMA-aware SRAM bank staggering.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitPlaceBuffersPass();
+
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)
 // Generates registerConduitPasses(), registerConduitToDMA(), etc.

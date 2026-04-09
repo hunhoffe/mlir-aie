@@ -729,4 +729,73 @@ def ConduitCheckLoopBalance : Pass<"conduit-check-loop-balance", "::mlir::Module
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// --conduit-materialize-buffers — emit aie.buffer + conduit.register_buffers
+//===----------------------------------------------------------------------===//
+
+def ConduitMaterializeBuffers
+    : Pass<"conduit-materialize-buffers", "::mlir::ModuleOp"> {
+  let summary = "Emit aie.buffer ops and conduit.register_buffers for each "
+                "Conduit channel";
+  let description = [{
+    Runs after --conduit-depth-promote.  For each conduit.create whose consumer
+    tile can be inferred from conduit.acquire{port=Consume} ops inside aie.core
+    bodies:
+
+      1. Computes buffer count = max(depth, window_size + 1).
+      2. Emits `aie.buffer × buffer_count` on the consumer tile.
+      3. Emits `conduit.register_buffers {name = @chan, buffers = [...]}`.
+
+    Enables --conduit-place-buffers to set mem_bank before Pass C runs, which
+    is impossible in Pass C's single-pass buffer allocation.  Also allows
+    expert users to supply hand-allocated buffers via conduit.register_buffers
+    before running --conduit-to-dma.
+
+    Channels that already have a conduit.register_buffers op are skipped.
+    Channels with no compute consumer (shim-only or DDR) are skipped.
+    Channels with depth = 0 are skipped (run --conduit-depth-promote first).
+
+    Standard pipeline position:
+      --conduit-depth-promote → --conduit-materialize-buffers
+        → [--conduit-place-buffers] → --conduit-to-dma
+        → --aie-assign-buffer-addresses
+  }];
+  let constructor =
+      "xilinx::conduit::createConduitMaterializeBuffersPass()";
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// --conduit-place-buffers — DMA-aware mem_bank assignment
+//===----------------------------------------------------------------------===//
+
+def ConduitPlaceBuffers
+    : Pass<"conduit-place-buffers", "::mlir::ModuleOp"> {
+  let summary = "Assign mem_bank attributes on aie.buffer ops for DMA-aware "
+                "bank staggering";
+  let description = [{
+    Runs between --conduit-materialize-buffers and --aie-assign-buffer-addresses.
+    For each set of buffers registered via conduit.register_buffers, assigns:
+
+      buf[i].mem_bank = i % numBanks
+
+    so that consecutive FIFO slots land in different SRAM banks.  This
+    eliminates the DMA↔core bank conflicts that degrade throughput when
+    producer and consumer access the same bank simultaneously.
+
+    Requires --conduit-materialize-buffers to have run first.
+
+    Enables the Exp A2 three-way comparison:
+      basic-sequential vs bank-aware vs conduit-place-buffers.
+  }];
+  let constructor = "xilinx::conduit::createConduitPlaceBuffersPass()";
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES

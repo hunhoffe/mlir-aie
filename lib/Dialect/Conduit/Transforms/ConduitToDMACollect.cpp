@@ -325,6 +325,25 @@ void collectPhase(ConduitToDMAState &state) {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Phase 1.5: Collect pre-registered buffers from conduit.register_buffers.
+  //
+  // --conduit-materialize-buffers (or hand-authored IR) may have emitted
+  // conduit.register_buffers ops before --conduit-to-dma runs.  Collect
+  // the aie.buffer operands now so that allocPhase can skip allocation
+  // for any channel whose buffers are already in conduitMap.
+  // -----------------------------------------------------------------------
+  module.walk([&](RegisterBuffersOp rb) {
+    std::string name = rb.getName().str();
+    ConduitInfo *cinfo = state.lookupConduit(name);
+    if (!cinfo)
+      return;
+    for (mlir::Value bufVal : rb.getBuffers()) {
+      if (auto bufOp = bufVal.getDefiningOp<AIE::BufferOp>())
+        cinfo->buffers.push_back(bufOp);
+    }
+  });
+
   // Hard error on depth = 0 after collection: caller must have run
   // --conduit-depth-promote before --conduit-to-dma.
   for (auto &[name, info] : state.conduitMap) {
