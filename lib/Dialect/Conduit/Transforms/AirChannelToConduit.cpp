@@ -481,8 +481,16 @@ struct AirChannelToConduitPass
 
     // Walk and collect all ops of interest.
     scopeOp->walk([&](mlir::Operation *op) {
-      if (isAirChannelDecl(op))
-        channelDeclsToErase.push_back(op);
+      if (isAirChannelDecl(op)) {
+        // Only collect declarations that live inside a device body.
+        // After --air-hierarchy-to-aie, the renamed @channel_XX declarations
+        // are direct children of the aie.device body and pass this check.
+        // Module-level original declarations (e.g., @L3ToL2Chan1) are NOT
+        // inside any DeviceOp and are excluded here; they are handled by
+        // the module-level cleanup after the per-device loop (lines below).
+        if (op->getParentOfType<AIE::DeviceOp>() != nullptr)
+          channelDeclsToErase.push_back(op);
+      }
       else if (isAirChannelPut(op) || isAirChannelGet(op)) {
         putGetToRewrite.push_back(op);
         std::string chanName = getChanName(op);

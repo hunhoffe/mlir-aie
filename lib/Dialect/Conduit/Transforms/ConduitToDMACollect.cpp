@@ -185,6 +185,166 @@ void collectPhase(ConduitToDMAState &state) {
       state.deviceOp = op;
   });
 
+  // -----------------------------------------------------------------------
+  // Phase 5a: Infer tile coordinates from IR structure.
+  //
+  // Primary source: walk aie.core ops to find which conduit channels are
+  // used (via acquire/release/put_memref/get_memref) on each tile, and walk
+  // aie.shim_dma_allocation ops for the shim consumer tile map.
+  //
+  // Fallback: if the IR walk finds nothing for a field, the attribute-read
+  // values already populated above (producer_tile / consumer_tiles /
+  // shim_consumer_tiles) remain in place.  This preserves all existing tests.
+  // -----------------------------------------------------------------------
+
+  // channelToProducerTile: channel name → (col, row) of producer tile.
+  // Source: Acquire with Port::Produce inside aie.core (Tier 2 window model).
+  // Note: Release has no $name attr; Acquire with port=Produce is the
+  //   unambiguous producer marker. put_memref_async is NOT used — it can
+  //   appear on either tile in loopback tests, making direction ambiguous.
+  llvm::StringMap<std::pair<int64_t, int64_t>> channelToProducerTile;
+
+  // channelToConsumerTiles: channel name → list of (col, row) consumer tiles.
+  // Source: Acquire with Port::Consume inside aie.core (Tier 2 window model).
+  llvm::StringMap<llvm::SmallVector<std::pair<int64_t, int64_t>>>
+      channelToConsumerTiles;
+
+  // Walk every aie.core. Only Acquire ops (which carry both $name and $port)
+  // provide unambiguous producer/consumer tile identification.
+  for (AIE::DeviceOp dev : state.deviceOps) {
+    dev.walk([&](AIE::CoreOp coreOp) {
+      AIE::TileOp tileOp =
+          coreOp.getTile().getDefiningOp<AIE::TileOp>();
+      if (!tileOp)
+        return;
+      int64_t col = static_cast<int64_t>(tileOp.getCol());
+      int64_t row = static_cast<int64_t>(tileOp.getRow());
+
+      coreOp.walk([&](Acquire acqOp) {
+        std::string name = acqOp.getName().str();
+        if (acqOp.getPort() == Port::Produce) {
+          channelToProducerTile[name] = {col, row};
+        } else {
+          // Port::Consume → consumer tile.
+          auto &vec = channelToConsumerTiles[name];
+          std::pair<int64_t, int64_t> coord = {col, row};
+          if (llvm::find(vec, coord) == vec.end())
+            vec.push_back(coord);
+        }
+      });
+      // GetMemrefAsync inside aie.core → consumer tile (Tier 3 DMA receive).
+      // This handles the case where a compute core drives DMA receives directly
+      // without Tier 2 acquire/release (e.g., conduit_to_dma_tier3_bd_length).
+      coreOp.walk([&](GetMemrefAsync getOp) {
+        std::string name = getOp.getName().str();
+        auto &vec = channelToConsumerTiles[name];
+        std::pair<int64_t, int64_t> coord = {col, row};
+        if (llvm::find(vec, coord) == vec.end())
+          vec.push_back(coord);
+      });
+    });
+  }
+
+  // shimAllocationMap: shim sym_name → (col, row) of the shim tile.
+  llvm::StringMap<std::pair<int64_t, int64_t>> shimAllocationMap;
+  for (AIE::DeviceOp dev : state.deviceOps) {
+    dev.walk([&](AIE::ShimDMAAllocationOp shimOp) {
+      // The tile operand is an Index value produced by aie.tile(col, row).
+      mlir::Value tileVal = shimOp.getTile();
+      AIE::TileOp tileOp = tileVal.getDefiningOp<AIE::TileOp>();
+      if (!tileOp)
+        return;
+      int64_t col = static_cast<int64_t>(tileOp.getCol());
+      int64_t row = static_cast<int64_t>(tileOp.getRow());
+      shimAllocationMap[shimOp.getSymName()] = {col, row};
+    });
+  }
+
+  // Apply inferred coordinates to conduitMap, using fallback to existing values.
+  for (auto &[name, info] : state.conduitMap) {
+    // Producer tile: IR walk wins if found.
+    auto prodIt = channelToProducerTile.find(name);
+    if (prodIt != channelToProducerTile.end()) {
+      int64_t col = prodIt->second.first;
+      int64_t row = prodIt->second.second;
+      info.producerTileCoord = {col, row};
+      std::string s;
+      llvm::raw_string_ostream os(s);
+      os << "tile(" << col << "," << row << ")";
+      info.producerTileStr = os.str();
+    }
+    // For relay ops (scatter/gather/transpose), producer tile is the memtile
+    // attr on the relay op itself; that is handled in linkPhase already.
+
+    // Consumer tiles: IR walk wins if found.
+    auto consIt = channelToConsumerTiles.find(name);
+    if (consIt != channelToConsumerTiles.end() &&
+        !consIt->second.empty()) {
+      info.consumerTileCoords.clear();
+      info.consumerTileStrs.clear();
+      for (auto [col, row] : consIt->second) {
+        info.consumerTileCoords.push_back({col, row});
+        std::string s;
+        llvm::raw_string_ostream os(s);
+        os << "tile(" << col << "," << row << ")";
+        info.consumerTileStrs.push_back(os.str());
+      }
+    }
+
+    // Shim consumer tiles: match shim_dma_allocation ops to conduit channels.
+    //
+    // Two cases handled in priority order:
+    //
+    // Case 1 — Pass A post-rewrite: Pass A renames conduit.create @chan to
+    //   @chan_shim_alloc, so the conduitMap key IS the shim alloc sym_name.
+    //   Direct lookup: shimAllocationMap["chan_shim_alloc"] → found.
+    //
+    // Case 2 — Direct conduit IR convention: hand-written programs use the
+    //   standard suffix convention: shim alloc sym = "<chan>_shim_alloc" with
+    //   conduit.create sym = "<chan>" (different symbols, no name conflict).
+    //   Suffix-strip lookup: strip "_shim_alloc" from shimAllocationMap keys
+    //   and check if the stripped name matches the channel name.
+    //
+    // Multi-consumer allocations (@chan_shim_alloc_0, _1, …): handled by
+    //   Case 1 if Pass A renames the primary channel to @chan_shim_alloc,
+    //   and secondary channels to @chan_shim_alloc_0 etc. (Pass A currently
+    //   only renames the primary; secondary channels remain unmatched until
+    //   Pass C Phase 5c scatter lowering, which uses the shim alloc directly).
+
+    // Shim endpoint: the shim_dma_allocation sym_name IS the conduit channel
+    // name after Pass A's rewrite (@chan → @chan_shim_alloc on conduit.create).
+    // Direct lookup: if conduitMap key matches the shim alloc sym_name, this
+    // channel's shim tile is the producer/consumer.
+    auto shimIt = shimAllocationMap.find(name);
+    if (shimIt != shimAllocationMap.end()) {
+      auto [col, row] = shimIt->second;
+      std::pair<int64_t, int64_t> coord = {col, row};
+      if (llvm::find(info.shimConsumerTileCoords, coord) ==
+          info.shimConsumerTileCoords.end())
+        info.shimConsumerTileCoords.push_back(coord);
+    }
+  }
+
+  // Hard error on depth = 0 after collection: caller must have run
+  // --conduit-depth-promote before --conduit-to-dma.
+  for (auto &[name, info] : state.conduitMap) {
+    if (info.depth == 0) {
+      // Emit a diagnostic on the conduit.create op for this channel.
+      module.walk([&](Create createOp) {
+        if (createOp.getName().str() == name) {
+          createOp.emitError(
+              "conduit-to-dma: channel @" + name +
+              " has depth = 0 — run --conduit-depth-promote before "
+              "--conduit-to-dma");
+          state.passFailed = true;
+        }
+      });
+    }
+  }
+
+  if (state.passFailed)
+    return;
+
   if (!state.deviceOp) {
     module.emitWarning(
         "conduit-to-dma: no aie.device found; skipping lowering");

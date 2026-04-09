@@ -74,6 +74,8 @@ module @wait_all_async_erasure {
     %tile_0_2 = aie.tile(0, 2)
 
     // conduit.create: shim (row=0) produces; tile_0_2 consumes.
+    // Consumer tile inferred from conduit.acquire(Consume) inside aie.core.
+    // Producer tile declared via producer_tile attr (shim side).
     // Pass C allocates aie.buffer + aie.lock on tile_0_2.
     conduit.create @fifo_waa {slot_elems = 8 : i64,
                     producer_tile = array<i64: 0, 0>,

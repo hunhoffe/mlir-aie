@@ -561,6 +561,24 @@ struct ConduitToDMAState {
     return it->second;
   }
 
+  // Return the Location from the DeviceOp that owns the tile produced by
+  // tileVal, falling back to deviceOp.getLoc() if the tile is not found.
+  // Use this instead of deviceOp.getLoc() when emitting ops that belong to
+  // a tile in a secondary device of a multi-device module.
+  mlir::Location getLocForTile(mlir::Value tileVal) {
+    if (!tileVal)
+      return deviceOp.getLoc();
+    AIE::TileOp tileOp = tileVal.getDefiningOp<AIE::TileOp>();
+    if (!tileOp)
+      return deviceOp.getLoc();
+    int64_t col = static_cast<int64_t>(tileOp.getCol());
+    int64_t row = static_cast<int64_t>(tileOp.getRow());
+    AIE::DeviceOp dev = getDeviceForTile(col, row);
+    if (!dev)
+      return deviceOp.getLoc();
+    return dev.getLoc();
+  }
+
   // Return the DeviceOp that owns the tile at (col, row), or null if not found.
   // Used by multi-device Pass C to select the correct DeviceOp body for
   // op insertion when emitting locks, buffers, and flows.
@@ -605,6 +623,9 @@ struct ConduitToDMAState {
   void emitFlow(llvm::StringRef routingMode, mlir::Value srcTile,
                 AIE::WireBundle srcBundle, int32_t srcChan, mlir::Value dstTile,
                 AIE::WireBundle dstBundle, int32_t dstChan) {
+    // Use the loc from the device that owns srcTile so that multi-device
+    // modules assign correct source locations to emitted flow ops.
+    mlir::Location loc = getLocForTile(srcTile);
     if (routingMode == "packet") {
       // Allocate a packet flow ID; fail gracefully if budget is exhausted.
       if (!packetIDAllocator) {
@@ -619,7 +640,7 @@ struct ConduitToDMAState {
         return;
       }
       auto pktFlow = builder->create<AIE::PacketFlowOp>(
-          deviceOp.getLoc(),
+          loc,
           static_cast<int8_t>(*pktID),
           /*keep_pkt_header=*/mlir::BoolAttr{},
           /*priority_route=*/mlir::BoolAttr{});
@@ -627,13 +648,13 @@ struct ConduitToDMAState {
       mlir::Block *block = builder->createBlock(&region);
       builder->setInsertionPointToStart(block);
       builder->create<AIE::PacketSourceOp>(
-          deviceOp.getLoc(), srcTile, srcBundle, static_cast<int32_t>(srcChan));
-      builder->create<AIE::PacketDestOp>(deviceOp.getLoc(), dstTile, dstBundle,
+          loc, srcTile, srcBundle, static_cast<int32_t>(srcChan));
+      builder->create<AIE::PacketDestOp>(loc, dstTile, dstBundle,
                                          static_cast<int32_t>(dstChan));
-      builder->create<AIE::EndOp>(deviceOp.getLoc());
+      builder->create<AIE::EndOp>(loc);
       builder->setInsertionPointAfter(pktFlow);
     } else {
-      builder->create<AIE::FlowOp>(deviceOp.getLoc(), srcTile, srcBundle,
+      builder->create<AIE::FlowOp>(loc, srcTile, srcBundle,
                                    srcChan, dstTile, dstBundle, dstChan);
     }
   }
@@ -654,13 +675,16 @@ struct ConduitToDMAState {
                                   int64_t depth, int64_t prodInit = -1) {
     if (prodInit < 0)
       prodInit = depth;
+    // Use the loc from the device that owns tileVal for correct multi-device
+    // source location attribution on emitted lock ops.
+    mlir::Location loc = getLocForTile(tileVal);
     AllocatedLocks locks;
     if (isAIE2Plus()) {
       {
         int lockIdx = lockIdCounter[tileVal]++;
         std::string symName = (prefix + "_prod_lock_0").str();
         AIE::LockOp lk = builder->create<AIE::LockOp>(
-            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(prodInit));
+            loc, tileVal, lockIdx, static_cast<int>(prodInit));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         locks.prodLock = lk;
       }
@@ -668,7 +692,7 @@ struct ConduitToDMAState {
         int lockIdx = lockIdCounter[tileVal]++;
         std::string symName = (prefix + "_cons_lock_0").str();
         AIE::LockOp lk = builder->create<AIE::LockOp>(
-            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(0));
+            loc, tileVal, lockIdx, static_cast<int>(0));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         locks.consLock = lk;
       }
@@ -677,7 +701,7 @@ struct ConduitToDMAState {
         int lockIdx = lockIdCounter[tileVal]++;
         std::string symName = (prefix + "_lock_" + llvm::Twine(i)).str();
         AIE::LockOp lk = builder->create<AIE::LockOp>(
-            deviceOp.getLoc(), tileVal, lockIdx, static_cast<int>(0));
+            loc, tileVal, lockIdx, static_cast<int>(0));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         locks.aie1Locks.push_back(lk);
       }
@@ -745,7 +769,7 @@ struct ConduitToDMAState {
     for (int64_t i = 0; i < count; ++i) {
       std::string symName = (prefix + "_buff_" + llvm::Twine(i)).str();
       auto buf =
-          builder->create<AIE::BufferOp>(deviceOp.getLoc(), bufTy, tileVal,
+          builder->create<AIE::BufferOp>(getLocForTile(tileVal), bufTy, tileVal,
                                          mlir::StringAttr::get(ctx, symName),
                                          /*address=*/mlir::IntegerAttr{},
                                          /*initial_value=*/mlir::ElementsAttr{},
