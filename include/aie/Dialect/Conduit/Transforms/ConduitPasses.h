@@ -138,6 +138,13 @@ createConduitCheckTiersPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitCheckLoopBalancePass();
 
+/// Spatial IRON operator fusion: replace LPDDR5 intermediates between two
+/// consecutive aie.device ops with shared-memory conduit.create channels.
+/// Offsets tile coordinates in device B, emits module-level fused conduit,
+/// deletes matched shim output/input channel pairs and their runtime DMA ops.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitFuseOperatorsPass();
+
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)
 // Generates registerConduitPasses(), registerConduitToDMA(), etc.

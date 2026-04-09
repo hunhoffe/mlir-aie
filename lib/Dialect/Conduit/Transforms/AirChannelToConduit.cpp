@@ -683,6 +683,8 @@ struct AirChannelToConduitPass
           loc,
           mlir::StringAttr::get(ctx, name),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), broadcastCapacity),
+          /*sync_mode=*/SyncModeAttr{},
+          /*window_size=*/mlir::IntegerAttr{},
           /*producer_tile=*/mlir::DenseI64ArrayAttr{},
           /*consumer_tiles=*/mlir::DenseI64ArrayAttr{},
           /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
@@ -778,6 +780,8 @@ struct AirChannelToConduitPass
                 loc,
                 mlir::StringAttr::get(ctx, dstName),
                 mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
+                /*sync_mode=*/SyncModeAttr{},
+                /*window_size=*/mlir::IntegerAttr{},
                 /*producer_tile=*/mlir::DenseI64ArrayAttr{},
                 /*consumer_tiles=*/mlir::DenseI64ArrayAttr::get(
                     ctx, {consumerCoords[i].first, consumerCoords[i].second}),

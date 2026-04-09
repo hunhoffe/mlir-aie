@@ -170,10 +170,17 @@ void collectPhase(ConduitToDMAState &state) {
     return;
 
   // -----------------------------------------------------------------------
-  // Phase 2: Find aie.device op, build tile cache, determine architecture.
+  // Phase 2: Find aie.device ops, build unified tile cache, determine arch.
+  //
+  // Multi-device support: collect ALL DeviceOps from the module.
+  // --conduit-fuse-operators offsets tile coordinates in device B so there
+  // are no coordinate conflicts.  The unified tile cache covers all devices.
+  // state.deviceOp is set to the first device (for legacy single-device code).
+  // state.deviceOps holds all devices in module order for multi-device paths.
   // -----------------------------------------------------------------------
 
   module.walk([&](AIE::DeviceOp op) {
+    state.deviceOps.push_back(op);
     if (!state.deviceOp)
       state.deviceOp = op;
   });
@@ -190,28 +197,34 @@ void collectPhase(ConduitToDMAState &state) {
                         ? AIE::LockAction::AcquireGreaterEqual
                         : AIE::LockAction::Acquire;
 
-  // Build tile cache.
-  state.deviceOp.walk([&](AIE::TileOp tile) {
-    state.tileCache[{tile.getCol(), tile.getRow()}] = tile;
-  });
+  // Build unified tile cache across all devices.
+  // Each device's tiles have unique coordinates after --conduit-fuse-operators.
+  for (AIE::DeviceOp dev : state.deviceOps) {
+    dev.walk([&](AIE::TileOp tile) {
+      state.tileCache[{tile.getCol(), tile.getRow()}] = tile;
+    });
+  }
 
-  // Set device body reference and insertion point.
+  // Set device body reference and insertion point (primary device only;
+  // multi-device emission uses getDeviceForTile to select the right device).
   state.deviceBody = &state.deviceOp.getBodyRegion().front();
   for (mlir::Operation &op : *state.deviceBody) {
     if (mlir::isa<AIE::TileOp>(op))
       state.insertAfterTile = &op;
   }
 
-  // Pre-populate lock ID counters from existing locks.
-  state.deviceOp.walk([&](AIE::LockOp existingLock) {
-    if (!existingLock.getLockID().has_value())
-      return;
-    mlir::Value tileVal = existingLock.getTile();
-    int existingId = static_cast<int>(existingLock.getLockID().value());
-    int &counter = state.lockIdCounter[tileVal];
-    if (existingId + 1 > counter)
-      counter = existingId + 1;
-  });
+  // Pre-populate lock ID counters from existing locks across all devices.
+  for (AIE::DeviceOp dev : state.deviceOps) {
+    dev.walk([&](AIE::LockOp existingLock) {
+      if (!existingLock.getLockID().has_value())
+        return;
+      mlir::Value tileVal = existingLock.getTile();
+      int existingId = static_cast<int>(existingLock.getLockID().value());
+      int &counter = state.lockIdCounter[tileVal];
+      if (existingId + 1 > counter)
+        counter = existingId + 1;
+    });
+  }
 
   // -----------------------------------------------------------------------
   // Collect link source names before allocation runs.
@@ -242,6 +255,18 @@ void collectPhase(ConduitToDMAState &state) {
           mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     for (auto d : fwdOp.getDsts())
       state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
+  });
+  module.walk([&](ScatterOp scatterOp) {
+    state.linkSrcNamesEarly.insert(scatterOp.getSrc());
+    for (auto d : scatterOp.getDsts())
+      state.linkDstNames.insert(
+          mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
+  });
+  module.walk([&](GatherOp gatherOp) {
+    for (auto s : gatherOp.getSrcs())
+      state.linkJoinSrcNames.insert(
+          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
+    state.linkDstNames.insert(gatherOp.getDst());
   });
 
   // Collect numElems from put/get_memref_async ops.

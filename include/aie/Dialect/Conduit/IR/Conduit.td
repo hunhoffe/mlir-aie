@@ -276,6 +276,24 @@ def Conduit_RoutingModeAttr : EnumAttr<Conduit_Dialect, Conduit_RoutingMode, "ro
 }
 
 // ---------------------------------------------------------------------------
+// SyncMode enum — synchronization mode for relay ops
+//
+// barrier (default): all endpoints synchronize on a single lock protocol
+// independent: each endpoint has its own lock pair (N-way ack protocol)
+// ---------------------------------------------------------------------------
+
+def Conduit_SyncMode : I32EnumAttr<"SyncMode", "Conduit synchronization mode", [
+  I32EnumAttrCase<"Barrier",     0, "barrier">,
+  I32EnumAttrCase<"Independent", 1, "independent">
+]> {
+  let cppNamespace = "::xilinx::conduit";
+  let genSpecializedAttr = 0;
+}
+def Conduit_SyncModeAttr : EnumAttr<Conduit_Dialect, Conduit_SyncMode, "sync_mode"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+// ---------------------------------------------------------------------------
 // Window type — !conduit.window<T>
 // ---------------------------------------------------------------------------
 
@@ -410,6 +428,8 @@ def Conduit_Create : Conduit_Op<"create"> {
   }];
   let arguments = (ins SymbolNameAttr:$sym_name,
                        I64Attr:$slot_elems,
+                       OptionalAttr<Conduit_SyncModeAttr>:$sync_mode,
+                       OptionalAttr<I64Attr>:$window_size,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_tile,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_tiles,
                        OptionalAttr<DenseI64ArrayAttr>:$shim_consumer_tiles,
@@ -880,6 +900,65 @@ def Conduit_Forward : Conduit_Op<"forward"> {
                        OptionalAttr<DenseI64ArrayAttr>:$offsets,
                        OptionalAttr<I64Attr>:$lock_id);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 1 relay ops — scatter, gather, transpose, register_buffers
+//
+// These are the redesigned relay ops that will eventually replace
+// conduit.distribute / conduit.join / conduit.forward above.
+// During the migration period both old and new ops coexist.
+// ---------------------------------------------------------------------------
+
+def Conduit_ScatterOp : Conduit_Op<"scatter", []> {
+  let summary = "1:N fan-out relay — routes one source channel to N destination channels";
+  let arguments = (ins
+    FlatSymbolRefAttr:$src,
+    SymbolRefArrayAttr:$dsts,
+    OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
+  );
+  let assemblyFormat = [{
+    `{` `src` `=` $src `,` `dsts` `=` $dsts attr-dict `}`
+  }];
+  let hasVerifier = 1;
+}
+
+def Conduit_GatherOp : Conduit_Op<"gather", []> {
+  let summary = "N:1 fan-in relay — collects N source channels into one destination channel";
+  let arguments = (ins
+    SymbolRefArrayAttr:$srcs,
+    FlatSymbolRefAttr:$dst,
+    OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
+  );
+  let assemblyFormat = [{
+    `{` `srcs` `=` $srcs `,` `dst` `=` $dst attr-dict `}`
+  }];
+  let hasVerifier = 1;
+}
+
+def Conduit_TransposeOp : Conduit_Op<"transpose", []> {
+  let summary = "N:M static redistribution relay using time-multiplexed DMA";
+  let arguments = (ins
+    SymbolRefArrayAttr:$srcs,
+    SymbolRefArrayAttr:$dsts,
+    OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
+  );
+  let assemblyFormat = [{
+    `{` `srcs` `=` `[` $srcs `]` `,` `dsts` `=` `[` $dsts `]` attr-dict `}`
+  }];
+  let hasVerifier = 1;
+}
+
+def Conduit_RegisterBuffersOp : Conduit_Op<"register_buffers", []> {
+  let summary = "register pre-allocated buffers (aie.buffer / aie.external_buffer) with a conduit channel";
+  let arguments = (ins
+    FlatSymbolRefAttr:$channel,
+    Variadic<AnyMemRef>:$buffers
+  );
+  let assemblyFormat = [{
+    `{` `channel` `=` $channel `,` `buffers` `=` `[` $buffers `]` attr-dict `}` `:` type($buffers)
+  }];
   let hasVerifier = 1;
 }
 

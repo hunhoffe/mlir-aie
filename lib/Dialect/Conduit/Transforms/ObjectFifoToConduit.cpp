@@ -614,6 +614,8 @@ struct ObjectFifoToConduitPass
           loc,
           mlir::StringAttr::get(ctx, name),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), slot_elems),
+          /*sync_mode=*/SyncModeAttr{},
+          /*window_size=*/mlir::IntegerAttr{},
           mlir::DenseI64ArrayAttr::get(ctx, info.producerTileArr),
           mlir::DenseI64ArrayAttr::get(ctx, info.consumerTilesArr),
           shimConsAttr,

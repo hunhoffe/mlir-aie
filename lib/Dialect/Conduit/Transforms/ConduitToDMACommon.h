@@ -420,7 +420,8 @@ struct AsyncAcquireInfo {
 struct ConduitToDMAState {
   // Module and device references.
   mlir::ModuleOp module;
-  AIE::DeviceOp deviceOp;
+  AIE::DeviceOp deviceOp;              // first device (primary; for legacy code)
+  llvm::SmallVector<AIE::DeviceOp> deviceOps; // ALL devices in module order
   mlir::OpBuilder *builder;
   mlir::MLIRContext *ctx;
 
@@ -558,6 +559,43 @@ struct ConduitToDMAState {
     if (it == tileCache.end())
       return {};
     return it->second;
+  }
+
+  // Return the DeviceOp that owns the tile at (col, row), or null if not found.
+  // Used by multi-device Pass C to select the correct DeviceOp body for
+  // op insertion when emitting locks, buffers, and flows.
+  AIE::DeviceOp getDeviceForTile(int64_t col, int64_t row) const {
+    auto cacheIt = tileCache.find({col, row});
+    if (cacheIt == tileCache.end())
+      return {};
+    AIE::TileOp tile = cacheIt->second;
+    // Walk parent chain: tile → DeviceOp.
+    mlir::Operation *parent = tile->getParentOp();
+    while (parent) {
+      if (auto dev = mlir::dyn_cast<AIE::DeviceOp>(parent))
+        return dev;
+      parent = parent->getParentOp();
+    }
+    return {};
+  }
+
+  // Update state.deviceBody and state.insertAfterTile to point to the correct
+  // DeviceOp for the tile at (col, row).  Call this before allocating
+  // aie.buffer / aie.lock ops for a tile in a multi-device module.
+  // No-op if the tile is not found or already in the active device.
+  void switchDeviceForTile(int64_t col, int64_t row) {
+    AIE::DeviceOp dev = getDeviceForTile(col, row);
+    if (!dev)
+      return;
+    mlir::Block *body = &dev.getBodyRegion().front();
+    if (body == deviceBody)
+      return; // already pointing at the correct device
+    deviceBody = body;
+    insertAfterTile = nullptr;
+    for (mlir::Operation &op : *deviceBody) {
+      if (mlir::isa<AIE::TileOp>(op))
+        insertAfterTile = &op;
+    }
   }
 
   // Emit a circuit or packet flow between two tiles.

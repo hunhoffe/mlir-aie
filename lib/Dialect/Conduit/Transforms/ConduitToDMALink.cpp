@@ -54,6 +54,16 @@ void linkPhase(ConduitToDMAState &state) {
     for (auto d : op.getDsts())
       state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
+  state.module.walk([&](ScatterOp op) {
+    state.linkSrcNames.insert(op.getSrc());
+    for (auto d : op.getDsts())
+      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
+  });
+  state.module.walk([&](GatherOp op) {
+    for (auto s : op.getSrcs())
+      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
+    state.linkDstNames.insert(op.getDst());
+  });
 
   // -----------------------------------------------------------------------
   // Phase 5: Lower conduit.distribute / conduit.join / conduit.forward.
@@ -109,6 +119,55 @@ void linkPhase(ConduitToDMAState &state) {
     a.memtileStr = fwdOp.getMemtile();
     a.isDistribute = true; // forward = distribute with 1 dst
     a.offsets = fwdOp.getOffsets();
+    linkAdapters.push_back(a);
+  });
+  state.module.walk([&](ScatterOp scatterOp) {
+    LinkAdapter a;
+    a.op = scatterOp.getOperation();
+    a.srcs = builder.getArrayAttr({scatterOp.getSrcAttr()});
+    a.dsts = scatterOp.getDsts();
+    // Infer memtile from the src conduit's producer tile: same column, row=1.
+    {
+      llvm::StringRef srcName = scatterOp.getSrc();
+      ConduitInfo *srcInfo = state.lookupConduit(srcName);
+      if (srcInfo && srcInfo->producerTileCoord.first >= 0) {
+        int64_t col = srcInfo->producerTileCoord.first;
+        std::string tileStr =
+            "tile(" + std::to_string(col) + ",1)";
+        a.memtileStr =
+            mlir::StringAttr::get(ctx, tileStr).getValue();
+      } else {
+        a.memtileStr = "";
+      }
+    }
+    a.isDistribute = true; // scatter = 1→N distribute
+    a.offsets = std::nullopt;
+    linkAdapters.push_back(a);
+  });
+  state.module.walk([&](GatherOp gatherOp) {
+    LinkAdapter a;
+    a.op = gatherOp.getOperation();
+    a.srcs = gatherOp.getSrcs();
+    a.dsts = builder.getArrayAttr({gatherOp.getDstAttr()});
+    // Infer memtile from the first src conduit's producer tile: same col, row=1.
+    {
+      llvm::StringRef memStr;
+      for (auto s : gatherOp.getSrcs()) {
+        llvm::StringRef sName =
+            mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue();
+        ConduitInfo *sInfo = state.lookupConduit(sName);
+        if (sInfo && sInfo->producerTileCoord.first >= 0) {
+          int64_t col = sInfo->producerTileCoord.first;
+          std::string tileStr =
+              "tile(" + std::to_string(col) + ",1)";
+          memStr = mlir::StringAttr::get(ctx, tileStr).getValue();
+          break;
+        }
+      }
+      a.memtileStr = memStr;
+    }
+    a.isDistribute = false; // gather = N→1 join
+    a.offsets = std::nullopt;
     linkAdapters.push_back(a);
   });
 
@@ -805,9 +864,18 @@ void linkPhase(ConduitToDMAState &state) {
           continue;
         int32_t s2mmCh = srcIdx < joinS2MMChannels.size()
                              ? joinS2MMChannels[srcIdx] : 0;
+        // A-1 fix: Allocate MM2S channel on the source producer tile
+        // dynamically instead of using hardcoded channel 0.  Record in
+        // conduitMM2SChannel so Phase 5.5 BD chain generation uses the
+        // same channel, and in preUsedMM2SChannels so Phase 5.5a
+        // (distribute source) avoids conflicts on the same tile.
+        int32_t srcMM2SCh =
+            state.tileNextMM2SChannel[srcProdTile.getResult()]++;
+        state.conduitMM2SChannel[sName] = srcMM2SCh;
+        state.preUsedMM2SChannels[srcProdTile.getResult()].insert(srcMM2SCh);
         builder.create<AIE::FlowOp>(
             state.deviceOp.getLoc(), srcProdTile.getResult(),
-            AIE::WireBundle::DMA, static_cast<int32_t>(0),
+            AIE::WireBundle::DMA, srcMM2SCh,
             memtileVal, AIE::WireBundle::DMA, s2mmCh);
       }
 
@@ -1140,9 +1208,24 @@ void linkPhase(ConduitToDMAState &state) {
     linkOpsToErase.push_back(linkOp.op);
   } // end for (auto &linkOp : linkAdapters)
 
-  // Erase distribute/join/forward ops after processing (collect-then-erase).
+  // Erase distribute/join/forward/scatter/gather ops after processing
+  // (collect-then-erase).
   for (auto *op : llvm::reverse(linkOpsToErase))
     op->erase();
+
+  // Erase any remaining scatter/gather ops not consumed by the adapter loop
+  // (e.g., those that hit a continue due to missing memtile inference).
+  {
+    llvm::SmallVector<mlir::Operation *> remainingScatterGather;
+    state.module.walk([&](ScatterOp op) {
+      remainingScatterGather.push_back(op.getOperation());
+    });
+    state.module.walk([&](GatherOp op) {
+      remainingScatterGather.push_back(op.getOperation());
+    });
+    for (auto *op : llvm::reverse(remainingScatterGather))
+      op->erase();
+  }
 
   if (state.passFailed)
     return;
@@ -1457,13 +1540,20 @@ void linkPhase(ConduitToDMAState &state) {
           existingRegion = it->second;
       }
 
-      // Acquire the MM2S channel index (channel 0 unless pre-used).
+      // A-1 fix: Look up MM2S channel pre-allocated during Phase 5 flow
+      // emission.  Falls back to dynamic allocation for gather sources
+      // not processed by Phase 5 (e.g., MemTile relay sources).
       int32_t joinMM2SChannel = 0;
       {
-        auto &usedCh = state.preUsedMM2SChannels[prodTileVal];
-        while (usedCh.count(joinMM2SChannel))
-          ++joinMM2SChannel;
-        usedCh.insert(joinMM2SChannel);
+        auto chIt = state.conduitMM2SChannel.find(name);
+        if (chIt != state.conduitMM2SChannel.end()) {
+          joinMM2SChannel = chIt->second;
+        } else {
+          auto &usedCh = state.preUsedMM2SChannels[prodTileVal];
+          while (usedCh.count(joinMM2SChannel))
+            ++joinMM2SChannel;
+          usedCh.insert(joinMM2SChannel);
+        }
       }
 
       mlir::Region *memRegion = nullptr;

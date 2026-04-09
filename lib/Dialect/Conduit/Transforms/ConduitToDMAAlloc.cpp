@@ -405,6 +405,9 @@ void allocPhase(ConduitToDMAState &state) {
             mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
 
+      // Multi-device: select the DeviceOp body that owns this producer tile.
+      state.switchDeviceForTile(prodCol, prodRow);
+
       if (state.insertAfterTile)
         builder.setInsertionPointAfter(state.insertAfterTile);
       else
@@ -520,6 +523,9 @@ void allocPhase(ConduitToDMAState &state) {
                                             mlir::IntegerType::get(ctx, 32));
             }
 
+            // Multi-device: allocate into the device that owns the alloc tile.
+            state.switchDeviceForTile(allocCol, allocRow);
+
             if (state.insertAfterTile)
               builder.setInsertionPointAfter(state.insertAfterTile);
             else
@@ -604,6 +610,9 @@ void allocPhase(ConduitToDMAState &state) {
             mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
 
+      // Multi-device: select device owning this producer tile.
+      state.switchDeviceForTile(prodCol, prodRow);
+
       if (state.insertAfterTile)
         builder.setInsertionPointAfter(state.insertAfterTile);
       else
@@ -652,6 +661,9 @@ void allocPhase(ConduitToDMAState &state) {
                                  name + "' not found in device");
         continue;
       }
+
+      // Multi-device: select device owning this consumer tile.
+      state.switchDeviceForTile(consCol, consRow);
 
       if (state.insertAfterTile)
         builder.setInsertionPointAfter(state.insertAfterTile);
@@ -832,6 +844,9 @@ void allocPhase(ConduitToDMAState &state) {
       int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
       bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
     }
+
+    // Multi-device: select device owning this producer tile.
+    state.switchDeviceForTile(prodCol, prodRow);
 
     if (state.insertAfterTile)
       builder.setInsertionPointAfter(state.insertAfterTile);

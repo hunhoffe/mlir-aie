@@ -645,6 +645,31 @@ void lowerPhase(ConduitToDMAState &state) {
       op.erase();
   }
 
+  // Erase conduit.scatter ops (Sprint 1 relay op, lowered in earlier phases).
+  {
+    llvm::SmallVector<ScatterOp> toErase;
+    module.walk([&](ScatterOp op) { toErase.push_back(op); });
+    for (auto op : llvm::reverse(toErase))
+      op.erase();
+  }
+
+  // Erase conduit.gather ops (Sprint 1 relay op, lowered in earlier phases).
+  {
+    llvm::SmallVector<GatherOp> toErase;
+    module.walk([&](GatherOp op) { toErase.push_back(op); });
+    for (auto op : llvm::reverse(toErase))
+      op.erase();
+  }
+
+  // Erase conduit.register_buffers ops (Sprint 1 Tier 2.5 op; buffers
+  // recorded into ConduitInfo in Phase 1.5 and BD chains built in Phase 5.5).
+  {
+    llvm::SmallVector<RegisterBuffersOp> toErase;
+    module.walk([&](RegisterBuffersOp op) { toErase.push_back(op); });
+    for (auto op : llvm::reverse(toErase))
+      op.erase();
+  }
+
   // Collect-then-erase for Wait and Create ops.
   {
     llvm::SmallVector<Wait> waitsToErase;

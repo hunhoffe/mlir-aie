@@ -23,28 +23,30 @@
 // CHECK-DAG:   name = @chan
 
 module @infer_rates_match {
-  // expected-remark@+1 {{conduit-infer-rates: attached producer_rates=[64] consumer_rates=[64] to conduit 'chan'}}
-  conduit.create @chan {slot_elems = 64 : i64,
-                  depth = 1 : i64,
-                  element_type = memref<64xi32>}
+  aie.device(npu2) {
+    // expected-remark@+1 {{conduit-infer-rates: attached producer_rates=[64] consumer_rates=[64] to conduit 'chan'}}
+    conduit.create @chan {slot_elems = 64 : i64,
+                    depth = 1 : i64,
+                    element_type = memref<64xi32>}
 
-  func.func @producer(%buf : memref<64xi32>) {
-    %tok = conduit.put_memref_async {name = @chan, num_elems = 64 : i64,
-                                     offsets = array<i64: 0>,
-                                     sizes   = array<i64: 64>,
-                                     strides = array<i64: 1>}
-                                    : !conduit.dma.token
-    conduit.wait %tok : !conduit.dma.token
-    return
-  }
+    func.func @producer(%buf : memref<64xi32>) {
+      %tok = conduit.put_memref_async {name = @chan, num_elems = 64 : i64,
+                                       offsets = array<i64: 0>,
+                                       sizes   = array<i64: 64>,
+                                       strides = array<i64: 1>}
+                                      : !conduit.dma.token
+      conduit.wait %tok : !conduit.dma.token
+      return
+    }
 
-  func.func @consumer(%buf : memref<64xi32>) {
-    %tok = conduit.get_memref_async {name = @chan, num_elems = 64 : i64,
-                                     offsets = array<i64: 0>,
-                                     sizes   = array<i64: 64>,
-                                     strides = array<i64: 1>}
-                                    : !conduit.dma.token
-    conduit.wait %tok : !conduit.dma.token
-    return
+    func.func @consumer(%buf : memref<64xi32>) {
+      %tok = conduit.get_memref_async {name = @chan, num_elems = 64 : i64,
+                                       offsets = array<i64: 0>,
+                                       sizes   = array<i64: 64>,
+                                       strides = array<i64: 1>}
+                                      : !conduit.dma.token
+      conduit.wait %tok : !conduit.dma.token
+      return
+    }
   }
 }

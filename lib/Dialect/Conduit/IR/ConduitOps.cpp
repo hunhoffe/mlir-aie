@@ -18,7 +18,9 @@
 //   Join::verify()        — M3-join: structural invariants + offset counts
 //                          M6-join / M7-join: CSDF balance + buffer capacity for N:1 join
 //   Forward::verify()     — M3-fwd: srcs.size()==1 && dsts.size()==1
-//   Create::verify() — M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
+//   Create::verify() — depth>=0 check; element_type MemRefType check;
+//                   sync_mode/disable_synchronization conflict;
+//                   M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
 //   Acquire::verify() / WaitWindow::verify() — M8a: window value release linearity
 //                                              M9: same-block acquire-release pairing (llvm::errs)
 //   AcquireAsync::verify() / ReleaseAsync::verify() — M8b: window.token wait_window linearity
@@ -602,8 +604,31 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
 //     channel: P=[3] (sum=3,q=1), C=[1,2] (sum=3,r=2) — sum(P)*r=6 ≠
 //     sum(C)*q=3, so no integer firing vector exists.
 ::mlir::LogicalResult Create::verify() {
+  // Addition 1 — depth < 0 rejection.
+  // depth=0 is the sentinel for "unresolved" (set by Pass A/B, resolved by
+  // --conduit-depth-promote).  Positive values are explicit depths.
+  // Negative values are always invalid.
+  if (auto d = getDepth()) {
+    if (static_cast<int64_t>(*d) < 0)
+      return emitOpError("depth must be >= 0 (0 = unresolved sentinel, "
+                         ">0 = explicit depth); got ")
+             << static_cast<int64_t>(*d);
+  }
+
+  // Addition 3 — sync_mode + disable_synchronization conflict.
+  // sync_mode specifies an active synchronization protocol; disable_synchronization
+  // suppresses all lock emission.  The two are mutually exclusive.
+  if (getSyncMode().has_value() && getDisableSynchronization().value_or(false))
+    return emitOpError(
+        "sync_mode and disable_synchronization=true are mutually exclusive");
+
   if (auto elemTypeOpt = getElementType()) {
     mlir::Type ty = *elemTypeOpt;
+    // Addition 2 — element_type must be MemRefType.
+    if (!mlir::isa<mlir::MemRefType>(ty))
+      return emitOpError(
+                 "element_type must be a MemRefType when present, got ")
+             << ty;
     if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(ty)) {
       for (int64_t dim : shaped.getShape()) {
         if (mlir::ShapedType::isDynamic(dim)) {
@@ -779,6 +804,18 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
                    << "consumer_rates=" << csum << "/phase, "
                    << "hyper-period=" << hyperPeriod << " steps)";
         }
+      }
+    }
+  }
+
+  // M7 extension: window_size must not exceed depth.
+  // Enforces that the buffer pool is large enough for the sliding window.
+  if (auto ws = getWindowSize()) {
+    if (auto d = getDepth()) {
+      int64_t depth = static_cast<int64_t>(*d);
+      if (depth > 0 && static_cast<int64_t>(*ws) > depth) {
+        return emitOpError("window_size (") << *ws
+            << ") exceeds depth (" << depth << "); buffer pool too small for sliding window";
       }
     }
   }
@@ -1071,6 +1108,45 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
 }
 ::mlir::LogicalResult GetMemrefAsync::verify() {
   return checkTokenDoesNotEscape(getOperation(), getToken());
+}
+
+//===----------------------------------------------------------------------===//
+// ScatterOp
+//===----------------------------------------------------------------------===//
+
+::mlir::LogicalResult ScatterOp::verify() {
+  // TODO Sprint 2: verify src exists as conduit.create, all dsts exist,
+  //               N >= 1, no cascade channels in src/dsts.
+  return ::mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// GatherOp
+//===----------------------------------------------------------------------===//
+
+::mlir::LogicalResult GatherOp::verify() {
+  // TODO Sprint 2: verify dst exists as conduit.create, all srcs exist,
+  //               N >= 1, no cascade channels in srcs/dst.
+  return ::mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// TransposeOp
+//===----------------------------------------------------------------------===//
+
+::mlir::LogicalResult TransposeOp::verify() {
+  // TODO Sprint 2: verify N*M <= 32 (packet ID budget), static shapes only.
+  return ::mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RegisterBuffersOp
+//===----------------------------------------------------------------------===//
+
+::mlir::LogicalResult RegisterBuffersOp::verify() {
+  // TODO Sprint 2: verify buffers are aie.buffer or aie.external_buffer,
+  //               channel exists as conduit.create, count matches depth.
+  return ::mlir::success();
 }
 
 //===----------------------------------------------------------------------===//

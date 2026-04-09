@@ -525,6 +525,7 @@ def ConduitInferRates : Pass<"conduit-infer-rates", "::mlir::ModuleOp"> {
 
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
   ];
 }
 
@@ -638,6 +639,57 @@ def ConduitCheckOrdering : Pass<"conduit-check-ordering", "::mlir::ModuleOp"> {
 
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Operator Fusion — conduit-fuse-operators
+//===----------------------------------------------------------------------===//
+
+def ConduitFuseOperators : Pass<"conduit-fuse-operators", "::mlir::ModuleOp"> {
+  let summary = "Spatial IRON operator fusion: replace LPDDR5 intermediates with shared-memory conduits";
+  let description = [{
+    Given two aie.device ops in one module (e.g., GEMV at col=0 and ReLU at
+    col=1), eliminates the LPDDR5 intermediate by:
+
+      1. Identifying the output channel of device A (conduit.create whose only
+         consumers are shim tiles — exits to LPDDR5).
+      2. Identifying the input channel of device B (conduit.create whose
+         producer tile is a shim tile — reads from LPDDR5).
+      3. Matching channels by element_type (unambiguous for single-output/
+         single-input operators).
+      4. Offsetting all tile coordinates in device B by +(maxColA + 1) to
+         ensure no tile coordinate conflicts when Pass C processes both devices.
+      5. Emitting a module-level conduit.create @fused_intermediate_N with:
+           routing_mode = "any"  (resolved to shared-memory by --conduit-infer-modes)
+           depth = 0             (sentinel; resolved by --conduit-depth-promote)
+           producer_tile from A's matched channel
+           consumer_tiles from B's matched channel (after offset)
+           element_type and producer_rates/consumer_rates propagated from both channels
+      6. Deleting the matched conduit.create ops and their aie.shim_dma_allocation ops.
+      7. Deleting runtime aiex.dma_configure_task_for/start/await/free ops for the
+         intermediate channels (shared-memory path needs no runtime sequence ops).
+
+    The result is a single-PDI design where the GEMV output flows directly to
+    the ReLU input through shared tile memory (zero DMA channels, zero shim
+    crossings for the intermediate).
+
+    Prerequisites: --objectfifo-to-conduit (Pass A must run first).
+
+    Run before: --conduit-infer-modes --conduit-depth-promote --conduit-to-dma.
+
+    Limitations (POC):
+      - Tile column offset is simple +maxColA+1 (no multi-operator chain optimization).
+      - Handles 2 devices; N>2 is future work.
+      - Shared-memory routing assumes col distance == 1; MemTile relay for
+        larger distances is not implemented.
+  }];
+
+  let constructor = "xilinx::conduit::createConduitFuseOperatorsPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
   ];
 }
 
