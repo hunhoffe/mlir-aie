@@ -1193,11 +1193,34 @@ LogicalResult ConfigureCascadeOp::verify() {
 // PutCascadeOp
 //===----------------------------------------------------------------------===//
 
+// Compute the bit width of a cascade type without requiring the enclosing
+// op's data layout to register every element type (e.g. bf16).
+// For memref<N x T>, returns N * T.getIntOrFloatBitWidth().
+// Falls back to DataLayout query for non-memref or non-scalar element types.
+static std::optional<uint64_t> cascadeTypeBits(Type type) {
+  if (auto memTy = mlir::dyn_cast<MemRefType>(type)) {
+    Type elem = memTy.getElementType();
+    if (elem.isIntOrFloat()) {
+      uint64_t elemBits = elem.getIntOrFloatBitWidth();
+      uint64_t numElems = 1;
+      for (int64_t d : memTy.getShape())
+        numElems *= static_cast<uint64_t>(d);
+      return numElems * elemBits;
+    }
+  }
+  return std::nullopt; // caller falls back to DataLayout
+}
+
 LogicalResult PutCascadeOp::verify() {
   const auto &targetModel = getTargetModel(*this);
   Type type = getCascadeValue().getType();
-  DataLayout dataLayout = DataLayout::closest(*this);
-  auto bits = dataLayout.getTypeSizeInBits(type);
+  uint64_t bits;
+  if (auto directBits = cascadeTypeBits(type)) {
+    bits = *directBits;
+  } else {
+    DataLayout dataLayout = DataLayout::closest(*this);
+    bits = dataLayout.getTypeSizeInBits(type);
+  }
   auto archbits = targetModel.getAccumulatorCascadeSize();
   if (bits != archbits)
     return emitOpError("type must match architecture cascade width (")
@@ -1213,8 +1236,13 @@ LogicalResult PutCascadeOp::verify() {
 LogicalResult GetCascadeOp::verify() {
   const auto &targetModel = getTargetModel(*this);
   Type type = getCascadeValue().getType();
-  DataLayout dataLayout = DataLayout::closest(*this);
-  auto bits = dataLayout.getTypeSizeInBits(type);
+  uint64_t bits;
+  if (auto directBits = cascadeTypeBits(type)) {
+    bits = *directBits;
+  } else {
+    DataLayout dataLayout = DataLayout::closest(*this);
+    bits = dataLayout.getTypeSizeInBits(type);
+  }
   if (isa<AIE1TargetModel>(targetModel)) {
     if (bits != 384)
       return emitOpError("must be a 384-bit type");
