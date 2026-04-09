@@ -42,6 +42,8 @@
 
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -1227,9 +1229,16 @@ parseTileCoordForVerifier(llvm::StringRef s) {
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult RegisterBuffersOp::verify() {
-  // TODO Sprint 2: verify buffers are aie.buffer or aie.external_buffer,
-  //               channel exists as conduit.create, count matches depth.
-  // Deferred: provenance check requires AIE dialect headers (dependency issue).
+  for (Value buf : getBuffers()) {
+    Operation *defOp = buf.getDefiningOp();
+    if (!defOp ||
+        (!mlir::isa<AIE::BufferOp>(defOp) &&
+         !mlir::isa<AIE::ExternalBufferOp>(defOp)))
+      return emitOpError(
+                 "buffer operand must be defined by aie.buffer or "
+                 "aie.external_buffer, got ")
+             << (defOp ? defOp->getName().getStringRef() : "block argument");
+  }
   return ::mlir::success();
 }
 
