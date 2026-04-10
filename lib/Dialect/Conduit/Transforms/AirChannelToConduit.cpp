@@ -1423,17 +1423,32 @@ struct AirChannelToConduitPass
       op->erase();
 
     // Phase 5: erase air.channel declaration ops (after all put/get refs are gone).
+    //
+    // After Phase 3+4, the only remaining references to a channel symbol are
+    // in conduit ops (conduit.put_memref_async {name = @chan}, etc.) —
+    // symbolKnownUseEmpty counts these, but they are EXPECTED: conduit.create
+    // @chan already exists and takes over as the canonical symbol definition
+    // once air.channel @chan is erased.  Erasing air.channel while conduit ops
+    // still reference @chan is safe because conduit.create @chan is the new
+    // authoritative definition.
+    //
+    // We only error if old AIR put/get ops still reference the channel, which
+    // indicates a rewrite failure (not the normal conduit-reference case).
     for (mlir::Operation *op : channelDeclsToErase) {
       if (auto symOp = mlir::dyn_cast<mlir::SymbolOpInterface>(op)) {
         llvm::StringRef name = symOp.getNameAttr().getValue();
-        bool symbolKnownUseEmpty = mlir::SymbolTable::symbolKnownUseEmpty(
-            symOp.getNameAttr(), scopeOp);
-        if (!symbolKnownUseEmpty) {
+        // Check for surviving AIR op uses only — conduit uses are expected.
+        bool hasAirUses = false;
+        scopeOp->walk([&](mlir::Operation *user) {
+          if ((isAirChannelPut(user) || isAirChannelGet(user)) &&
+              getChanName(user) == name)
+            hasAirUses = true;
+        });
+        if (hasAirUses) {
           op->emitError("air-channel-to-conduit: channel decl '")
               << name
               << "' has remaining uses after rewrite — cannot erase";
           signalPassFailure();
-          // Do NOT erase — erasing with remaining uses corrupts the IR.
           continue;
         }
       }
