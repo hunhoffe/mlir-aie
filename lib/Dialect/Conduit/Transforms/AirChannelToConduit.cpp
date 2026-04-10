@@ -715,6 +715,8 @@ struct AirChannelToConduitPass
 
       // Patch producer_tile and consumer_tiles when tile coordinates are
       // available from aie.core enclosure (hierarchy-produced IR).
+      // Pass C requires these to allocate locks and flows on the correct tiles.
+      // DEFERRED-13: structural removal of these attrs deferred to Sprint 5.
       if (auto createTypedOp = mlir::dyn_cast<Create>(createOp)) {
         auto prodIt = channelProducerTile.find(name);
         if (prodIt != channelProducerTile.end()) {
@@ -811,14 +813,12 @@ struct AirChannelToConduitPass
             channelCreateOps[dstName] = consCreate.getOperation();
           }
 
-          // Build srcs and dsts symbol ref arrays for conduit.link.
-          llvm::SmallVector<mlir::Attribute> srcsAttrs = {
-              mlir::FlatSymbolRefAttr::get(ctx, name)};
+          // Build dsts symbol ref array for conduit.scatter.
           llvm::SmallVector<mlir::Attribute> dstsAttrs;
           for (auto &dst : dstNames)
             dstsAttrs.push_back(mlir::FlatSymbolRefAttr::get(ctx, dst));
 
-          // Emit conduit.distribute.
+          // Emit conduit.scatter.
           // Determine relay MemTile from consumer tile column.
           std::string memtileStr;
           if (!consumerCoords.empty()) {
@@ -831,13 +831,14 @@ struct AirChannelToConduitPass
             if (prodIt2 != channelProducerTile.end())
               memtileStr = findMemTileInColumn(createOp, prodIt2->second.first);
           }
-          builder.create<Distribute>(
+          builder.create<ScatterOp>(
               loc,
-              mlir::ArrayAttr::get(ctx, srcsAttrs),
+              mlir::FlatSymbolRefAttr::get(ctx, name),
               mlir::ArrayAttr::get(ctx, dstsAttrs),
-              /*memtile=*/mlir::StringAttr::get(ctx, memtileStr),
+              mlir::StringAttr::get(ctx, memtileStr),
               /*offsets=*/mlir::DenseI64ArrayAttr{},
-              /*lock_id=*/mlir::IntegerAttr{});
+              /*lock_id=*/nullptr,
+              /*sync_mode=*/SyncModeAttr{});
         }
       }
     }
@@ -894,14 +895,14 @@ struct AirChannelToConduitPass
       }
     }
 
-    // Phase 2c: create shim aie.tile ops and conduit.register_external_buffers
+    // Phase 2c: create shim aie.tile ops and conduit.register_buffers
     // for channels with shim endpoints (producer or consumer at row 0).
     //
     // After --air-hierarchy-to-aie, shim tiles (row 0) are NOT created by
     // that pass — only compute tiles (row >= 2) and MemTiles (row 1) exist.
     // Pass C needs shim tiles for shim DMA allocation, so we create them here.
-    // We also emit conduit.register_external_buffers to associate the
-    // aie.external_buffer SSA values with the shim tile, enabling Pass C to
+    // We also emit conduit.register_buffers to associate the
+    // aie.external_buffer SSA values with the channel, enabling Pass C to
     // build shim DMA BD chains.
     {
       AIE::DeviceOp deviceOp;
@@ -942,13 +943,10 @@ struct AirChannelToConduitPass
           }
         }
 
-        // Emit conduit.register_external_buffers for shim channels.
+        // Emit conduit.register_buffers for shim channels.
         for (auto &[name, bufs] : shimExtBufs) {
-          auto coordIt = shimTileCoords.find(name);
-          if (coordIt == shimTileCoords.end() || bufs.empty())
+          if (bufs.empty())
             continue;
-
-          auto [col, row] = coordIt->second;
 
           // Deduplicate external buffers (same channel may have multiple
           // put/get ops referencing the same buffer).
@@ -967,10 +965,10 @@ struct AirChannelToConduitPass
             builder.setInsertionPointToEnd(
                 &deviceOp.getBodyRegion().front());
 
-          builder.create<RegisterExternalBuffers>(
+          builder.create<RegisterBuffersOp>(
               deviceOp.getLoc(),
               mlir::FlatSymbolRefAttr::get(ctx, name),
-              mlir::DenseI64ArrayAttr::get(ctx, {col, row}), uniqueBufs);
+              uniqueBufs);
         }
       }
     }
@@ -1034,7 +1032,7 @@ struct AirChannelToConduitPass
       // Erase duplicate conduit.register_external_buffers ops.
       if (!channelMergeMap.empty()) {
         llvm::SmallVector<mlir::Operation *> toErase;
-        scopeOp->walk([&](RegisterExternalBuffers regOp) {
+        scopeOp->walk([&](RegisterBuffersOp regOp) {
           auto nameAttr =
               mlir::cast<mlir::FlatSymbolRefAttr>(
                   regOp->getAttr("name"));

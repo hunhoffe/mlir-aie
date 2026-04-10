@@ -28,10 +28,9 @@
 // CHECK: conduit.create @bcast_c1
 // CHECK-SAME: consumer_tiles = array<i64: 1, 3>
 
-// Distribute op.
-// CHECK: conduit.distribute
-// CHECK-SAME: dsts = [@bcast_c0, @bcast_c1]
-// CHECK-SAME: srcs = [@bcast]
+// Scatter op (Sprint 4: distribute renamed to scatter, srcs array→src single).
+// CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0, @bcast_c1]
+// CHECK-SAME: memtile = "tile(0,1)"
 
 // No residual air ops.
 // CHECK-NOT: air.channel

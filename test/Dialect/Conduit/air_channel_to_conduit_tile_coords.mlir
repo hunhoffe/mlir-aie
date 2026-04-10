@@ -5,7 +5,8 @@
 // When air.channel.put/get ops appear inside aie.core regions (i.e., after
 // --air-hierarchy-to-aie), Pass B propagates the enclosing core's tile
 // coordinates into the conduit.create op's producer_tile and consumer_tiles
-// attributes.  Without these, Pass C cannot allocate buffers/locks/flows.
+// attributes.  Pass C requires these to allocate locks and flows on the
+// correct tiles.
 //
 // Input: hierarchy-produced IR with:
 //   - aie.device(xcve2802) containing two tiles

@@ -37,16 +37,16 @@
 // CHECK: conduit.create @bcast_c1
 // CHECK-SAME: consumer_tiles = array<i64: 3, 2>
 
-// Distribute op.
-// CHECK: conduit.distribute
-// CHECK-SAME: dsts = [@bcast_c0, @bcast_c1]
-// CHECK-SAME: srcs = [@bcast]
+// Scatter op (Sprint 4: distribute renamed to scatter, srcs array→src single).
+// CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0, @bcast_c1]
+// CHECK-SAME: memtile = "tile(2,1)"
 
 // No residual air.channel declarations.
 // CHECK-NOT: air.channel {
 
 module {
   aie.device(xcve2302) {
+    %tile_2_1 = aie.tile(2, 1)
     %tile_2_2 = aie.tile(2, 2)
     %tile_3_2 = aie.tile(3, 2)
     %buf_2 = aie.buffer(%tile_2_2) {sym_name = "buf_2"} : memref<16xi32>
