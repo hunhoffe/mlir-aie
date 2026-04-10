@@ -10,11 +10,9 @@
 // CHECK:     conduit.create @link2
 // CHECK:     conduit.create @link3
 // CHECK:     conduit.create @link4
-// CHECK:     conduit.join
-// CHECK-SAME:   dsts = [@link4]
+// CHECK:     conduit.gather{srcs = [@link1, @link2, @link3], dst = @link4
 // CHECK-SAME:   memtile = "tile(2,1)"
 // CHECK-SAME:   offsets = array<i64: 0, 16, 36>
-// CHECK-SAME:   srcs = [@link1, @link2, @link3]
 // CHECK-NOT: aie.objectfifo
 // CHECK-NOT: aie.objectfifo.link
 

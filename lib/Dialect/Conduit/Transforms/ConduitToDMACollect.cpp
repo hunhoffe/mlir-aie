@@ -579,12 +579,29 @@ void collectPhase(ConduitToDMAState &state) {
   }
 
   // -----------------------------------------------------------------------
-  // Phase 1.5: Collect conduit.register_external_buffers.
+  // Phase 1.5b: Collect external buffers from conduit.register_buffers.
   //
-  // Records the external buffer SSA values and tile coordinates into
-  // ConduitInfo so that Phase 3 can skip internal buffer allocation and
-  // Phase 5.5 can build the shim_dma BD chain using the external buffers.
+  // Pass A (Sprint 3+) emits conduit.register_buffers for external buffers
+  // (replacing the old conduit.register_external_buffers).  The walk at
+  // Phase 1.5 above handles internal buffers (aie.buffer); this walk
+  // handles external buffers (aie.external_buffer) from the same op type.
   // -----------------------------------------------------------------------
+  module.walk([&](RegisterBuffersOp regOp) {
+    llvm::StringRef conduitName = regOp.getName();
+    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    if (!cinfo)
+      return;
+    // Record external buffer SSA values.
+    // RegisterBuffersOp unifies internal and external buffers; distinguish
+    // by checking the defining op type.
+    for (mlir::Value buf : regOp.getBuffers()) {
+      if (buf.getDefiningOp<AIE::ExternalBufferOp>())
+        cinfo->externalBuffers.push_back(buf);
+    }
+  });
+
+  // Legacy: collect conduit.register_external_buffers (Pass B still emits
+  // these until its Sprint 3 migration is complete).
   module.walk([&](RegisterExternalBuffers regOp) {
     llvm::StringRef conduitName = regOp.getName();
     ConduitInfo *cinfo = state.lookupConduit(conduitName);
@@ -594,10 +611,8 @@ void collectPhase(ConduitToDMAState &state) {
           "conduit '" + conduitName.str() + "'; ignoring");
       return;
     }
-    // Record external buffer SSA values.
     for (mlir::Value extBuf : regOp.getExternalBuffers())
       cinfo->externalBuffers.push_back(extBuf);
-    // Record the tile coordinate.
     auto tc = regOp.getTileCoord();
     if (tc.size() >= 2)
       cinfo->externalBufferTileCoord = {tc[0], tc[1]};

@@ -751,12 +751,17 @@ struct ObjectFifoToConduitPass
       mlir::ArrayAttr srcsArr = mlir::ArrayAttr::get(ctx, srcAttrs);
       mlir::ArrayAttr dstsArr = mlir::ArrayAttr::get(ctx, dstAttrs);
       mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
-      if (isDistribute)
-        builder.create<Distribute>(loc, srcsArr, dstsArr, memtileAttr,
-                                   offsetsAttr, /*lock_id=*/nullptr);
-      else
-        builder.create<Join>(loc, srcsArr, dstsArr, memtileAttr,
-                             offsetsAttr, /*lock_id=*/nullptr);
+      if (isDistribute) {
+        auto srcRef = mlir::cast<mlir::FlatSymbolRefAttr>(srcAttrs[0]);
+        builder.create<ScatterOp>(loc, srcRef, dstsArr, memtileAttr,
+                                  offsetsAttr, /*lock_id=*/nullptr,
+                                  /*sync_mode=*/SyncModeAttr{});
+      } else {
+        auto dstRef = mlir::cast<mlir::FlatSymbolRefAttr>(dstAttrs[0]);
+        builder.create<GatherOp>(loc, srcsArr, dstRef, memtileAttr,
+                                 offsetsAttr, /*lock_id=*/nullptr,
+                                 /*sync_mode=*/SyncModeAttr{});
+      }
 
       op.erase();
     });
@@ -1381,12 +1386,12 @@ struct ObjectFifoToConduitPass
       op.erase();
 
     // Lower aie.objectfifo.register_external_buffers →
-    // conduit.register_external_buffers.
+    // conduit.register_buffers.
     //
     // ORDERING: must run BEFORE Phase 4.5's replaceAllSymbolUses() because
     // that rewrite changes @fifo_name → @fifo_name_shim_alloc in all
-    // FlatSymbolRefAttr references (including the register_external_buffers
-    // op's objFifo_name attribute).  We need the original name to match the
+    // FlatSymbolRefAttr references (including the register_buffers
+    // op's name attribute).  We need the original name to match the
     // conduit.create emitted in Phase 2.
     //
     // Collects ops first to avoid walk-while-erase.
@@ -1400,18 +1405,12 @@ struct ObjectFifoToConduitPass
       // Extract conduit name from the objectfifo symbol reference.
       std::string name = extBufOp.getObjFifoName().str();
 
-      // Extract shim tile coordinates.
-      auto shimTile =
-          mlir::cast<AIE::TileOp>(extBufOp.getTile().getDefiningOp());
-      llvm::SmallVector<int64_t> tileCoord = {shimTile.getCol(),
-                                               shimTile.getRow()};
-
       // Collect external buffer SSA values.
       llvm::SmallVector<mlir::Value> extBufs(extBufOp.getExternalBuffers());
 
-      builder.create<RegisterExternalBuffers>(
+      builder.create<RegisterBuffersOp>(
           extBufOp.getLoc(), mlir::FlatSymbolRefAttr::get(ctx, name),
-          mlir::DenseI64ArrayAttr::get(ctx, tileCoord), extBufs);
+          extBufs);
 
       extBufOp.erase();
     }
@@ -1516,7 +1515,7 @@ struct ObjectFifoToConduitPass
           deviceOp.walk([&](PutMemrefAsync op)       { revertIfRenamed(op); });
           deviceOp.walk([&](GetMemrefAsync op)       { revertIfRenamed(op); });
           deviceOp.walk([&](WaitWindow op)           { revertIfRenamed(op); });
-          deviceOp.walk([&](RegisterExternalBuffers op) { revertIfRenamed(op); });
+          deviceOp.walk([&](RegisterBuffersOp op) { revertIfRenamed(op); });
           // Also revert srcs/dsts arrays on distribute/join/forward ops.
           // replaceAllSymbolUses renames FlatSymbolRefAttr elements inside
           // SymbolRefArrayAttr arrays as well.
@@ -1537,23 +1536,17 @@ struct ObjectFifoToConduitPass
               return arr;
             return mlir::ArrayAttr::get(ctx, newAttrs);
           };
-          deviceOp.walk([&](Distribute op) {
-            auto newSrcs = revertArray(op.getSrcs());
+          deviceOp.walk([&](ScatterOp op) {
+            if (op.getSrcAttr() == allocRef)
+              op.setSrcAttr(origRef);
             auto newDsts = revertArray(op.getDsts());
-            if (newSrcs != op.getSrcs()) op.setSrcsAttr(newSrcs);
             if (newDsts != op.getDsts()) op.setDstsAttr(newDsts);
           });
-          deviceOp.walk([&](Join op) {
+          deviceOp.walk([&](GatherOp op) {
             auto newSrcs = revertArray(op.getSrcs());
-            auto newDsts = revertArray(op.getDsts());
             if (newSrcs != op.getSrcs()) op.setSrcsAttr(newSrcs);
-            if (newDsts != op.getDsts()) op.setDstsAttr(newDsts);
-          });
-          deviceOp.walk([&](Forward op) {
-            auto newSrcs = revertArray(op.getSrcs());
-            auto newDsts = revertArray(op.getDsts());
-            if (newSrcs != op.getSrcs()) op.setSrcsAttr(newSrcs);
-            if (newDsts != op.getDsts()) op.setDstsAttr(newDsts);
+            if (op.getDstAttr() == allocRef)
+              op.setDstAttr(origRef);
           });
         }
       }
