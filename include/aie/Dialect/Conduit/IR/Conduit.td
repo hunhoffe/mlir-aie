@@ -356,11 +356,6 @@ def Conduit_Create : Conduit_Op<"create"> {
     - producer_tile        : I64 array [col, row] of the producer tile
     - consumer_tiles       : flat I64 array [col0, row0, col1, row1, ...] for
                              each non-shim consumer tile in order (row > 0)
-    - shim_consumer_tiles  : flat I64 array [col0, row0, ...] for each shim
-                             (row == 0) consumer tile in order.  Shim tiles
-                             are DMA endpoints with no local memory; they
-                             receive aie.shim_dma_allocation + aie.flow
-                             rather than aie.buffer + aie.lock.
     - element_type    : TypeAttr — actual element memref type (e.g. memref<10xi32>)
                         Pass C uses this for aie.buffer allocation; never defaults to i32.
     - depth           : I64Attr — double-buffering depth
@@ -389,33 +384,12 @@ def Conduit_Create : Conduit_Op<"create"> {
                             == sum(consumer_rates) * len(producer_rates)
                         Note: the weaker condition sum(P)==sum(C) only handles
                         equal-period actors (q==r) and is NOT sufficient in general.
-                        Legacy note: access_pattern is a backward-compatible alias
-                        for per-phase consumer window sizes and does not carry an
-                        explicit producer rate.  New code should use producer_rates
-                        + consumer_rates for full CSDF semantics.
 
     Example:
       conduit.create @c1 {slot_elems = 10 : i64,
                           producer_tile = array<i64: 0, 2>,
-                          shim_consumer_tiles = array<i64: 0, 0>,
                           element_type = memref<10xi32>,
                           depth = 1 : i64}
-
-    Cyclostatic (CSDF) example — consumer alternates between acquiring 1 then 2:
-      conduit.create @csdf_fifo {slot_elems = 4 : i64,
-                                 producer_tile = array<i64: 2, 2>,
-                                 consumer_tiles = array<i64: 2, 3>,
-                                 element_type = memref<i32>,
-                                 depth = 4 : i64,
-                                 access_pattern = array<i64: 1, 2, 1>}
-
-    The access_pattern encodes the cyclostatic consume sequence: the consumer
-    acquires access_pattern[0] elements on the first iteration, access_pattern[1]
-    on the second, and so on, cycling back to index 0.  Pass C uses this to
-    generate lock acquire/release sequences with the correct varying counts
-    rather than the uniform count used in the SDF case.
-    When access_pattern is absent the conduit is treated as uniform SDF with
-    count = slot_elems / depth per iteration.
 
     Full CSDF example with explicit producer and consumer rates:
       conduit.create @csdf_full {slot_elems = 6 : i64,
@@ -447,18 +421,11 @@ def Conduit_Create : Conduit_Op<"create"> {
                        OptionalAttr<I64Attr>:$window_size,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_tile,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_tiles,
-                       OptionalAttr<DenseI64ArrayAttr>:$shim_consumer_tiles,
                        OptionalAttr<TypeAttr>:$element_type,
                        OptionalAttr<I64Attr>:$depth,
-                       OptionalAttr<DenseI64ArrayAttr>:$access_pattern,
                        OptionalAttr<Conduit_RoutingModeAttr>:$routing_mode,
                        OptionalAttr<DenseI64ArrayAttr>:$producer_rates,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_rates,
-                       // alloc_tile: optional MemTile coordinate [col, row] for
-                       // hardware relay allocation.  No verifier checks tile validity.
-                       // Pass A guarantees a valid MemTile coordinate; Pass C will
-                       // fail at lookupTileByCoord if wrong.
-                       OptionalAttr<DenseI64ArrayAttr>:$alloc_tile,
                        // bd_repeat: BD-level unroll factor within one chain pass.
                        // When present, Pass C sets effectiveBDs = depth * bd_repeat;
                        // each BD in the chain fires bd_repeat times before advancing.
@@ -524,37 +491,6 @@ def Conduit_Create : Conduit_Op<"create"> {
     ::llvm::StringRef getName() { return getSymName(); }
     ::mlir::StringAttr getNameAttr() { return getSymNameAttr(); }
   }];
-}
-
-def Conduit_RegisterExternalBuffers : Conduit_Op<"register_external_buffers"> {
-  let summary = "register host-side external buffers with a shim-DMA conduit";
-  let description = [{
-    Registers external memory buffers (typically host-side DDR allocations) with
-    a shim DMA conduit endpoint.  The shim DMA will use these buffers instead of
-    on-chip tile memory for the data transfer.
-
-    This covers the aie.objectfifo.register_external_buffers pattern where
-    external buffers (from aie.external_buffer) are bound to a shim tile's DMA
-    for host ↔ device data movement.
-
-    Attributes:
-    - name       : conduit channel name (must match a conduit.create)
-    - tile_coord : [col, row] of the shim tile these buffers are bound to
-
-    Operands:
-    - external_buffers : one or more memref SSA values from aie.external_buffer
-
-    Example:
-      %buf0 = aie.external_buffer : memref<512xi16>
-      %buf1 = aie.external_buffer : memref<512xi16>
-      conduit.register_external_buffers(%buf0, %buf1)
-          {name = "shim_chan", tile_coord = array<i64: 0, 0>}
-          : (memref<512xi16>, memref<512xi16>)
-  }];
-  let arguments = (ins FlatSymbolRefAttr:$name,
-                       DenseI64ArrayAttr:$tile_coord,
-                       Variadic<AnyMemRef>:$external_buffers);
-  let assemblyFormat = "`(` $external_buffers `)` attr-dict `:` `(` type($external_buffers) `)`";
 }
 
 // ---------------------------------------------------------------------------
@@ -816,114 +752,7 @@ def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {
 }
 
 // ---------------------------------------------------------------------------
-// Hardware structure ops
-// ---------------------------------------------------------------------------
-
-def Conduit_Distribute : Conduit_Op<"distribute"> {
-  let summary = "fan-out: relay one source conduit to N consumer aliases via a MemTile";
-  let description = [{
-    Represents the 1:N distribute pattern: a single source conduit is relayed
-    through a MemTile to N destination conduit aliases.  Pass C allocates S2MM
-    on the MemTile for the source and N MM2S channels for the destinations.
-
-    The 'memtile' attribute is a coordinate hint ("tile(col,row)") indicating
-    which MemTile tile performs the relay.  Pass C uses this to locate the
-    correct tile SSA value in the device body.
-
-    The 'offsets' attribute, when present, gives a per-destination byte offset
-    within the source buffer (one entry per destination).
-
-    The 'lock_id', when present, passes through to generated AIE ops.
-
-    Invariants (enforced by verifier):
-    - srcs must contain exactly 1 name
-    - dsts must contain at least 1 name
-    - when offsets is non-empty, offsets.size() == dsts.size()
-    - cascade-mode conduits may not appear in srcs or dsts
-
-    Example:
-      conduit.distribute {srcs = ["of_in"],
-                          dsts = ["of_out0", "of_out1"],
-                          memtile = "tile(0,1)",
-                          offsets = array<i64: 0, 1024>}
-  }];
-  let arguments = (ins SymbolRefArrayAttr:$srcs,
-                       SymbolRefArrayAttr:$dsts,
-                       StrAttr:$memtile,
-                       OptionalAttr<DenseI64ArrayAttr>:$offsets,
-                       OptionalAttr<I64Attr>:$lock_id);
-  let assemblyFormat = "attr-dict";
-  let hasVerifier = 1;
-}
-
-def Conduit_Join : Conduit_Op<"join"> {
-  let summary = "fan-in: relay N source conduits into one destination via a MemTile";
-  let description = [{
-    Represents the N:1 join pattern: N source conduits are relayed through a
-    MemTile into a single destination conduit.  Pass C allocates S2MM channels
-    on the MemTile for each source and a single MM2S for the destination.
-
-    The 'memtile' attribute is a coordinate hint ("tile(col,row)") identifying
-    the relay MemTile.
-
-    The 'offsets' attribute, when present, gives a per-source byte offset
-    within the destination buffer (one entry per source).
-
-    Invariants (enforced by verifier):
-    - srcs must contain at least 1 name
-    - dsts must contain exactly 1 name
-    - when offsets is non-empty, offsets.size() == srcs.size()
-    - cascade-mode conduits may not appear in srcs or dsts
-
-    Example:
-      conduit.join {srcs = ["in0", "in1"],
-                    dsts = ["of_out"],
-                    memtile = "tile(0,1)",
-                    offsets = array<i64: 0, 512>}
-  }];
-  let arguments = (ins SymbolRefArrayAttr:$srcs,
-                       SymbolRefArrayAttr:$dsts,
-                       StrAttr:$memtile,
-                       OptionalAttr<DenseI64ArrayAttr>:$offsets,
-                       OptionalAttr<I64Attr>:$lock_id);
-  let assemblyFormat = "attr-dict";
-  let hasVerifier = 1;
-}
-
-def Conduit_Forward : Conduit_Op<"forward"> {
-  let summary = "relay: forward exactly one source conduit to one destination via a tile";
-  let description = [{
-    Represents the 1:1 forward (pass-through) pattern: a single source conduit
-    is relayed through an intermediate tile to a single destination conduit,
-    with no splitting or joining.
-
-    The 'memtile' attribute identifies the relay tile (may be MemTile or
-    compute tile).
-
-    Invariants (enforced by verifier):
-    - srcs must contain exactly 1 name
-    - dsts must contain exactly 1 name
-
-    Example:
-      conduit.forward {srcs = ["in_fwd"],
-                       dsts = ["out_fwd"],
-                       memtile = "tile(0,1)"}
-  }];
-  let arguments = (ins SymbolRefArrayAttr:$srcs,
-                       SymbolRefArrayAttr:$dsts,
-                       StrAttr:$memtile,
-                       OptionalAttr<DenseI64ArrayAttr>:$offsets,
-                       OptionalAttr<I64Attr>:$lock_id);
-  let assemblyFormat = "attr-dict";
-  let hasVerifier = 1;
-}
-
-// ---------------------------------------------------------------------------
-// Sprint 1 relay ops — scatter, gather, transpose, register_buffers
-//
-// These are the redesigned relay ops that will eventually replace
-// conduit.distribute / conduit.join / conduit.forward above.
-// During the migration period both old and new ops coexist.
+// Relay ops — scatter, gather, transpose, register_buffers
 // ---------------------------------------------------------------------------
 
 def Conduit_ScatterOp : Conduit_Op<"scatter", []> {

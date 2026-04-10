@@ -8,10 +8,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Phase 5: Lower conduit.distribute/join/forward → MemTile DMA BD chain.
-//   Distribute (1 src → N dsts): S2MM ingests full buffer, N MM2S channels.
-//   Join (N srcs → 1 dst): N S2MM channels, one MM2S output.
-//   Forward (1 src → 1 dst): treated as distribute with 1 destination.
+// Phase 5: Lower conduit.scatter/gather/transpose → MemTile DMA BD chain.
+//   Scatter (1 src → N dsts): S2MM ingests full buffer, N MM2S channels.
+//   Gather (N srcs → 1 dst): N S2MM channels, one MM2S output.
+//   Transpose: static N:M redistribution via MemTile.
 //
 // Phase 5.5: Generate aie.mem BD chains for simple (non-link) conduits.
 //   Case C: producer MM2S, consumer S2MM.
@@ -36,24 +36,6 @@ void linkPhase(ConduitToDMAState &state) {
   (void)ctx; // suppress unused warning when not used in all paths
 
   // Collect ALL link source and destination names for Phase 5.5 skip logic.
-  state.module.walk([&](Distribute op) {
-    for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    for (auto d : op.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
-  });
-  state.module.walk([&](Join op) {
-    for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    for (auto d : op.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
-  });
-  state.module.walk([&](Forward op) {
-    for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    for (auto d : op.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
-  });
   state.module.walk([&](ScatterOp op) {
     state.linkSrcNames.insert(op.getSrc());
     for (auto d : op.getDsts())
@@ -66,9 +48,9 @@ void linkPhase(ConduitToDMAState &state) {
   });
 
   // -----------------------------------------------------------------------
-  // Phase 5: Lower conduit.distribute / conduit.join / conduit.forward.
+  // Phase 5: Lower conduit.scatter / conduit.gather / conduit.transpose.
   //
-  // LinkAdapter unifies the three op types so the lowering body can be shared.
+  // LinkAdapter unifies the relay op types so the lowering body can be shared.
   // -----------------------------------------------------------------------
 
   struct LinkAdapter {
@@ -76,7 +58,7 @@ void linkPhase(ConduitToDMAState &state) {
     mlir::ArrayAttr srcs;
     mlir::ArrayAttr dsts;
     llvm::StringRef memtileStr;
-    bool isDistribute; // true for Distribute + Forward; false for Join
+    bool isDistribute; // true for Scatter; false for Gather
     std::optional<llvm::ArrayRef<int64_t>> offsets;
 
     mlir::Location getLoc() const { return op->getLoc(); }
@@ -91,36 +73,6 @@ void linkPhase(ConduitToDMAState &state) {
   llvm::SmallVector<mlir::Operation *> linkOpsToErase;
   llvm::SmallVector<LinkAdapter> linkAdapters;
 
-  state.module.walk([&](Distribute distOp) {
-    LinkAdapter a;
-    a.op = distOp.getOperation();
-    a.srcs = distOp.getSrcs();
-    a.dsts = distOp.getDsts();
-    a.memtileStr = distOp.getMemtile();
-    a.isDistribute = true;
-    a.offsets = distOp.getOffsets();
-    linkAdapters.push_back(a);
-  });
-  state.module.walk([&](Join joinOp) {
-    LinkAdapter a;
-    a.op = joinOp.getOperation();
-    a.srcs = joinOp.getSrcs();
-    a.dsts = joinOp.getDsts();
-    a.memtileStr = joinOp.getMemtile();
-    a.isDistribute = false;
-    a.offsets = joinOp.getOffsets();
-    linkAdapters.push_back(a);
-  });
-  state.module.walk([&](Forward fwdOp) {
-    LinkAdapter a;
-    a.op = fwdOp.getOperation();
-    a.srcs = fwdOp.getSrcs();
-    a.dsts = fwdOp.getDsts();
-    a.memtileStr = fwdOp.getMemtile();
-    a.isDistribute = true; // forward = distribute with 1 dst
-    a.offsets = fwdOp.getOffsets();
-    linkAdapters.push_back(a);
-  });
   state.module.walk([&](ScatterOp scatterOp) {
     LinkAdapter a;
     a.op = scatterOp.getOperation();

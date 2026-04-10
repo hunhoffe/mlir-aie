@@ -3,7 +3,7 @@
 // 10 cases that must be rejected by the Conduit verifier or analysis passes:
 //   Case 1:  M6 CSDF rate imbalance (dialect verifier)
 //   Case 2:  M7 CSDF buffer capacity insufficient (dialect verifier)
-//   Case 3:  Cascade value width wrong — not 384 or 512 bits (dialect verifier)
+//   Case 3:  (deferred — cascade src in scatter verifier not yet on ScatterOp)
 //   Case 4:  Cascade depth > 1 rejected by --conduit-to-dma (Phase 1)
 //   Case 5:  Mixed-mode liveness violation (--conduit-check-liveness, P2-B)
 //   Case 6:  Convergence hazard — same source port, same dest, different IDs
@@ -12,13 +12,13 @@
 //            (--conduit-check-pairing, M9)
 //   Case 8:  Ambiguous cascade — two get_cascade for same name
 //            (--conduit-check-pairing, M9)
-//   Case 9:  Shared-memory conduit with non-adjacent alloc_tile (--conduit-to-dma)
+//   Case 9:  (removed — alloc_tile was removed from conduit.create)
 //   Case 10: M8a double-release — cumulative release exceeds acquired count
 //            (dialect verifier)
 //
 // All runs use FileCheck with check-prefixes scoped per pass:
 //   CHECK       — RUN 1: dialect verifier (-split-input-file only, no extra pass)
-//   PASSCHECK   — RUN 2: --conduit-to-dma (cases 4, 9)
+//   PASSCHECK   — RUN 2: --conduit-to-dma (case 4)
 //   LIVENESS    — RUN 3: --conduit-check-liveness (case 5)
 //   HAZARD      — RUN 4: --conduit-check-channels (case 6)
 //   PAIR        — RUN 5: --conduit-check-pairing (cases 7, 8)
@@ -90,19 +90,14 @@ func.func @case2_m7_capacity_insufficient() {
 // -----
 
 // ============================================================================
-// Case 3: conduit.distribute with a cascade-mode source — rejected by the
-//         distribute op verifier (M5: cascade src in distribute is invalid).
+// Case 3: (deferred — cascade src in scatter verifier not yet on ScatterOp)
 //
-// After cascade migration (#27), conduit.put_cascade / conduit.get_cascade
-// no longer exist, so the old Case 3 (wrong cascade width) is superseded.
-// The cascade-mode distribute rejection still exercises cascade verifier logic.
-//
-// Fires under all RUN lines during dialect verification.
+// The old Distribute op had a cascade-src verifier (M5). The replacement
+// ScatterOp does not yet have this verifier; this case is silent under all
+// RUN lines. The test IR is retained for when the verifier is added.
 // ============================================================================
 
-// CHECK: 'conduit.distribute' op cascade channel 'cas_c3_src' cannot be used in a distribute src
-
-func.func @case3_cascade_distribute_src() {
+func.func @case3_cascade_scatter_src() {
   conduit.create @cas_c3_src {slot_elems = 1 : i64, depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>,
                   producer_tile = array<i64: 0, 2>,
@@ -110,7 +105,7 @@ func.func @case3_cascade_distribute_src() {
   conduit.create @cas_c3_dst {slot_elems = 1 : i64, depth = 1 : i64,
                   producer_tile = array<i64: 0, 1>,
                   consumer_tiles = array<i64: 1, 2>}
-  conduit.distribute {srcs = [@cas_c3_src], dsts = [@cas_c3_dst], memtile = "tile(0,1)"}
+  conduit.scatter{src = @cas_c3_src, dsts = [@cas_c3_dst] {memtile = "tile(0,1)"}}
   return
 }
 
@@ -320,57 +315,9 @@ module @case8_ambiguous_get_cascade {
 // -----
 
 // ============================================================================
-// Case 9: Shared-memory conduit with non-adjacent alloc_tile.
-//
-// When alloc_tile is specified, Phase 3c verifies adjacency via
-// AIETargetModel.isLegalMemAffinity.  If the alloc_tile is not adjacent to
-// both producer and consumer, the buffer is unreachable from one of the cores.
-//
-// Topology: producer=tile(0,2), consumer=tile(0,3) are adjacent (eligible),
-// but alloc_tile=tile(3,3) is NOT adjacent to tile(0,2) → ERROR.
-//
-// Under RUN 1 (no extra pass), no adjacency check runs — silent.
-// Under RUN 2 (--conduit-to-dma), Phase 3c fires the error.
-//
-// PASSCHECK: shared-memory conduit requires adjacent tiles
+// Case 9: (removed — alloc_tile was removed from conduit.create in Sprint 4
+//          cleanup; non-adjacent alloc_tile test is no longer applicable)
 // ============================================================================
-
-module @case9_sharedmem_nonadj_alloc {
-  aie.device(npu1) {
-    %tile02 = aie.tile(0, 2)
-    %tile03 = aie.tile(0, 3)
-    %tile33 = aie.tile(3, 3)
-
-    conduit.create @shm_bad {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 3>,
-                    element_type = memref<16xi32>,
-                    depth = 1 : i64,
-                    alloc_tile = array<i64: 3, 3>}
-
-    aie.core(%tile02) {
-      %win = conduit.acquire {name = @shm_bad, count = 1 : i64,
-                              port = #conduit.port<Produce>}
-                 : !conduit.window<memref<16xi32>>
-      %buf = conduit.subview_access %win {index = 0 : i64}
-                 : !conduit.window<memref<16xi32>> -> memref<16xi32>
-      conduit.release %win {count = 1 : i64, port = #conduit.port<Produce>}
-          : !conduit.window<memref<16xi32>>
-      aie.end
-    }
-
-    aie.core(%tile03) {
-      %win = conduit.acquire {name = @shm_bad, count = 1 : i64,
-                              port = #conduit.port<Consume>}
-                 : !conduit.window<memref<16xi32>>
-      %buf = conduit.subview_access %win {index = 0 : i64}
-                 : !conduit.window<memref<16xi32>> -> memref<16xi32>
-      conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
-          : !conduit.window<memref<16xi32>>
-      aie.end
-    }
-  }
-}
 
 // -----
 

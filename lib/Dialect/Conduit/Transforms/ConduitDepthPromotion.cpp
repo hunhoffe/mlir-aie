@@ -83,12 +83,12 @@ static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
 // ---------------------------------------------------------------------------
 
 /// Collect conduit names that appear in any relay op (src/dst of scatter,
-/// gather, transpose, or the legacy distribute/join/forward).
+/// gather, transpose).
 static llvm::StringSet<>
 collectLinkedConduitNames(mlir::ModuleOp module) {
   llvm::StringSet<> linked;
   auto collect = [&](mlir::Operation *op) {
-    // Array attrs: scatter.dsts, gather.srcs, legacy distribute.srcs/dsts.
+    // Array attrs: scatter.dsts, gather.srcs.
     if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs"))
       for (auto s : srcsAttr)
         if (auto str = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(s))
@@ -107,10 +107,6 @@ collectLinkedConduitNames(mlir::ModuleOp module) {
   module.walk([&](ScatterOp op) { collect(op.getOperation()); });
   module.walk([&](GatherOp op) { collect(op.getOperation()); });
   module.walk([&](TransposeOp op) { collect(op.getOperation()); });
-  // Legacy relay ops (pre-Sprint-3 IR compatibility).
-  module.walk([&](Distribute op) { collect(op.getOperation()); });
-  module.walk([&](Join op) { collect(op.getOperation()); });
-  module.walk([&](Forward op) { collect(op.getOperation()); });
   return linked;
 }
 

@@ -26,7 +26,7 @@
 //       annotated (same producer tile) but no time_multiplex_count.
 //   (g) Depth > 1 excluded: capacity>1 / depth>1 -> NOT annotated with
 //       fused_dma_channel_group (Pass C remark emitted; skipped).
-//   (h) Link src excluded from temporal mux: conduit in distribute srcs ->
+//   (h) Link src excluded from temporal mux: conduit in scatter src ->
 //       fused_dma_channel_group annotated but no time_multiplex_count.
 //
 //===----------------------------------------------------------------------===//
@@ -255,7 +255,7 @@ func.func @depth2_excluded() {
 //===----------------------------------------------------------------------===//
 // (h) Link src excluded from temporal mux.
 //
-//     lk1 appears in a conduit.distribute srcs list.  lk2 is ordered after
+//     lk1 appears in a conduit.scatter dsts list.  lk2 is ordered after
 //     lk1 by a token dep at the same endpoint.  Because lk1 is a relay
 //     source (lk channel resources are managed by linkPhase), it must not
 //     be merged by the temporal mux analysis.
@@ -289,7 +289,7 @@ func.func @link_src_excluded() {
                   consumer_tiles = array<i64: 6, 2>,
                   element_type = memref<4096xbf16>,
                   depth = 1 : i64}
-  conduit.distribute {srcs = [@lk1], dsts = [@lk_dst], memtile = "tile(6,1)"}
+  conduit.scatter{src = @lk1, dsts = [@lk_dst] {memtile = "tile(6,1)"}}
 
   %ta = conduit.put_memref_async {name = @lk1, num_elems = 4096 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 4096>,

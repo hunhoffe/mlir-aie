@@ -29,8 +29,8 @@
 // CHECK-DAG: conduit.create @linked_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 8 : i64
 // (c) passthrough_fifo: NOT promoted — capacity stays 4, depth stays 1
 // CHECK-DAG: conduit.create @passthrough_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 4 : i64
-// conduit.forward must survive unchanged (also CHECK-DAG to allow any order)
-// CHECK-DAG: conduit.forward
+// conduit.scatter must survive unchanged (also CHECK-DAG to allow any order)
+// CHECK-DAG: conduit.scatter{src = @linked_fifo, dsts = [@linked_out]
 
 // expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s)}}
 module {
@@ -76,7 +76,7 @@ func.func @linked_conduit_not_promoted() {
                   element_type = memref<8xi32>,
                   depth = 1 : i64}
   // This link causes both "linked_fifo" and "linked_out" to be excluded.
-  conduit.forward {srcs = [@linked_fifo], dsts = [@linked_out], memtile = "tile(0,1)"}
+  conduit.scatter{src = @linked_fifo, dsts = [@linked_out] {memtile = "tile(0,1)"}}
   return
 }
 

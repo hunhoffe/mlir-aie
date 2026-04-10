@@ -1,25 +1,5 @@
 // RUN: aie-opt %s -split-input-file -verify-diagnostics
 
-// distribute mode: offsets count must equal dsts count
-func.func @bad_distribute_offsets() {
-  // expected-error@+1 {{'conduit.distribute' op distribute: offsets count (1) must equal dsts count (2)}}
-  conduit.distribute {srcs = [@in], dsts = [@out0, @out1], memtile = "tile(0,1)",
-                           offsets = array<i64: 0>}
-  return
-}
-
-// -----
-
-// join mode: offsets count must equal srcs count
-func.func @bad_join_offsets() {
-  // expected-error@+1 {{'conduit.join' op join: offsets count (1) must equal srcs count (2)}}
-  conduit.join {srcs = [@in0, @in1], dsts = [@out], memtile = "tile(0,1)",
-                           offsets = array<i64: 0>}
-  return
-}
-
-// -----
-
 // M2: subview_access index out of bounds for acquire count
 func.func @bad_subview_index() {
   conduit.create @fifo {slot_elems = 8 : i64,
@@ -59,28 +39,10 @@ func.func @bad_subview_cross_block() {
 
 // -----
 
-// M3: distribute mode requires exactly 1 src
-func.func @bad_distribute_multiple_srcs() {
-  // expected-error@+1 {{'conduit.distribute' op distribute requires exactly 1 src, got 2}}
-  conduit.distribute {srcs = [@in0, @in1], dsts = [@out0, @out1], memtile = "tile(0,1)"}
-  return
-}
-
-// -----
-
-// M3: join mode requires exactly 1 dst
-func.func @bad_join_multiple_dsts() {
-  // expected-error@+1 {{'conduit.join' op join requires exactly 1 dst, got 2}}
-  conduit.join {srcs = [@in0, @in1], dsts = [@out0, @out1], memtile = "tile(0,1)"}
-  return
-}
-
-// -----
-
-// M3-dist: conduit.distribute with zero dsts is rejected by verifier
-func.func @bad_distribute_zero_dsts() {
-  // expected-error@+1 {{'conduit.distribute' op distribute requires at least 1 dst, got 0}}
-  conduit.distribute {srcs = [@in], dsts = [], memtile = "tile(0,1)"}
+// M3-scatter: conduit.scatter with zero dsts is rejected by verifier
+func.func @bad_scatter_zero_dsts() {
+  // expected-error@+1 {{'conduit.scatter' op scatter requires at least 1 dst, got 0}}
+  conduit.scatter{src = @in, dsts = [] {memtile = "tile(0,1)"}}
   return
 }
 
@@ -173,24 +135,6 @@ func.func @bad_wait_with_dma_token() {
   // expected-error@+2 {{invalid kind of type specified: expected}}
   %win = conduit.wait_window %tok for @ch
              : !conduit.dma.token -> !conduit.window<memref<64xi32>>
-  return
-}
-
-// -----
-
-// forward mode: requires exactly 1 src and 1 dst; 2 srcs must fail.
-func.func @bad_forward_two_srcs() {
-  // expected-error@+1 {{'conduit.forward' op forward requires exactly 1 src and 1 dst}}
-  conduit.forward {srcs = [@in0, @in1], dsts = [@out], memtile = "tile(0,1)"}
-  return
-}
-
-// -----
-
-// forward mode: requires exactly 1 src and 1 dst; 2 dsts must fail.
-func.func @bad_forward_two_dsts() {
-  // expected-error@+1 {{'conduit.forward' op forward requires exactly 1 src and 1 dst}}
-  conduit.forward {srcs = [@in], dsts = [@out0, @out1], memtile = "tile(0,1)"}
   return
 }
 

@@ -59,7 +59,7 @@ func.func @join_three_sources_pass() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 8>,
                   consumer_rates = array<i64: 8>}
-  conduit.join {srcs = [@js_s1, @js_s2, @js_s3], dsts = [@js_dst], memtile = "tile(0,1)"}
+  conduit.gather{srcs = [@js_s1, @js_s2, @js_s3], dst = @js_dst {memtile = "tile(0,1)"}}
   return
 }
 
@@ -86,33 +86,7 @@ func.func @join_src_imbalanced() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.join {srcs = [@ji_s1_bad], dsts = [@ji_dst], memtile = "tile(0,1)"}
+  conduit.gather{srcs = [@ji_s1_bad], dst = @ji_dst {memtile = "tile(0,1)"}}
   return
 }
 
-// -----
-
-// Section 3: FAIL — join mode requires exactly 1 dst.
-//
-// M3 structural invariant violation: join mode can only have 1 destination.
-
-func.func @join_multiple_dsts() {
-  conduit.create @jm_s1 {slot_elems = 2 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 1>,
-                  element_type = memref<i32>,
-                  depth = 1 : i64}
-  conduit.create @jm_d1 {slot_elems = 2 : i64,
-                  producer_tile = array<i64: 0, 1>,
-                  consumer_tiles = array<i64: 0, 0>,
-                  element_type = memref<i32>,
-                  depth = 1 : i64}
-  conduit.create @jm_d2 {slot_elems = 2 : i64,
-                  producer_tile = array<i64: 0, 1>,
-                  consumer_tiles = array<i64: 1, 0>,
-                  element_type = memref<i32>,
-                  depth = 1 : i64}
-  // expected-error@+1 {{'conduit.join' op join requires exactly 1 dst, got 2}}
-  conduit.join {srcs = [@jm_s1], dsts = [@jm_d1, @jm_d2], memtile = "tile(0,1)"}
-  return
-}

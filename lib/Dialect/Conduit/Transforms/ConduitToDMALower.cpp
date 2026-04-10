@@ -633,18 +633,6 @@ void lowerPhase(ConduitToDMAState &state) {
   module.walk([&](PutMemrefAsync op) { op.getDepsMutable().clear(); });
   module.walk([&](GetMemrefAsync op) { op.getDepsMutable().clear(); });
 
-  // Erase conduit.register_external_buffers before other Conduit ops.
-  // The external buffers have been recorded into ConduitInfo in Phase 1.5
-  // and the BD chains have been built in Phase 5.5. The SSA operands
-  // (aie.external_buffer values) survive in the device body; only the
-  // conduit.register_external_buffers wrapper is erased here.
-  {
-    llvm::SmallVector<RegisterExternalBuffers> regToErase;
-    module.walk([&](RegisterExternalBuffers op) { regToErase.push_back(op); });
-    for (auto op : llvm::reverse(regToErase))
-      op.erase();
-  }
-
   // Erase conduit.scatter ops (Sprint 1 relay op, lowered in earlier phases).
   {
     llvm::SmallVector<ScatterOp> toErase;

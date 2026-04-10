@@ -66,20 +66,6 @@ void collectPhase(ConduitToDMAState &state) {
       }
     }
 
-    // Shim consumer tile coordinates (row == 0).
-    if (auto sct = op.getShimConsumerTiles()) {
-      for (size_t i = 0; i + 1 < sct->size(); i += 2) {
-        int64_t col = (*sct)[i], row = (*sct)[i + 1];
-        info.shimConsumerTileCoords.push_back(std::make_pair(col, row));
-      }
-    }
-
-    // Cyclostatic (CSDF) access pattern.
-    if (auto ap = op.getAccessPattern()) {
-      for (int64_t v : *ap)
-        info.accessPattern.push_back(v);
-    }
-
     // Routing mode (enum; absent = unresolved — treated as "any" in Pass C
     // so that Step 3.5 packet fallback still applies when no explicit mode
     // has been set via --conduit-infer-modes).
@@ -92,14 +78,6 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto aspAttr =
             op->getAttrOfType<mlir::IntegerAttr>("aie_stream_port"))
       info.aieStreamPort = static_cast<int32_t>(aspAttr.getInt());
-
-    // Alloc tile delegate coordinates.
-    if (auto at = op.getAllocTile()) {
-      if (at->size() >= 2) {
-        info.hasAllocTile = true;
-        info.allocTileCoord = std::make_pair((*at)[0], (*at)[1]);
-      }
-    }
 
     // Fused DMA channel group label.
     if (auto fuseAttr =
@@ -245,11 +223,18 @@ void collectPhase(ConduitToDMAState &state) {
     });
   }
 
-  // shimAllocationMap: shim sym_name → (col, row) of the shim tile.
+  // shimAllocationMap: shim sym_name → (col, row) — all directions (used for
+  // Case 2 suffix-strip matching; filtered below before use).
+  // shimConsumerAllocMap: S2MM-only entries (shim is consumer).
+  // conduitChannelMap: channel name → (col, row) via conduit_channel attr,
+  //   S2MM only (DEFERRED-13 structural fix).
+  // Only S2MM (consumer-direction) shim tiles belong in shimConsumerTileCoords;
+  // MM2S (producer-direction) shim tiles are already handled via producer_tile.
   llvm::StringMap<std::pair<int64_t, int64_t>> shimAllocationMap;
+  llvm::StringMap<std::pair<int64_t, int64_t>> shimConsumerAllocMap;
+  llvm::StringMap<std::pair<int64_t, int64_t>> conduitChannelMap;
   for (AIE::DeviceOp dev : state.deviceOps) {
     dev.walk([&](AIE::ShimDMAAllocationOp shimOp) {
-      // The tile operand is an Index value produced by aie.tile(col, row).
       mlir::Value tileVal = shimOp.getTile();
       AIE::TileOp tileOp = tileVal.getDefiningOp<AIE::TileOp>();
       if (!tileOp)
@@ -257,6 +242,14 @@ void collectPhase(ConduitToDMAState &state) {
       int64_t col = static_cast<int64_t>(tileOp.getCol());
       int64_t row = static_cast<int64_t>(tileOp.getRow());
       shimAllocationMap[shimOp.getSymName()] = {col, row};
+      // Only record S2MM (consumer) shim allocs for shimConsumerTileCoords.
+      if (shimOp.getChannelDir() == AIE::DMAChannelDir::S2MM) {
+        shimConsumerAllocMap[shimOp.getSymName()] = {col, row};
+        // DEFERRED-13: conduit_channel attr → direct channel→shim linkage.
+        if (auto ccAttr = shimOp->getAttrOfType<mlir::FlatSymbolRefAttr>(
+                "conduit_channel"))
+          conduitChannelMap[ccAttr.getValue()] = {col, row};
+      }
     });
   }
 
@@ -293,35 +286,51 @@ void collectPhase(ConduitToDMAState &state) {
 
     // Shim consumer tiles: match shim_dma_allocation ops to conduit channels.
     //
-    // Two cases handled in priority order:
+    // Three cases handled in priority order:
+    //
+    // Case 0 — DEFERRED-13 structural fix: shim_dma_allocation carries a
+    //   conduit_channel = @chan attr set by Pass A/B.  This is the preferred
+    //   path and takes precedence over sym_name matching.
     //
     // Case 1 — Pass A post-rewrite: Pass A renames conduit.create @chan to
     //   @chan_shim_alloc, so the conduitMap key IS the shim alloc sym_name.
     //   Direct lookup: shimAllocationMap["chan_shim_alloc"] → found.
     //
     // Case 2 — Direct conduit IR convention: hand-written programs use the
-    //   standard suffix convention: shim alloc sym = "<chan>_shim_alloc" with
-    //   conduit.create sym = "<chan>" (different symbols, no name conflict).
-    //   Suffix-strip lookup: strip "_shim_alloc" from shimAllocationMap keys
-    //   and check if the stripped name matches the channel name.
+    //   standard suffix convention (retained as implicit fallback via Case 1).
     //
-    // Multi-consumer allocations (@chan_shim_alloc_0, _1, …): handled by
-    //   Case 1 if Pass A renames the primary channel to @chan_shim_alloc,
-    //   and secondary channels to @chan_shim_alloc_0 etc. (Pass A currently
-    //   only renames the primary; secondary channels remain unmatched until
-    //   Pass C Phase 5c scatter lowering, which uses the shim alloc directly).
-
-    // Shim endpoint: the shim_dma_allocation sym_name IS the conduit channel
-    // name after Pass A's rewrite (@chan → @chan_shim_alloc on conduit.create).
-    // Direct lookup: if conduitMap key matches the shim alloc sym_name, this
-    // channel's shim tile is the producer/consumer.
-    auto shimIt = shimAllocationMap.find(name);
-    if (shimIt != shimAllocationMap.end()) {
+    // Case 0 (conduit_channel attr) — preferred path.
+    auto ccIt = conduitChannelMap.find(name);
+    if (ccIt != conduitChannelMap.end()) {
+      auto [col, row] = ccIt->second;
+      std::pair<int64_t, int64_t> coord = {col, row};
+      if (llvm::find(info.shimConsumerTileCoords, coord) ==
+          info.shimConsumerTileCoords.end())
+        info.shimConsumerTileCoords.push_back(coord);
+    }
+    // Case 1 (sym_name match, S2MM only) — conduitMap key matches shim alloc sym.
+    auto shimIt = shimConsumerAllocMap.find(name);
+    if (shimIt != shimConsumerAllocMap.end()) {
       auto [col, row] = shimIt->second;
       std::pair<int64_t, int64_t> coord = {col, row};
       if (llvm::find(info.shimConsumerTileCoords, coord) ==
           info.shimConsumerTileCoords.end())
         info.shimConsumerTileCoords.push_back(coord);
+    }
+    // Case 2 (suffix-strip, S2MM only) — hand-written conduit IR: shim alloc
+    // sym = "<chan>_shim_alloc" and conduit.create sym = "<chan>".
+    for (auto &[shimName, coord] : shimConsumerAllocMap) {
+      llvm::StringRef shimRef = shimName;
+      if (shimRef.ends_with("_shim_alloc")) {
+        llvm::StringRef stripped = shimRef.drop_back(
+            llvm::StringLiteral("_shim_alloc").size());
+        if (stripped == name) {
+          std::pair<int64_t, int64_t> c = {coord.first, coord.second};
+          if (llvm::find(info.shimConsumerTileCoords, c) ==
+              info.shimConsumerTileCoords.end())
+            info.shimConsumerTileCoords.push_back(c);
+        }
+      }
     }
   }
 
@@ -414,27 +423,6 @@ void collectPhase(ConduitToDMAState &state) {
   // Join sources: Phase 5 uses the existing per-source lock pairs from
   // Phase 3. Tracked separately for Phase 3 producer-tile reallocation.
   // -----------------------------------------------------------------------
-  module.walk([&](Distribute distOp) {
-    for (auto s : distOp.getSrcs())
-      state.linkSrcNamesEarly.insert(
-          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    for (auto d : distOp.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
-  });
-  module.walk([&](Join joinOp) {
-    for (auto s : joinOp.getSrcs())
-      state.linkJoinSrcNames.insert(
-          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    for (auto d : joinOp.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
-  });
-  module.walk([&](Forward fwdOp) {
-    for (auto s : fwdOp.getSrcs())
-      state.linkSrcNamesEarly.insert(
-          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    for (auto d : fwdOp.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
-  });
   module.walk([&](ScatterOp scatterOp) {
     state.linkSrcNamesEarly.insert(scatterOp.getSrc());
     for (auto d : scatterOp.getDsts())
@@ -600,23 +588,6 @@ void collectPhase(ConduitToDMAState &state) {
     }
   });
 
-  // Legacy: collect conduit.register_external_buffers (Pass B still emits
-  // these until its Sprint 3 migration is complete).
-  module.walk([&](RegisterExternalBuffers regOp) {
-    llvm::StringRef conduitName = regOp.getName();
-    ConduitInfo *cinfo = state.lookupConduit(conduitName);
-    if (!cinfo) {
-      regOp.emitWarning(
-          "conduit-to-dma: register_external_buffers references unknown "
-          "conduit '" + conduitName.str() + "'; ignoring");
-      return;
-    }
-    for (mlir::Value extBuf : regOp.getExternalBuffers())
-      cinfo->externalBuffers.push_back(extBuf);
-    auto tc = regOp.getTileCoord();
-    if (tc.size() >= 2)
-      cinfo->externalBufferTileCoord = {tc[0], tc[1]};
-  });
 }
 
 } // namespace xilinx::conduit

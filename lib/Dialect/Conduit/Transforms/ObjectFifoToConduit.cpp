@@ -436,19 +436,6 @@ struct ObjectFifoToConduitPass
       int64_t slot_elems = info.depth * info.numElems;
 
       // conduit.create with typed attributes — no conduit.annotate ops.
-      // shim_consumer_tiles carries shim (row==0) consumer tiles separately;
-      // they are DMA endpoints handled via shim_dma_allocation in Pass C.
-      mlir::DenseI64ArrayAttr shimConsAttr;
-      if (!info.shimConsumerTilesArr.empty())
-        shimConsAttr = mlir::DenseI64ArrayAttr::get(ctx, info.shimConsumerTilesArr);
-
-      // Emit access_pattern attribute for cyclostatic (CSDF) fifos.
-      // When the consumer acquires varying counts per iteration, the pattern
-      // is stored here so Pass C can generate the correct lock protocol.
-      mlir::DenseI64ArrayAttr accessPatternAttr;
-      if (!info.accessPattern.empty())
-        accessPatternAttr =
-            mlir::DenseI64ArrayAttr::get(ctx, info.accessPattern);
 
       // infer-rates: attach CSDF producer_rates/consumer_rates when inferred.
       // For multi-consumer fifos, inferred rates are empty — emit a remark.
@@ -618,14 +605,11 @@ struct ObjectFifoToConduitPass
           /*window_size=*/mlir::IntegerAttr{},
           mlir::DenseI64ArrayAttr::get(ctx, info.producerTileArr),
           mlir::DenseI64ArrayAttr::get(ctx, info.consumerTilesArr),
-          shimConsAttr,
           mlir::TypeAttr::get(info.elemType),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
-          accessPatternAttr,
           routingModeAttr,
           /*producer_rates=*/inferredPRAttr,
           /*consumer_rates=*/inferredCRAttr,
-          /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
           repeatCountAttr,
           disableSyncAttr,
           viaDMAAttr,
@@ -1474,12 +1458,14 @@ struct ObjectFifoToConduitPass
           channelIdx = shimS2MMCounter[shimTile.getResult()]++;
 
         builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
-        builder.create<AIE::ShimDMAAllocationOp>(
+        auto shimAllocOp = builder.create<AIE::ShimDMAAllocationOp>(
             op.getLoc(), allocSym, shimTile.getResult(),
             channelDir,
             /*channel_index=*/static_cast<int64_t>(channelIdx),
             /*plio=*/op.getPlio(),
             /*packet=*/nullptr);
+        shimAllocOp->setAttr("conduit_channel",
+            mlir::FlatSymbolRefAttr::get(ctx, op.getSymName().str()));
 
         // Only rewrite symbol uses for the first (or only) allocation so that
         // a single symbol name continues to refer to the objectfifo.
@@ -1548,52 +1534,22 @@ struct ObjectFifoToConduitPass
             if (op.getDstAttr() == allocRef)
               op.setDstAttr(origRef);
           });
+          // DEFERRED-13: replaceAllSymbolUses also renamed the conduit_channel
+          // attr on shimAllocOp from @origName to @allocSym.  Reset it to the
+          // original objectfifo name so Phase 5a conduitChannelMap lookup
+          // (keyed on conduit.create sym_name = @origName) succeeds.
+          shimAllocOp->setAttr("conduit_channel", origRef);
         }
       }
     }
 
-    // Phase 4.5b: transfer objectfifo.allocate delegate tile info into the
-    // alloc_tile attribute on the matching conduit.create, then erase.
-    //
-    // The delegate tile from objectfifo.allocate controls buffer placement
-    // in the stateful transform.  We now propagate this into conduit.create's
-    // alloc_tile attribute so Pass C can use it for tile selection.
-    //
+    // Erase objectfifo.allocate ops (alloc_tile attr removed from dialect).
     // Erasure order matters: ObjectFifoAllocateOp's verifier does a
     // symbol-table lookup for the referenced ObjectFifoCreateOp.  If we
     // erase the create op first, any surviving allocate op fires the
-    // verifier.  Fix: process and erase all allocate ops before erasing
-    // the create ops they reference.
-    //
-    // Fix 3.5: Erasure order is intentional: allocate ops before create ops.
-    // Intermediate state is invalid but MLIR does not re-verify within a pass.
-
-    // Fix 4i: Build a name→conduit.create map to avoid O(n²) inner walk.
-    // Previously this used a nested module.walk to find the matching
-    // conduit.create for each allocate op; now we do a single pre-scan.
-    llvm::DenseMap<mlir::StringAttr, Create> conduitCreateMap;
-    module.walk([&](Create conduitOp) {
-      auto nameAttr = mlir::StringAttr::get(ctx, conduitOp.getName().str());
-      conduitCreateMap[nameAttr] = conduitOp;
-    });
-
+    // verifier.  Fix: erase all allocate ops before erasing the create ops.
     llvm::SmallVector<AIE::ObjectFifoAllocateOp> allocatesToErase;
     module.walk([&](AIE::ObjectFifoAllocateOp op) {
-      // Find the matching conduit.create by direct map lookup (O(1)).
-      llvm::StringRef fifoName = op.getObjFifoName();
-      auto nameAttr = mlir::StringAttr::get(ctx, fifoName);
-      auto it = conduitCreateMap.find(nameAttr);
-      if (it != conduitCreateMap.end()) {
-        Create conduitOp = it->second;
-        // Extract delegate tile coordinates.
-        auto delegateTile =
-            mlir::cast<AIE::TileOp>(op.getDelegateTile().getDefiningOp());
-        int64_t col = delegateTile.getCol();
-        int64_t row = delegateTile.getRow();
-        llvm::SmallVector<int64_t> tileCoord = {col, row};
-        conduitOp.setAllocTileAttr(
-            mlir::DenseI64ArrayAttr::get(op.getContext(), tileCoord));
-      }
       allocatesToErase.push_back(op);
     });
     for (AIE::ObjectFifoAllocateOp op : allocatesToErase)

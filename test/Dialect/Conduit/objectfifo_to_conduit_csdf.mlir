@@ -1,13 +1,11 @@
 // RUN: aie-opt --objectfifo-to-conduit %s | FileCheck %s
 //
 // Pass A test: cyclostatic access pattern detection.
-// Pass A correctly detects the CSDF access pattern {1, 2, 1} and emits
-// access_pattern = array<i64: 1, 2, 1> on conduit.create.
 // Input has a single objectfifo whose consumer acquires {1, 2, 1} elements
 // across three acquire ops — a classic CSDF pattern.
 //
 // Pass A should:
-//   1. Emit conduit.create with access_pattern = array<i64: 1, 2, 1>
+//   1. Emit conduit.create with consumer_rates (access_pattern was removed).
 //   2. Emit three conduit.acquire ops with counts 1, 2, 1 (preserving the
 //      original per-op counts from the aie.objectfifo.acquire ops).
 //   3. Erase all aie.objectfifo* ops.
@@ -15,9 +13,8 @@
 // CHECK-LABEL: module @csdf_pass_a_test
 // CHECK:   aie.device(xcve2302) {
 
-// --- conduit.create must carry access_pattern=[1,2,1] ---
+// --- conduit.create ---
 // CHECK:     conduit.create @fifo
-// CHECK-SAME:   access_pattern = array<i64: 1, 2, 1>
 // CHECK-SAME:   depth = 4 : i64
 // CHECK-SAME:   slot_elems = 4 : i64
 

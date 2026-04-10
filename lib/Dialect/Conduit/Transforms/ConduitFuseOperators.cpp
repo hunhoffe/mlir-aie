@@ -115,26 +115,22 @@ static void offsetDeviceTiles(AIE::DeviceOp device, int64_t colOffset) {
       conduit.setConsumerTilesAttr(
           builder.getDenseI64ArrayAttr(coords));
     }
-    if (auto sct = conduit.getShimConsumerTiles()) {
-      llvm::SmallVector<int64_t> coords(sct->begin(), sct->end());
-      for (size_t i = 0; i + 1 < coords.size(); i += 2)
-        coords[i] += colOffset;
-      conduit.setShimConsumerTilesAttr(
-          builder.getDenseI64ArrayAttr(coords));
-    }
   });
 }
 
 // ---------------------------------------------------------------------------
 // Helper: check if a conduit.create is an operator "output" channel.
-// Criterion: shimConsumerTileCoords is non-empty and consumerTileCoords is
-// empty (the only exit is to the shim → LPDDR5).
+// Criterion: consumerTileCoords is empty and producer_tile is a shim (row==0).
+// After DEFERRED-13, shim endpoints are identified via aie.shim_dma_allocation
+// conduit_channel attr rather than the removed shim_consumer_tiles attr.
 // ---------------------------------------------------------------------------
 static bool isOutputChannel(Create op) {
   auto ct = op.getConsumerTiles();
   bool noComputeConsumers = (!ct || ct->empty());
-  auto sct = op.getShimConsumerTiles();
-  bool hasShimConsumer = (sct && !sct->empty());
+  // Shim consumer detection: check if producer_tile is at row 0 (shim row).
+  // shim_consumer_tiles attr removed in Sprint 4; use producer_tile row as proxy.
+  auto pt = op.getProducerTile();
+  bool hasShimConsumer = (pt && pt->size() >= 2 && (*pt)[1] == 0);
   return noComputeConsumers && hasShimConsumer;
 }
 
@@ -401,14 +397,11 @@ struct ConduitFuseOperatorsPass
             /*window_size=*/mlir::IntegerAttr{},
             /*producer_tile=*/producerTileAttr,
             /*consumer_tiles=*/consumerTilesAttr,
-            /*shim_consumer_tiles=*/mlir::DenseI64ArrayAttr{},
             /*element_type=*/elemTypeAttr,
             /*depth=*/depthAttr,
-            /*access_pattern=*/mlir::DenseI64ArrayAttr{},
             /*routing_mode=*/routingModeAttr,
             /*producer_rates=*/producerRatesAttr,
             /*consumer_rates=*/consumerRatesAttr,
-            /*alloc_tile=*/mlir::DenseI64ArrayAttr{},
             /*bd_repeat=*/mlir::IntegerAttr{},
             /*disable_synchronization=*/mlir::BoolAttr{},
             /*viaDMA=*/mlir::BoolAttr{},

@@ -5,7 +5,7 @@
 //
 // Three cases verified:
 //   1. Positive: all valid routing_mode enum values roundtrip correctly.
-//   2. Positive: all valid link_mode enum values roundtrip correctly.
+//   2. Positive: scatter and gather relay ops roundtrip correctly.
 //   3. Positive: absent routing_mode (unresolved) is valid and not rejected.
 //
 // Negative cases (invalid string values rejected by ODS parser) are in
@@ -48,41 +48,38 @@ func.func @routing_mode_stream() {
 }
 
 // -----------------------------------------------------------------------
-// Case 2: link_mode enum roundtrip — all three values.
+// Case 2: relay op roundtrip — scatter and gather.
 // -----------------------------------------------------------------------
 
-// CHECK-LABEL: func.func @link_mode_distribute
-func.func @link_mode_distribute() {
+// CHECK-LABEL: func.func @relay_scatter
+func.func @relay_scatter() {
   conduit.create @src {slot_elems = 4 : i64, depth = 0 : i64}
   conduit.create @dst0 {slot_elems = 2 : i64, depth = 0 : i64}
   conduit.create @dst1 {slot_elems = 2 : i64, depth = 0 : i64}
-  // CHECK: conduit.distribute
+  // CHECK: conduit.scatter{src = @src, dsts = [@dst0, @dst1]
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.distribute {srcs = [@src], dsts = [@dst0, @dst1],
-                memtile = "tile(0,1)"}
+  conduit.scatter{src = @src, dsts = [@dst0, @dst1] {memtile = "tile(0,1)"}}
   return
 }
 
-// CHECK-LABEL: func.func @link_mode_join
-func.func @link_mode_join() {
+// CHECK-LABEL: func.func @relay_gather
+func.func @relay_gather() {
   conduit.create @src0 {slot_elems = 2 : i64, depth = 0 : i64}
   conduit.create @src1 {slot_elems = 2 : i64, depth = 0 : i64}
   conduit.create @dst {slot_elems = 4 : i64, depth = 0 : i64}
-  // CHECK: conduit.join
+  // CHECK: conduit.gather{srcs = [@src0, @src1], dst = @dst
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.join {srcs = [@src0, @src1], dsts = [@dst],
-                memtile = "tile(0,1)"}
+  conduit.gather{srcs = [@src0, @src1], dst = @dst {memtile = "tile(0,1)"}}
   return
 }
 
-// CHECK-LABEL: func.func @link_mode_forward
-func.func @link_mode_forward() {
+// CHECK-LABEL: func.func @relay_scatter_forward
+func.func @relay_scatter_forward() {
   conduit.create @in_fwd {slot_elems = 4 : i64, depth = 0 : i64}
   conduit.create @out_fwd {slot_elems = 4 : i64, depth = 0 : i64}
-  // CHECK: conduit.forward
+  // CHECK: conduit.scatter{src = @in_fwd, dsts = [@out_fwd]
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.forward {srcs = [@in_fwd], dsts = [@out_fwd],
-                memtile = "tile(0,1)"}
+  conduit.scatter{src = @in_fwd, dsts = [@out_fwd] {memtile = "tile(0,1)"}}
   return
 }
 

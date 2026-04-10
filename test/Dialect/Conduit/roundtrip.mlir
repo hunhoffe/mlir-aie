@@ -30,12 +30,13 @@ func.func @window_ops() {
   return
 }
 
-// CHECK-LABEL: func.func @link_op
-func.func @link_op() {
-  // CHECK: conduit.distribute
+// CHECK-LABEL: func.func @scatter_op
+func.func @scatter_op() {
+  // CHECK: conduit.scatter{src = @in, dsts = [@out0, @out1]
   // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.distribute {srcs = [@in], dsts = [@out0, @out1], memtile = "tile(0,1)",
-                           offsets = array<i64: 0, 1024>}
+  // CHECK-SAME: offsets = array<i64: 0, 1024>
+  conduit.scatter{src = @in, dsts = [@out0, @out1] {memtile = "tile(0,1)",
+                   offsets = array<i64: 0, 1024>}}
   return
 }
 
@@ -147,35 +148,6 @@ func.func @release_async_op() {
   // wait_all accepts AnyType variadic — can wait on a window.token here.
   // CHECK: conduit.wait_all
   conduit.wait_all %rel_tok : !conduit.window.token
-  return
-}
-
-// CHECK-LABEL: func.func @register_ext_bufs
-func.func @register_ext_bufs(%buf0: memref<512xi16>, %buf1: memref<512xi16>) {
-  // CHECK: conduit.register_external_buffers(%arg0, %arg1)
-  // CHECK-SAME: name = @shim_chan
-  // CHECK-SAME: tile_coord = array<i64: 0, 0>
-  // CHECK-SAME: : (memref<512xi16>, memref<512xi16>)
-  conduit.register_external_buffers(%buf0, %buf1)
-      {name = @shim_chan, tile_coord = array<i64: 0, 0>}
-      : (memref<512xi16>, memref<512xi16>)
-  return
-}
-
-// CHECK-LABEL: func.func @csdf_create
-// Tests that conduit.create with an access_pattern (CSDF) attribute
-// roundtrips correctly through the parser and printer.
-func.func @csdf_create() {
-  // CHECK: conduit.create @csdf_ch
-  // CHECK-SAME: access_pattern = array<i64: 1, 2, 1>
-  // CHECK-SAME: depth = 4 : i64
-  // CHECK-SAME: slot_elems = 4 : i64
-  conduit.create @csdf_ch {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 2, 2>,
-                  consumer_tiles = array<i64: 2, 3>,
-                  element_type = memref<i32>,
-                  depth = 4 : i64,
-                  access_pattern = array<i64: 1, 2, 1>}
   return
 }
 

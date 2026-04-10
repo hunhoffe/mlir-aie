@@ -44,7 +44,7 @@ func.func @join_all_balanced() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 4>,
                   consumer_rates = array<i64: 4>}
-  conduit.join {srcs = [@j_src1, @j_src2], dsts = [@j_dst], memtile = "tile(0,1)"}
+  conduit.gather{srcs = [@j_src1, @j_src2], dst = @j_dst {memtile = "tile(0,1)"}}
   return
 }
 
@@ -88,7 +88,7 @@ func.func @join_dst_rates_imbalanced() {
                   depth = 3 : i64,
                   producer_rates = array<i64: 3>,
                   consumer_rates = array<i64: 1, 2>}
-  conduit.join {srcs = [@j2_src1, @j2_src2], dsts = [@j2_dst], memtile = "tile(0,1)"}
+  conduit.gather{srcs = [@j2_src1, @j2_src2], dst = @j2_dst {memtile = "tile(0,1)"}}
   return
 }
 
@@ -125,6 +125,6 @@ func.func @join_dst_buffer_undersized() {
                   depth = 2 : i64,
                   producer_rates = array<i64: 3, 1>,
                   consumer_rates = array<i64: 2>}
-  conduit.join {srcs = [@j3_src1, @j3_src2], dsts = [@j3_dst], memtile = "tile(0,1)"}
+  conduit.gather{srcs = [@j3_src1, @j3_src2], dst = @j3_dst {memtile = "tile(0,1)"}}
   return
 }

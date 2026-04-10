@@ -1,13 +1,13 @@
 // RUN: aie-opt %s -split-input-file -verify-diagnostics
 //
-// Tests for conduit.link distribute mode with CSDF rate annotations.
+// Tests for conduit.scatter with CSDF rate annotations.
 //
 // This file covers the skip path and pass path for the Level 2 composed-consume
-// check (Denolf Eq. 48) in Link::verify() / checkDistributeComposedConsume().
+// check (Denolf Eq. 48) in ScatterOp::verify() / checkDistributeComposedConsume().
 //
 // Background: Create::verify() runs M6/M7 on each conduit independently.
-// Link::verify() runs a second pass (checkDistributeComposedConsume) that is
-// unique to conduit.link: it computes the composed (minimum) consume across
+// ScatterOp::verify() runs a second pass (checkDistributeComposedConsume) that is
+// unique to scatter: it computes the composed (minimum) consume across
 // ALL N destination consumers to verify the source buffer can accommodate the
 // worst-case occupancy when a slow consumer gates buffer reuse.
 //
@@ -18,13 +18,13 @@
 // (Section 3) which documents the verification order.
 //
 // This file tests:
-//   (a) distribute with unannotated destinations → Level 2 skipped → PASS
-//   (b) distribute with 2 symmetric consumers (both annotated, same rate) → PASS
-//   (c) distribute with single consumer → Level 2 skip (size < 2) → PASS
+//   (a) scatter with unannotated destinations → Level 2 skipped → PASS
+//   (b) scatter with 2 symmetric consumers (both annotated, same rate) → PASS
+//   (c) scatter with single consumer → Level 2 skip (size < 2) → PASS
 
 // -----
 
-// (a) distribute with unannotated destinations — Level 2 skipped.
+// (a) scatter with unannotated destinations — Level 2 skipped.
 // checkDistributeComposedConsume: allDstsHaveRates=false → return success().
 
 func.func @distribute_unannotated_skip() {
@@ -46,14 +46,13 @@ func.func @distribute_unannotated_skip() {
                   element_type = memref<4xi32>,
                   depth = 1 : i64}
   // No error: dst conduits lack rate annotations → skip Level 2.
-  conduit.distribute {srcs = [@src_skip],
-                dsts = [@dst0_skip, @dst1_skip], memtile = "tile(0,1)"}
+  conduit.scatter{src = @src_skip, dsts = [@dst0_skip, @dst1_skip] {memtile = "tile(0,1)"}}
   return
 }
 
 // -----
 
-// (b) distribute with 2 symmetric annotated consumers — Level 2 PASS.
+// (b) scatter with 2 symmetric annotated consumers — Level 2 PASS.
 // Both dst consumers drain at 1/step. Composed consume = 1/step.
 // src P=[1], slot_elems =4: H=1: cumProd=1, composed=1, occ=0 ≤ 4 → PASS.
 
@@ -80,14 +79,13 @@ func.func @distribute_symmetric_pass() {
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
   // No error: composed consume = per-consumer = 1, source capacity sufficient.
-  conduit.distribute {srcs = [@src_sym],
-                dsts = [@dst0_sym, @dst1_sym], memtile = "tile(0,1)"}
+  conduit.scatter{src = @src_sym, dsts = [@dst0_sym, @dst1_sym] {memtile = "tile(0,1)"}}
   return
 }
 
 // -----
 
-// (c) Single-consumer distribute — Level 2 skip (dstConsRates.size() < 2).
+// (c) Single-consumer scatter — Level 2 skip (dstConsRates.size() < 2).
 // checkDistributeComposedConsume returns success immediately for N < 2.
 
 func.func @distribute_single_consumer_skip() {
@@ -106,6 +104,6 @@ func.func @distribute_single_consumer_skip() {
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
   // No error: single destination → Level 2 skip (per-edge check only).
-  conduit.distribute {srcs = [@src_one], dsts = [@dst0_one], memtile = "tile(0,1)"}
+  conduit.scatter{src = @src_one, dsts = [@dst0_one] {memtile = "tile(0,1)"}}
   return
 }

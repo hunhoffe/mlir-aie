@@ -13,11 +13,6 @@
 //
 // Custom verifiers:
 //   SubviewAccess::verify() — M2: index bounds against conduit depth
-//   Distribute::verify() — M3-dist: structural invariants + offset counts
-//                          M6-dist / M7-dist: CSDF balance + buffer capacity for 1:N distribute
-//   Join::verify()        — M3-join: structural invariants + offset counts
-//                          M6-join / M7-join: CSDF balance + buffer capacity for N:1 join
-//   Forward::verify()     — M3-fwd: srcs.size()==1 && dsts.size()==1
 //   Create::verify() — depth>=0 check; element_type MemRefType check;
 //                   sync_mode/disable_synchronization conflict;
 //                   M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
@@ -26,17 +21,10 @@
 //   AcquireAsync::verify() / ReleaseAsync::verify() — M8b: window.token wait_window linearity
 //                                                     M9: wait_window→release pairing (llvm::errs)
 //   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token types
-//
-// Denolf 2007 channel type mapping (DOI: 10.1155/2007/84078):
-//   conduit.distribute (1:N) — Denolf §3.3.3 multi-consumer / nondestructive-read.
-//     Level 1: Bilsen 1:1 equation applied per-edge (Eq. 45).
-//     Level 2: Composed consume buffer capacity (Eq. 46/48) — cross-conduit check on the
-//     source buffer, accounting for the slowest consumer gating buffer reuse.
-//   conduit.join (N:1) — Denolf §3.3.4 multi-producer / shared-buffer pattern.
-//     Per-edge Bilsen 1:1 check (conservative structural approximation).
-//     NOTE: Denolf §3.3.4 proves that N:1 join has NO equivalent standard CSDF channel
-//     because token arrival order depends on runtime response time.  No exact
-//     composed-produce formula exists; the per-edge check is a conservative bound.
+//   ScatterOp::verify() — DMA budget, memtile format
+//   GatherOp::verify() — DMA budget, memtile format
+//   TransposeOp::verify() — DMA budget, offsets, packet ID budget, memtile format
+//   RegisterBuffersOp::verify() — provenance (aie.buffer / aie.external_buffer)
 //
 //===----------------------------------------------------------------------===//
 
@@ -170,415 +158,6 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Shared CSDF helper: apply the Bilsen 1:1 balance check (M6) and
-// hyper-period buffer capacity check (M7) to a single channel edge.
-//
-// Theory basis: Bilsen et al. 1996 (IEEE Transactions on Signal Processing,
-// DOI: 10.1109/78.485935) defines the CSDF consistency equation for a
-// single channel:  sum(P) * len(C) == sum(C) * len(P)
-//
-// Application to link topologies: this function applies the 1:1 equation
-// per-edge to each conduit in a join or distribute link.  For distribute,
-// this is supplemented by checkDistributeComposedConsume (Denolf Eq. 46/48)
-// which performs the cross-conduit composed consume analysis.  For join,
-// Denolf §3.3.4 proves no exact CSDF equivalent exists (token arrival
-// order depends on runtime response time); the per-edge check is a
-// conservative structural approximation.
-//
-// This function implements the per-edge check.
-//
-// Parameters:
-//   diagnosticOp — the op to attach error messages to (conduit.link)
-//   edgeLabel    — human-readable label for error messages (e.g., "join source 'foo'")
-//   pRates       — producer rate sequence P for this edge
-//   cRates       — consumer rate sequence C for this edge
-//   capacity     — declared buffer capacity for this conduit
-//
-// Returns failure() if M6 or M7 is violated; success() otherwise.
-// ---------------------------------------------------------------------------
-static ::mlir::LogicalResult checkCSDF1x1(mlir::Operation *diagnosticOp,
-                                          llvm::StringRef edgeLabel,
-                                          llvm::ArrayRef<int64_t> pRates,
-                                          llvm::ArrayRef<int64_t> cRates,
-                                          int64_t capacity) {
-  int64_t psum = 0;
-  for (int64_t v : pRates)
-    psum += v;
-  int64_t csum = 0;
-  for (int64_t v : cRates)
-    csum += v;
-  int64_t plen = static_cast<int64_t>(pRates.size());
-  int64_t clen = static_cast<int64_t>(cRates.size());
-
-  // M6: Bilsen 1996 balance equation.
-  if (psum * clen != csum * plen)
-    return diagnosticOp->emitOpError("M6-")
-           << edgeLabel << ": CSDF rate imbalance: "
-           << "sum(producer_rates)*len(consumer_rates)=" << (psum * clen)
-           << " != sum(consumer_rates)*len(producer_rates)=" << (csum * plen)
-           << " (producer_rates sum=" << psum << " period=" << plen
-           << ", consumer_rates sum=" << csum << " period=" << clen << ")";
-
-  // M7: hyper-period buffer capacity simulation (same algorithm as Create::verify()).
-  // Compute gcd(plen, clen) via Euclid's algorithm.
-  int64_t a = plen, b = clen;
-  while (b) { int64_t tmp = b; b = a % b; a = tmp; }
-  int64_t g = a;
-  int64_t clenOverG = clen / g;
-  constexpr int64_t kMaxSimSteps = 1024;
-  if (plen > kMaxSimSteps || clenOverG > kMaxSimSteps / plen) {
-    diagnosticOp->emitWarning("M7-")
-        << edgeLabel << ": CSDF hyper-period exceeds simulation cap ("
-        << kMaxSimSteps << " steps); buffer capacity check skipped";
-    return ::mlir::success();
-  }
-  int64_t hyperPeriod = plen * clenOverG;
-  if (hyperPeriod > kMaxSimSteps) {
-    diagnosticOp->emitWarning("M7-")
-        << edgeLabel << ": CSDF hyper-period exceeds simulation cap ("
-        << kMaxSimSteps << " steps); buffer capacity check skipped";
-    return ::mlir::success();
-  }
-
-  int64_t occupancy = 0;
-  int64_t peakOccupancy = 0;
-  for (int64_t t = 0; t < hyperPeriod; ++t) {
-    occupancy += pRates[static_cast<size_t>(t % plen)];
-    if (occupancy > peakOccupancy)
-      peakOccupancy = occupancy;
-    occupancy -= cRates[static_cast<size_t>(t % clen)];
-    if (occupancy < 0) {
-      diagnosticOp->emitWarning("M7-")
-          << edgeLabel << ": CSDF hyper-period simulation: "
-             "momentary underflow at step " << t
-          << " (occupancy=" << occupancy
-          << "); hardware BD scheduling may differ from "
-             "produce-before-consume simulation order";
-      occupancy = 0;
-    }
-  }
-  if (peakOccupancy > capacity)
-    return diagnosticOp->emitOpError("M7-")
-           << edgeLabel
-           << ": CSDF buffer capacity insufficient: "
-              "peak token occupancy over one hyper-period="
-           << peakOccupancy << " exceeds slot_elems =" << capacity
-           << " (producer_rates=" << psum << "/phase"
-           << ", consumer_rates=" << csum << "/phase"
-           << ", hyper-period=" << hyperPeriod << " steps)";
-
-  return ::mlir::success();
-}
-
-// ---------------------------------------------------------------------------
-// Denolf Eq. 46/48: composed consume + buffer capacity for 1:N distribute.
-//
-// Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.3 Equations 45-48.
-//
-// In a 1:N distribute (multi-consumer / nondestructive-read), N consumers
-// share a single source buffer on the MemTile relay.  A buffer container
-// can only be freed once ALL consumers have consumed from it.
-//
-// Eq. 46 — composed consume: cc(j) = min_{1<=y<=N} cumCons_y(t)
-//   The composed (aggregate) consumption at step t is the minimum of
-//   the cumulative consumption across all N consumers.  This reflects the
-//   hardware constraint that the slowest consumer gates buffer reuse.
-//
-// Eq. 48 — buffer capacity:
-//   d >= max over hyper-period of (cumProd(t) - min_{y} cumCons_y(t))
-//   The source buffer depth must be at least the peak occupancy computed
-//   using the composed consume, not just the per-edge consume.
-//
-// This check is CROSS-CONDUIT: it combines the source conduit's
-// producer_rates with each destination conduit's consumer_rates.
-// The per-edge checkCSDF1x1 checks each conduit independently and
-// cannot detect bottlenecks caused by a slow consumer in the distribute.
-//
-// Parameters:
-//   diagnosticOp — the conduit.link op for error attachment
-//   srcProdRates — the source conduit's producer_rates (P)
-//   srcCapacity  — the source conduit's declared buffer capacity
-//   dstConsRates — each destination conduit's consumer_rates (C_y)
-//   dstNames     — destination conduit names (for error messages)
-//
-// Returns failure() if the source buffer is undersized; success() otherwise.
-// ---------------------------------------------------------------------------
-static ::mlir::LogicalResult checkDistributeComposedConsume(
-    mlir::Operation *diagnosticOp,
-    llvm::ArrayRef<int64_t> srcProdRates,
-    int64_t srcCapacity,
-    llvm::SmallVectorImpl<llvm::SmallVector<int64_t>> &dstConsRates,
-    llvm::SmallVectorImpl<std::string> &dstNames) {
-  if (dstConsRates.size() < 2)
-    return ::mlir::success(); // single consumer: per-edge check suffices
-
-  // Compute hyper-period H = lcm of all periods.
-  auto gcd = [](int64_t a, int64_t b) -> int64_t {
-    while (b) { int64_t tmp = b; b = a % b; a = tmp; }
-    return a;
-  };
-  auto lcm = [&gcd](int64_t a, int64_t b) -> int64_t {
-    if (a == 0 || b == 0) return 0;
-    return (a / gcd(a, b)) * b;
-  };
-
-  int64_t H = static_cast<int64_t>(srcProdRates.size());
-  for (auto &cRates : dstConsRates)
-    H = lcm(H, static_cast<int64_t>(cRates.size()));
-
-  constexpr int64_t kMaxSimSteps = 1024;
-  if (H <= 0 || H > kMaxSimSteps) {
-    diagnosticOp->emitWarning(
-        "M7-dist composed-consume: hyper-period exceeds simulation cap (")
-        << kMaxSimSteps
-        << " steps); Denolf Eq. 48 buffer capacity check skipped";
-    return ::mlir::success();
-  }
-
-  // Simulate the hyper-period.
-  int64_t plen = static_cast<int64_t>(srcProdRates.size());
-  unsigned N = dstConsRates.size();
-  int64_t cumProd = 0;
-  llvm::SmallVector<int64_t> cumCons(N, 0);
-  int64_t peakOccupancy = 0;
-
-  for (int64_t t = 0; t < H; ++t) {
-    // Producer fires: add tokens to source buffer.
-    cumProd += srcProdRates[static_cast<size_t>(t % plen)];
-
-    // Each consumer fires: track cumulative consumption.
-    for (unsigned y = 0; y < N; ++y) {
-      int64_t clen = static_cast<int64_t>(dstConsRates[y].size());
-      cumCons[y] += dstConsRates[y][static_cast<size_t>(t % clen)];
-    }
-
-    // Composed consume (Eq. 46): min over all consumers.
-    int64_t composedConsume = cumCons[0];
-    for (unsigned y = 1; y < N; ++y) {
-      if (cumCons[y] < composedConsume)
-        composedConsume = cumCons[y];
-    }
-
-    // Occupied containers = produced - composed consume.
-    int64_t occupied = cumProd - composedConsume;
-    if (occupied > peakOccupancy)
-      peakOccupancy = occupied;
-  }
-
-  if (peakOccupancy > srcCapacity) {
-    // Identify the bottleneck consumer (min cumulative at end).
-    unsigned bottleneck = 0;
-    for (unsigned y = 1; y < N; ++y) {
-      if (cumCons[y] < cumCons[bottleneck])
-        bottleneck = y;
-    }
-    return diagnosticOp->emitOpError(
-               "M7-dist composed-consume (Denolf Eq. 48): "
-               "source buffer capacity insufficient for multi-consumer "
-               "distribute: peak occupancy=")
-           << peakOccupancy << " exceeds source slot_elems =" << srcCapacity
-           << " (bottleneck consumer: '" << dstNames[bottleneck]
-           << "', hyper-period=" << H << " steps"
-           << "; a container can only be freed after ALL "
-           << N << " consumers have consumed it)";
-  }
-
-  return ::mlir::success();
-}
-
-::mlir::LogicalResult Distribute::verify() {
-  auto srcs = getSrcs();
-  auto dsts = getDsts();
-  auto offsets = getOffsets();
-
-  // M3-dist: structural invariants.
-  if (srcs.size() != 1)
-    return emitOpError("distribute requires exactly 1 src, got ") << srcs.size();
-  if (dsts.empty())
-    return emitOpError("distribute requires at least 1 dst, got 0");
-
-  // Offset count consistency.
-  if (offsets.has_value() && !offsets->empty()) {
-    if (offsets->size() != dsts.size())
-      return emitOpError("distribute: offsets count (")
-             << offsets->size() << ") must equal dsts count (" << dsts.size()
-             << ")";
-  }
-
-  // -------------------------------------------------------------------------
-  // A-10: cascade channels cannot be used in conduit.distribute.
-  // -------------------------------------------------------------------------
-  auto checkCascade = [&](mlir::ArrayAttr names,
-                          llvm::StringRef role) -> mlir::LogicalResult {
-    for (auto attr : names) {
-      llvm::StringRef name = mlir::cast<mlir::FlatSymbolRefAttr>(attr).getValue();
-      Create chanCreate = findConduitCreateByName(getOperation(), name);
-      if (!chanCreate)
-        continue;
-      auto routingModeOpt = chanCreate.getRoutingMode();
-      if (routingModeOpt && *routingModeOpt == RoutingMode::Cascade)
-        return emitOpError("cascade channel '")
-               << name << "' cannot be used in a distribute " << role;
-    }
-    return ::mlir::success();
-  };
-  if (failed(checkCascade(srcs, "src")) || failed(checkCascade(dsts, "dst")))
-    return ::mlir::failure();
-
-  // -------------------------------------------------------------------------
-  // M6-dist / M7-dist: CSDF balance and buffer capacity for 1:N distribute.
-  //
-  // Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.3 Equations 45-48.
-  //
-  // Level 1 — Per-edge balance (Eq. 45).
-  // Level 2 — Composed consume buffer capacity (Eq. 46/48).
-  // -------------------------------------------------------------------------
-  llvm::StringRef srcName =
-      mlir::cast<mlir::FlatSymbolRefAttr>(srcs[0]).getValue();
-  Create srcCreate = findConduitCreateByName(getOperation(), srcName);
-  if (srcCreate && srcCreate.getProducerRates().has_value() &&
-      srcCreate.getConsumerRates().has_value()) {
-    auto pRates = *srcCreate.getProducerRates();
-    auto cRates = *srcCreate.getConsumerRates();
-    int64_t cap = srcCreate.getSlotElems();
-    std::string label = "distribute source '" + srcName.str() + "'";
-    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
-      return ::mlir::failure();
-  }
-  for (auto dstAttr : dsts) {
-    llvm::StringRef dstName =
-        mlir::cast<mlir::FlatSymbolRefAttr>(dstAttr).getValue();
-    Create dstCreate = findConduitCreateByName(getOperation(), dstName);
-    if (!dstCreate || !dstCreate.getProducerRates().has_value() ||
-        !dstCreate.getConsumerRates().has_value())
-      continue;
-    auto pRates = *dstCreate.getProducerRates();
-    auto cRates = *dstCreate.getConsumerRates();
-    int64_t cap = dstCreate.getSlotElems();
-    std::string label = "distribute destination '" + dstName.str() + "'";
-    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
-      return ::mlir::failure();
-  }
-
-  // Level 2: Composed consume buffer capacity (Denolf Eq. 46/48).
-  if (srcCreate && srcCreate.getProducerRates().has_value()) {
-    llvm::SmallVector<llvm::SmallVector<int64_t>> allDstConsRates;
-    llvm::SmallVector<std::string> allDstNames;
-    bool allDstsHaveRates = true;
-    for (auto dstAttr : dsts) {
-      llvm::StringRef dstName =
-          mlir::cast<mlir::FlatSymbolRefAttr>(dstAttr).getValue();
-      Create dstCreate = findConduitCreateByName(getOperation(), dstName);
-      if (!dstCreate || !dstCreate.getConsumerRates().has_value()) {
-        allDstsHaveRates = false;
-        break;
-      }
-      auto cRates = *dstCreate.getConsumerRates();
-      llvm::SmallVector<int64_t> rates(cRates.begin(), cRates.end());
-      allDstConsRates.push_back(std::move(rates));
-      allDstNames.push_back(dstName.str());
-    }
-    if (allDstsHaveRates && allDstConsRates.size() >= 2) {
-      auto srcPRates = *srcCreate.getProducerRates();
-      llvm::SmallVector<int64_t> srcPR(srcPRates.begin(), srcPRates.end());
-      if (failed(checkDistributeComposedConsume(
-              getOperation(), srcPR, srcCreate.getSlotElems(),
-              allDstConsRates, allDstNames)))
-        return ::mlir::failure();
-    }
-  }
-
-  return ::mlir::success();
-}
-
-::mlir::LogicalResult Join::verify() {
-  auto srcs = getSrcs();
-  auto dsts = getDsts();
-  auto offsets = getOffsets();
-
-  // M3-join: structural invariants.
-  if (srcs.empty())
-    return emitOpError("join requires at least 1 src, got 0");
-  if (dsts.size() != 1)
-    return emitOpError("join requires exactly 1 dst, got ") << dsts.size();
-
-  // Offset count consistency.
-  if (offsets.has_value() && !offsets->empty()) {
-    if (offsets->size() != srcs.size())
-      return emitOpError("join: offsets count (")
-             << offsets->size() << ") must equal srcs count (" << srcs.size()
-             << ")";
-  }
-
-  // -------------------------------------------------------------------------
-  // A-10: cascade channels cannot be used in conduit.join.
-  // -------------------------------------------------------------------------
-  auto checkCascade = [&](mlir::ArrayAttr names,
-                          llvm::StringRef role) -> mlir::LogicalResult {
-    for (auto attr : names) {
-      llvm::StringRef name = mlir::cast<mlir::FlatSymbolRefAttr>(attr).getValue();
-      Create chanCreate = findConduitCreateByName(getOperation(), name);
-      if (!chanCreate)
-        continue;
-      auto routingModeOpt = chanCreate.getRoutingMode();
-      if (routingModeOpt && *routingModeOpt == RoutingMode::Cascade)
-        return emitOpError("cascade channel '")
-               << name << "' cannot be used in a join " << role;
-    }
-    return ::mlir::success();
-  };
-  if (failed(checkCascade(srcs, "src")) || failed(checkCascade(dsts, "dst")))
-    return ::mlir::failure();
-
-  // -------------------------------------------------------------------------
-  // M6-join / M7-join: CSDF balance and buffer capacity for N:1 join.
-  //
-  // Theory: Denolf et al. 2007 (DOI: 10.1155/2007/84078) §3.3.4.
-  // Per-edge Bilsen 1:1 check (conservative structural approximation).
-  // -------------------------------------------------------------------------
-  for (auto srcAttr : srcs) {
-    llvm::StringRef srcName =
-        mlir::cast<mlir::FlatSymbolRefAttr>(srcAttr).getValue();
-    Create srcCreate = findConduitCreateByName(getOperation(), srcName);
-    if (!srcCreate || !srcCreate.getProducerRates().has_value() ||
-        !srcCreate.getConsumerRates().has_value())
-      continue;
-    auto pRates = *srcCreate.getProducerRates();
-    auto cRates = *srcCreate.getConsumerRates();
-    int64_t cap = srcCreate.getSlotElems();
-    std::string label = "join source '" + srcName.str() + "'";
-    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
-      return ::mlir::failure();
-  }
-  llvm::StringRef dstName =
-      mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue();
-  Create dstCreate = findConduitCreateByName(getOperation(), dstName);
-  if (dstCreate && dstCreate.getProducerRates().has_value() &&
-      dstCreate.getConsumerRates().has_value()) {
-    auto pRates = *dstCreate.getProducerRates();
-    auto cRates = *dstCreate.getConsumerRates();
-    int64_t cap = dstCreate.getSlotElems();
-    std::string label = "join destination '" + dstName.str() + "'";
-    if (failed(checkCSDF1x1(getOperation(), label, pRates, cRates, cap)))
-      return ::mlir::failure();
-  }
-
-  return ::mlir::success();
-}
-
-::mlir::LogicalResult Forward::verify() {
-  auto srcs = getSrcs();
-  auto dsts = getDsts();
-
-  // M3-fwd: exactly 1 src and 1 dst.
-  if (srcs.size() != 1 || dsts.size() != 1)
-    return emitOpError("forward requires exactly 1 src and 1 dst, got ")
-           << srcs.size() << " src(s) and " << dsts.size() << " dst(s)";
-
-  return ::mlir::success();
-}
-
 //===----------------------------------------------------------------------===//
 // Conduit ops — Create verifier
 //===----------------------------------------------------------------------===//
@@ -673,10 +252,14 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
           "without the AIE dialect loaded?");
   }
 
-  // plio verifier: plio=true requires at least one shim-row (row == 0) endpoint.
-  // The shim endpoint may be the producer (producer_tile row=0) or a consumer
-  // (shim_consumer_tiles non-empty).  Both directions are valid: a compute→shim
-  // conduit with plio has producer_tile at a compute row and a shim consumer.
+  // plio verifier: plio=true requires a shim-row (row == 0) endpoint — either
+  // the producer tile or at least one consumer tile must be on the shim row.
+  //
+  // Caveat: inside a DeviceOp, Pass A records shim consumers via
+  // aie.shim_dma_allocation ops rather than consumer_tiles.  We cannot do a
+  // module-level walk in the verifier, so skip the consumer-tiles check when
+  // inside a DeviceOp (trust Pass A correctness).  For hand-written IR
+  // outside a DeviceOp, consumer_tiles is the authoritative list.
   if (auto plioAttr = getPlio()) {
     if (*plioAttr) {
       bool producerIsShim = false;
@@ -685,13 +268,29 @@ static ::mlir::LogicalResult checkDistributeComposedConsume(
         if (arr.size() >= 2 && arr[1] == 0)
           producerIsShim = true;
       }
-      bool hasShimConsumer = false;
-      if (auto shimCons = getShimConsumerTiles()) {
-        hasShimConsumer = !shimCons->empty();
+      if (!producerIsShim) {
+        bool insideDevice =
+            getOperation()->getParentOfType<xilinx::AIE::DeviceOp>() !=
+            nullptr;
+        if (!insideDevice) {
+          // Hand-written IR: consumer_tiles is authoritative.
+          bool consumerHasShim = false;
+          if (auto consArr = getConsumerTiles()) {
+            auto arr = *consArr;
+            for (size_t i = 0; i + 1 < arr.size(); i += 2) {
+              if (arr[i + 1] == 0) {
+                consumerHasShim = true;
+                break;
+              }
+            }
+          }
+          if (!consumerHasShim)
+            return emitOpError("plio=true requires a shim tile (row 0) as "
+                               "producer_tile or consumer_tiles");
+        }
+        // Inside a DeviceOp: shim consumers may exist via
+        // aie.shim_dma_allocation — skip the check.
       }
-      if (!producerIsShim && !hasShimConsumer)
-        return emitOpError("plio=true requires a shim tile (row 0) as either "
-                           "producer_tile or in shim_consumer_tiles");
     }
   }
 

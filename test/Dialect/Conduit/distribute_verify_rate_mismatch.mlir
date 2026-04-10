@@ -43,7 +43,7 @@ func.func @distribute_dst_imbalanced() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.distribute {srcs = [@rm_src], dsts = [@rm_d1_bad, @rm_d2], memtile = "tile(0,1)"}
+  conduit.scatter{src = @rm_src, dsts = [@rm_d1_bad, @rm_d2] {memtile = "tile(0,1)"}}
   return
 }
 
@@ -71,6 +71,6 @@ func.func @distribute_src_imbalanced() {
                   depth = 1 : i64,
                   producer_rates = array<i64: 1>,
                   consumer_rates = array<i64: 1>}
-  conduit.distribute {srcs = [@rm2_src_bad], dsts = [@rm2_d1], memtile = "tile(0,1)"}
+  conduit.scatter{src = @rm2_src_bad, dsts = [@rm2_d1] {memtile = "tile(0,1)"}}
   return
 }
