@@ -26,7 +26,7 @@
 // Attributes are printed in alphabetical order:
 //   capacity, depth, element_type, name
 // CHECK:   conduit.create @chan
-// CHECK-SAME: depth = 1
+// CHECK-SAME: depth = 0
 // CHECK-SAME: element_type = memref<8x8xi32>
 // CHECK-SAME: slot_elems = 1
 //

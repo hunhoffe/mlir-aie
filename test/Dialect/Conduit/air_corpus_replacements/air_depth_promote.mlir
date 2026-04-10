@@ -22,10 +22,9 @@
 
 // CHECK-LABEL: module
 
-// conduit.create emitted with depth=1 (Pass B Tier 3: depth-promote does not
-// resolve depth=0 for air.channel-originated conduits; depth=1 is the default).
+// conduit.create emitted with depth=0 sentinel (resolved by --conduit-depth-promote).
 // CHECK: conduit.create @chan
-// CHECK-SAME: depth = 1
+// CHECK-SAME: depth = 0
 
 // Tier 3 ops inside loop body.
 // CHECK: scf.for

@@ -1,4 +1,4 @@
-// RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit --conduit-depth-promote --conduit-to-dma %s | FileCheck %s
 //
 // Regression test: Tier 3 ops (put/get_memref_async) inside aie.core bodies
 // must be lowered to use_lock ops (Pass C Phase 6, Steps 8e-8f).

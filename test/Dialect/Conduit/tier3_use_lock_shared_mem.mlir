@@ -1,4 +1,4 @@
-// RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit --conduit-depth-promote --conduit-to-dma %s | FileCheck %s
 //
 // Regression test: Tier 3 use_lock on adjacent tiles (shared memory path).
 //

@@ -15,6 +15,7 @@
 
 // RUN: aie-opt --allow-unregistered-dialect \
 // RUN:   --air-channel-to-conduit \
+// RUN:   --conduit-depth-promote \
 // RUN:   --conduit-to-dma \
 // RUN:   %s | FileCheck %s
 

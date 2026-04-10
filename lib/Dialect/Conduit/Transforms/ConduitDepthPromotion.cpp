@@ -11,8 +11,17 @@
 // NOTE: This pass is experimental and not validated on hardware. Use
 // --conduit-depth-promote only as an opt-in flag.
 //
-// Promotes eligible depth-1 conduits to depth-2 (double-buffering) to enable
-// compute-DMA overlap.  Runs after Pass A/B and before Pass C.
+// Two-phase pass that runs after Pass A/B and before Pass C:
+//
+// Phase 1 — Sentinel resolver (always runs):
+//   Pass A/B emit depth=0 for channels whose depth is unknown at translation
+//   time.  This phase resolves depth=0 to depth=1 (single-buffering minimum),
+//   or to the CSDFa minimum depth when --conduit-depth-promote{csdf=true} and
+//   producer_rates/consumer_rates are present.
+//
+// Phase 2 — Depth promotion (opt-in heuristic):
+//   Promotes eligible depth-1 conduits to depth-2 (double-buffering) to enable
+//   compute-DMA overlap.
 //
 // Exclusion criteria (any one disqualifies):
 //   0. Cascade conduit (routing_mode = "cascade") — depth is architecturally
@@ -73,11 +82,13 @@ static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Collect conduit names that appear in any distribute/join/forward (src or dst).
+/// Collect conduit names that appear in any relay op (src/dst of scatter,
+/// gather, transpose, or the legacy distribute/join/forward).
 static llvm::StringSet<>
 collectLinkedConduitNames(mlir::ModuleOp module) {
   llvm::StringSet<> linked;
   auto collect = [&](mlir::Operation *op) {
+    // Array attrs: scatter.dsts, gather.srcs, legacy distribute.srcs/dsts.
     if (auto srcsAttr = op->getAttrOfType<mlir::ArrayAttr>("srcs"))
       for (auto s : srcsAttr)
         if (auto str = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(s))
@@ -86,7 +97,17 @@ collectLinkedConduitNames(mlir::ModuleOp module) {
       for (auto d : dstsAttr)
         if (auto str = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(d))
           linked.insert(str.getValue());
+    // Scalar attrs: scatter.src (single), gather.dst (single).
+    if (auto srcAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("src"))
+      linked.insert(srcAttr.getValue());
+    if (auto dstAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("dst"))
+      linked.insert(dstAttr.getValue());
   };
+  // Sprint 3+ relay ops.
+  module.walk([&](ScatterOp op) { collect(op.getOperation()); });
+  module.walk([&](GatherOp op) { collect(op.getOperation()); });
+  module.walk([&](TransposeOp op) { collect(op.getOperation()); });
+  // Legacy relay ops (pre-Sprint-3 IR compatibility).
   module.walk([&](Distribute op) { collect(op.getOperation()); });
   module.walk([&](Join op) { collect(op.getOperation()); });
   module.walk([&](Forward op) { collect(op.getOperation()); });
@@ -141,8 +162,54 @@ struct ConduitDepthPromotePass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
+    mlir::OpBuilder builder(module.getContext());
+
     // Step 1: Collect linked conduit names (exclusion criterion #2).
     auto linkedNames = collectLinkedConduitNames(module);
+
+    // Step 1.5: Resolve depth=0 sentinel.
+    // Pass A/B emit depth=0 for channels where depth is unknown at translation
+    // time.  Resolve to the CSDFa minimum depth (if --conduit-depth-promote
+    // {csdf=true} and producer_rates/consumer_rates are present), or to depth=1
+    // (safe single-buffering minimum) otherwise.  After resolution the standard
+    // promotion loop (Step 5) may further promote depth=1 → depth=2+.
+    module.walk([&](Create op) {
+      auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
+      if (!depthAttr || depthAttr.getInt() != 0)
+        return;
+      // Cascade channels are architecturally fixed at depth=1; pass the
+      // sentinel through as 1 and let Criterion 0 in Step 5 prevent promotion.
+      if (auto rm = op.getRoutingMode()) {
+        if (*rm == RoutingMode::Cascade) {
+          op->setAttr("depth", builder.getI64IntegerAttr(1));
+          return;
+        }
+      }
+      int64_t resolvedDepth = 1; // safe default
+      if (csdfa) {
+        auto prodRates =
+            op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_rates");
+        auto consRates =
+            op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_rates");
+        if (prodRates && consRates) {
+          int64_t P = 0, C = 0;
+          for (int64_t r : prodRates.asArrayRef()) P += r;
+          for (int64_t r : consRates.asArrayRef()) C += r;
+          if (P > 0 && C > 0) {
+            int64_t maxPC = std::max(P, C);
+            int64_t minPC = std::min(P, C);
+            resolvedDepth = static_cast<int64_t>(
+                std::ceil(static_cast<double>(maxPC) * eta /
+                          static_cast<double>(minPC)));
+            if (resolvedDepth < 1)
+              resolvedDepth = 1;
+            op->emitRemark("conduit-depth-promote: sentinel depth=0 → depth=")
+                << resolvedDepth << " (CSDFa) for '" << op.getSymName() << "'";
+          }
+        }
+      }
+      op->setAttr("depth", builder.getI64IntegerAttr(resolvedDepth));
+    });
 
     // Step 2: Collect all conduit.create ops with depth == 1.
     llvm::SmallVector<mlir::Operation *> candidates;
@@ -288,7 +355,6 @@ struct ConduitDepthPromotePass
 
     // Step 5: Evaluate each candidate.
     int promoted = 0;
-    mlir::OpBuilder builder(module.getContext());
 
     for (mlir::Operation *createOp : candidates) {
       auto typedCreate = mlir::dyn_cast<Create>(createOp);
