@@ -1,4 +1,5 @@
-//===- ConduitMaterializeBuffers.cpp - emit aie.buffer per channel -*-C++-*-===//
+//===- ConduitMaterializeBuffers.cpp - emit aie.buffer per channel
+//-*-C++-*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -53,8 +54,7 @@ struct ConduitMaterializeBuffersPass
       llvm::StringMap<llvm::SmallVector<mlir::Value>> channelToConsumerTiles;
 
       device.walk([&](AIE::CoreOp coreOp) {
-        AIE::TileOp tileOp =
-            coreOp.getTile().getDefiningOp<AIE::TileOp>();
+        AIE::TileOp tileOp = coreOp.getTile().getDefiningOp<AIE::TileOp>();
         if (!tileOp)
           return;
         mlir::Value tileVal = tileOp.getResult();
@@ -109,8 +109,7 @@ struct ConduitMaterializeBuffersPass
           continue;
 
         // Buffer count: max(depth, window_size + 1).
-        int64_t windowSize =
-            createOp.getWindowSize().value_or(0);
+        int64_t windowSize = createOp.getWindowSize().value_or(0);
         int64_t bufCount = std::max(depth, windowSize + 1);
 
         mlir::Location loc = createOp.getLoc();
@@ -119,16 +118,13 @@ struct ConduitMaterializeBuffersPass
         for (mlir::Value tileVal : consIt->second) {
           // Insert before the device body terminator so all emitted ops
           // appear at device scope (not inside any core or mem region).
-          builder.setInsertionPoint(
-              device.getBody()->getTerminator());
+          builder.setInsertionPoint(device.getBody()->getTerminator());
 
           llvm::SmallVector<mlir::Value> bufs;
           for (int64_t i = 0; i < bufCount; ++i) {
-            std::string symName =
-                name + "_cons_buff_" + std::to_string(i);
+            std::string symName = name + "_cons_buff_" + std::to_string(i);
             auto buf = builder.create<AIE::BufferOp>(
-                loc, bufTy, tileVal,
-                mlir::StringAttr::get(ctx, symName),
+                loc, bufTy, tileVal, mlir::StringAttr::get(ctx, symName),
                 /*address=*/mlir::IntegerAttr{},
                 /*initial_value=*/mlir::ElementsAttr{},
                 /*mem_bank=*/mlir::IntegerAttr{});
@@ -137,8 +133,7 @@ struct ConduitMaterializeBuffersPass
 
           // Emit conduit.register_buffers linking the channel to its buffers.
           builder.create<RegisterBuffersOp>(
-              loc,
-              mlir::FlatSymbolRefAttr::get(ctx, name),
+              loc, mlir::FlatSymbolRefAttr::get(ctx, name),
               mlir::ValueRange(bufs));
         }
       }

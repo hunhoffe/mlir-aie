@@ -16,15 +16,19 @@
 //   Create::verify() — depth>=0 check; element_type MemRefType check;
 //                   sync_mode/disable_synchronization conflict;
 //                   M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
-//   Acquire::verify() / WaitWindow::verify() — M8a: window value release linearity
-//                                              M9: same-block acquire-release pairing (llvm::errs)
-//   AcquireAsync::verify() / ReleaseAsync::verify() — M8b: window.token wait_window linearity
-//                                                     M9: wait_window→release pairing (llvm::errs)
-//   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token types
-//   ScatterOp::verify() — DMA budget, memtile format
-//   GatherOp::verify() — DMA budget, memtile format
-//   TransposeOp::verify() — DMA budget, offsets, packet ID budget, memtile format
-//   RegisterBuffersOp::verify() — provenance (aie.buffer / aie.external_buffer)
+//   Acquire::verify() / WaitWindow::verify() — M8a: window value release
+//   linearity
+//                                              M9: same-block acquire-release
+//                                              pairing (llvm::errs)
+//   AcquireAsync::verify() / ReleaseAsync::verify() — M8b: window.token
+//   wait_window linearity
+//                                                     M9: wait_window→release
+//                                                     pairing (llvm::errs)
+//   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token
+//   types ScatterOp::verify() — DMA budget, memtile format GatherOp::verify() —
+//   DMA budget, memtile format TransposeOp::verify() — DMA budget, offsets,
+//   packet ID budget, memtile format RegisterBuffersOp::verify() — provenance
+//   (aie.buffer / aie.external_buffer)
 //
 //===----------------------------------------------------------------------===//
 
@@ -93,8 +97,7 @@ void ConduitDialect::initialize() {
     return emitOpError("operand must be !conduit.window<T>");
   if (getResult().getType() != winTy.getElementType())
     return emitOpError("result type ")
-           << getResult().getType()
-           << " does not match window element type "
+           << getResult().getType() << " does not match window element type "
            << winTy.getElementType();
 
   // M2: index bounds check against acquire count from the defining
@@ -116,8 +119,7 @@ void ConduitDialect::initialize() {
       acquireCount = acqOp.getCount();
       haveCount = true;
     } else if (auto waitOp = mlir::dyn_cast<WaitWindow>(defOp)) {
-      if (auto acqAsyncOp =
-              waitOp.getToken().getDefiningOp<AcquireAsync>()) {
+      if (auto acqAsyncOp = waitOp.getToken().getDefiningOp<AcquireAsync>()) {
         acquireCount = acqAsyncOp.getCount();
         haveCount = true;
       }
@@ -135,20 +137,24 @@ void ConduitDialect::initialize() {
 //===----------------------------------------------------------------------===//
 
 // ---------------------------------------------------------------------------
-// Shared CSDF helper: find conduit.create by name in the enclosing module.
+// Shared CSDF helper: find conduit.create by name in the enclosing DeviceOp.
 // Used by Link::verify() for M6-join/M7-join/M6-dist/M7-dist checks.
 // Returns nullptr when not found (conduit.create may be in a different
 // translation unit or a test fragment; skip rather than error).
+//
+// Walks from the nearest AIE::DeviceOp ancestor (conduit.create has
+// HasParent<"AIE::DeviceOp">), which is faster and more precise than
+// walking from the enclosing ModuleOp.
 // ---------------------------------------------------------------------------
 static Create findConduitCreateByName(mlir::Operation *anchor,
                                       llvm::StringRef name) {
-  mlir::Operation *mod = anchor;
-  while (mod && !mlir::isa<mlir::ModuleOp>(mod))
-    mod = mod->getParentOp();
-  if (!mod)
+  mlir::Operation *parent = anchor;
+  while (parent && !mlir::isa<AIE::DeviceOp>(parent))
+    parent = parent->getParentOp();
+  if (!parent)
     return {};
   Create result{};
-  mod->walk([&](Create op) -> mlir::WalkResult {
+  parent->walk([&](Create op) -> mlir::WalkResult {
     if (op.getName() == name) {
       result = op;
       return mlir::WalkResult::interrupt();
@@ -197,8 +203,9 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
   }
 
   // Addition 3 — sync_mode + disable_synchronization conflict.
-  // sync_mode specifies an active synchronization protocol; disable_synchronization
-  // suppresses all lock emission.  The two are mutually exclusive.
+  // sync_mode specifies an active synchronization protocol;
+  // disable_synchronization suppresses all lock emission.  The two are mutually
+  // exclusive.
   if (getSyncMode().has_value() && getDisableSynchronization().value_or(false))
     return emitOpError(
         "sync_mode and disable_synchronization=true are mutually exclusive");
@@ -207,8 +214,7 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
     mlir::Type ty = *elemTypeOpt;
     // Addition 2 — element_type must be MemRefType.
     if (!mlir::isa<mlir::MemRefType>(ty))
-      return emitOpError(
-                 "element_type must be a MemRefType when present, got ")
+      return emitOpError("element_type must be a MemRefType when present, got ")
              << ty;
     if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(ty)) {
       for (int64_t dim : shaped.getShape()) {
@@ -260,6 +266,12 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
   // module-level walk in the verifier, so skip the consumer-tiles check when
   // inside a DeviceOp (trust Pass A correctness).  For hand-written IR
   // outside a DeviceOp, consumer_tiles is the authoritative list.
+  //
+  // NOTE: Since Phase 9 enforces HasParent<DeviceOp> on conduit.create, the
+  // !insideDevice branch below is effectively dead code for valid IR — all
+  // conduit.create ops are now required to be inside a DeviceOp.  The branch
+  // is retained as a safety net for test contexts that may construct ops
+  // outside DeviceOp programmatically.
   if (auto plioAttr = getPlio()) {
     if (*plioAttr) {
       bool producerIsShim = false;
@@ -270,8 +282,7 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
       }
       if (!producerIsShim) {
         bool insideDevice =
-            getOperation()->getParentOfType<xilinx::AIE::DeviceOp>() !=
-            nullptr;
+            getOperation()->getParentOfType<xilinx::AIE::DeviceOp>() != nullptr;
         if (!insideDevice) {
           // Hand-written IR: consumer_tiles is authoritative.
           bool consumerHasShim = false;
@@ -320,12 +331,13 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
     int64_t clen = static_cast<int64_t>(cRates.size());
     // CSDF balance: sum(P)*len(C) == sum(C)*len(P)
     if (psum * clen != csum * plen)
-      return emitOpError("CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=")
+      return emitOpError("CSDF rate imbalance: "
+                         "sum(producer_rates)*len(consumer_rates)=")
              << (psum * clen)
-             << " != sum(consumer_rates)*len(producer_rates)="
-             << (csum * plen)
+             << " != sum(consumer_rates)*len(producer_rates)=" << (csum * plen)
              << " (producer_rates has sum=" << psum << " period=" << plen
-             << ", consumer_rates has sum=" << csum << " period=" << clen << ")";
+             << ", consumer_rates has sum=" << csum << " period=" << clen
+             << ")";
 
     // M7: CSDF buffer capacity check (sufficient condition).
     // Simulate one hyper-period (H = lcm(len(P), len(C)) time slots) and track
@@ -335,8 +347,8 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
     // capacity.
     //
     // Algorithm:
-    //   For t = 0..H-1: produce P[t mod q] tokens, then consume C[t mod r] tokens.
-    //   Track occupancy after each produce step; record the maximum.
+    //   For t = 0..H-1: produce P[t mod q] tokens, then consume C[t mod r]
+    //   tokens. Track occupancy after each produce step; record the maximum.
     //   Require: capacity >= peak_occupancy.
     //
     // The hyper-period H = lcm(q, r) = q * (r / gcd(q, r)).
@@ -345,20 +357,25 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
     //
     // Underflow semantics: when occupancy goes negative after the consume step,
     // this means the simulation's produce-before-consume interleaving is
-    // incompatible with the hardware's BD scheduling for these rates.  M6 already
-    // guarantees the schedule is feasible over the full hyper-period; momentary
-    // underflow in this simulation does NOT necessarily mean hardware deadlock —
-    // the actual AIE BD chain may fire in a different order (e.g., the hardware
-    // drains the consumer BD before the producer BD refills).  We therefore emit
-    // emitWarning (not emitOpError) for underflow: it flags a potential ordering
-    // mismatch for the user to verify against their BD chain layout, but does not
-    // reject the program.  Only capacity overflow (peakOccupancy > capacity) is a
-    // hard error, because no interleaving can hide that constraint.
+    // incompatible with the hardware's BD scheduling for these rates.  M6
+    // already guarantees the schedule is feasible over the full hyper-period;
+    // momentary underflow in this simulation does NOT necessarily mean hardware
+    // deadlock — the actual AIE BD chain may fire in a different order (e.g.,
+    // the hardware drains the consumer BD before the producer BD refills).  We
+    // therefore emit emitWarning (not emitOpError) for underflow: it flags a
+    // potential ordering mismatch for the user to verify against their BD chain
+    // layout, but does not reject the program.  Only capacity overflow
+    // (peakOccupancy > capacity) is a hard error, because no interleaving can
+    // hide that constraint.
     {
       int64_t slot_elems = getSlotElems();
       // Compute gcd(plen, clen) via Euclid's algorithm.
       int64_t a = plen, b = clen;
-      while (b) { int64_t tmp = b; b = a % b; a = tmp; }
+      while (b) {
+        int64_t tmp = b;
+        b = a % b;
+        a = tmp;
+      }
       int64_t g = a;
       int64_t clenOverG = clen / g; // exact: g divides clen by construction
       constexpr int64_t kMaxSimSteps = 1024;
@@ -366,8 +383,8 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
       // within the simulation cap before we compute hyperPeriod.
       // Since kMaxSimSteps == 1024 and plen >= 1, the product overflows only
       // when clenOverG > INT64_MAX / plen.  We conservatively skip simulation
-      // if either factor exceeds kMaxSimSteps (the product would then exceed the
-      // cap regardless).
+      // if either factor exceeds kMaxSimSteps (the product would then exceed
+      // the cap regardless).
       if (plen > kMaxSimSteps || clenOverG > kMaxSimSteps / plen) {
         emitWarning("M7: CSDF hyper-period exceeds simulation cap (")
             << kMaxSimSteps << " steps); buffer capacity check skipped";
@@ -389,8 +406,9 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
             if (occupancy < 0) {
               // Momentary underflow in produce-before-consume interleaving.
               // See comment above: this is a warning, not an error.
-              emitWarning("M7: CSDF hyper-period simulation: momentary underflow "
-                          "at step ")
+              emitWarning(
+                  "M7: CSDF hyper-period simulation: momentary underflow "
+                  "at step ")
                   << t << " (occupancy=" << occupancy
                   << "); hardware BD scheduling may differ from "
                      "produce-before-consume simulation order";
@@ -415,8 +433,9 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
     if (auto d = getDepth()) {
       int64_t depth = static_cast<int64_t>(*d);
       if (depth > 0 && static_cast<int64_t>(*ws) > depth) {
-        return emitOpError("window_size (") << *ws
-            << ") exceeds depth (" << depth << "); buffer pool too small for sliding window";
+        return emitOpError("window_size (")
+               << *ws << ") exceeds depth (" << depth
+               << "); buffer pool too small for sliding window";
       }
     }
   }
@@ -490,7 +509,8 @@ checkTokenDoesNotEscape(mlir::Operation *producerOp, mlir::Value tokenVal) {
 //===----------------------------------------------------------------------===//
 
 static ::mlir::LogicalResult
-checkWindowReleaseCumulativeCount(mlir::Operation *producerOp, mlir::Value windowVal) {
+checkWindowReleaseCumulativeCount(mlir::Operation *producerOp,
+                                  mlir::Value windowVal) {
   // M8a: True double-release detection — cumulative released count at the same
   // nesting level must not exceed the acquired count.  Multiple conduit.release
   // ops on the same window value are valid for sliding-window partial-release
@@ -500,7 +520,8 @@ checkWindowReleaseCumulativeCount(mlir::Operation *producerOp, mlir::Value windo
   // Releases inside nested regions (e.g., loop bodies) execute once per loop
   // iteration; their relationship to the acquire count is enforced at runtime
   // and depends on the loop trip count — static counting would yield false
-  // positives.  M9 liveness analysis (separate pass) handles loop-carried cases.
+  // positives.  M9 liveness analysis (separate pass) handles loop-carried
+  // cases.
   //
   // Example valid pattern (cross-block):
   //   %win = conduit.acquire {count=1}    // in block B0
@@ -515,8 +536,7 @@ checkWindowReleaseCumulativeCount(mlir::Operation *producerOp, mlir::Value windo
   if (auto acqOp = mlir::dyn_cast<Acquire>(producerOp)) {
     acquiredCount = static_cast<int64_t>(acqOp.getCount());
   } else if (auto waitWinOp = mlir::dyn_cast<WaitWindow>(producerOp)) {
-    if (auto acqAsyncOp =
-            waitWinOp.getToken().getDefiningOp<AcquireAsync>()) {
+    if (auto acqAsyncOp = waitWinOp.getToken().getDefiningOp<AcquireAsync>()) {
       acquiredCount = static_cast<int64_t>(acqAsyncOp.getCount());
     } else {
       return ::mlir::success();
@@ -546,8 +566,8 @@ checkWindowReleaseCumulativeCount(mlir::Operation *producerOp, mlir::Value windo
   return ::mlir::success();
 }
 
-static ::mlir::LogicalResult
-checkWindowTokenLinear(mlir::Operation *producerOp, mlir::Value tokenVal) {
+static ::mlir::LogicalResult checkWindowTokenLinear(mlir::Operation *producerOp,
+                                                    mlir::Value tokenVal) {
   unsigned waitWindowCount = 0;
   for (mlir::OpOperand &use : tokenVal.getUses()) {
     mlir::Operation *user = use.getOwner();
@@ -562,8 +582,8 @@ checkWindowTokenLinear(mlir::Operation *producerOp, mlir::Value tokenVal) {
   return ::mlir::success();
 }
 
-static ::mlir::LogicalResult
-checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
+static ::mlir::LogicalResult checkTokenOperandTypes(mlir::Operation *op,
+                                                    mlir::ValueRange operands) {
   for (auto [idx, operand] : llvm::enumerate(operands)) {
     mlir::Type ty = operand.getType();
     bool isToken = mlir::isa<DMATokenType, WindowTokenType>(ty);
@@ -592,8 +612,8 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
       if (auto d = createOp.getDepth()) {
         int64_t depth = static_cast<int64_t>(*d);
         if (depth < wsize)
-          return emitOpError(
-              "depth must be >= window_size for sliding-window channel (depth=")
+          return emitOpError("depth must be >= window_size for sliding-window "
+                             "channel (depth=")
                  << depth << ", window_size=" << wsize << ")";
       }
     }
@@ -623,8 +643,8 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
       if (auto d = createOp.getDepth()) {
         int64_t depth = static_cast<int64_t>(*d);
         if (depth < wsize)
-          return emitOpError(
-              "depth must be >= window_size for sliding-window channel (depth=")
+          return emitOpError("depth must be >= window_size for sliding-window "
+                             "channel (depth=")
                  << depth << ", window_size=" << wsize << ")";
       }
     }
@@ -645,7 +665,8 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   //       its channel name must match $name.
   if (mlir::Value win = getWindow()) {
     if (!mlir::isa<WindowType>(win.getType()))
-      return emitOpError("$window operand must be of type !conduit.window<T>, got ")
+      return emitOpError(
+                 "$window operand must be of type !conduit.window<T>, got ")
              << win.getType();
     if (auto *defOp = win.getDefiningOp()) {
       llvm::StringRef defName;
@@ -680,27 +701,27 @@ checkTokenOperandTypes(mlir::Operation *op, mlir::ValueRange operands) {
   if (auto acqAsync = getToken().getDefiningOp<AcquireAsync>()) {
     if (acqAsync.getName() != this->getName()) {
       return emitOpError("wait_window channel name '")
-             << this->getName()
-             << "' does not match the channel name '"
-             << acqAsync.getName()
-             << "' of the acquire_async token operand";
+             << this->getName() << "' does not match the channel name '"
+             << acqAsync.getName() << "' of the acquire_async token operand";
     }
   }
 
   return ::mlir::success();
 }
 ::mlir::LogicalResult WaitAll::verify() {
-  // Note: This check is redundant with the TableGen Conduit_AnyTokenType constraint,
-  // which MLIR enforces before user verify() runs. Left in place for defense-in-depth
-  // but may be dead code — the TableGen constraint fires first.
+  // Note: This check is redundant with the TableGen Conduit_AnyTokenType
+  // constraint, which MLIR enforces before user verify() runs. Left in place
+  // for defense-in-depth but may be dead code — the TableGen constraint fires
+  // first.
   return checkTokenOperandTypes(getOperation(), getTokens());
 }
 ::mlir::LogicalResult WaitAllAsync::verify() {
   if (failed(checkTokenDoesNotEscape(getOperation(), getResult())))
     return ::mlir::failure();
-  // Note: This check is redundant with the TableGen Conduit_AnyTokenType constraint,
-  // which MLIR enforces before user verify() runs. Left in place for defense-in-depth
-  // but may be dead code — the TableGen constraint fires first.
+  // Note: This check is redundant with the TableGen Conduit_AnyTokenType
+  // constraint, which MLIR enforces before user verify() runs. Left in place
+  // for defense-in-depth but may be dead code — the TableGen constraint fires
+  // first.
   return checkTokenOperandTypes(getOperation(), getTokens());
 }
 
@@ -724,7 +745,8 @@ parseTileCoordForVerifier(llvm::StringRef s) {
   auto inner = s.drop_front(5).drop_back(1); // "COL,ROW"
   auto [colStr, rowStr] = inner.split(',');
   int64_t col, row;
-  if (colStr.trim().getAsInteger(10, col) || rowStr.trim().getAsInteger(10, row))
+  if (colStr.trim().getAsInteger(10, col) ||
+      rowStr.trim().getAsInteger(10, row))
     return {-1, -1};
   return {col, row};
 }
@@ -750,7 +772,8 @@ parseTileCoordForVerifier(llvm::StringRef s) {
 
   // memtile attribute must be of the form "tile(col,row)".
   if (parseTileCoordForVerifier(getMemtile()).first == -1)
-    return emitOpError("memtile attribute must be of the form 'tile(col,row)', got '")
+    return emitOpError(
+               "memtile attribute must be of the form 'tile(col,row)', got '")
            << getMemtile() << "'";
 
   return ::mlir::success();
@@ -776,7 +799,8 @@ parseTileCoordForVerifier(llvm::StringRef s) {
 
   // memtile attribute must be of the form "tile(col,row)".
   if (parseTileCoordForVerifier(getMemtile()).first == -1)
-    return emitOpError("memtile attribute must be of the form 'tile(col,row)', got '")
+    return emitOpError(
+               "memtile attribute must be of the form 'tile(col,row)', got '")
            << getMemtile() << "'";
 
   return ::mlir::success();
@@ -799,8 +823,8 @@ parseTileCoordForVerifier(llvm::StringRef s) {
   // MemTile DMA budget: N S2MM (sources) + M MM2S (destinations) <= 12.
   if (srcs.size() + dsts.size() > 12)
     return emitOpError("transpose DMA budget exceeded: ")
-           << srcs.size() << " srcs + " << dsts.size() << " dsts = "
-           << (srcs.size() + dsts.size())
+           << srcs.size() << " srcs + " << dsts.size()
+           << " dsts = " << (srcs.size() + dsts.size())
            << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
 
   // offsets.size() must equal srcs.size() * dsts.size().
@@ -811,13 +835,15 @@ parseTileCoordForVerifier(llvm::StringRef s) {
 
   // Packet ID budget: N*M <= 32.
   if (expectedOffsets > 32)
-    return emitOpError("transpose packet ID budget exceeded: srcs.size() * dsts.size() = ")
+    return emitOpError("transpose packet ID budget exceeded: srcs.size() * "
+                       "dsts.size() = ")
            << srcs.size() << " * " << dsts.size() << " = " << expectedOffsets
            << ", maximum is 32 (AIE2 packet ID space)";
 
   // memtile attribute must be of the form "tile(col,row)".
   if (parseTileCoordForVerifier(getMemtile()).first == -1)
-    return emitOpError("memtile attribute must be of the form 'tile(col,row)', got '")
+    return emitOpError(
+               "memtile attribute must be of the form 'tile(col,row)', got '")
            << getMemtile() << "'";
 
   return ::mlir::success();
@@ -830,12 +856,10 @@ parseTileCoordForVerifier(llvm::StringRef s) {
 ::mlir::LogicalResult RegisterBuffersOp::verify() {
   for (Value buf : getBuffers()) {
     Operation *defOp = buf.getDefiningOp();
-    if (!defOp ||
-        (!mlir::isa<AIE::BufferOp>(defOp) &&
-         !mlir::isa<AIE::ExternalBufferOp>(defOp)))
-      return emitOpError(
-                 "buffer operand must be defined by aie.buffer or "
-                 "aie.external_buffer, got ")
+    if (!defOp || (!mlir::isa<AIE::BufferOp>(defOp) &&
+                   !mlir::isa<AIE::ExternalBufferOp>(defOp)))
+      return emitOpError("buffer operand must be defined by aie.buffer or "
+                         "aie.external_buffer, got ")
              << (defOp ? defOp->getName().getStringRef() : "block argument");
   }
   return ::mlir::success();

@@ -10,11 +10,13 @@
 // -----
 
 // get_memref_async dma.token escapes via return.
+aie.device(npu1) {
+conduit.create @recv_ch {slot_elems = 64 : i64, depth = 0 : i64}
 func.func @get_memref_async_escape_return() -> !conduit.dma.token {
-  conduit.create @recv_ch {slot_elems = 64 : i64, depth = 0 : i64}
   // expected-error @+1 {{'conduit.get_memref_async' op M10: token escapes function scope via return}}
   %tok = conduit.get_memref_async {name = @recv_ch, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
   return %tok : !conduit.dma.token
+}
 }

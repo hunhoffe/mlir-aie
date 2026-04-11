@@ -56,10 +56,8 @@ struct ConduitPlaceBuffersPass
         }
         // Only assign mem_bank if not already set.
         if (!bufOp.getMemBank()) {
-          bufOp.setMemBankAttr(
-              mlir::IntegerAttr::get(
-                  mlir::IntegerType::get(ctx, 32),
-                  bankIdx % kDefaultNumBanks));
+          bufOp.setMemBankAttr(mlir::IntegerAttr::get(
+              mlir::IntegerType::get(ctx, 32), bankIdx % kDefaultNumBanks));
         }
         ++bankIdx;
       }

@@ -1,12 +1,13 @@
 // RUN: aie-opt %s -split-input-file -verify-diagnostics
 
 // M2: subview_access index out of bounds for acquire count
+aie.device(npu1) {
+conduit.create @fifo {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 2 : i64}
 func.func @bad_subview_index() {
-  conduit.create @fifo {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 2 : i64}
   %win = conduit.acquire {name = @fifo, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // expected-error@+1 {{'conduit.subview_access' op index 2 out of bounds for acquire count 1}}
@@ -16,11 +17,13 @@ func.func @bad_subview_index() {
       : !conduit.window<memref<8xi32>>
   return
 }
+}
 
 // -----
 
 // M2: subview_access index out of bounds for acquire count — conduit.create at
-// module level, acquire in nested func body (the common case for real programs).
+// device level, acquire in nested func body (the common case for real programs).
+aie.device(npu1) {
 conduit.create @xblock {slot_elems = 16 : i64,
                 producer_tile = array<i64: 1, 2>,
                 consumer_tiles = array<i64: 1, 3>,
@@ -36,14 +39,17 @@ func.func @bad_subview_cross_block() {
       : !conduit.window<memref<16xi32>>
   return
 }
+}
 
 // -----
 
 // M3-scatter: conduit.scatter with zero dsts is rejected by verifier
+aie.device(npu1) {
 func.func @bad_scatter_zero_dsts() {
   // expected-error@+1 {{'conduit.scatter' op scatter requires at least 1 dst, got 0}}
   conduit.scatter{src = @in, dsts = [] {memtile = "tile(0,1)"}}
   return
+}
 }
 
 // -----
@@ -51,16 +57,18 @@ func.func @bad_scatter_zero_dsts() {
 // M6: CSDF — unbalanced producer and consumer rates (different sums, same period)
 // P=[1,2] sum=3 period=2, C=[2,3] sum=5 period=2
 // CSDF check: 3*2 != 5*2 → 6 != 10
+aie.device(npu1) {
+// expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=10}}
+conduit.create @csdf_bad {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 8 : i64,
+                producer_rates = array<i64: 1, 2>,
+                consumer_rates = array<i64: 2, 3>}
 func.func @bad_csdf_imbalanced_rates() {
-  // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=10}}
-  conduit.create @csdf_bad {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 8 : i64,
-                  producer_rates = array<i64: 1, 2>,
-                  consumer_rates = array<i64: 2, 3>}
   return
+}
 }
 
 // -----
@@ -69,66 +77,71 @@ func.func @bad_csdf_imbalanced_rates() {
 // P=[3] sum=3 period=1, C=[1,2] sum=3 period=2
 // Wrong check (sum==sum): 3==3 → would PASS (incorrectly)
 // Correct check: sum(P)*len(C) == sum(C)*len(P) → 3*2 != 3*1 → 6 != 3 → FAIL (correct)
-// No integer firing vector exists: producer fires 1x/period, consumer fires 2x/period,
-// but producer delivers 3 tokens and consumer expects 1+2=3 tokens per consumer cycle —
-// except producer period=1 and consumer period=2 means in 2 producer firings (6 tokens)
-// vs 1 consumer firing (3 tokens): 6 != 3 → imbalanced.
+aie.device(npu1) {
+// expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=3}}
+conduit.create @csdf_sum_equal_bad {slot_elems = 6 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 6 : i64,
+                producer_rates = array<i64: 3>,
+                consumer_rates = array<i64: 1, 2>}
 func.func @bad_csdf_sum_equal_period_imbalanced() {
-  // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=3}}
-  conduit.create @csdf_sum_equal_bad {slot_elems = 6 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 6 : i64,
-                  producer_rates = array<i64: 3>,
-                  consumer_rates = array<i64: 1, 2>}
   return
+}
 }
 
 // -----
 
 // M6: CSDF — only producer_rates provided (missing consumer_rates)
+aie.device(npu1) {
+// expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
+conduit.create @csdf_incomplete {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 4 : i64,
+                producer_rates = array<i64: 1, 2>}
 func.func @bad_csdf_missing_consumer_rates() {
-  // expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
-  conduit.create @csdf_incomplete {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 4 : i64,
-                  producer_rates = array<i64: 1, 2>}
   return
+}
 }
 
 // -----
 
 // M6: CSDF — only consumer_rates provided (missing producer_rates)
+aie.device(npu1) {
+// expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
+conduit.create @csdf_incomplete2 {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 4 : i64,
+                consumer_rates = array<i64: 1, 2>}
 func.func @bad_csdf_missing_producer_rates() {
-  // expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
-  conduit.create @csdf_incomplete2 {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 4 : i64,
-                  consumer_rates = array<i64: 1, 2>}
   return
+}
 }
 
 // -----
 
 // M5: bad routing_mode value — rejected by the ODS enum parser before the verifier runs
+aie.device(npu1) {
+// expected-error@+1 {{attribute 'routing_mode' failed to satisfy constraint: Conduit routing mode}}
+conduit.create @bad_mode_ch {slot_elems = 4 : i64, depth = 0 : i64,
+                routing_mode = "broadcast"}
 func.func @bad_routing_mode() {
-  // expected-error@+1 {{attribute 'routing_mode' failed to satisfy constraint: Conduit routing mode}}
-  conduit.create @bad_mode_ch {slot_elems = 4 : i64, depth = 0 : i64,
-                  routing_mode = "broadcast"}
   return
+}
 }
 
 // -----
 
 // Token type mismatch: conduit.wait_window requires !conduit.window.token;
 // passing !conduit.dma.token must fail type checking.
+aie.device(npu1) {
+conduit.create @ch {slot_elems = 64 : i64, depth = 0 : i64}
 func.func @bad_wait_with_dma_token() {
-  conduit.create @ch {slot_elems = 64 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @ch, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -136,6 +149,7 @@ func.func @bad_wait_with_dma_token() {
   %win = conduit.wait_window %tok for @ch
              : !conduit.dma.token -> !conduit.window<memref<64xi32>>
   return
+}
 }
 
 // -----
@@ -147,16 +161,18 @@ func.func @bad_wait_with_dma_token() {
 //   t=0: produce 3 (occ=3), consume 2 (occ=1) — peak=3
 //   t=1: produce 1 (occ=2), consume 2 (occ=0) — peak still 3
 // Peak occupancy = 3 > slot_elems = 2 → M7 error.
+aie.device(npu1) {
+// expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2}}
+conduit.create @csdf_cap_bad {slot_elems = 2 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 3, 1>,
+                consumer_rates = array<i64: 2>}
 func.func @bad_csdf_capacity_insufficient() {
-  // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2}}
-  conduit.create @csdf_cap_bad {slot_elems = 2 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 2 : i64,
-                  producer_rates = array<i64: 3, 1>,
-                  consumer_rates = array<i64: 2>}
   return
+}
 }
 
 // -----
@@ -171,28 +187,31 @@ func.func @bad_csdf_capacity_insufficient() {
 // This tests that underflow emits emitWarning (not emitOpError): the program is
 // accepted (M6 guarantees feasibility) but the user is warned that the
 // produce-before-consume simulation interleaving hits underflow.
+aie.device(npu1) {
+// expected-warning@+1 {{M7: CSDF hyper-period simulation: momentary underflow at step 0}}
+conduit.create @csdf_underflow {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 4 : i64,
+                producer_rates = array<i64: 1, 3>,
+                consumer_rates = array<i64: 3, 1>}
 func.func @warn_csdf_underflow() {
-  // expected-warning@+1 {{M7: CSDF hyper-period simulation: momentary underflow at step 0}}
-  conduit.create @csdf_underflow {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 4 : i64,
-                  producer_rates = array<i64: 1, 3>,
-                  consumer_rates = array<i64: 3, 1>}
   return
+}
 }
 
 // -----
 
 // M8a: double release — acquire(count=1) + release(count=1) + release(count=1)
 // = cumulative 2 > acquired 1 → hardware lock-counter overflow.
+aie.device(npu1) {
+conduit.create @dbl {slot_elems = 1 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<1xi32>,
+                depth = 1 : i64}
 func.func @m8a_double_release() {
-  conduit.create @dbl {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<1xi32>,
-                  depth = 1 : i64}
   // expected-error@+1 {{'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow}}
   %win = conduit.acquire {name = @dbl, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
@@ -202,32 +221,36 @@ func.func @m8a_double_release() {
       : !conduit.window<memref<1xi32>>
   return
 }
+}
 
 // -----
 
 // M8c: !conduit.window<T> is not a token type — rejected by wait_all.
+aie.device(npu1) {
+conduit.create @unx {slot_elems = 1 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<1xi32>,
+                depth = 1 : i64}
 func.func @m8c_wait_all_window_value() {
-  conduit.create @unx {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<1xi32>,
-                  depth = 1 : i64}
   %win = conduit.acquire {name = @unx, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
   // expected-error@+1 {{'conduit.wait_all' op operand #0 must be variadic of conduit token type, but got '!conduit.window<memref<1xi32>>'}}
   conduit.wait_all %win : !conduit.window<memref<1xi32>>
   return
 }
+}
 
 // -----
 
 // M8b: two wait_window on same token → double-materialization, deadlock.
+aie.device(npu1) {
+conduit.create @dbl_tok {slot_elems = 1 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<1xi32>,
+                depth = 1 : i64}
 func.func @m8b_double_wait_window() {
-  conduit.create @dbl_tok {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<1xi32>,
-                  depth = 1 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M8: window.token has 2 conduit.wait_window uses}}
   %tok = conduit.acquire_async {name = @dbl_tok, count = 1 : i64,
              port = #conduit.port<Consume>}
@@ -242,12 +265,14 @@ func.func @m8b_double_wait_window() {
       : !conduit.window<memref<1xi32>>
   return
 }
+}
 
 // -----
 
 // M8c: i32 operand in wait_all is not a token type.
+aie.device(npu1) {
+conduit.create @ntok {slot_elems = 1 : i64, depth = 0 : i64}
 func.func @m8c_wait_all_non_token(%bad : i32) {
-  conduit.create @ntok {slot_elems = 1 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @ntok, num_elems = 1 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 1>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -255,37 +280,43 @@ func.func @m8c_wait_all_non_token(%bad : i32) {
   conduit.wait_all %tok, %bad : !conduit.dma.token, i32
   return
 }
+}
 
 // -----
 
 // M10: window.token escapes via return — hardware state is not portable.
+aie.device(npu1) {
+conduit.create @esc {slot_elems = 1 : i64, depth = 0 : i64}
 func.func @m10_window_token_escape_return() -> !conduit.window.token {
-  conduit.create @esc {slot_elems = 1 : i64, depth = 0 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via return}}
   %tok = conduit.acquire_async {name = @esc, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
   return %tok : !conduit.window.token
 }
+}
 
 // -----
 
 // M10: dma.token escapes via return — hardware state is not portable.
+aie.device(npu1) {
+conduit.create @esc_dma {slot_elems = 64 : i64, depth = 0 : i64}
 func.func @m10_dma_token_escape_return() -> !conduit.dma.token {
-  conduit.create @esc_dma {slot_elems = 64 : i64, depth = 0 : i64}
   // expected-error@+1 {{'conduit.put_memref_async' op M10: token escapes function scope via return}}
   %tok = conduit.put_memref_async {name = @esc_dma, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
   return %tok : !conduit.dma.token
 }
+}
 
 // -----
 
 // M10: window.token escapes via call argument.
+aie.device(npu1) {
+conduit.create @esc_call {slot_elems = 1 : i64, depth = 0 : i64}
 func.func private @callee(%tok : !conduit.window.token)
 func.func @m10_token_escape_call() {
-  conduit.create @esc_call {slot_elems = 1 : i64, depth = 0 : i64}
   // expected-error@+1 {{'conduit.acquire_async' op M10: token escapes function scope via call argument}}
   %tok = conduit.acquire_async {name = @esc_call, count = 1 : i64,
              port = #conduit.port<Consume>}
@@ -293,18 +324,21 @@ func.func @m10_token_escape_call() {
   func.call @callee(%tok) : (!conduit.window.token) -> ()
   return
 }
+}
 
 // -----
 
 // M10: wait_all_async result (dma.token) escapes via return.
 // wait_all_async merges completion tokens into a single dma.token result;
 // that result must not escape function scope.
+aie.device(npu1) {
+conduit.create @wa_esc {slot_elems = 64 : i64, depth = 0 : i64}
 func.func @m10_wait_all_async_token_escape() -> !conduit.dma.token {
-  conduit.create @wa_esc {slot_elems = 64 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @wa_esc, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
   // expected-error@+1 {{'conduit.wait_all_async' op M10: token escapes function scope via return}}
   %merged = conduit.wait_all_async %tok : (!conduit.dma.token) -> !conduit.dma.token
   return %merged : !conduit.dma.token
+}
 }

@@ -24,18 +24,20 @@
 // PASSING: acquire + matching sync release (same block)
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 func.func @ok_sync_release() {
-  conduit.create @c {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   %win = conduit.acquire {name = @c, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device
 
 // -----
 
@@ -43,12 +45,13 @@ func.func @ok_sync_release() {
 // PASSING: async acquire path (acquire_async + wait_window + release)
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 func.func @ok_async_acquire() {
-  conduit.create @c {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   %tok = conduit.acquire_async {name = @c, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
@@ -58,6 +61,7 @@ func.func @ok_async_acquire() {
       : !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device
 
 // -----
 
@@ -65,12 +69,13 @@ func.func @ok_async_acquire() {
 // PASSING: release_async by name (async release path; no SSA window operand)
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 func.func @ok_release_async() {
-  conduit.create @c {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   %win = conduit.acquire {name = @c, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   // release_async references the channel by name, not by SSA window value.
@@ -79,6 +84,7 @@ func.func @ok_release_async() {
       : !conduit.window.token
   return
 }
+} // aie.device
 
 // -----
 
@@ -88,18 +94,20 @@ func.func @ok_release_async() {
 //   M11 fires on ZERO releases; one release is sufficient regardless of count.
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 24 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<24xi32>,
+                depth = 3 : i64}
 func.func @ok_partial_release() {
-  conduit.create @c {slot_elems = 24 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<24xi32>,
-                  depth = 3 : i64}
   %win = conduit.acquire {name = @c, count = 3 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<24xi32>>
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<24xi32>>
   return
 }
+} // aie.device
 
 // -----
 
@@ -107,18 +115,20 @@ func.func @ok_partial_release() {
 // FAILING: acquire with no release anywhere in the function
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_no_release'}}
 func.func @fail_no_release() {
-  conduit.create @c {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   // expected-error@+1 {{M11: window lock grant from conduit.acquire on channel 'c' is never released}}
   %win = conduit.acquire {name = @c, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device
 
 // -----
 
@@ -126,13 +136,14 @@ func.func @fail_no_release() {
 // FAILING: async acquire (wait_window) with no release
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_wait_window_no_release'}}
 func.func @fail_wait_window_no_release() {
-  conduit.create @c {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   %tok = conduit.acquire_async {name = @c, count = 1 : i64,
              port = #conduit.port<Consume>}
              : !conduit.window.token
@@ -141,6 +152,7 @@ func.func @fail_wait_window_no_release() {
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device
 
 // -----
 
@@ -148,13 +160,14 @@ func.func @fail_wait_window_no_release() {
 // FAILING: two acquires, only one released — second window leaks
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 2 : i64}
 // expected-note@+1 {{in function '@fail_second_acquire_leaked'}}
 func.func @fail_second_acquire_leaked() {
-  conduit.create @c {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 2 : i64}
   // First acquire: correctly released.
   %w1 = conduit.acquire {name = @c, count = 1 : i64, port = #conduit.port<Consume>}
             : !conduit.window<memref<8xi32>>
@@ -166,6 +179,7 @@ func.func @fail_second_acquire_leaked() {
             : !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device
 
 // -----
 
@@ -174,13 +188,14 @@ func.func @fail_second_acquire_leaked() {
 // (name scoping is per-channel, not global)
 //===----------------------------------------------------------------------===//
 
+aie.device(npu1) {
+conduit.create @c {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_wrong_channel_release_async'}}
 func.func @fail_wrong_channel_release_async() {
-  conduit.create @c {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   // expected-error@+1 {{M11: window lock grant from conduit.acquire on channel 'c' is never released}}
   %win = conduit.acquire {name = @c, count = 1 : i64, port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
@@ -189,3 +204,4 @@ func.func @fail_wrong_channel_release_async() {
       : !conduit.window.token
   return
 }
+} // aie.device

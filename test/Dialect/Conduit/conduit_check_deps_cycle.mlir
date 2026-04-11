@@ -36,6 +36,7 @@
 // The pass must detect the cycle through the block argument and emit M12.
 
 module {
+  aie.device(npu1) {
   conduit.create @chA {slot_elems = 64 : i64, depth = 0 : i64}
   conduit.create @chB {slot_elems = 64 : i64, depth = 0 : i64}
 
@@ -76,4 +77,5 @@ module {
     conduit.wait_all %_ : !conduit.dma.token
     return
   }
+  } // aie.device
 }

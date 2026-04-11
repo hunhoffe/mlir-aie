@@ -39,6 +39,10 @@
 #define GET_TYPEDEF_CLASSES
 #include "aie/Dialect/Conduit/IR/ConduitTypes.h.inc"
 
+// AIEDialect.h required for ::xilinx::AIE::DeviceOp used in HasParent trait
+// on conduit.create (Phase 9 — [Symbol]+HasParent<"::xilinx::AIE::DeviceOp">).
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+
 // Include generated op class declarations
 #define GET_OP_CLASSES
 #include "aie/Dialect/Conduit/IR/ConduitOps.h.inc"

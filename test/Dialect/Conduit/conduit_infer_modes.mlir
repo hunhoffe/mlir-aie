@@ -233,3 +233,84 @@ module @test_via_dma_override {
                     }
   }
 }
+
+// -----
+
+// Test 8: R3a.5 — multi-consumer uniform conduit → packet (multicast).
+//
+// tile(0,2) produces to tile(1,3), tile(1,4), tile(1,5).
+// consumer_dimensions absent → uniform.  Expect routing_mode=packet.
+// Multicast costs 1 packet ID regardless of N consumers.
+
+// CHECK-LABEL: aie.device(npu1)
+// CHECK: conduit.create @bcast
+// CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
+module @test_multicast_uniform {
+  aie.device(npu1) {
+    %t02 = aie.tile(0, 2)
+    %t13 = aie.tile(1, 3)
+    %t14 = aie.tile(1, 4)
+    %t15 = aie.tile(1, 5)
+    conduit.create @bcast {slot_elems = 4 : i64,
+                    producer_tile = array<i64: 0, 2>,
+                    consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
+                    element_type = memref<4xi32>,
+                    depth = 1 : i64
+                    }
+  }
+}
+
+// -----
+
+// Test 9: R3a.5 — multi-consumer, consumer_dimensions present and all
+// identical → packet (multicast).
+//
+// Same topology as Test 8 but with explicit consumer_dimensions.
+// All three sub-arrays are identical → uniform = true → packet.
+
+// CHECK-LABEL: aie.device(npu1)
+// CHECK: conduit.create @bcast_dims_uniform
+// CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
+module @test_multicast_uniform_dims {
+  aie.device(npu1) {
+    %t02 = aie.tile(0, 2)
+    %t13 = aie.tile(1, 3)
+    %t14 = aie.tile(1, 4)
+    %t15 = aie.tile(1, 5)
+    conduit.create @bcast_dims_uniform {slot_elems = 4 : i64,
+                    producer_tile = array<i64: 0, 2>,
+                    consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
+                    element_type = memref<4xi32>,
+                    depth = 1 : i64,
+                    consumer_dimensions = [[1 : i64, 2 : i64], [1 : i64, 2 : i64], [1 : i64, 2 : i64]]
+                    }
+  }
+}
+
+// -----
+
+// Test 10: R3a.5 — multi-consumer, consumer_dimensions present and
+// NON-uniform → falls through to R3b (circuit DMA available).
+//
+// Same topology as Test 8 but consumer_dimensions sub-arrays differ.
+// uniform = false → R3a.5 does NOT fire → R3b assigns circuit
+// (tile(0,2) has 2 MM2S channels, none consumed).
+
+// CHECK-LABEL: aie.device(npu1)
+// CHECK: conduit.create @bcast_dims_nonuniform
+// CHECK-SAME: routing_mode = #conduit.routing_mode<circuit>
+module @test_multicast_nonuniform_dims {
+  aie.device(npu1) {
+    %t02 = aie.tile(0, 2)
+    %t13 = aie.tile(1, 3)
+    %t14 = aie.tile(1, 4)
+    %t15 = aie.tile(1, 5)
+    conduit.create @bcast_dims_nonuniform {slot_elems = 4 : i64,
+                    producer_tile = array<i64: 0, 2>,
+                    consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
+                    element_type = memref<4xi32>,
+                    depth = 1 : i64,
+                    consumer_dimensions = [[1 : i64, 2 : i64], [3 : i64, 4 : i64], [1 : i64, 2 : i64]]
+                    }
+  }
+}

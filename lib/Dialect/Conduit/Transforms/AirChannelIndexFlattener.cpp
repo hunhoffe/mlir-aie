@@ -150,7 +150,8 @@ static std::string flatName(llvm::StringRef base, int64_t i, int64_t j) {
 /// Retrieve operand segment sizes from "operand_segment_sizes".
 static llvm::SmallVector<int32_t> getOperandSegments(mlir::Operation *op) {
   llvm::SmallVector<int32_t> segs;
-  auto attr = op->getAttrOfType<mlir::DenseI32ArrayAttr>("operand_segment_sizes");
+  auto attr =
+      op->getAttrOfType<mlir::DenseI32ArrayAttr>("operand_segment_sizes");
   if (attr)
     for (int32_t v : attr.asArrayRef())
       segs.push_back(v);
@@ -264,12 +265,12 @@ struct AirChannelIndexFlattenerPass
               continue;
             attrs.push_back(attr);
           }
-          attrs.push_back(mlir::NamedAttribute(
-              mlir::StringAttr::get(ctx, "sym_name"),
-              mlir::StringAttr::get(ctx, newName)));
-          attrs.push_back(mlir::NamedAttribute(
-              mlir::StringAttr::get(ctx, "size"),
-              mlir::DenseI64ArrayAttr::get(ctx, {1, 1})));
+          attrs.push_back(
+              mlir::NamedAttribute(mlir::StringAttr::get(ctx, "sym_name"),
+                                   mlir::StringAttr::get(ctx, newName)));
+          attrs.push_back(
+              mlir::NamedAttribute(mlir::StringAttr::get(ctx, "size"),
+                                   mlir::DenseI64ArrayAttr::get(ctx, {1, 1})));
 
           mlir::OperationState state(loc, "air.channel");
           state.addAttributes(attrs);
@@ -308,7 +309,8 @@ struct AirChannelIndexFlattenerPass
 
       // Decode index operands.
       auto segs = getOperandSegments(op);
-      // operand_segment_sizes = [ndeps, nidx, 1(memref), noffsets, nsizes, nstrides]
+      // operand_segment_sizes = [ndeps, nidx, 1(memref), noffsets, nsizes,
+      // nstrides]
       if (segs.size() < 2) {
         op->emitError()
             << "air-channel-flatten-indices: channel @" << chanName
@@ -318,23 +320,21 @@ struct AirChannelIndexFlattenerPass
         return;
       }
       int32_t ndeps = segs[0];
-      int32_t nidx  = segs[1];
+      int32_t nidx = segs[1];
 
       if (nidx == 0) {
         // No index operands — this is a scalar access on a multi-dim channel.
         // Treat as [0, 0].
         std::string newName = flatName(chanName, 0, 0);
-        op->setAttr("chan_name",
-                    mlir::FlatSymbolRefAttr::get(ctx, newName));
+        op->setAttr("chan_name", mlir::FlatSymbolRefAttr::get(ctx, newName));
         return;
       }
 
       mlir::OperandRange allOps = op->getOperands();
       if ((int32_t)allOps.size() < ndeps + nidx) {
-        op->emitError()
-            << "air-channel-flatten-indices: channel @" << chanName
-            << " put/get: operand count " << allOps.size()
-            << " < ndeps+nidx = " << ndeps + nidx;
+        op->emitError() << "air-channel-flatten-indices: channel @" << chanName
+                        << " put/get: operand count " << allOps.size()
+                        << " < ndeps+nidx = " << ndeps + nidx;
         passFailed = true;
         signalPassFailure();
         return;
@@ -357,7 +357,9 @@ struct AirChannelIndexFlattenerPass
         op->emitError()
             << "air-channel-flatten-indices: channel @" << chanName
             << " has dynamic index operand(s); cannot statically determine "
-               "the target channel @" << chanName << "[i][j]. "
+               "the target channel @"
+            << chanName
+            << "[i][j]. "
                "Use air-specialize-channel-broadcast before this pass to "
                "specialize dynamic indices to constants.";
         passFailed = true;
@@ -369,10 +371,9 @@ struct AirChannelIndexFlattenerPass
       int64_t i = (indices.size() >= 1) ? indices[0] : 0;
       int64_t j = (indices.size() >= 2) ? indices[1] : 0;
       if (i < 0 || i >= M || j < 0 || j >= N) {
-        op->emitError()
-            << "air-channel-flatten-indices: channel @" << chanName
-            << " index [" << i << ", " << j << "] out of bounds "
-            << "[" << M << ", " << N << "]";
+        op->emitError() << "air-channel-flatten-indices: channel @" << chanName
+                        << " index [" << i << ", " << j << "] out of bounds "
+                        << "[" << M << ", " << N << "]";
         passFailed = true;
         signalPassFailure();
         return;
@@ -380,8 +381,7 @@ struct AirChannelIndexFlattenerPass
 
       // Rewrite chan_name to the flat scalar channel.
       std::string newName = flatName(chanName, i, j);
-      op->setAttr("chan_name",
-                  mlir::FlatSymbolRefAttr::get(ctx, newName));
+      op->setAttr("chan_name", mlir::FlatSymbolRefAttr::get(ctx, newName));
     });
 
     // -----------------------------------------------------------------------

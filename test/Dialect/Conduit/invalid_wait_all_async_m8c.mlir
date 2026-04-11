@@ -1,19 +1,13 @@
 // RUN: aie-opt -split-input-file -verify-diagnostics %s
 //
 // Negative test: M8c operand type check on conduit.wait_all_async.
-//
-// WaitAllAsync::verify() calls checkTokenOperandTypes() on its inputs.
-// The TableGen AnyType variadic would normally accept anything — M8c fills
-// that gap by explicitly checking that every operand is a conduit token type.
-//
-// This supplements invalid.mlir which covers the conduit.wait_all path.
-// Here we cover the wait_all_async input path.
 
 // -----
 
 // wait_all_async with an i32 non-token input must be rejected.
+aie.device(npu1) {
+conduit.create @ch_wa {slot_elems = 64 : i64, depth = 0 : i64}
 func.func @wait_all_async_non_token(%bad : i32) {
-  conduit.create @ch_wa {slot_elems = 64 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @ch_wa, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -23,14 +17,15 @@ func.func @wait_all_async_non_token(%bad : i32) {
   conduit.wait_all %merged : !conduit.dma.token
   return
 }
+}
 
 // -----
 
 // wait_all_async result (dma.token) escapes via call — M10 via wait_all_async.
-// WaitAllAsync::verify() calls checkTokenDoesNotEscape() on its result.
+aie.device(npu1) {
+conduit.create @ch_wa2 {slot_elems = 64 : i64, depth = 0 : i64}
 func.func private @consumer(%tok : !conduit.dma.token)
 func.func @wait_all_async_escape_call() {
-  conduit.create @ch_wa2 {slot_elems = 64 : i64, depth = 0 : i64}
   %tok = conduit.put_memref_async {name = @ch_wa2, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
              strides = array<i64: 1>} : !conduit.dma.token
@@ -39,4 +34,5 @@ func.func @wait_all_async_escape_call() {
       (!conduit.dma.token) -> !conduit.dma.token
   func.call @consumer(%merged) : (!conduit.dma.token) -> ()
   return
+}
 }

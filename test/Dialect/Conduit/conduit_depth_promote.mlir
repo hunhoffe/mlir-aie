@@ -34,16 +34,42 @@
 
 // expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s)}}
 module {
+aie.device(npu1) {
 
 // (a) Eligible: depth-1 with loop-enclosed acquire and compute.
 // Pass must promote to depth=2, slot_elems =16.
+// expected-remark @+1 {{conduit-depth-promote: promoted 'loop_fifo' from depth-1 to depth-2}}
+conduit.create @loop_fifo {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
+
+// (b) Linked: depth-1 but conduit.link references it.
+// Pass must skip it (exclusion criterion #2).
+// expected-remark @+1 {{conduit-depth-promote: skipping 'linked_fifo' -- linked conduit}}
+conduit.create @linked_fifo {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 1>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
+// expected-remark @+1 {{conduit-depth-promote: skipping 'linked_out' -- linked conduit}}
+conduit.create @linked_out {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 1>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
+
+// (c) Passthrough: depth-1 with acquire immediately followed by release, no compute.
+// Pass must skip it (exclusion criterion #4).
+// expected-remark @+1 {{conduit-depth-promote: skipping 'passthrough_fifo' -- passthrough-only (no compute)}}
+conduit.create @passthrough_fifo {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<4xi32>,
+                depth = 1 : i64}
+
 func.func @eligible_loop_fifo(%result: memref<8xi32>) {
-  // expected-remark @+1 {{conduit-depth-promote: promoted 'loop_fifo' from depth-1 to depth-2}}
-  conduit.create @loop_fifo {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c8 = arith.constant 8 : index
@@ -60,35 +86,13 @@ func.func @eligible_loop_fifo(%result: memref<8xi32>) {
   return
 }
 
-// (b) Linked: depth-1 but conduit.link references it.
-// Pass must skip it (exclusion criterion #2).
 func.func @linked_conduit_not_promoted() {
-  // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_fifo' -- linked conduit}}
-  conduit.create @linked_fifo {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 1>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
-  // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_out' -- linked conduit}}
-  conduit.create @linked_out {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 1>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   // This link causes both "linked_fifo" and "linked_out" to be excluded.
   conduit.scatter{src = @linked_fifo, dsts = [@linked_out] {memtile = "tile(0,1)"}}
   return
 }
 
-// (c) Passthrough: depth-1 with acquire immediately followed by release, no compute.
-// Pass must skip it (exclusion criterion #4).
 func.func @passthrough_not_promoted() {
-  // expected-remark @+1 {{conduit-depth-promote: skipping 'passthrough_fifo' -- passthrough-only (no compute)}}
-  conduit.create @passthrough_fifo {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<4xi32>,
-                  depth = 1 : i64}
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
@@ -102,4 +106,5 @@ func.func @passthrough_not_promoted() {
   return
 }
 
+} // aie.device
 } // module

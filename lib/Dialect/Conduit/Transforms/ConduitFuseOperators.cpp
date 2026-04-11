@@ -23,11 +23,11 @@
 //      the maximum column index in device A. This ensures no coordinate
 //      conflicts when Pass C walks all devices together.
 //   5. Emits a module-level conduit.create @fused_intermediate_N with:
-//        routing_mode = "any"  (resolved to shared-mem by --conduit-infer-modes)
-//        depth = 0             (sentinel; resolved by --conduit-depth-promote)
-//        producer_tile = tile from A's output (after offset: still col A_max)
-//        consumer_tiles = tile from B's input (after offset: col A_max + 1)
-//        element_type = matched element_type
+//        routing_mode = "any"  (resolved to shared-mem by
+//        --conduit-infer-modes) depth = 0             (sentinel; resolved by
+//        --conduit-depth-promote) producer_tile = tile from A's output (after
+//        offset: still col A_max) consumer_tiles = tile from B's input (after
+//        offset: col A_max + 1) element_type = matched element_type
 //   6. Deletes the matched conduit.create ops and their aie.shim_dma_allocation
 //      ops in both devices.
 //   7. Deletes the aiex.dma_configure_task_for / aiex.dma_start_task /
@@ -104,16 +104,14 @@ static void offsetDeviceTiles(AIE::DeviceOp device, int64_t colOffset) {
       if (pt->size() >= 2) {
         llvm::SmallVector<int64_t> coords(pt->begin(), pt->end());
         coords[0] += colOffset;
-        conduit.setProducerTileAttr(
-            builder.getDenseI64ArrayAttr(coords));
+        conduit.setProducerTileAttr(builder.getDenseI64ArrayAttr(coords));
       }
     }
     if (auto ct = conduit.getConsumerTiles()) {
       llvm::SmallVector<int64_t> coords(ct->begin(), ct->end());
       for (size_t i = 0; i + 1 < coords.size(); i += 2)
         coords[i] += colOffset;
-      conduit.setConsumerTilesAttr(
-          builder.getDenseI64ArrayAttr(coords));
+      conduit.setConsumerTilesAttr(builder.getDenseI64ArrayAttr(coords));
     }
   });
 }
@@ -128,7 +126,8 @@ static bool isOutputChannel(Create op) {
   auto ct = op.getConsumerTiles();
   bool noComputeConsumers = (!ct || ct->empty());
   // Shim consumer detection: check if producer_tile is at row 0 (shim row).
-  // shim_consumer_tiles attr removed in Sprint 4; use producer_tile row as proxy.
+  // shim_consumer_tiles attr removed in Sprint 4; use producer_tile row as
+  // proxy.
   auto pt = op.getProducerTile();
   bool hasShimConsumer = (pt && pt->size() >= 2 && (*pt)[1] == 0);
   return noComputeConsumers && hasShimConsumer;
@@ -178,8 +177,9 @@ static void eraseRuntimeDMAOpsForName(AIE::DeviceOp device,
   std::string shimAllocName = name.str() + "_shim_alloc";
 
   // Collect DMA configure ops referencing our channel (either naming form).
-  // Pass A emits: "aiex.dma_configure_task_for"() <{alloc = @<name>_shim_alloc}>
-  // The symbol is stored as a FlatSymbolRefAttr under the "alloc" property key.
+  // Pass A emits: "aiex.dma_configure_task_for"() <{alloc =
+  // @<name>_shim_alloc}> The symbol is stored as a FlatSymbolRefAttr under the
+  // "alloc" property key.
   llvm::SmallVector<mlir::Operation *> configOps;
   device.walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
@@ -212,7 +212,8 @@ static void eraseRuntimeDMAOpsForName(AIE::DeviceOp device,
       }
   });
 
-  // For each configure op, collect its token users (start/await/free) then erase.
+  // For each configure op, collect its token users (start/await/free) then
+  // erase.
   for (mlir::Operation *configOp : configOps) {
     llvm::SmallVector<mlir::Operation *> userOps;
     if (configOp->getNumResults() > 0) {
@@ -286,8 +287,9 @@ struct ConduitFuseOperatorsPass
       if (matched.empty()) {
         module.emitWarning(
             "conduit-fuse-operators: no matching channel pair found between "
-            "device " + std::to_string(i) + " and device " +
-            std::to_string(i + 1) + " by element_type; skipping");
+            "device " +
+            std::to_string(i) + " and device " + std::to_string(i + 1) +
+            " by element_type; skipping");
         continue;
       }
 
@@ -325,12 +327,13 @@ struct ConduitFuseOperatorsPass
 
         // Gather attributes for the fused conduit.create.
 
-        // producer_tile: from device A's output channel (already at correct col).
-        mlir::DenseI64ArrayAttr producerTileAttr =
-            builder.getDenseI64ArrayAttr(
-                llvm::ArrayRef<int64_t>(outPT->begin(), outPT->end()));
+        // producer_tile: from device A's output channel (already at correct
+        // col).
+        mlir::DenseI64ArrayAttr producerTileAttr = builder.getDenseI64ArrayAttr(
+            llvm::ArrayRef<int64_t>(outPT->begin(), outPT->end()));
 
-        // consumer_tiles: from device B's input channel (already offset by Step 4).
+        // consumer_tiles: from device B's input channel (already offset by Step
+        // 4).
         mlir::DenseI64ArrayAttr consumerTilesAttr =
             builder.getDenseI64ArrayAttr(
                 llvm::ArrayRef<int64_t>(inCT->begin(), inCT->end()));
@@ -389,26 +392,23 @@ struct ConduitFuseOperatorsPass
             builder.setInsertionPoint(
                 devA.getBodyRegion().front().getTerminator());
         }
-        builder.create<Create>(
-            devA.getLoc(),
-            fusedName,
-            slotElems,
-            /*sync_mode=*/SyncModeAttr{},
-            /*window_size=*/mlir::IntegerAttr{},
-            /*producer_tile=*/producerTileAttr,
-            /*consumer_tiles=*/consumerTilesAttr,
-            /*element_type=*/elemTypeAttr,
-            /*depth=*/depthAttr,
-            /*routing_mode=*/routingModeAttr,
-            /*producer_rates=*/producerRatesAttr,
-            /*consumer_rates=*/consumerRatesAttr,
-            /*bd_repeat=*/mlir::IntegerAttr{},
-            /*disable_synchronization=*/mlir::BoolAttr{},
-            /*viaDMA=*/mlir::BoolAttr{},
-            /*plio=*/mlir::BoolAttr{},
-            /*dma_repeat=*/mlir::IntegerAttr{},
-            /*producer_dimensions=*/mlir::Attribute{},
-            /*consumer_dimensions=*/mlir::Attribute{});
+        builder.create<Create>(devA.getLoc(), fusedName, slotElems,
+                               /*sync_mode=*/SyncModeAttr{},
+                               /*window_size=*/mlir::IntegerAttr{},
+                               /*producer_tile=*/producerTileAttr,
+                               /*consumer_tiles=*/consumerTilesAttr,
+                               /*element_type=*/elemTypeAttr,
+                               /*depth=*/depthAttr,
+                               /*routing_mode=*/routingModeAttr,
+                               /*producer_rates=*/producerRatesAttr,
+                               /*consumer_rates=*/consumerRatesAttr,
+                               /*bd_repeat=*/mlir::IntegerAttr{},
+                               /*disable_synchronization=*/mlir::BoolAttr{},
+                               /*viaDMA=*/mlir::BoolAttr{},
+                               /*plio=*/mlir::BoolAttr{},
+                               /*dma_repeat=*/mlir::IntegerAttr{},
+                               /*producer_dimensions=*/mlir::Attribute{},
+                               /*consumer_dimensions=*/mlir::Attribute{});
 
         // --- Step 6: Rename channel references in core bodies. ---
         // The GEMV core has conduit.acquire/release on @outName (the old output
@@ -421,8 +421,9 @@ struct ConduitFuseOperatorsPass
                                      llvm::StringRef oldName) {
           device.walk([&](mlir::Operation *op) {
             // Rename any op that has a "name" attribute matching oldName.
-            // This covers conduit.acquire, conduit.release, conduit.subview_access,
-            // conduit.acquire_async, conduit.release_async.
+            // This covers conduit.acquire, conduit.release,
+            // conduit.subview_access, conduit.acquire_async,
+            // conduit.release_async.
             if (auto nameAttr =
                     op->getAttrOfType<mlir::FlatSymbolRefAttr>("name")) {
               if (nameAttr.getValue() == oldName)
@@ -526,7 +527,8 @@ struct ConduitFuseOperatorsPass
         // needed for those.
         {
           for (mlir::Operation *seqB : seqOps) {
-            if (seqA && seqA->getNumRegions() > 0 && seqB->getNumRegions() > 0) {
+            if (seqA && seqA->getNumRegions() > 0 &&
+                seqB->getNumRegions() > 0) {
               mlir::Block &seqBodyA = seqA->getRegion(0).front();
               mlir::Block &seqBodyB = seqB->getRegion(0).front();
 

@@ -94,8 +94,8 @@ void lowerPhase(ConduitToDMAState &state) {
           // - Consume port uses consumerTileRotationBufs (rotationBuf)
           // - Produce port uses producerTileRotationBufs (producerRotationBuf)
           mlir::Value tileRotationBuf = (acquirePort == Port::Produce)
-                                          ? resolved.producerRotationBuf
-                                          : resolved.rotationBuf;
+                                            ? resolved.producerRotationBuf
+                                            : resolved.rotationBuf;
 
           {
             int64_t bufIdx =
@@ -142,8 +142,8 @@ void lowerPhase(ConduitToDMAState &state) {
                     loc, mlir::arith::CmpIPredicate::uge, sum, depthConst);
                 mlir::Value sub =
                     builder.create<mlir::arith::SubIOp>(loc, sum, depthConst);
-                absIdx = builder.create<mlir::arith::SelectOp>(loc, cond, sub,
-                                                               sum);
+                absIdx =
+                    builder.create<mlir::arith::SelectOp>(loc, cond, sub, sum);
               }
 
               // IMPORTANT: Do NOT use scf::IndexSwitchOp here.
@@ -311,8 +311,7 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
       mlir::Value result = emitFastModulo(loc, newVal, consModulus);
-      builder.create<mlir::memref::StoreOp>(loc, result,
-                                            resolvedRotationBuf,
+      builder.create<mlir::memref::StoreOp>(loc, result, resolvedRotationBuf,
                                             mlir::ValueRange{slotIdx});
     }
     // Counter increment for depth>1 Produce port (producer buffer rotation).
@@ -334,16 +333,14 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(
           loc, resolvedProducerRotationBufSlot);
       mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
-          loc, resolvedProducerRotationBuf,
-          mlir::ValueRange{slotIdx});
+          loc, resolvedProducerRotationBuf, mlir::ValueRange{slotIdx});
       mlir::Value incI32 =
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
       mlir::Value result = emitFastModulo(loc, newVal, prodModulus);
       builder.create<mlir::memref::StoreOp>(
-          loc, result, resolvedProducerRotationBuf,
-          mlir::ValueRange{slotIdx});
+          loc, result, resolvedProducerRotationBuf, mlir::ValueRange{slotIdx});
     }
     releasesToErase.push_back(op);
   });
@@ -393,10 +390,12 @@ void lowerPhase(ConduitToDMAState &state) {
   // Per-channel live-window state, keyed by (channel name, port).
   // Propagated through nested blocks via the recursive walk below.
   struct ChannelState {
-    int64_t lastAcquireCount = 0; // count of most recent acquire (not reduced by release)
-    int64_t heldCount = 0;        // currently held (lastAcquireCount - sum releases)
+    int64_t lastAcquireCount =
+        0; // count of most recent acquire (not reduced by release)
+    int64_t heldCount = 0; // currently held (lastAcquireCount - sum releases)
   };
-  using StateMap = llvm::DenseMap<std::pair<mlir::StringAttr, int>, ChannelState>;
+  using StateMap =
+      llvm::DenseMap<std::pair<mlir::StringAttr, int>, ChannelState>;
 
   llvm::SmallVector<Acquire> acquiresToErase;
 
@@ -481,7 +480,8 @@ void lowerPhase(ConduitToDMAState &state) {
           if (!counterInitialized.count(ctrKey)) {
             counterInitialized.insert(ctrKey);
             mlir::OpBuilder initBuilder(ctx);
-            initBuilder.setInsertionPointAfterValue(resolvedProducerRotationBuf);
+            initBuilder.setInsertionPointAfterValue(
+                resolvedProducerRotationBuf);
             mlir::Location loc = op.getLoc();
             mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
             mlir::Value zero =
@@ -559,7 +559,7 @@ void lowerPhase(ConduitToDMAState &state) {
       for (mlir::Region &region : rawOp.getRegions()) {
         StateMap childState = liveState;
         for (auto &[k, cs] : childState) {
-          int port = k.second;  // 0=Produce, 1=Consume
+          int port = k.second; // 0=Produce, 1=Consume
           if (port == static_cast<int>(Port::Consume)) {
             // Consume: inherit lastAcquireCount as heldCount.
             // DMA eagerly pre-fills slots up to lastAcquireCount, so those
@@ -570,10 +570,10 @@ void lowerPhase(ConduitToDMAState &state) {
             // Each loop iteration starts fresh: the parent may have released a
             // non-uniform fraction (acquire N, release M<N, enter loop), but
             // the child should start from 0 held — the child acquire must wait
-            // for a new slot from the lock, not assume the parent's partial hold
-            // persists.  Keeping the parent's heldCount would suppress the
-            // AcquireGreaterEqual delta, causing the core to write without owning
-            // the lock → hardware deadlock.
+            // for a new slot from the lock, not assume the parent's partial
+            // hold persists.  Keeping the parent's heldCount would suppress the
+            // AcquireGreaterEqual delta, causing the core to write without
+            // owning the lock → hardware deadlock.
             cs.heldCount = 0;
           }
         }
@@ -589,7 +589,8 @@ void lowerPhase(ConduitToDMAState &state) {
         // the child exits with heldCount=K-1 (the sliding-window tail).  The
         // parent must know about these still-held slots so that a subsequent
         // tail acquire in the outer block computes delta=0 (no new slots
-        // needed) instead of delta=count-parentHeld (wrong AcquireGreaterEqual).
+        // needed) instead of delta=count-parentHeld (wrong
+        // AcquireGreaterEqual).
         //
         // Only Consume port: Produce port holds are reset to 0 at loop entry
         // (B-1 fix), so no slots are inherited from the child Produce side.
@@ -618,7 +619,8 @@ void lowerPhase(ConduitToDMAState &state) {
       initialState = walkBlock(&block, initialState);
   });
 
-  // Step 3: Erase Release ops (after walkBlock has seen them for delta inference).
+  // Step 3: Erase Release ops (after walkBlock has seen them for delta
+  // inference).
   for (auto op : releasesToErase)
     op.erase();
 
@@ -832,8 +834,7 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
       mlir::Value result = emitFastModulo(loc, newVal, consModulus);
-      builder.create<mlir::memref::StoreOp>(loc, result,
-                                            resolvedRotationBuf,
+      builder.create<mlir::memref::StoreOp>(loc, result, resolvedRotationBuf,
                                             mlir::ValueRange{slotIdx});
     }
     // Counter increment for depth>1 Produce port (producer buffer rotation).
@@ -855,16 +856,14 @@ void lowerPhase(ConduitToDMAState &state) {
       mlir::Value slotIdx = builder.create<mlir::arith::ConstantIndexOp>(
           loc, resolvedProducerRotationBufSlot);
       mlir::Value curI32 = builder.create<mlir::memref::LoadOp>(
-          loc, resolvedProducerRotationBuf,
-          mlir::ValueRange{slotIdx});
+          loc, resolvedProducerRotationBuf, mlir::ValueRange{slotIdx});
       mlir::Value incI32 =
           mlir::arith::ConstantIntOp::create(builder, loc, i32Ty, count);
       mlir::Value newVal =
           builder.create<mlir::arith::AddIOp>(loc, curI32, incI32);
       mlir::Value result = emitFastModulo(loc, newVal, prodModulus);
       builder.create<mlir::memref::StoreOp>(
-          loc, result, resolvedProducerRotationBuf,
-          mlir::ValueRange{slotIdx});
+          loc, result, resolvedProducerRotationBuf, mlir::ValueRange{slotIdx});
     }
     releaseAsyncsToErase.push_back(op);
   });
@@ -908,16 +907,16 @@ void lowerPhase(ConduitToDMAState &state) {
 
             // Acquire prodLock: wait for empty buffer slot.
             if (resolved.prodLock) {
-              int32_t acqVal =
-                  state.lockAcqValue(Port::Produce, static_cast<int32_t>(count));
+              int32_t acqVal = state.lockAcqValue(Port::Produce,
+                                                  static_cast<int32_t>(count));
               builder.create<AIE::UseLockOp>(op.getLoc(),
                                              resolved.prodLock.getResult(),
                                              acqAction, acqVal);
             }
             // Release consLock: signal data ready for DMA.
             if (resolved.consLock) {
-              int32_t relVal =
-                  state.lockRelValue(Port::Produce, static_cast<int32_t>(count));
+              int32_t relVal = state.lockRelValue(Port::Produce,
+                                                  static_cast<int32_t>(count));
               builder.create<AIE::UseLockOp>(op.getLoc(),
                                              resolved.consLock.getResult(),
                                              AIE::LockAction::Release, relVal);
@@ -952,9 +951,8 @@ void lowerPhase(ConduitToDMAState &state) {
           if (resolved.consLock) {
             int32_t acqVal =
                 state.lockAcqValue(Port::Consume, static_cast<int32_t>(count));
-            builder.create<AIE::UseLockOp>(op.getLoc(),
-                                           resolved.consLock.getResult(),
-                                           acqAction, acqVal);
+            builder.create<AIE::UseLockOp>(
+                op.getLoc(), resolved.consLock.getResult(), acqAction, acqVal);
           }
           // Release prodLock: signal buffer slot is empty.
           if (resolved.prodLock) {

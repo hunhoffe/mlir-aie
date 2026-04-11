@@ -26,6 +26,7 @@
 // CHECK: module
 
 module {
+  aie.device(npu1) {
   conduit.create @chA {slot_elems = 64 : i64, depth = 0 : i64}
   conduit.create @chB {slot_elems = 64 : i64, depth = 0 : i64}
   conduit.create @chX {slot_elems = 32 : i64, depth = 0 : i64}
@@ -77,4 +78,5 @@ module {
     conduit.wait_all %tok_p, %tok_q : !conduit.dma.token, !conduit.dma.token
     return
   }
+  } // aie.device
 }

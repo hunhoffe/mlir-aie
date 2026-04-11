@@ -42,23 +42,23 @@
 //     Expected: neither create gains time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: func.func @no_dep_no_merge
 // CHECK:       conduit.create @nd1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
 // CHECK:       conduit.create @nd2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
+// CHECK-LABEL: func.func @no_dep_no_merge
+aie.device(npu1) {
+conduit.create @nd1 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 1, 1>,
+                consumer_tiles = array<i64: 1, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
+conduit.create @nd2 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 1, 1>,
+                consumer_tiles = array<i64: 1, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
 func.func @no_dep_no_merge() {
-  conduit.create @nd1 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 1, 1>,
-                  consumer_tiles = array<i64: 1, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-  conduit.create @nd2 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 1, 1>,
-                  consumer_tiles = array<i64: 1, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-
   // No dep list on nd2 -- not ordered relative to nd1.
   %ta = conduit.put_memref_async {name = @nd1, num_elems = 4096 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 4096>,
@@ -69,6 +69,7 @@ func.func @no_dep_no_merge() {
   conduit.wait_all %ta : !conduit.dma.token
   conduit.wait_all %tb : !conduit.dma.token
   return
+}
 }
 
 // -----
@@ -84,7 +85,6 @@ func.func @no_dep_no_merge() {
 //     Expected: pd1, pd2, pd3 all get fuse attrs; no time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: func.func @partial_dep
 // CHECK:       conduit.create @pd1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
 // pd2 is NOT erased by this pass (TM erasure moved to Pass C).
@@ -93,23 +93,24 @@ func.func @no_dep_no_merge() {
 // pd3 gets fuse attrs but no time_multiplex_count.
 // CHECK:       conduit.create @pd3 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
+// CHECK-LABEL: func.func @partial_dep
+aie.device(npu1) {
+conduit.create @pd1 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 2, 1>,
+                consumer_tiles = array<i64: 2, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
+conduit.create @pd2 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 2, 1>,
+                consumer_tiles = array<i64: 2, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
+conduit.create @pd3 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 2, 1>,
+                consumer_tiles = array<i64: 2, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
 func.func @partial_dep() {
-  conduit.create @pd1 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 2, 1>,
-                  consumer_tiles = array<i64: 2, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-  conduit.create @pd2 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 2, 1>,
-                  consumer_tiles = array<i64: 2, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-  conduit.create @pd3 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 2, 1>,
-                  consumer_tiles = array<i64: 2, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-
   %ta = conduit.put_memref_async {name = @pd1, num_elems = 4096 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 4096>,
             strides = array<i64: 1>} : !conduit.dma.token
@@ -126,6 +127,7 @@ func.func @partial_dep() {
   conduit.wait_all %tc : !conduit.dma.token
   return
 }
+}
 
 // -----
 
@@ -139,23 +141,23 @@ func.func @partial_dep() {
 //     Expected: neither gets time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: func.func @different_consumer_tile
 // CHECK:       conduit.create @de1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
 // CHECK:       conduit.create @de2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
+// CHECK-LABEL: func.func @different_consumer_tile
+aie.device(npu1) {
+conduit.create @de1 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 3, 1>,
+                consumer_tiles = array<i64: 3, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
+conduit.create @de2 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 3, 1>,
+                consumer_tiles = array<i64: 3, 3>,   // different consumer row
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
 func.func @different_consumer_tile() {
-  conduit.create @de1 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 3, 1>,
-                  consumer_tiles = array<i64: 3, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-  conduit.create @de2 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 3, 1>,
-                  consumer_tiles = array<i64: 3, 3>,   // different consumer row
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-
   %ta = conduit.put_memref_async {name = @de1, num_elems = 4096 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 4096>,
             strides = array<i64: 1>} : !conduit.dma.token
@@ -165,6 +167,7 @@ func.func @different_consumer_tile() {
              strides = array<i64: 1>} : !conduit.dma.token
   conduit.wait_all %tb : !conduit.dma.token
   return
+}
 }
 
 // -----
@@ -180,25 +183,25 @@ func.func @different_consumer_tile() {
 //     Expected: neither gets time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: func.func @packet_mode_excluded
 // CHECK:       conduit.create @pkt1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
 // CHECK:       conduit.create @pkt2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
+// CHECK-LABEL: func.func @packet_mode_excluded
+aie.device(npu1) {
+conduit.create @pkt1 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 4, 1>,
+                consumer_tiles = array<i64: 4, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64,
+                routing_mode = #conduit.routing_mode<packet>}
+conduit.create @pkt2 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 4, 1>,
+                consumer_tiles = array<i64: 4, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64,
+                routing_mode = #conduit.routing_mode<packet>}
 func.func @packet_mode_excluded() {
-  conduit.create @pkt1 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 4, 1>,
-                  consumer_tiles = array<i64: 4, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64,
-                  routing_mode = #conduit.routing_mode<packet>}
-  conduit.create @pkt2 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 4, 1>,
-                  consumer_tiles = array<i64: 4, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64,
-                  routing_mode = #conduit.routing_mode<packet>}
-
   %ta = conduit.put_memref_async {name = @pkt1, num_elems = 4096 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 4096>,
             strides = array<i64: 1>} : !conduit.dma.token
@@ -208,6 +211,7 @@ func.func @packet_mode_excluded() {
              strides = array<i64: 1>} : !conduit.dma.token
   conduit.wait_all %tb : !conduit.dma.token
   return
+}
 }
 
 // -----
@@ -222,23 +226,23 @@ func.func @packet_mode_excluded() {
 //     Expected: neither gets time_multiplex_count or fused_dma_channel_group.
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: func.func @depth2_excluded
 // CHECK:       conduit.create @d2a {
 // CHECK-NOT:   time_multiplex_count
 // CHECK:       conduit.create @d2b {
 // CHECK-NOT:   time_multiplex_count
+// CHECK-LABEL: func.func @depth2_excluded
+aie.device(npu1) {
+conduit.create @d2a {slot_elems = 2 : i64,
+                producer_tile = array<i64: 5, 1>,
+                consumer_tiles = array<i64: 5, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 2 : i64}
+conduit.create @d2b {slot_elems = 2 : i64,
+                producer_tile = array<i64: 5, 1>,
+                consumer_tiles = array<i64: 5, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 2 : i64}
 func.func @depth2_excluded() {
-  conduit.create @d2a {slot_elems = 2 : i64,
-                  producer_tile = array<i64: 5, 1>,
-                  consumer_tiles = array<i64: 5, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 2 : i64}
-  conduit.create @d2b {slot_elems = 2 : i64,
-                  producer_tile = array<i64: 5, 1>,
-                  consumer_tiles = array<i64: 5, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 2 : i64}
-
   %ta = conduit.put_memref_async {name = @d2a, num_elems = 4096 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 4096>,
             strides = array<i64: 1>} : !conduit.dma.token
@@ -248,6 +252,7 @@ func.func @depth2_excluded() {
              strides = array<i64: 1>} : !conduit.dma.token
   conduit.wait_all %tb : !conduit.dma.token
   return
+}
 }
 
 // -----
@@ -265,7 +270,6 @@ func.func @depth2_excluded() {
 //              lk_dst is on a different producer tile, no fuse attrs.
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: func.func @link_src_excluded
 // CHECK:       conduit.create @lk1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
 // CHECK-NOT:   time_multiplex_count
 // CHECK:       conduit.create @lk2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
@@ -273,22 +277,24 @@ func.func @depth2_excluded() {
 // lk_dst is on a different producer tile (6,1) vs lk1/lk2 (6,2) -- no fuse attrs.
 // CHECK:       conduit.create @lk_dst {
 // CHECK-NOT:   fused_dma_channel_group
+// CHECK-LABEL: func.func @link_src_excluded
+aie.device(npu1) {
+conduit.create @lk1 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 6, 2>,
+                consumer_tiles = array<i64: 6, 3>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
+conduit.create @lk2 {slot_elems = 1 : i64,
+                producer_tile = array<i64: 6, 2>,
+                consumer_tiles = array<i64: 6, 3>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
+conduit.create @lk_dst {slot_elems = 1 : i64,
+                producer_tile = array<i64: 6, 1>,
+                consumer_tiles = array<i64: 6, 2>,
+                element_type = memref<4096xbf16>,
+                depth = 1 : i64}
 func.func @link_src_excluded() {
-  conduit.create @lk1 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 6, 2>,
-                  consumer_tiles = array<i64: 6, 3>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-  conduit.create @lk2 {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 6, 2>,
-                  consumer_tiles = array<i64: 6, 3>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
-  conduit.create @lk_dst {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 6, 1>,
-                  consumer_tiles = array<i64: 6, 2>,
-                  element_type = memref<4096xbf16>,
-                  depth = 1 : i64}
   conduit.scatter{src = @lk1, dsts = [@lk_dst] {memtile = "tile(6,1)"}}
 
   %ta = conduit.put_memref_async {name = @lk1, num_elems = 4096 : i64,
@@ -300,4 +306,5 @@ func.func @link_src_excluded() {
              strides = array<i64: 1>} : !conduit.dma.token
   conduit.wait_all %tb : !conduit.dma.token
   return
+}
 }

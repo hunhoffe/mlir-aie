@@ -25,7 +25,8 @@
 //     This is NOT the total send count; it depends on depth and BD structure.
 //     Checking bd_repeat alone for finite-send detection is unsound.
 //
-// This pass checks ONLY `dma_repeat`, which is the unambiguous total send count.
+// This pass checks ONLY `dma_repeat`, which is the unambiguous total send
+// count.
 //
 // Check:
 //   For each conduit.create with dma_repeat=N:
@@ -43,10 +44,11 @@
 //
 // Name matching:
 //   conduit.acquire uses FlatSymbolRefAttr:$name.  The generated getName()
-//   accessor calls getNameAttr().getValue(), returning the root reference string
-//   (e.g. "weights" for @weights).  conduit.create uses SymbolNameAttr:$sym_name
-//   with getName() as a backward-compat alias for getSymName() → same StringRef.
-//   Both sides compare equal for matching channels.
+//   accessor calls getNameAttr().getValue(), returning the root reference
+//   string (e.g. "weights" for @weights).  conduit.create uses
+//   SymbolNameAttr:$sym_name with getName() as a backward-compat alias for
+//   getSymName() → same StringRef. Both sides compare equal for matching
+//   channels.
 //
 // This pass emits warnings only (never signals pass failure).
 // It is OPT-IN and NOT part of the default pipeline.

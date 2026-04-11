@@ -56,6 +56,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITPAIRINGCHECK
 #define GEN_PASS_DECL_CONDUITLIVENESSCHECK
 #define GEN_PASS_DECL_CONDUITFUSECHANNELS
+#define GEN_PASS_DECL_CONDUITFUSERELAY
 #define GEN_PASS_DECL_CONDUITCHECKCHANNELS
 #define GEN_PASS_DECL_CONDUITINFERMODES
 #define GEN_PASS_DECL_CONDUITCHECKDEPS
@@ -89,7 +90,8 @@ std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createConduitToDMAPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitDepthPromotePass();
 
-/// M9 Phase 2 pairing check: warn when acquire has no matching release in block.
+/// M9 Phase 2 pairing check: warn when acquire has no matching release in
+/// block.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitPairingCheckPass();
 
@@ -101,6 +103,11 @@ createConduitLivenessCheckPass();
 /// DMA channel sharing (addresses DMA channel exhaustion gap).
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitFuseChannelsPass();
+
+/// Relay fusion: fuse gather→scatter relay chains through the same MemTile
+/// into conduit.transpose, eliminating the intermediate channel.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitFuseRelayPass();
 
 /// Channel check: validate that no tile exceeds its hardware DMA channel limit.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>

@@ -14,16 +14,18 @@
 // CHECK: conduit.create @csdf_uneven {{{.*}}depth = 2 : i64, {{.*}}slot_elems = 12 : i64
 // expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s)}}
 module {
+aie.device(npu1) {
+
+// expected-remark @+1 {{conduit-depth-promote: promoted 'csdf_uneven' from depth-1 to depth-2}}
+conduit.create @csdf_uneven {slot_elems = 6 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<6xi32>,
+                depth = 1 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
 
 func.func @csdf_uneven_rates(%result: memref<6xi32>) {
-  // expected-remark @+1 {{conduit-depth-promote: promoted 'csdf_uneven' from depth-1 to depth-2}}
-  conduit.create @csdf_uneven {slot_elems = 6 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<6xi32>,
-                  depth = 1 : i64,
-                  producer_rates = array<i64: 2>,
-                  consumer_rates = array<i64: 2>}
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c6 = arith.constant 6 : index
@@ -39,4 +41,5 @@ func.func @csdf_uneven_rates(%result: memref<6xi32>) {
   return
 }
 
+} // aie.device
 } // module

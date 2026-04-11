@@ -17,10 +17,16 @@
 //   - conduit.subview_access uses {index = i : i64}, not bracket syntax.
 //   - conduit.acquire requires port = #conduit.port<Produce>|"Consume".
 
+aie.device(npu1) {
+
+conduit.create @input {slot_elems = 10 : i64, depth = 0 : i64}
+conduit.create @weights {slot_elems = 4 : i64, depth = 0 : i64}
+conduit.create @async_input {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @in {slot_elems = 9 : i64, depth = 0 : i64}
+conduit.create @out {slot_elems = 1 : i64, depth = 0 : i64}
+
 // CHECK-LABEL: func.func @blocking_acquire_roundtrip
 func.func @blocking_acquire_roundtrip() {
-  conduit.create @input {slot_elems = 10 : i64, depth = 0 : i64}
-
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 1
   // CHECK-SAME: name = @input
@@ -43,8 +49,6 @@ func.func @blocking_acquire_roundtrip() {
 
 // CHECK-LABEL: func.func @sliding_window_partial_release
 func.func @sliding_window_partial_release() {
-  conduit.create @weights {slot_elems = 4 : i64, depth = 0 : i64}
-
   // CHECK: conduit.acquire
   // CHECK-SAME: count = 4
   // CHECK-SAME: name = @weights
@@ -72,8 +76,6 @@ func.func @sliding_window_partial_release() {
 // CHECK-LABEL: func.func @async_acquire_wait_window
 // conduit.wait_window: dedicated op for acquire tokens; conduit.wait_all is void.
 func.func @async_acquire_wait_window() {
-  conduit.create @async_input {slot_elems = 16 : i64, depth = 0 : i64}
-
   // CHECK: conduit.acquire_async
   // CHECK-SAME: name = @async_input
   // CHECK-SAME: !conduit.window.token
@@ -102,9 +104,6 @@ func.func @async_acquire_wait_window() {
 // CHECK-LABEL: func.func @async_acquire_with_overlap
 // Overlapping DMA and acquire — the canonical double-buffer usage.
 func.func @async_acquire_with_overlap() {
-  conduit.create @in {slot_elems = 9 : i64, depth = 0 : i64}
-  conduit.create @out {slot_elems = 1 : i64, depth = 0 : i64}
-
   // CHECK: conduit.put_memref_async
   %dma_tok = conduit.put_memref_async {name = @in, num_elems = 9 : i64,
                  offsets = array<i64: 0>, sizes = array<i64: 9>,
@@ -135,3 +134,5 @@ func.func @async_acquire_with_overlap() {
 
   return
 }
+
+} // aie.device

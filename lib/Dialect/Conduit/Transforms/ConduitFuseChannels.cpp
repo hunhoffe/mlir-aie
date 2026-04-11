@@ -132,8 +132,8 @@ static llvm::StringRef getConduitOpName(mlir::Operation *op) {
     return getWindowChannelName(relOp.getWindow());
 
   // All other Tier 2 / Tier 3 activity ops carry an explicit 'name' attribute.
-  if (mlir::isa<Acquire, AcquireAsync, ReleaseAsync, WaitWindow,
-                PutMemref, GetMemref, PutMemrefAsync, GetMemrefAsync>(op))
+  if (mlir::isa<Acquire, AcquireAsync, ReleaseAsync, WaitWindow, PutMemref,
+                GetMemref, PutMemrefAsync, GetMemrefAsync>(op))
     if (auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name"))
       return nameAttr.getValue();
 
@@ -184,10 +184,11 @@ struct ConduitInfo {
 // the number of groups equals the maximum clique size (maximum concurrency).
 //
 // Returns a SmallVector of group IDs in the post-sort order of 'items'.
-static llvm::SmallVector<unsigned>
-assignGroups(llvm::SmallVectorImpl<std::pair<std::string, LiveInterval>> &items) {
-  std::sort(items.begin(), items.end(),
-            [](const auto &a, const auto &b) { return a.second.lo < b.second.lo; });
+static llvm::SmallVector<unsigned> assignGroups(
+    llvm::SmallVectorImpl<std::pair<std::string, LiveInterval>> &items) {
+  std::sort(items.begin(), items.end(), [](const auto &a, const auto &b) {
+    return a.second.lo < b.second.lo;
+  });
 
   llvm::SmallVector<unsigned> groups(items.size());
   // groupEnd[g] = hi of the last interval assigned to group g.
@@ -283,8 +284,8 @@ struct ConduitFuseChannelsPass
 
       for (auto &[block, items] : blockConduits) {
         // Check if this block is directly inside an scf::IfOp region.
-        bool inIfBlock = mlir::isa_and_present<mlir::scf::IfOp>(
-            block->getParentOp());
+        bool inIfBlock =
+            mlir::isa_and_present<mlir::scf::IfOp>(block->getParentOp());
         for (auto &[name, iv] : items) {
           if (inIfBlock)
             nameNeedsRuntime[name] = true;
@@ -374,18 +375,16 @@ struct ConduitFuseChannelsPass
 
         std::string label = "group" + std::to_string(gid);
         mlir::MLIRContext *ctx = module.getContext();
-        ci.createOp->setAttr(
-            "fused_dma_channel_group",
-            mlir::StringAttr::get(ctx, label));
-        // fuse_mode = "static"  → Pass C emits static BD chain (NextBDOp linking)
-        // fuse_mode = "runtime" → Pass C must use control-packet path (Phase 3)
+        ci.createOp->setAttr("fused_dma_channel_group",
+                             mlir::StringAttr::get(ctx, label));
+        // fuse_mode = "static"  → Pass C emits static BD chain (NextBDOp
+        // linking) fuse_mode = "runtime" → Pass C must use control-packet path
+        // (Phase 3)
         llvm::StringRef fuseMode =
             groupNeedsRuntime[gid] ? "runtime" : "static";
-        ci.createOp->setAttr("fuse_mode",
-                             mlir::StringAttr::get(ctx, fuseMode));
+        ci.createOp->setAttr("fuse_mode", mlir::StringAttr::get(ctx, fuseMode));
       }
     }
-
   }
 };
 

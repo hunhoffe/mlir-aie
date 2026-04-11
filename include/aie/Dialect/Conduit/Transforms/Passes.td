@@ -358,6 +358,40 @@ def ConduitFuseChannels : Pass<"conduit-fuse-channels", "::mlir::ModuleOp"> {
 }
 
 //===----------------------------------------------------------------------===//
+// Relay Fusion — conduit-fuse-relay
+//===----------------------------------------------------------------------===//
+
+def ConduitFuseRelay : Pass<"conduit-fuse-relay", "::mlir::ModuleOp"> {
+  let summary = "Fuse gather→scatter relay chains into conduit.transpose";
+  let description = [{
+    Fuses a gather→scatter relay pair through the same MemTile into a single
+    conduit.transpose op, eliminating the intermediate channel and halving the
+    MemTile DMA channel usage.
+
+    Match condition:
+      1. gather.dst == scatter.src  (connected via the same intermediate channel)
+      2. gather.memtile == scatter.memtile  (same MemTile relay point)
+      3. The intermediate channel has no other users (no acquire/release/
+         put_memref/get_memref ops reference that channel name)
+      4. srcs.size() + dsts.size() <= 12  (hardware port budget)
+      5. srcs.size() * dsts.size() <= 32  (AIE2 packet ID budget)
+
+    The fused conduit.transpose carries the cross-product of gather and scatter
+    offsets (N×M entries).  lock_id and sync_mode are copied from the gather.
+
+    This pass is OPT-IN and NOT part of the default pipeline.
+
+    Run with:  aie-opt --conduit-fuse-relay <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitFuseRelayPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // Channel Check — conduit-check-channels (P1-B validation)
 //===----------------------------------------------------------------------===//
 

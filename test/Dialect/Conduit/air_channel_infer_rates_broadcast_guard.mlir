@@ -19,8 +19,8 @@
 
 // SPSC: consumer_rates and producer_rates attached.
 // CHECK: conduit.create @spsc_chan
-// CHECK-SAME: consumer_rates = array<i64: 1>
-// CHECK-SAME: producer_rates = array<i64: 1>
+// CHECK-SAME: consumer_rates = array<i64: 64>
+// CHECK-SAME: producer_rates = array<i64: 64>
 
 // Broadcast: slot_elems =4 (fan-out), NO producer_rates or consumer_rates.
 // After matching the bcast_chan create line, CHECK-NOT asserts producer_rates

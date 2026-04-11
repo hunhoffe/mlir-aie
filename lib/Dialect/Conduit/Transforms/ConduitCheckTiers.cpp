@@ -25,11 +25,13 @@
 //   Pass C generates a fixed BD chain for Tier 3 without updating the counter.
 //
 //   If a single aie.core mixes both tiers for the SAME channel name:
-//     - The Tier 3 op issues a DMA transfer that fills (or drains) a buffer slot
+//     - The Tier 3 op issues a DMA transfer that fills (or drains) a buffer
+//     slot
 //       without advancing the rotation counter.
 //     - The subsequent Tier 2 acquire uses the stale counter value and selects
 //       the WRONG physical buffer.
-//     - Result: silent read of stale or uninitialized data — hardware correctness
+//     - Result: silent read of stale or uninitialized data — hardware
+//     correctness
 //       bug with no compile-time or runtime signal.
 //
 //   This pass catches the bug at compile time with a hard error.

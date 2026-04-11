@@ -14,13 +14,14 @@
 
 // (1) acquire_async with port=Consume roundtrips correctly.
 
+aie.device(npu1) {
+conduit.create @fifo {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 // CHECK-LABEL: func.func @acquire_async_consume_port
 func.func @acquire_async_consume_port() {
-  conduit.create @fifo {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   // CHECK: conduit.acquire_async
   // CHECK-SAME: name = @fifo
   // CHECK-SAME: port = #conduit.port<Consume>
@@ -33,18 +34,20 @@ func.func @acquire_async_consume_port() {
       : !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device
 
 // -----
 
 // (2) acquire_async with port=Produce roundtrips correctly.
 
+aie.device(npu1) {
+conduit.create @out {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 4>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 // CHECK-LABEL: func.func @acquire_async_produce_port
 func.func @acquire_async_produce_port() {
-  conduit.create @out {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 4>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   // CHECK: conduit.acquire_async
   // CHECK-SAME: port = #conduit.port<Produce>
   %tok = conduit.acquire_async {name = @out, count = 1 : i64,
@@ -56,19 +59,21 @@ func.func @acquire_async_produce_port() {
       : !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device
 
 // -----
 
 // (3) release_async with optional SSA $window operand (type-checked release).
 // The verifier confirms the window comes from a matching conduit.acquire.
 
+aie.device(npu1) {
+conduit.create @ch {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 // CHECK-LABEL: func.func @release_async_with_window_operand
 func.func @release_async_with_window_operand() {
-  conduit.create @ch {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   %win = conduit.acquire {name = @ch, count = 1 : i64,
                           port = #conduit.port<Consume>}
              : !conduit.window<memref<8xi32>>
@@ -81,19 +86,21 @@ func.func @release_async_with_window_operand() {
   conduit.wait_all %rel_tok : !conduit.window.token
   return
 }
+} // aie.device
 
 // -----
 
 // (4) release_async without $window (name-only path) — valid for producer-side
 // standalone async release where no prior acquire exists in this scope.
 
+aie.device(npu1) {
+conduit.create @fifo {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 4>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 // CHECK-LABEL: func.func @release_async_name_only
 func.func @release_async_name_only() {
-  conduit.create @fifo {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 4>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   // CHECK: conduit.release_async
   // CHECK-SAME: name = @fifo
   // CHECK-SAME: port = #conduit.port<Produce>
@@ -103,23 +110,25 @@ func.func @release_async_name_only() {
   conduit.wait_all %rel_tok : !conduit.window.token
   return
 }
+} // aie.device
 
 // -----
 
 // (5) Invalid: release_async $window names channel "other" but $name="ch".
 // Verifier must reject: window from "other" cannot satisfy "ch"'s lock.
 
+aie.device(npu1) {
+conduit.create @ch {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
+conduit.create @other {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 func.func @release_async_window_name_mismatch() {
-  conduit.create @ch {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
-  conduit.create @other {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
   %win_other = conduit.acquire {name = @other, count = 1 : i64,
                                 port = #conduit.port<Consume>}
                    : !conduit.window<memref<8xi32>>
@@ -132,3 +141,4 @@ func.func @release_async_window_name_mismatch() {
       : !conduit.window<memref<8xi32>>
   return
 }
+} // aie.device

@@ -39,31 +39,34 @@
 // CHECK-DAG: conduit.create @heavy_conduit {{{.*}}depth = 4 : i64, {{.*}}slot_elems = 65536 : i64
 // expected-remark @+1 {{conduit-depth-promote: promoted 0 conduit(s)}}
 module {
+aie.device(npu1) {
 
 // A depth-4 conduit on tile (0,2) occupying the full 32KB budget:
 // 4 slots × memref<2048xi32> = 4 × 8192 bytes = 32768 bytes = 32KB.
 // slot_elems = 4 * 2048 * 4 = 32768.
-func.func @heavy_existing() {
-  conduit.create @heavy_conduit {slot_elems = 65536 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<2048xi32>,
-                  depth = 4 : i64}
-  return
-}
+conduit.create @heavy_conduit {slot_elems = 65536 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<2048xi32>,
+                depth = 4 : i64}
 
 // A depth-1 candidate on the same tile (0,2).
 // With the fix, the pre-population correctly charges 4×8KB=32KB for heavy_conduit,
 // leaving 0 bytes free → light_fifo must NOT be promoted.
 // With the bug (newDepth=2), only 2×8KB=16KB is charged → 16KB appears free →
 // light_fifo would be incorrectly promoted to depth=2.
+// expected-remark @+1 {{conduit-depth-promote: skipping 'light_fifo' -- memory budget}}
+conduit.create @light_fifo {slot_elems = 128 : i64,
+                producer_tile = array<i64: 0, 0>,
+                consumer_tiles = array<i64: 0, 2>,
+                element_type = memref<32xi32>,
+                depth = 1 : i64}
+
+func.func @heavy_existing() {
+  return
+}
+
 func.func @light_candidate(%result: memref<32xi32>) {
-  // expected-remark @+1 {{conduit-depth-promote: skipping 'light_fifo' -- memory budget}}
-  conduit.create @light_fifo {slot_elems = 128 : i64,
-                  producer_tile = array<i64: 0, 0>,
-                  consumer_tiles = array<i64: 0, 2>,
-                  element_type = memref<32xi32>,
-                  depth = 1 : i64}
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
@@ -80,4 +83,5 @@ func.func @light_candidate(%result: memref<32xi32>) {
   return
 }
 
+} // aie.device
 } // module

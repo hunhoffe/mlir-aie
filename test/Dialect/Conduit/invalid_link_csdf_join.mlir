@@ -25,20 +25,22 @@
 // GatherOp::verify() checks are guarded by 'has_value()' on producer_rates/consumer_rates.
 // Unannotated conduits are silently skipped.
 
+aie.device(npu1) {
+conduit.create @j_src_norates {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 1>,
+                element_type = memref<4xi32>,
+                depth = 1 : i64}
+conduit.create @j_dst_norates {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 1>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<4xi32>,
+                depth = 1 : i64}
 func.func @join_unannotated_srcs_pass() {
-  conduit.create @j_src_norates {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 1>,
-                  element_type = memref<4xi32>,
-                  depth = 1 : i64}
-  conduit.create @j_dst_norates {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 1>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<4xi32>,
-                  depth = 1 : i64}
   // No expected-error: unannotated → skip path → PASS.
   conduit.gather{srcs = [@j_src_norates], dst = @j_dst_norates {memtile = "tile(0,1)"}}
   return
+}
 }
 
 // -----
@@ -50,22 +52,24 @@ func.func @join_unannotated_srcs_pass() {
 // dst: P=[2], C=[2] → 2*1 == 2*1 ✓ (passes Create::verify M6)
 // GatherOp::verify M6-join: both pass → no error.
 
+aie.device(npu1) {
+conduit.create @j2_src {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 1>,
+                element_type = memref<4xi32>,
+                depth = 1 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
+conduit.create @j2_dst {slot_elems = 4 : i64,
+                producer_tile = array<i64: 0, 1>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<4xi32>,
+                depth = 1 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
 func.func @join_all_balanced_link_check() {
-  conduit.create @j2_src {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 1>,
-                  element_type = memref<4xi32>,
-                  depth = 1 : i64,
-                  producer_rates = array<i64: 2>,
-                  consumer_rates = array<i64: 2>}
-  conduit.create @j2_dst {slot_elems = 4 : i64,
-                  producer_tile = array<i64: 0, 1>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<4xi32>,
-                  depth = 1 : i64,
-                  producer_rates = array<i64: 2>,
-                  consumer_rates = array<i64: 2>}
   // No error expected: all rates balanced.
   conduit.gather{srcs = [@j2_src], dst = @j2_dst {memtile = "tile(0,1)"}}
   return
+}
 }

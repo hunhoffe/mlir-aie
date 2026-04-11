@@ -108,8 +108,8 @@ static bool verifyMemTileBDParity(ConduitToDMAState &state) {
 
     // Extract tile coordinates for the diagnostic message.
     int col = -1, row = -1;
-    if (auto tileOp = llvm::dyn_cast<AIE::TileOp>(
-            mtDMA.getTile().getDefiningOp())) {
+    if (auto tileOp =
+            llvm::dyn_cast<AIE::TileOp>(mtDMA.getTile().getDefiningOp())) {
       col = tileOp.getCol();
       row = tileOp.getRow();
     }
@@ -180,8 +180,7 @@ static bool verifyDMAChannelBudgets(ConduitToDMAState &state) {
     uint32_t maxMM2S = targetModel.getNumSourceSwitchboxConnections(
         col, row, AIE::WireBundle::DMA);
     if (static_cast<uint32_t>(nextCh) > maxMM2S) {
-      tileOp.emitError(
-          "DMA channel budget exceeded: tile(")
+      tileOp.emitError("DMA channel budget exceeded: tile(")
           << col << "," << row << ") needs " << nextCh
           << " MM2S channels but hardware maximum is " << maxMM2S;
       passed = false;
@@ -201,8 +200,7 @@ static bool verifyDMAChannelBudgets(ConduitToDMAState &state) {
     uint32_t maxS2MM = targetModel.getNumDestSwitchboxConnections(
         col, row, AIE::WireBundle::DMA);
     if (static_cast<uint32_t>(nextCh) > maxS2MM) {
-      tileOp.emitError(
-          "DMA channel budget exceeded: tile(")
+      tileOp.emitError("DMA channel budget exceeded: tile(")
           << col << "," << row << ") needs " << nextCh
           << " S2MM channels but hardware maximum is " << maxS2MM;
       passed = false;
@@ -232,7 +230,8 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // phase and calls signalPassFailure() + returns if set.
     // Do NOT call signalPassFailure() inside a module.walk() callback — it
     // does not stop the walk. Instead, set state.passFailed and return from
-    // the walk callback; runOnOperation() handles signalPassFailure() centrally.
+    // the walk callback; runOnOperation() handles signalPassFailure()
+    // centrally.
 
     // Initialize shared state.
     ConduitToDMAState state;
@@ -243,7 +242,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     // Phase 1-2.5: Collect conduit metadata, find device, build tile cache,
     // compute effective depths, gather link source names.
     collectPhase(state);
-    if (state.passFailed) { signalPassFailure(); return; }
+    if (state.passFailed) {
+      signalPassFailure();
+      return;
+    }
 
     // Initialize the packet flow ID allocator after collectPhase has resolved
     // the architecture (AIETargetModel).  AIE1 and AIE2 both support up to 32
@@ -258,30 +260,48 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
     // Phase 3: Allocate buffers and locks for each conduit.
     allocPhase(state);
-    if (state.passFailed) { signalPassFailure(); return; }
+    if (state.passFailed) {
+      signalPassFailure();
+      return;
+    }
 
     // Phase 4-4.5a: Shim DMA allocation, symbol rewriting, flow emission.
     routePhase(state);
-    if (state.passFailed) { signalPassFailure(); return; }
+    if (state.passFailed) {
+      signalPassFailure();
+      return;
+    }
 
     // Phase 5-5.5: Link lowering, aie.mem BD chains, fused chains.
     linkPhase(state);
-    if (state.passFailed) { signalPassFailure(); return; }
+    if (state.passFailed) {
+      signalPassFailure();
+      return;
+    }
 
     // Post-link verification: DMA channel budget.
     // Must run after routePhase() + linkPhase() which finalize all channel
     // allocations.  Catches MemTile MM2S/S2MM overflow (max 6 each) and
     // compute tile overflow (max 2 each) before the invalid IR reaches
     // downstream tools (aiecc pathfinder assertion crash).
-    if (!verifyDMAChannelBudgets(state)) { signalPassFailure(); return; }
+    if (!verifyDMAChannelBudgets(state)) {
+      signalPassFailure();
+      return;
+    }
 
     // Post-link verification: MemTile BD parity pool constraint.
     // Must run after linkPhase() which generates all MemTile BD chains.
-    if (!verifyMemTileBDParity(state)) { signalPassFailure(); return; }
+    if (!verifyMemTileBDParity(state)) {
+      signalPassFailure();
+      return;
+    }
 
     // Phase 6-8: Acquire/release lowering, op erasure, async path.
     lowerPhase(state);
-    if (state.passFailed) { signalPassFailure(); return; }
+    if (state.passFailed) {
+      signalPassFailure();
+      return;
+    }
 
     // Post-pass: Propagate link_with from func.func declarations to aie.core.
     //

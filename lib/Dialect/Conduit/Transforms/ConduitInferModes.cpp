@@ -15,7 +15,8 @@
 //
 //   R1. If routing_mode is not "any": skip (already resolved).
 //   R2. If routing_mode is "cascade": skip (hardware-fixed, no inference).
-//   R3a. If producer and single consumer are adjacent tiles (isLegalMemAffinity)
+//   R3a. If producer and single consumer are adjacent tiles
+//   (isLegalMemAffinity)
 //        and via_DMA is not set: resolve to "circuit".  Pass C Phase 3c will
 //        use shared memory — no DMA flow is needed.  The "circuit" label is
 //        correct since that path uses no DMA channels.
@@ -26,7 +27,8 @@
 //   Step 4. If all modes are exhausted: emit a hard error.
 //
 // The per-tile MM2S budget is simulated in the same order as Pass C Phase 4.5a
-// (conduits sorted by name for determinism, matching conduitMap MapVector order).
+// (conduits sorted by name for determinism, matching conduitMap MapVector
+// order).
 //
 // This pass runs AFTER Pass A or Pass B and BEFORE Pass C.
 // It is OPT-IN and NOT part of the default pipeline.
@@ -137,10 +139,10 @@ struct ConduitInferModesPass
         auto viaDMAAttr = op->getAttrOfType<mlir::BoolAttr>("viaDMA");
         bool viaDMA = viaDMAAttr && viaDMAAttr.getValue();
         if (!viaDMA) {
-          bool adj = targetModel.isLegalMemAffinity(prodCol, prodRow,
-                                                    consCol, consRow) ||
-                     targetModel.isLegalMemAffinity(consCol, consRow,
-                                                    prodCol, prodRow);
+          bool adj = targetModel.isLegalMemAffinity(prodCol, prodRow, consCol,
+                                                    consRow) ||
+                     targetModel.isLegalMemAffinity(consCol, consRow, prodCol,
+                                                    prodRow);
           if (adj)
             continue; // shared-memory path, no DMA channel consumed
         }
@@ -157,7 +159,8 @@ struct ConduitInferModesPass
     for (Create op : anyConduits) {
       auto pt = op.getProducerTile();
       if (!pt || pt->size() < 2) {
-        // No producer tile info — cannot determine topology; default to circuit.
+        // No producer tile info — cannot determine topology; default to
+        // circuit.
         op.setRoutingModeAttr(
             RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
         continue;
@@ -194,14 +197,46 @@ struct ConduitInferModesPass
       // -----------------------------------------------------------------------
       if (!viaDMA && ct && ct->size() == 2) {
         int64_t consCol = (*ct)[0], consRow = (*ct)[1];
-        bool adj = targetModel.isLegalMemAffinity(prodCol, prodRow,
-                                                  consCol, consRow) ||
-                   targetModel.isLegalMemAffinity(consCol, consRow,
-                                                  prodCol, prodRow);
+        bool adj =
+            targetModel.isLegalMemAffinity(prodCol, prodRow, consCol,
+                                           consRow) ||
+            targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         if (adj) {
           op.setRoutingModeAttr(
               RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
           continue;
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // R3a.5: Multicast inference.
+      //
+      // If the conduit has more than one consumer tile and all consumers use
+      // uniform access patterns (consumer_dimensions absent or all sub-arrays
+      // identical), resolve to "packet".  Multicast costs only 1 packet ID
+      // regardless of N consumers (the switchbox broadcasts).
+      // -----------------------------------------------------------------------
+      if (ct && ct->size() > 2) {
+        bool uniform = true;
+        if (auto cdAttr =
+                op->getAttrOfType<mlir::ArrayAttr>("consumer_dimensions")) {
+          for (size_t i = 1; i < cdAttr.size(); ++i) {
+            if (cdAttr[i] != cdAttr[0]) {
+              uniform = false;
+              break;
+            }
+          }
+        }
+        if (uniform) {
+          if (pktBudget >= 1) {
+            pktBudget -= 1;
+            op.setRoutingModeAttr(
+                RoutingModeAttr::get(module.getContext(), RoutingMode::Packet));
+            op->emitRemark("conduit-infer-modes: resolved multicast conduit "
+                           "to \"packet\" (uniform consumers on tile (")
+                << prodCol << "," << prodRow << "))";
+            continue;
+          }
         }
       }
 
@@ -213,16 +248,15 @@ struct ConduitInferModesPass
       // advance the counter so the next unresolved conduit on the same tile
       // sees the reduced budget.
       // -----------------------------------------------------------------------
-      uint32_t maxMM2S = static_cast<uint32_t>(
-          targetModel.getNumSourceSwitchboxConnections(
+      uint32_t maxMM2S =
+          static_cast<uint32_t>(targetModel.getNumSourceSwitchboxConnections(
               static_cast<int>(prodCol), static_cast<int>(prodRow),
               AIE::WireBundle::DMA));
       if (maxMM2S == 0)
         maxMM2S = 2; // safe fallback for non-modelled tiles
 
-      int32_t nextCh = tileNextMM2S.count(prodTileVal)
-                           ? tileNextMM2S[prodTileVal]
-                           : 0;
+      int32_t nextCh =
+          tileNextMM2S.count(prodTileVal) ? tileNextMM2S[prodTileVal] : 0;
 
       if (static_cast<uint32_t>(nextCh) < maxMM2S) {
         tileNextMM2S[prodTileVal]++;
@@ -253,8 +287,7 @@ struct ConduitInferModesPass
       // -----------------------------------------------------------------------
       op->emitError("conduit-infer-modes: cannot resolve routing_mode "
                     "for conduit '")
-          << op.getName()
-          << "': circuit DMA MM2S channels exhausted on tile ("
+          << op.getName() << "': circuit DMA MM2S channels exhausted on tile ("
           << prodCol << "," << prodRow
           << ") and packet flow ID budget is also exhausted";
       failed = true;

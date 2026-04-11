@@ -19,14 +19,16 @@
 // (e) conduit.scatter with a cascade-mode src — parses without verifier error.
 // Cascade incompatibility is detected by Pass C, not by ScatterOp::verify().
 
+aie.device(npu1) {
+conduit.create @src {slot_elems = 1 : i64, depth = 1 : i64,
+                routing_mode = #conduit.routing_mode<cascade>,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 1>}
+conduit.create @dst {slot_elems = 1 : i64, depth = 1 : i64,
+                producer_tile = array<i64: 0, 1>,
+                consumer_tiles = array<i64: 1, 2>}
 func.func @scatter_cascade_src_parse_ok() {
-  conduit.create @src {slot_elems = 1 : i64, depth = 1 : i64,
-                  routing_mode = #conduit.routing_mode<cascade>,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 1>}
-  conduit.create @dst {slot_elems = 1 : i64, depth = 1 : i64,
-                  producer_tile = array<i64: 0, 1>,
-                  consumer_tiles = array<i64: 1, 2>}
   conduit.scatter{src = @src, dsts = [@dst] {memtile = "tile(0,1)"}}
   return
+}
 }

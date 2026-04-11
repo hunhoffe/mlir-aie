@@ -39,11 +39,13 @@ void linkPhase(ConduitToDMAState &state) {
   state.module.walk([&](ScatterOp op) {
     state.linkSrcNames.insert(op.getSrc());
     for (auto d : op.getDsts())
-      state.linkDstNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
+      state.linkDstNames.insert(
+          mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
   });
   state.module.walk([&](GatherOp op) {
     for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
+      state.linkSrcNames.insert(
+          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
     state.linkDstNames.insert(op.getDst());
   });
 
@@ -181,9 +183,9 @@ void linkPhase(ConduitToDMAState &state) {
       if (relayBufIt == coreRelaySrc.consumerTileBuffers.end() ||
           relayBufIt->second.empty()) {
         linkOp.emitError("conduit-to-dma: CoreTile relay: relay buffers for "
-                         "src conduit '" + coreRelayName +
-                         "' not found on relay tile '" + memtileStr.str() +
-                         "'");
+                         "src conduit '" +
+                         coreRelayName + "' not found on relay tile '" +
+                         memtileStr.str() + "'");
         state.passFailed = true;
         continue;
       }
@@ -198,8 +200,7 @@ void linkPhase(ConduitToDMAState &state) {
         }
       }
 
-      int64_t relayDepth =
-          coreRelaySrc.depth > 0 ? coreRelaySrc.depth : 1;
+      int64_t relayDepth = coreRelaySrc.depth > 0 ? coreRelaySrc.depth : 1;
 
       // If relay locks are missing (e.g., shim→relay path where Phase 3 doesn't
       // allocate consumer-side locks on the relay tile), allocate them now.
@@ -217,8 +218,8 @@ void linkPhase(ConduitToDMAState &state) {
         {
           int lockIdx = state.lockIdCounter[relayTileVal]++;
           std::string symName = coreRelayName + "_cons_cons_lock_0";
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              loc, relayTileVal, lockIdx, 0);
+          AIE::LockOp lk =
+              builder.create<AIE::LockOp>(loc, relayTileVal, lockIdx, 0);
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
           relayConsLock = lk;
           coreRelaySrc.consumerTileLocks[relayTileVal].second = lk;
@@ -256,8 +257,7 @@ void linkPhase(ConduitToDMAState &state) {
         if (existing)
           return existing;
         builder.setInsertionPoint(state.deviceBody->getTerminator());
-        auto memOp =
-            builder.create<AIE::MemOp>(loc, relayTileVal);
+        auto memOp = builder.create<AIE::MemOp>(loc, relayTileVal);
         return &memOp.getBody();
       };
 
@@ -297,19 +297,18 @@ void linkPhase(ConduitToDMAState &state) {
 
         builder.setInsertionPointToEnd(s2mmEntry);
         builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::S2MM,
-                                        relaySrcS2MMCh, 0,
-                                        s2mmBDs[0], s2mmExit);
+                                        relaySrcS2MMCh, 0, s2mmBDs[0],
+                                        s2mmExit);
 
         for (int64_t i = 0; i < relayDepth; ++i) {
           mlir::Value acqLock =
               relayProdLock ? relayProdLock.getResult() : mlir::Value{};
           mlir::Value relLock =
               relayConsLock ? relayConsLock.getResult() : mlir::Value{};
-          state.emitBDBlock(loc, s2mmBDs[i],
-                            acqLock, state.lockAcqValue(Port::Produce, 1),
-                            relayBufs[i % relayBufs.size()].getResult(),
-                            0, relayPerBufLen,
-                            relLock, state.lockRelValue(Port::Produce));
+          state.emitBDBlock(
+              loc, s2mmBDs[i], acqLock, state.lockAcqValue(Port::Produce, 1),
+              relayBufs[i % relayBufs.size()].getResult(), 0, relayPerBufLen,
+              relLock, state.lockRelValue(Port::Produce));
           builder.create<AIE::NextBDOp>(loc, s2mmBDs[(i + 1) % relayDepth]);
         }
 
@@ -324,7 +323,9 @@ void linkPhase(ConduitToDMAState &state) {
           for (unsigned dstIdx = 0; dstIdx < static_cast<unsigned>(dsts.size());
                ++dstIdx) {
             std::string dstName =
-                mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
+                mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx])
+                    .getValue()
+                    .str();
             ConduitInfo *dstInfo = state.lookupConduit(dstName);
             if (!dstInfo || dstInfo->consumerTileCoords.empty()) {
               continue;
@@ -337,17 +338,16 @@ void linkPhase(ConduitToDMAState &state) {
             for (unsigned consIdx = 0;
                  consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
               auto [consCol, consRow] = dstInfo->consumerTileCoords[consIdx];
-              AIE::TileOp consTile =
-                  state.lookupTileByCoord(consCol, consRow);
-              if (!consTile) continue;
+              AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
+              if (!consTile)
+                continue;
               mlir::Value consTileVal = consTile.getResult();
               int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
               state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
               builder.setInsertionPoint(state.deviceBody->getTerminator());
-              builder.create<AIE::FlowOp>(loc, relayTileVal,
-                                          AIE::WireBundle::DMA, mm2sCh,
-                                          consTileVal,
-                                          AIE::WireBundle::DMA, s2mmCh);
+              builder.create<AIE::FlowOp>(
+                  loc, relayTileVal, AIE::WireBundle::DMA, mm2sCh, consTileVal,
+                  AIE::WireBundle::DMA, s2mmCh);
             }
 
             // Build MM2S BD chain for this dst.
@@ -363,22 +363,22 @@ void linkPhase(ConduitToDMAState &state) {
 
             builder.setInsertionPointToEnd(prevMM2SBlock);
             builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S,
-                                            mm2sCh, 0,
-                                            mm2sBDs[0], nextChainOrEnd);
+                                            mm2sCh, 0, mm2sBDs[0],
+                                            nextChainOrEnd);
 
             for (int64_t i = 0; i < relayDepth; ++i) {
-              // MM2S: acq consLock (data ready), send, rel prodLock (space free)
+              // MM2S: acq consLock (data ready), send, rel prodLock (space
+              // free)
               mlir::Value acqLock =
                   relayConsLock ? relayConsLock.getResult() : mlir::Value{};
               mlir::Value relLock =
                   relayProdLock ? relayProdLock.getResult() : mlir::Value{};
-              state.emitBDBlock(loc, mm2sBDs[i],
-                                acqLock, state.lockAcqValue(Port::Consume, 1),
-                                relayBufs[i % relayBufs.size()].getResult(),
-                                0, relayPerBufLen,
-                                relLock, state.lockRelValue(Port::Consume));
-              builder.create<AIE::NextBDOp>(loc,
-                                            mm2sBDs[(i + 1) % relayDepth]);
+              state.emitBDBlock(loc, mm2sBDs[i], acqLock,
+                                state.lockAcqValue(Port::Consume, 1),
+                                relayBufs[i % relayBufs.size()].getResult(), 0,
+                                relayPerBufLen, relLock,
+                                state.lockRelValue(Port::Consume));
+              builder.create<AIE::NextBDOp>(loc, mm2sBDs[(i + 1) % relayDepth]);
             }
 
             prevMM2SBlock = nextChainOrEnd;
@@ -400,9 +400,12 @@ void linkPhase(ConduitToDMAState &state) {
 
     // Guard: cascade-mode conduits cannot be used with distribute/join/forward.
     if (srcInfoPtr && srcInfoPtr->routingMode == "cascade") {
-      linkOp.emitError("conduit distribute/join/forward cannot use cascade-mode "
-                       "conduit '" + srcName + "' — cascade is point-to-point "
-                       "and has no MemTile relay or DMA BD chain");
+      linkOp.emitError(
+          "conduit distribute/join/forward cannot use cascade-mode "
+          "conduit '" +
+          srcName +
+          "' — cascade is point-to-point "
+          "and has no MemTile relay or DMA BD chain");
       state.passFailed = true;
       continue;
     }
@@ -414,11 +417,9 @@ void linkPhase(ConduitToDMAState &state) {
     bool isMemTileRelaySrc = false;
     if (srcInfoPtr) {
       auto [sp, sr] = srcInfoPtr->producerTileCoord;
-      isMemTileRelaySrc =
-          (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr));
+      isMemTileRelaySrc = (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr));
     }
-    if (!srcInfoPtr ||
-        (srcInfoPtr->buffers.empty() && !isMemTileRelaySrc)) {
+    if (!srcInfoPtr || (srcInfoPtr->buffers.empty() && !isMemTileRelaySrc)) {
       linkOp.emitError("conduit-to-dma: src conduit '" + srcName +
                        "' buffers not allocated for link op");
       state.passFailed = true;
@@ -431,13 +432,15 @@ void linkPhase(ConduitToDMAState &state) {
     mlir::Value memTileResult = memtile.getResult();
     auto memBufsIt = srcInfo.consumerTileBuffers.find(memTileResult);
     auto &linkBufs = (memBufsIt != srcInfo.consumerTileBuffers.end())
-        ? memBufsIt->second : srcInfo.buffers;
+                         ? memBufsIt->second
+                         : srcInfo.buffers;
 
     int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
     int64_t perBufLen =
         srcInfo.slotElems > 0 ? srcInfo.slotElems / linkDepth : 1;
 
-    // Per-destination independent lock pairs on the MemTile (distribute/forward).
+    // Per-destination independent lock pairs on the MemTile
+    // (distribute/forward).
     bool isDistribute = linkOp.isDistribute;
     unsigned numDsts = static_cast<unsigned>(dsts.size());
 
@@ -470,7 +473,9 @@ void linkPhase(ConduitToDMAState &state) {
         int64_t dstRepeat = 1;
         {
           std::string dstNameR =
-              mlir::cast<mlir::FlatSymbolRefAttr>(dsts[sliceIdx]).getValue().str();
+              mlir::cast<mlir::FlatSymbolRefAttr>(dsts[sliceIdx])
+                  .getValue()
+                  .str();
           if (ConduitInfo *dstInfoR = state.lookupConduit(dstNameR))
             if (dstInfoR->bdRepeat > 1)
               dstRepeat = dstInfoR->bdRepeat;
@@ -480,8 +485,8 @@ void linkPhase(ConduitToDMAState &state) {
         if (isAIE2) {
           {
             int lockIdx = state.lockIdCounter[memtileVal]++;
-            std::string symName = srcName + "_link_prod_lock_" +
-                                  std::to_string(sliceIdx);
+            std::string symName =
+                srcName + "_link_prod_lock_" + std::to_string(sliceIdx);
             AIE::LockOp lk = builder.create<AIE::LockOp>(
                 state.deviceOp.getLoc(), memtileVal, lockIdx,
                 static_cast<int>(sliceProdInit));
@@ -490,8 +495,8 @@ void linkPhase(ConduitToDMAState &state) {
           }
           {
             int lockIdx = state.lockIdCounter[memtileVal]++;
-            std::string symName = srcName + "_link_cons_lock_" +
-                                  std::to_string(sliceIdx);
+            std::string symName =
+                srcName + "_link_cons_lock_" + std::to_string(sliceIdx);
             AIE::LockOp lk = builder.create<AIE::LockOp>(
                 state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
             lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
@@ -499,10 +504,10 @@ void linkPhase(ConduitToDMAState &state) {
           }
         } else {
           int lockIdx = state.lockIdCounter[memtileVal]++;
-          std::string symName = srcName + "_link_lock_" +
-                                std::to_string(sliceIdx);
-          AIE::LockOp lk = builder.create<AIE::LockOp>(
-              state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
+          std::string symName =
+              srcName + "_link_lock_" + std::to_string(sliceIdx);
+          AIE::LockOp lk = builder.create<AIE::LockOp>(state.deviceOp.getLoc(),
+                                                       memtileVal, lockIdx, 0);
           lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
           sliceProdLocks.push_back(lk);
           sliceConsLocks.push_back(lk);
@@ -527,18 +532,21 @@ void linkPhase(ConduitToDMAState &state) {
     int64_t joinDstPerBufForLen = 1;
 
     if (!isDistribute && !dsts.empty()) {
-      std::string jDstName = mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
+      std::string jDstName =
+          mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
       ConduitInfo *jDstInfo = state.lookupConduit(jDstName);
       if (!jDstInfo) {
         linkOp.emitWarning("conduit-to-dma: join destination conduit '")
             << jDstName << "' not found — BD lengths defaulting to 1";
       } else {
         int64_t jDstDepth = jDstInfo->depth > 0 ? jDstInfo->depth : 1;
-        joinDstPerBufForLen = jDstInfo->slotElems > 0 ? jDstInfo->slotElems / jDstDepth : 1;
+        joinDstPerBufForLen =
+            jDstInfo->slotElems > 0 ? jDstInfo->slotElems / jDstDepth : 1;
 
         mlir::Type intBufTy = jDstInfo->elemType;
         if (!intBufTy)
-          intBufTy = mlir::MemRefType::get({joinDstPerBufForLen}, mlir::IntegerType::get(ctx, 32));
+          intBufTy = mlir::MemRefType::get({joinDstPerBufForLen},
+                                           mlir::IntegerType::get(ctx, 32));
 
         builder.setInsertionPoint(lockInsertionPoint);
         unsigned numJoinSrcs = static_cast<unsigned>(srcs.size());
@@ -547,7 +555,8 @@ void linkPhase(ConduitToDMAState &state) {
         // Record them in jDstInfo->buffers so Phase 6/7 can look them up.
         for (int64_t i = 0; i < jDstDepth; ++i) {
           std::string symName = jDstName + "_buff_" + std::to_string(i);
-          auto buf = builder.create<AIE::BufferOp>(state.deviceOp.getLoc(), intBufTy, memtileVal,
+          auto buf = builder.create<AIE::BufferOp>(
+              state.deviceOp.getLoc(), intBufTy, memtileVal,
               mlir::StringAttr::get(ctx, symName), mlir::IntegerAttr{},
               mlir::ElementsAttr{}, mlir::IntegerAttr{});
           joinIntermediateBuffers.push_back(buf);
@@ -563,21 +572,29 @@ void linkPhase(ConduitToDMAState &state) {
         if (!jDstInfo->disableSynchronization) {
           for (unsigned srcIdx = 0; srcIdx < numJoinSrcs; ++srcIdx) {
             if (isAIE2) {
-              { int lockIdx = state.lockIdCounter[memtileVal]++;
-                std::string symName = jDstName + "_prod_lock_" + std::to_string(srcIdx);
+              {
+                int lockIdx = state.lockIdCounter[memtileVal]++;
+                std::string symName =
+                    jDstName + "_prod_lock_" + std::to_string(srcIdx);
                 AIE::LockOp lk = builder.create<AIE::LockOp>(
-                    state.deviceOp.getLoc(), memtileVal, lockIdx, static_cast<int>(jDstDepth));
+                    state.deviceOp.getLoc(), memtileVal, lockIdx,
+                    static_cast<int>(jDstDepth));
                 lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                joinSrcProdLocks.push_back(lk); }
-              { int lockIdx = state.lockIdCounter[memtileVal]++;
-                std::string symName = jDstName + "_cons_lock_" + std::to_string(srcIdx);
+                joinSrcProdLocks.push_back(lk);
+              }
+              {
+                int lockIdx = state.lockIdCounter[memtileVal]++;
+                std::string symName =
+                    jDstName + "_cons_lock_" + std::to_string(srcIdx);
                 AIE::LockOp lk = builder.create<AIE::LockOp>(
                     state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
                 lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-                joinSrcConsLocks.push_back(lk); }
+                joinSrcConsLocks.push_back(lk);
+              }
             } else {
               int lockIdx = state.lockIdCounter[memtileVal]++;
-              std::string symName = jDstName + "_lock_" + std::to_string(srcIdx);
+              std::string symName =
+                  jDstName + "_lock_" + std::to_string(srcIdx);
               AIE::LockOp lk = builder.create<AIE::LockOp>(
                   state.deviceOp.getLoc(), memtileVal, lockIdx, 0);
               lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
@@ -628,8 +645,7 @@ void linkPhase(ConduitToDMAState &state) {
         if (chIt != state.conduitMM2SChannel.end()) {
           distMM2SChannels.push_back(chIt->second);
         } else {
-          distMM2SChannels.push_back(
-              state.tileNextMM2SChannel[memtileVal]++);
+          distMM2SChannels.push_back(state.tileNextMM2SChannel[memtileVal]++);
         }
       }
     }
@@ -695,8 +711,8 @@ void linkPhase(ConduitToDMAState &state) {
         if (!dstInfo || dstInfo->consumerTileCoords.empty())
           continue;
 
-        int32_t mm2sCh = dstIdx < distMM2SChannels.size()
-                             ? distMM2SChannels[dstIdx] : 0;
+        int32_t mm2sCh =
+            dstIdx < distMM2SChannels.size() ? distMM2SChannels[dstIdx] : 0;
 
         // Determine routing mode for this dst conduit.
         std::string dstRoutingMode =
@@ -711,8 +727,7 @@ void linkPhase(ConduitToDMAState &state) {
             state.passFailed = true;
             return;
           }
-          std::optional<uint8_t> pktID =
-              state.packetIDAllocator->allocate();
+          std::optional<uint8_t> pktID = state.packetIDAllocator->allocate();
           if (!pktID) {
             state.passFailed = true;
             return;
@@ -720,16 +735,15 @@ void linkPhase(ConduitToDMAState &state) {
           state.conduitPacketID[dstName] = *pktID;
 
           auto pktFlow = builder.create<AIE::PacketFlowOp>(
-              state.deviceOp.getLoc(),
-              static_cast<int8_t>(*pktID),
+              state.deviceOp.getLoc(), static_cast<int8_t>(*pktID),
               /*keep_pkt_header=*/mlir::BoolAttr{},
               /*priority_route=*/mlir::BoolAttr{});
           mlir::Region &region = pktFlow.getPorts();
           mlir::Block *pktBlock = builder.createBlock(&region);
           builder.setInsertionPointToStart(pktBlock);
-          builder.create<AIE::PacketSourceOp>(
-              state.deviceOp.getLoc(), memtileVal,
-              AIE::WireBundle::DMA, static_cast<int32_t>(mm2sCh));
+          builder.create<AIE::PacketSourceOp>(state.deviceOp.getLoc(),
+                                              memtileVal, AIE::WireBundle::DMA,
+                                              static_cast<int32_t>(mm2sCh));
 
           for (unsigned consIdx = 0;
                consIdx < dstInfo->consumerTileCoords.size(); ++consIdx) {
@@ -766,8 +780,7 @@ void linkPhase(ConduitToDMAState &state) {
 
             state.emitFlow(dstRoutingMode, memtileVal, AIE::WireBundle::DMA,
                            mm2sCh, dstConsTile.getResult(),
-                           AIE::WireBundle::DMA,
-                           static_cast<int32_t>(s2mmCh));
+                           AIE::WireBundle::DMA, static_cast<int32_t>(s2mmCh));
           }
         }
       }
@@ -789,9 +802,8 @@ void linkPhase(ConduitToDMAState &state) {
               srcPort = srcInfo.aieStreamPort >= 0 ? srcInfo.aieStreamPort : 0;
             }
             builder.create<AIE::FlowOp>(
-                state.deviceOp.getLoc(), srcProdTile.getResult(),
-                srcBundle, srcPort,
-                memtileVal, AIE::WireBundle::DMA,
+                state.deviceOp.getLoc(), srcProdTile.getResult(), srcBundle,
+                srcPort, memtileVal, AIE::WireBundle::DMA,
                 static_cast<int32_t>(ingestS2MMCh));
           }
         }
@@ -814,11 +826,12 @@ void linkPhase(ConduitToDMAState &state) {
         // MemTile.  Emitting again would create a duplicate flow.
         if (targetModel.isMemTile(srcProdCol, srcProdRow))
           continue;
-        AIE::TileOp srcProdTile = state.lookupTileByCoord(srcProdCol, srcProdRow);
+        AIE::TileOp srcProdTile =
+            state.lookupTileByCoord(srcProdCol, srcProdRow);
         if (!srcProdTile)
           continue;
-        int32_t s2mmCh = srcIdx < joinS2MMChannels.size()
-                             ? joinS2MMChannels[srcIdx] : 0;
+        int32_t s2mmCh =
+            srcIdx < joinS2MMChannels.size() ? joinS2MMChannels[srcIdx] : 0;
         // A-1 fix: Allocate MM2S channel on the source producer tile
         // dynamically instead of using hardcoded channel 0.  Record in
         // conduitMM2SChannel so Phase 5.5 BD chain generation uses the
@@ -828,10 +841,10 @@ void linkPhase(ConduitToDMAState &state) {
             state.tileNextMM2SChannel[srcProdTile.getResult()]++;
         state.conduitMM2SChannel[sName] = srcMM2SCh;
         state.preUsedMM2SChannels[srcProdTile.getResult()].insert(srcMM2SCh);
-        builder.create<AIE::FlowOp>(
-            state.deviceOp.getLoc(), srcProdTile.getResult(),
-            AIE::WireBundle::DMA, srcMM2SCh,
-            memtileVal, AIE::WireBundle::DMA, s2mmCh);
+        builder.create<AIE::FlowOp>(state.deviceOp.getLoc(),
+                                    srcProdTile.getResult(),
+                                    AIE::WireBundle::DMA, srcMM2SCh, memtileVal,
+                                    AIE::WireBundle::DMA, s2mmCh);
       }
 
       // Destination flow: memtile MM2S → dst compute consumer.
@@ -839,9 +852,11 @@ void linkPhase(ConduitToDMAState &state) {
       // iterates all conduits with shimConsumerTileCoords. We must NOT emit
       // the shim flow here to avoid duplicating Phase 4b's emission.
       if (!dsts.empty()) {
-        std::string dstName = mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
+        std::string dstName =
+            mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
         if (ConduitInfo *dstFlowInfo = state.lookupConduit(dstName)) {
-          for (unsigned ci = 0; ci < dstFlowInfo->consumerTileCoords.size(); ++ci) {
+          for (unsigned ci = 0; ci < dstFlowInfo->consumerTileCoords.size();
+               ++ci) {
             auto [consCol, consRow] = dstFlowInfo->consumerTileCoords[ci];
             AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
             if (consTile) {
@@ -855,8 +870,9 @@ void linkPhase(ConduitToDMAState &state) {
               // mismatch and potential MemTile S2MM overflow (>6 channels).
               state.conduitConsS2MMChannel[{dstName, ci}] = consS2MM;
               builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
-                  AIE::WireBundle::DMA, joinMM2SCh, consTile.getResult(),
-                  AIE::WireBundle::DMA, consS2MM);
+                                          AIE::WireBundle::DMA, joinMM2SCh,
+                                          consTile.getResult(),
+                                          AIE::WireBundle::DMA, consS2MM);
             }
           }
           // Shim consumer flows are NOT emitted here. Phase 4b emits
@@ -892,8 +908,7 @@ void linkPhase(ConduitToDMAState &state) {
       }
     } else {
       builder.setInsertionPoint(state.deviceBody->getTerminator());
-      auto memtileDMA =
-          builder.create<AIE::MemTileDMAOp>(loc, memtileVal);
+      auto memtileDMA = builder.create<AIE::MemTileDMAOp>(loc, memtileVal);
       dmaRegionPtr = &memtileDMA.getBody();
       memtileDMAMap[memtileVal] = memtileDMA;
     }
@@ -910,8 +925,7 @@ void linkPhase(ConduitToDMAState &state) {
     if (isDistribute) {
       // Single S2MM entry, depth*numDsts BD ring.
       // If merging, chain from the previous group's EndOp block.
-      mlir::Block *entryBlock = mergeChainBlock ? mergeChainBlock
-                                                : addBlock();
+      mlir::Block *entryBlock = mergeChainBlock ? mergeChainBlock : addBlock();
 
       llvm::SmallVector<mlir::Block *> ingestBlocks;
       for (int64_t bufIdx = 0; bufIdx < linkDepth; ++bufIdx)
@@ -921,18 +935,17 @@ void linkPhase(ConduitToDMAState &state) {
       mm2sChainStartBlock = addBlock();
 
       builder.setInsertionPointToEnd(entryBlock);
-      builder.create<AIE::DMAStartOp>(
-          loc, AIE::DMAChannelDir::S2MM,
-          ingestS2MMCh, static_cast<int32_t>(0),
-          ingestBlocks[0], mm2sChainStartBlock);
+      builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::S2MM,
+                                      ingestS2MMCh, static_cast<int32_t>(0),
+                                      ingestBlocks[0], mm2sChainStartBlock);
 
       unsigned totalIngest = static_cast<unsigned>(linkDepth) * numDsts;
       for (unsigned blkIdx = 0; blkIdx < totalIngest; ++blkIdx) {
-        unsigned bufIdx   = blkIdx / numDsts;
+        unsigned bufIdx = blkIdx / numDsts;
         unsigned sliceIdx = blkIdx % numDsts;
 
         int64_t dstOffset = 0;
-        int64_t dstLen    = perBufLen;
+        int64_t dstLen = perBufLen;
         if (offsets.has_value() && !offsets->empty()) {
           if (sliceIdx < static_cast<unsigned>(offsets->size()))
             dstOffset = (*offsets)[sliceIdx];
@@ -942,30 +955,26 @@ void linkPhase(ConduitToDMAState &state) {
             dstLen = perBufLen - dstOffset;
         }
 
-        mlir::Value ingestAcqLock =
-            (sliceIdx < sliceProdLocks.size())
-                ? sliceProdLocks[sliceIdx].getResult()
-                : mlir::Value{};
-        mlir::Value ingestRelLock =
-            (sliceIdx < sliceConsLocks.size())
-                ? sliceConsLocks[sliceIdx].getResult()
-                : mlir::Value{};
-        state.emitBDBlock(
-            loc, ingestBlocks[blkIdx],
-            ingestAcqLock,
-            state.lockAcqValue(Port::Produce, 1),
-            linkBufs[bufIdx].getResult(), dstOffset, dstLen,
-            ingestRelLock,
-            state.lockRelValue(Port::Produce));
+        mlir::Value ingestAcqLock = (sliceIdx < sliceProdLocks.size())
+                                        ? sliceProdLocks[sliceIdx].getResult()
+                                        : mlir::Value{};
+        mlir::Value ingestRelLock = (sliceIdx < sliceConsLocks.size())
+                                        ? sliceConsLocks[sliceIdx].getResult()
+                                        : mlir::Value{};
+        state.emitBDBlock(loc, ingestBlocks[blkIdx], ingestAcqLock,
+                          state.lockAcqValue(Port::Produce, 1),
+                          linkBufs[bufIdx].getResult(), dstOffset, dstLen,
+                          ingestRelLock, state.lockRelValue(Port::Produce));
         builder.create<AIE::NextBDOp>(loc,
-            ingestBlocks[(blkIdx + 1) % totalIngest]);
+                                      ingestBlocks[(blkIdx + 1) % totalIngest]);
       }
 
     } else {
       // Join: N independent S2MM channels.
       unsigned numSrcs = static_cast<unsigned>(srcs.size());
       int64_t jDepth = static_cast<int64_t>(joinIntermediateBuffers.size());
-      if (jDepth == 0) jDepth = 1;
+      if (jDepth == 0)
+        jDepth = 1;
 
       llvm::SmallVector<int64_t> srcOffsets(numSrcs, 0);
       llvm::SmallVector<int64_t> srcLens(numSrcs, 1);
@@ -983,14 +992,16 @@ void linkPhase(ConduitToDMAState &state) {
       }
 
       llvm::SmallVector<mlir::Block *> s2mmEntries(numSrcs);
-      llvm::SmallVector<llvm::SmallVector<mlir::Block *>> srcIngestBlocks(numSrcs);
+      llvm::SmallVector<llvm::SmallVector<mlir::Block *>> srcIngestBlocks(
+          numSrcs);
       // If merging, the first entry reuses the previous EndOp block.
       if (mergeChainBlock) {
         s2mmEntries[0] = mergeChainBlock;
         for (int64_t i = 0; i < jDepth; ++i)
           srcIngestBlocks[0].push_back(addBlock());
       }
-      for (unsigned srcIdx = (mergeChainBlock ? 1u : 0u); srcIdx < numSrcs; ++srcIdx) {
+      for (unsigned srcIdx = (mergeChainBlock ? 1u : 0u); srcIdx < numSrcs;
+           ++srcIdx) {
         s2mmEntries[srcIdx] = addBlock();
         for (int64_t i = 0; i < jDepth; ++i)
           srcIngestBlocks[srcIdx].push_back(addBlock());
@@ -1000,35 +1011,42 @@ void linkPhase(ConduitToDMAState &state) {
       for (unsigned srcIdx = 0; srcIdx < numSrcs; ++srcIdx) {
         int64_t srcOffset = srcOffsets[srcIdx];
         int64_t srcLen = srcLens[srcIdx];
-        mlir::Block *nextBlock = (srcIdx + 1 < numSrcs) ?
-            s2mmEntries[srcIdx + 1] : mm2sChainStartBlock;
+        mlir::Block *nextBlock = (srcIdx + 1 < numSrcs)
+                                     ? s2mmEntries[srcIdx + 1]
+                                     : mm2sChainStartBlock;
 
-        int32_t s2mmCh = srcIdx < joinS2MMChannels.size()
-                             ? joinS2MMChannels[srcIdx] : 0;
+        int32_t s2mmCh =
+            srcIdx < joinS2MMChannels.size() ? joinS2MMChannels[srcIdx] : 0;
         builder.setInsertionPointToEnd(s2mmEntries[srcIdx]);
-        builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::S2MM,
-            s2mmCh, 0,
-            srcIngestBlocks[srcIdx][0], nextBlock);
+        builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::S2MM, s2mmCh,
+                                        0, srcIngestBlocks[srcIdx][0],
+                                        nextBlock);
 
         mlir::Value jAcqLock = (srcIdx < joinSrcProdLocks.size())
-            ? joinSrcProdLocks[srcIdx].getResult() : mlir::Value{};
+                                   ? joinSrcProdLocks[srcIdx].getResult()
+                                   : mlir::Value{};
         mlir::Value jRelLock = (srcIdx < joinSrcConsLocks.size())
-            ? joinSrcConsLocks[srcIdx].getResult() : mlir::Value{};
+                                   ? joinSrcConsLocks[srcIdx].getResult()
+                                   : mlir::Value{};
         for (int64_t i = 0; i < jDepth; ++i) {
-          mlir::Value buf = !joinIntermediateBuffers.empty()
-              ? joinIntermediateBuffers[i % joinIntermediateBuffers.size()].getResult()
-              : mlir::Value{};
-          state.emitBDBlock(loc, srcIngestBlocks[srcIdx][i],
-              jAcqLock, state.lockAcqValue(Port::Produce, 1),
-              buf, srcOffset, srcLen,
-              jRelLock, state.lockRelValue(Port::Produce));
-          builder.create<AIE::NextBDOp>(loc, srcIngestBlocks[srcIdx][(i + 1) % jDepth]);
+          mlir::Value buf =
+              !joinIntermediateBuffers.empty()
+                  ? joinIntermediateBuffers[i % joinIntermediateBuffers.size()]
+                        .getResult()
+                  : mlir::Value{};
+          state.emitBDBlock(loc, srcIngestBlocks[srcIdx][i], jAcqLock,
+                            state.lockAcqValue(Port::Produce, 1), buf,
+                            srcOffset, srcLen, jRelLock,
+                            state.lockRelValue(Port::Produce));
+          builder.create<AIE::NextBDOp>(
+              loc, srcIngestBlocks[srcIdx][(i + 1) % jDepth]);
         }
       }
     }
 
     // Build MM2S send chains.
-    mlir::Block *prevChainBlock = mm2sChainStartBlock ? mm2sChainStartBlock : addBlock();
+    mlir::Block *prevChainBlock =
+        mm2sChainStartBlock ? mm2sChainStartBlock : addBlock();
     mlir::Block *endBlock = nullptr;
 
     if (!isDistribute && !joinIntermediateBuffers.empty()) {
@@ -1058,22 +1076,27 @@ void linkPhase(ConduitToDMAState &state) {
       endBlock = addBlock();
 
       builder.setInsertionPointToEnd(prevChainBlock);
-      builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S,
-          joinMM2SCh, 0, sendBDBlocks[0], endBlock);
+      builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S, joinMM2SCh,
+                                      0, sendBDBlocks[0], endBlock);
 
       for (unsigned bdIdx = 0; bdIdx < totalBDs; ++bdIdx) {
         unsigned bufIdx = bdIdx / numJoinSrcs;
         unsigned srcIdx = bdIdx % numJoinSrcs;
         mlir::Value acqLock = (srcIdx < joinSrcConsLocks.size())
-            ? joinSrcConsLocks[srcIdx].getResult() : mlir::Value{};
+                                  ? joinSrcConsLocks[srcIdx].getResult()
+                                  : mlir::Value{};
         mlir::Value relLock = (srcIdx < joinSrcProdLocks.size())
-            ? joinSrcProdLocks[srcIdx].getResult() : mlir::Value{};
-        state.emitBDBlock(loc, sendBDBlocks[bdIdx],
-            acqLock, state.lockAcqValue(Port::Consume, 1),
-            joinIntermediateBuffers[bufIdx % joinIntermediateBuffers.size()].getResult(),
-            mm2sOffsets[srcIdx], mm2sLens[srcIdx],
-            relLock, state.lockRelValue(Port::Consume));
-        builder.create<AIE::NextBDOp>(loc, sendBDBlocks[(bdIdx + 1) % totalBDs]);
+                                  ? joinSrcProdLocks[srcIdx].getResult()
+                                  : mlir::Value{};
+        state.emitBDBlock(
+            loc, sendBDBlocks[bdIdx], acqLock,
+            state.lockAcqValue(Port::Consume, 1),
+            joinIntermediateBuffers[bufIdx % joinIntermediateBuffers.size()]
+                .getResult(),
+            mm2sOffsets[srcIdx], mm2sLens[srcIdx], relLock,
+            state.lockRelValue(Port::Consume));
+        builder.create<AIE::NextBDOp>(loc,
+                                      sendBDBlocks[(bdIdx + 1) % totalBDs]);
       }
     } else {
       // Distribute MM2S: per-destination chains.
@@ -1105,7 +1128,9 @@ void linkPhase(ConduitToDMAState &state) {
         int dstPktID = -1;
         {
           std::string dstName2 =
-              mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
+              mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx])
+                  .getValue()
+                  .str();
           if (ConduitInfo *dstInfo = state.lookupConduit(dstName2)) {
             dstProdDims = dstInfo->producerDimensions;
             if (dstInfo->bdRepeat > 1)
@@ -1130,25 +1155,26 @@ void linkPhase(ConduitToDMAState &state) {
           nextChainBlock = addBlock();
         }
 
-        int32_t mm2sCh = dstIdx < distMM2SChannels.size()
-                             ? distMM2SChannels[dstIdx] : 0;
+        int32_t mm2sCh =
+            dstIdx < distMM2SChannels.size() ? distMM2SChannels[dstIdx] : 0;
         builder.setInsertionPointToEnd(prevChainBlock);
-        builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S,
-            mm2sCh, 0, sendBDBlocks[0], nextChainBlock);
+        builder.create<AIE::DMAStartOp>(loc, AIE::DMAChannelDir::MM2S, mm2sCh,
+                                        0, sendBDBlocks[0], nextChainBlock);
 
         for (int64_t i = 0; i < thisDstEffective; ++i) {
           // Each source buffer (linkBufs[j]) is repeated mm2sDstRepeat times.
-          mlir::Value buf = !linkBufs.empty()
-              ? linkBufs[(i / mm2sDstRepeat) % linkBufs.size()].getResult()
-              : mlir::Value{};
-          state.emitBDBlock(loc, sendBDBlocks[i],
+          mlir::Value buf =
+              !linkBufs.empty()
+                  ? linkBufs[(i / mm2sDstRepeat) % linkBufs.size()].getResult()
+                  : mlir::Value{};
+          state.emitBDBlock(
+              loc, sendBDBlocks[i],
               mm2sAcqLock ? mm2sAcqLock.getResult() : mlir::Value{},
-              state.lockAcqValue(Port::Consume, 1),
-              buf, dstOffset, dstLen,
+              state.lockAcqValue(Port::Consume, 1), buf, dstOffset, dstLen,
               mm2sRelLock ? mm2sRelLock.getResult() : mlir::Value{},
-              state.lockRelValue(Port::Consume), dstProdDims,
-              dstPktID);
-          builder.create<AIE::NextBDOp>(loc, sendBDBlocks[(i + 1) % thisDstEffective]);
+              state.lockRelValue(Port::Consume), dstProdDims, dstPktID);
+          builder.create<AIE::NextBDOp>(
+              loc, sendBDBlocks[(i + 1) % thisDstEffective]);
         }
         prevChainBlock = nextChainBlock;
       }
@@ -1192,8 +1218,7 @@ void linkPhase(ConduitToDMAState &state) {
   // Pre-compute used DMA channels per tile (avoids O(n²) scan).
   state.deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
     mlir::Value parentTile;
-    if (auto memOp =
-            mlir::dyn_cast<AIE::MemOp>(dmaStart->getParentOp()))
+    if (auto memOp = mlir::dyn_cast<AIE::MemOp>(dmaStart->getParentOp()))
       parentTile = memOp.getTile();
     else if (auto mtOp =
                  mlir::dyn_cast<AIE::MemTileDMAOp>(dmaStart->getParentOp()))
@@ -1258,8 +1283,8 @@ void linkPhase(ConduitToDMAState &state) {
     builder.setInsertionPointToEnd(entryBlock);
     builder.create<AIE::DMAStartOp>(
         state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-        static_cast<int32_t>(0), static_cast<int32_t>(0),
-        bdBlocks[0], endBlock);
+        static_cast<int32_t>(0), static_cast<int32_t>(0), bdBlocks[0],
+        endBlock);
 
     for (unsigned i = 0; i < numExtBufs; ++i) {
       mlir::Value extBuf = info.externalBuffers[i];
@@ -1278,14 +1303,12 @@ void linkPhase(ConduitToDMAState &state) {
       mlir::Value relLock =
           info.shimConsLock ? info.shimConsLock.getResult() : mlir::Value{};
 
-      state.emitBDBlock(
-          state.deviceOp.getLoc(), bdBlocks[i],
-          acqLock, state.lockAcqValue(Port::Consume, 1),
-          extBuf, 0, bufLen,
-          relLock, state.lockRelValue(Port::Consume));
+      state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], acqLock,
+                        state.lockAcqValue(Port::Consume, 1), extBuf, 0, bufLen,
+                        relLock, state.lockRelValue(Port::Consume));
       // Circular ring.
-      builder.create<AIE::NextBDOp>(
-          state.deviceOp.getLoc(), bdBlocks[(i + 1) % numExtBufs]);
+      builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                    bdBlocks[(i + 1) % numExtBufs]);
     }
 
     builder.setInsertionPointToEnd(endBlock);
@@ -1335,8 +1358,8 @@ void linkPhase(ConduitToDMAState &state) {
 
     int64_t depth = info.depth > 0 ? info.depth : 1;
     int64_t perBufLen = info.numElems > 0
-                           ? info.numElems
-                           : (info.slotElems > 0 ? info.slotElems / depth : 1);
+                            ? info.numElems
+                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
     int64_t nBufs = static_cast<int64_t>(prodBufs.size());
 
     // Acquire the MM2S channel index (channel 0 unless pre-used).
@@ -1384,22 +1407,21 @@ void linkPhase(ConduitToDMAState &state) {
       endBlock->back().erase(); // remove old aie.end
       builder.setInsertionPointToEnd(endBlock);
       builder.create<AIE::DMAStartOp>(
-          state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-          mm2sChannel, static_cast<int32_t>(0),
-          bdBlocks[0], newEndBlock);
+          state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S, mm2sChannel,
+          static_cast<int32_t>(0), bdBlocks[0], newEndBlock);
 
       for (int64_t i = 0; i < nBufs; ++i) {
-        mlir::Value acqLock = isAIE2
-            ? (pConsLock ? pConsLock.getResult() : mlir::Value{})
-            : (pConsLock ? pConsLock.getResult() : mlir::Value{});
-        mlir::Value relLock = isAIE2
-            ? (pProdLock ? pProdLock.getResult() : mlir::Value{})
-            : acqLock;
-        state.emitBDBlock(
-            state.deviceOp.getLoc(), bdBlocks[i],
-            acqLock, state.lockAcqValue(Port::Consume, 1),
-            prodBufs[i % prodBufs.size()].getResult(), 0, perBufLen,
-            relLock, state.lockRelValue(Port::Consume));
+        mlir::Value acqLock =
+            isAIE2 ? (pConsLock ? pConsLock.getResult() : mlir::Value{})
+                   : (pConsLock ? pConsLock.getResult() : mlir::Value{});
+        mlir::Value relLock =
+            isAIE2 ? (pProdLock ? pProdLock.getResult() : mlir::Value{})
+                   : acqLock;
+        state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], acqLock,
+                          state.lockAcqValue(Port::Consume, 1),
+                          prodBufs[i % prodBufs.size()].getResult(), 0,
+                          perBufLen, relLock,
+                          state.lockRelValue(Port::Consume));
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % nBufs]);
       }
@@ -1408,8 +1430,8 @@ void linkPhase(ConduitToDMAState &state) {
     } else {
       // No existing aie.mem — create one and register it.
       builder.setInsertionPoint(state.deviceBody->getTerminator());
-      auto memOp = builder.create<AIE::MemOp>(
-          state.deviceOp.getLoc(), prodTileVal);
+      auto memOp =
+          builder.create<AIE::MemOp>(state.deviceOp.getLoc(), prodTileVal);
       mlir::Region *memRegion = &memOp.getBody();
       tileToDMARegion[prodTileVal] = memRegion;
 
@@ -1423,24 +1445,22 @@ void linkPhase(ConduitToDMAState &state) {
       mlir::Block *endMemBlock = addMemBlock();
 
       builder.setInsertionPointToEnd(dmaStartBlock);
-      builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(),
-                                      AIE::DMAChannelDir::MM2S,
-                                      mm2sChannel,
-                                      static_cast<int32_t>(0),
-                                      bdBlocks[0], endMemBlock);
+      builder.create<AIE::DMAStartOp>(
+          state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S, mm2sChannel,
+          static_cast<int32_t>(0), bdBlocks[0], endMemBlock);
 
       for (int64_t i = 0; i < nBufs; ++i) {
-        mlir::Value acqLock = isAIE2
-            ? (pConsLock ? pConsLock.getResult() : mlir::Value{})
-            : (pConsLock ? pConsLock.getResult() : mlir::Value{});
-        mlir::Value relLock = isAIE2
-            ? (pProdLock ? pProdLock.getResult() : mlir::Value{})
-            : acqLock;
-        state.emitBDBlock(
-            state.deviceOp.getLoc(), bdBlocks[i],
-            acqLock, state.lockAcqValue(Port::Consume, 1),
-            prodBufs[i % prodBufs.size()].getResult(), 0, perBufLen,
-            relLock, state.lockRelValue(Port::Consume));
+        mlir::Value acqLock =
+            isAIE2 ? (pConsLock ? pConsLock.getResult() : mlir::Value{})
+                   : (pConsLock ? pConsLock.getResult() : mlir::Value{});
+        mlir::Value relLock =
+            isAIE2 ? (pProdLock ? pProdLock.getResult() : mlir::Value{})
+                   : acqLock;
+        state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], acqLock,
+                          state.lockAcqValue(Port::Consume, 1),
+                          prodBufs[i % prodBufs.size()].getResult(), 0,
+                          perBufLen, relLock,
+                          state.lockRelValue(Port::Consume));
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % nBufs]);
       }
@@ -1477,17 +1497,17 @@ void linkPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen = info.numElems > 0
-                             ? info.numElems
-                             : (info.slotElems > 0 ? info.slotElems / depth : 1);
+      int64_t perBufLen =
+          info.numElems > 0 ? info.numElems
+                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
       mlir::Value prodTileVal = prodTile.getResult();
 
       // Check for an existing aie.mem for this tile (e.g. created by Phase 5.5
       // for a broadcast consumer S2MM on the same tile).  If one exists, append
       // the MM2S chain into it rather than creating a duplicate aie.mem op.
       // Without this check, a tile that is both a broadcast consumer and a join
-      // source receives two separate aie.mem blocks, and aiecc silently discards
-      // the second one, causing a hardware deadlock.
+      // source receives two separate aie.mem blocks, and aiecc silently
+      // discards the second one, causing a hardware deadlock.
       mlir::Region *existingRegion = nullptr;
       {
         auto it = tileToDMARegion.find(prodTileVal);
@@ -1545,19 +1565,22 @@ void linkPhase(ConduitToDMAState &state) {
           builder.setInsertionPointToEnd(endBlock);
           builder.create<AIE::DMAStartOp>(
               state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-              joinMM2SChannel, static_cast<int32_t>(0),
-              bdBlocks[0], newEndBlock);
+              joinMM2SChannel, static_cast<int32_t>(0), bdBlocks[0],
+              newEndBlock);
 
           for (int64_t i = 0; i < nBufs; ++i) {
-            mlir::Value acqLock = isAIE2 ? info.consLock.getResult()
-                : (info.aie1Locks.empty() ? info.consLock.getResult()
-                       : info.aie1Locks[i % info.aie1Locks.size()].getResult());
+            mlir::Value acqLock =
+                isAIE2 ? info.consLock.getResult()
+                       : (info.aie1Locks.empty()
+                              ? info.consLock.getResult()
+                              : info.aie1Locks[i % info.aie1Locks.size()]
+                                    .getResult());
             mlir::Value relLock = isAIE2 ? info.prodLock.getResult() : acqLock;
-            state.emitBDBlock(
-                state.deviceOp.getLoc(), bdBlocks[i],
-                acqLock, state.lockAcqValue(Port::Consume, 1),
-                info.buffers[i % info.buffers.size()].getResult(), 0, perBufLen,
-                relLock, state.lockRelValue(Port::Consume));
+            state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], acqLock,
+                              state.lockAcqValue(Port::Consume, 1),
+                              info.buffers[i % info.buffers.size()].getResult(),
+                              0, perBufLen, relLock,
+                              state.lockRelValue(Port::Consume));
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdBlocks[(i + 1) % nBufs]);
           }
@@ -1567,10 +1590,10 @@ void linkPhase(ConduitToDMAState &state) {
       } else {
         // No existing aie.mem for this tile — create one and register it.
         builder.setInsertionPoint(state.deviceBody->getTerminator());
-        auto memOp = builder.create<AIE::MemOp>(
-            state.deviceOp.getLoc(), prodTileVal);
+        auto memOp =
+            builder.create<AIE::MemOp>(state.deviceOp.getLoc(), prodTileVal);
         memRegion = &memOp.getBody();
-        tileToDMARegion[prodTileVal] = memRegion;   // register for later phases
+        tileToDMARegion[prodTileVal] = memRegion; // register for later phases
 
         int64_t nBufs = info.nConsumerBuffers();
         auto addMemBlock = [&]() -> mlir::Block * {
@@ -1583,22 +1606,23 @@ void linkPhase(ConduitToDMAState &state) {
         mlir::Block *endMemBlock = addMemBlock();
 
         builder.setInsertionPointToEnd(dmaStartBlock);
-        builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(),
-                                        AIE::DMAChannelDir::MM2S,
-                                        joinMM2SChannel,
-                                        static_cast<int32_t>(0),
-                                        bdBlocks[0], endMemBlock);
+        builder.create<AIE::DMAStartOp>(
+            state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S, joinMM2SChannel,
+            static_cast<int32_t>(0), bdBlocks[0], endMemBlock);
 
         for (int64_t i = 0; i < nBufs; ++i) {
-          mlir::Value acqLock = isAIE2 ? info.consLock.getResult()
-              : (info.aie1Locks.empty() ? info.consLock.getResult()
-                     : info.aie1Locks[i % info.aie1Locks.size()].getResult());
+          mlir::Value acqLock =
+              isAIE2 ? info.consLock.getResult()
+                     : (info.aie1Locks.empty()
+                            ? info.consLock.getResult()
+                            : info.aie1Locks[i % info.aie1Locks.size()]
+                                  .getResult());
           mlir::Value relLock = isAIE2 ? info.prodLock.getResult() : acqLock;
-          state.emitBDBlock(
-              state.deviceOp.getLoc(), bdBlocks[i],
-              acqLock, state.lockAcqValue(Port::Consume, 1),
-              info.buffers[i % info.buffers.size()].getResult(), 0, perBufLen,
-              relLock, state.lockRelValue(Port::Consume));
+          state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], acqLock,
+                            state.lockAcqValue(Port::Consume, 1),
+                            info.buffers[i % info.buffers.size()].getResult(),
+                            0, perBufLen, relLock,
+                            state.lockRelValue(Port::Consume));
           builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                         bdBlocks[(i + 1) % nBufs]);
         }
@@ -1616,10 +1640,8 @@ void linkPhase(ConduitToDMAState &state) {
     // Skip link destinations: their MemTile MM2S BDs are emitted in Phase 5.
     {
       auto [prodCol, prodRow] = info.producerTileCoord;
-      if (prodCol >= 0 && prodRow >= 1 &&
-          !state.linkSrcNames.count(name) &&
-          !state.linkDstNames.count(name) &&
-          !info.consumerTileCoords.empty()) {
+      if (prodCol >= 0 && prodRow >= 1 && !state.linkSrcNames.count(name) &&
+          !state.linkDstNames.count(name) && !info.consumerTileCoords.empty()) {
         AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
         if (prodTile) {
           mlir::Value prodTileVal = prodTile.getResult();
@@ -1628,8 +1650,7 @@ void linkPhase(ConduitToDMAState &state) {
               !bufIt->second.empty()) {
             llvm::SmallVector<AIE::BufferOp> &prodBuffers = bufIt->second;
             int64_t depth = info.depth > 0 ? info.depth : 1;
-            int64_t perBufLen =
-                info.slotElems > 0 ? info.slotElems / depth : 1;
+            int64_t perBufLen = info.slotElems > 0 ? info.slotElems / depth : 1;
 
             // Look up packet flow ID for packet-mode channels.
             // When set, each MM2S BD emits aie.dma_bd_packet so the switchbox
@@ -1658,8 +1679,7 @@ void linkPhase(ConduitToDMAState &state) {
             // For disable_synchronization conduits, locks are null by design
             // but we still emit BD chains (without lock ops via emitBDBlock).
             if (mm2sAcqLock || info.disableSynchronization) {
-              bool prodIsMemTile =
-                  targetModel.isMemTile(prodCol, prodRow);
+              bool prodIsMemTile = targetModel.isMemTile(prodCol, prodRow);
 
               int32_t mm2sChannel = 0;
               {
@@ -1685,16 +1705,16 @@ void linkPhase(ConduitToDMAState &state) {
               bool isFusedNonFirst = false;
               if (!info.fuseGroup.empty()) {
                 auto &members = state.fuseGroupMembers[info.fuseGroup];
-                isFusedNonFirst = (!members.empty() &&
-                                   members.front() != name);
+                isFusedNonFirst = (!members.empty() && members.front() != name);
               }
 
               // Compute DMAStartOp repeat_count from dma_repeat.
-              int32_t dmaRepeatCount = (info.dmaRepeat > 0) ?
-                  static_cast<int32_t>(info.dmaRepeat - 1) : 0;
+              int32_t dmaRepeatCount =
+                  (info.dmaRepeat > 0)
+                      ? static_cast<int32_t>(info.dmaRepeat - 1)
+                      : 0;
               // BD chain repeat factor for objectfifo bd_repeat.
-              int64_t bdRepeat = info.bdRepeat > 1 ?
-                  info.bdRepeat : 1;
+              int64_t bdRepeat = info.bdRepeat > 1 ? info.bdRepeat : 1;
               int64_t effectiveBDs = depth * bdRepeat;
 
               if (existingDMARegion) {
@@ -1726,8 +1746,9 @@ void linkPhase(ConduitToDMAState &state) {
                   // returns the LAST block with aie.end; since bdTermBlock is
                   // inserted first, newEndBlock (last) is selected by the next
                   // channel and its aie.end is replaced.  bdTermBlock keeps its
-                  // aie.end permanently, satisfying the AIEAssignBufferDescriptorIDs
-                  // assertion: "bb that's not in blockMap can only have aie.end".
+                  // aie.end permanently, satisfying the
+                  // AIEAssignBufferDescriptorIDs assertion: "bb that's not in
+                  // blockMap can only have aie.end".
                   mlir::Block *bdTermBlock =
                       (info.dmaRepeat > 0) ? addBlock() : nullptr;
                   mlir::Block *newEndBlock = addBlock();
@@ -1740,39 +1761,45 @@ void linkPhase(ConduitToDMAState &state) {
                     oldEnd->erase();
                     builder.create<AIE::DMAStartOp>(
                         state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-                        mm2sChannel, dmaRepeatCount,
-                        bdBlocks[0], newEndBlock);
+                        mm2sChannel, dmaRepeatCount, bdBlocks[0], newEndBlock);
                   }
 
                   for (int64_t i = 0; i < effectiveBDs; ++i) {
-                    // Null locks for disable_synchronization — emitBDBlock skips them.
+                    // Null locks for disable_synchronization — emitBDBlock
+                    // skips them.
                     mlir::Value blockAcq =
                         mm2sAcqLock
-                            ? (isAIE2 ? mm2sAcqLock.getResult()
-                                      : (prodAIE1Locks && !prodAIE1Locks->empty()
-                                             ? (*prodAIE1Locks)[i % prodAIE1Locks->size()].getResult()
-                                             : mm2sAcqLock.getResult()))
+                            ? (isAIE2
+                                   ? mm2sAcqLock.getResult()
+                                   : (prodAIE1Locks && !prodAIE1Locks->empty()
+                                          ? (*prodAIE1Locks)[i % prodAIE1Locks
+                                                                     ->size()]
+                                                .getResult()
+                                          : mm2sAcqLock.getResult()))
                             : mlir::Value{};
                     mlir::Value blockRel =
                         mm2sRelLock
                             ? (isAIE2 ? mm2sRelLock.getResult() : blockAcq)
                             : mlir::Value{};
                     state.emitBDBlock(
-                        state.deviceOp.getLoc(), bdBlocks[i],
-                        blockAcq, state.lockAcqValue(Port::Consume, 1),
-                        prodBuffers[(i / bdRepeat) % prodBuffers.size()].getResult(),
-                        0, perBufLen,
-                        blockRel, state.lockRelValue(Port::Consume),
-                        info.producerDimensions,
-                        pktID);
-                    // Non-circular when dma_repeat > 0: last BD → bdTermBlock (aie.end).
-                    bool isLast = (i == effectiveBDs - 1) && (info.dmaRepeat > 0);
+                        state.deviceOp.getLoc(), bdBlocks[i], blockAcq,
+                        state.lockAcqValue(Port::Consume, 1),
+                        prodBuffers[(i / bdRepeat) % prodBuffers.size()]
+                            .getResult(),
+                        0, perBufLen, blockRel,
+                        state.lockRelValue(Port::Consume),
+                        info.producerDimensions, pktID);
+                    // Non-circular when dma_repeat > 0: last BD → bdTermBlock
+                    // (aie.end).
+                    bool isLast =
+                        (i == effectiveBDs - 1) && (info.dmaRepeat > 0);
                     if (isLast)
-                      builder.create<AIE::NextBDOp>(
-                          state.deviceOp.getLoc(), bdTermBlock);
+                      builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                                    bdTermBlock);
                     else
                       builder.create<AIE::NextBDOp>(
-                          state.deviceOp.getLoc(), bdBlocks[(i + 1) % effectiveBDs]);
+                          state.deviceOp.getLoc(),
+                          bdBlocks[(i + 1) % effectiveBDs]);
                   }
                   if (bdTermBlock) {
                     builder.setInsertionPointToEnd(bdTermBlock);
@@ -1782,7 +1809,8 @@ void linkPhase(ConduitToDMAState &state) {
                   builder.create<AIE::EndOp>(state.deviceOp.getLoc());
 
                   if (!info.fuseGroup.empty())
-                    state.conduitBDRange[name] = {bdBlocks.front(), bdBlocks.back()};
+                    state.conduitBDRange[name] = {bdBlocks.front(),
+                                                  bdBlocks.back()};
                 }
               } else {
                 builder.setInsertionPoint(state.deviceBody->getTerminator());
@@ -1813,8 +1841,7 @@ void linkPhase(ConduitToDMAState &state) {
                   builder.setInsertionPointToEnd(dmaStartBlock);
                   builder.create<AIE::DMAStartOp>(
                       state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-                      mm2sChannel, dmaRepeatCount,
-                      bdBlocks[0], endBlock);
+                      mm2sChannel, dmaRepeatCount, bdBlocks[0], endBlock);
                 }
 
                 for (int64_t i = 0; i < effectiveBDs; ++i) {
@@ -1823,7 +1850,9 @@ void linkPhase(ConduitToDMAState &state) {
                       mm2sAcqLock
                           ? (isAIE2 ? mm2sAcqLock.getResult()
                                     : (prodAIE1Locks && !prodAIE1Locks->empty()
-                                           ? (*prodAIE1Locks)[i % prodAIE1Locks->size()].getResult()
+                                           ? (*prodAIE1Locks)[i % prodAIE1Locks
+                                                                      ->size()]
+                                                 .getResult()
                                            : mm2sAcqLock.getResult()))
                           : mlir::Value{};
                   mlir::Value blockRel =
@@ -1831,27 +1860,28 @@ void linkPhase(ConduitToDMAState &state) {
                           ? (isAIE2 ? mm2sRelLock.getResult() : blockAcq)
                           : mlir::Value{};
                   state.emitBDBlock(
-                      state.deviceOp.getLoc(), bdBlocks[i],
-                      blockAcq, state.lockAcqValue(Port::Consume, 1),
-                      prodBuffers[(i / bdRepeat) % prodBuffers.size()].getResult(),
-                      0, perBufLen,
-                      blockRel, state.lockRelValue(Port::Consume),
-                      info.producerDimensions,
-                      pktID);
+                      state.deviceOp.getLoc(), bdBlocks[i], blockAcq,
+                      state.lockAcqValue(Port::Consume, 1),
+                      prodBuffers[(i / bdRepeat) % prodBuffers.size()]
+                          .getResult(),
+                      0, perBufLen, blockRel, state.lockRelValue(Port::Consume),
+                      info.producerDimensions, pktID);
                   // Non-circular when dma_repeat > 0.
                   bool isLast = (i == effectiveBDs - 1) && (info.dmaRepeat > 0);
                   if (isLast)
-                    builder.create<AIE::NextBDOp>(
-                        state.deviceOp.getLoc(), endBlock);
+                    builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                                  endBlock);
                   else
                     builder.create<AIE::NextBDOp>(
-                        state.deviceOp.getLoc(), bdBlocks[(i + 1) % effectiveBDs]);
+                        state.deviceOp.getLoc(),
+                        bdBlocks[(i + 1) % effectiveBDs]);
                 }
                 builder.setInsertionPointToEnd(endBlock);
                 builder.create<AIE::EndOp>(state.deviceOp.getLoc());
 
                 if (!info.fuseGroup.empty())
-                  state.conduitBDRange[name] = {bdBlocks.front(), bdBlocks.back()};
+                  state.conduitBDRange[name] = {bdBlocks.front(),
+                                                bdBlocks.back()};
               }
             }
           }
@@ -1860,8 +1890,8 @@ void linkPhase(ConduitToDMAState &state) {
     }
 
     // Consumer S2MM.
-    bool isProducerToShim = info.consumerTileCoords.empty() &&
-                            !info.shimConsumerTileCoords.empty();
+    bool isProducerToShim =
+        info.consumerTileCoords.empty() && !info.shimConsumerTileCoords.empty();
 
     if (isProducerToShim) {
       // Case B: compute tile sends MM2S to shim.
@@ -1875,9 +1905,9 @@ void linkPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen = info.numElems > 0
-                             ? info.numElems
-                             : (info.slotElems > 0 ? info.slotElems / depth : 1);
+      int64_t perBufLen =
+          info.numElems > 0 ? info.numElems
+                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
 
       mlir::Value prodTileVal = dmaHostTile.getResult();
 
@@ -1895,10 +1925,9 @@ void linkPhase(ConduitToDMAState &state) {
       // producer_dimensions are NOT applied here: for shim consumers, the
       // DMA descriptor on the shim side (runtime-programmed) carries dims.
       // The compute tile MM2S BD uses the raw buffer without transforms.
-      int32_t caseBDmaRepeatCount = (info.dmaRepeat > 0) ?
-          static_cast<int32_t>(info.dmaRepeat - 1) : 0;
-      int64_t caseBBdRepeat = info.bdRepeat > 1 ?
-          info.bdRepeat : 1;
+      int32_t caseBDmaRepeatCount =
+          (info.dmaRepeat > 0) ? static_cast<int32_t>(info.dmaRepeat - 1) : 0;
+      int64_t caseBBdRepeat = info.bdRepeat > 1 ? info.bdRepeat : 1;
       int64_t caseBEffectiveBDs = info.nConsumerBuffers() * caseBBdRepeat;
 
       if (existingDMARegion) {
@@ -1952,48 +1981,52 @@ void linkPhase(ConduitToDMAState &state) {
             }
           }
           builder.create<AIE::DMAStartOp>(
-              state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-              caseBMM2SCh, caseBDmaRepeatCount,
-              bdBlocks[0], newEndBlock);
+              state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S, caseBMM2SCh,
+              caseBDmaRepeatCount, bdBlocks[0], newEndBlock);
 
           for (int64_t i = 0; i < caseBEffectiveBDs; ++i) {
             // Null locks for disable_synchronization — emitBDBlock skips them.
             mlir::Value blockAcqVal =
                 info.consLock
                     ? (isAIE2 ? info.consLock.getResult()
-                               : (info.aie1Locks.empty()
-                                      ? info.consLock.getResult()
-                                      : info.aie1Locks[i % info.aie1Locks.size()].getResult()))
+                              : (info.aie1Locks.empty()
+                                     ? info.consLock.getResult()
+                                     : info.aie1Locks[i % info.aie1Locks.size()]
+                                           .getResult()))
                     : mlir::Value{};
             mlir::Value blockRelVal =
                 info.prodLock
                     ? (isAIE2 ? info.prodLock.getResult()
-                               : (info.aie1Locks.empty()
-                                      ? info.prodLock.getResult()
-                                      : info.aie1Locks[i % info.aie1Locks.size()].getResult()))
+                              : (info.aie1Locks.empty()
+                                     ? info.prodLock.getResult()
+                                     : info.aie1Locks[i % info.aie1Locks.size()]
+                                           .getResult()))
                     : mlir::Value{};
             // Case B: compute MM2S to shim — no BDDimLayout on this BD
             // (shim-side descriptor is runtime-programmed, not emitted here).
             state.emitBDBlock(
-                state.deviceOp.getLoc(), bdBlocks[i],
-                blockAcqVal, state.lockAcqValue(Port::Consume, 1),
-                info.buffers[(i / caseBBdRepeat) % info.buffers.size()].getResult(),
-                0, perBufLen,
-                blockRelVal, state.lockRelValue(Port::Consume));
-            bool caseBIsLast = (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
+                state.deviceOp.getLoc(), bdBlocks[i], blockAcqVal,
+                state.lockAcqValue(Port::Consume, 1),
+                info.buffers[(i / caseBBdRepeat) % info.buffers.size()]
+                    .getResult(),
+                0, perBufLen, blockRelVal, state.lockRelValue(Port::Consume));
+            bool caseBIsLast =
+                (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
             if (caseBIsLast)
-              builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), newEndBlock);
-            else
               builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                            bdBlocks[(i + 1) % caseBEffectiveBDs]);
+                                            newEndBlock);
+            else
+              builder.create<AIE::NextBDOp>(
+                  state.deviceOp.getLoc(),
+                  bdBlocks[(i + 1) % caseBEffectiveBDs]);
           }
           builder.setInsertionPointToEnd(newEndBlock);
           builder.create<AIE::EndOp>(state.deviceOp.getLoc());
         }
       } else {
         builder.setInsertionPoint(state.deviceBody->getTerminator());
-        auto memOp = builder.create<AIE::MemOp>(state.deviceOp.getLoc(),
-                                                prodTileVal);
+        auto memOp =
+            builder.create<AIE::MemOp>(state.deviceOp.getLoc(), prodTileVal);
         mlir::Region &memRegion = memOp.getBody();
         tileToDMARegion[prodTileVal] = &memRegion;
         auto addMemBlock = [&]() -> mlir::Block * {
@@ -2028,39 +2061,42 @@ void linkPhase(ConduitToDMAState &state) {
             state.conduitMM2SChannel[name] = caseBMM2SCh2;
           }
         }
-        builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S,
-                                        caseBMM2SCh2, caseBDmaRepeatCount,
-                                        bdBlocks[0], endMemBlock);
+        builder.create<AIE::DMAStartOp>(
+            state.deviceOp.getLoc(), AIE::DMAChannelDir::MM2S, caseBMM2SCh2,
+            caseBDmaRepeatCount, bdBlocks[0], endMemBlock);
 
         for (int64_t i = 0; i < caseBEffectiveBDs; ++i) {
           // Null locks for disable_synchronization — emitBDBlock skips them.
           mlir::Value blockAcqVal =
               info.consLock
                   ? (isAIE2 ? info.consLock.getResult()
-                             : (info.aie1Locks.empty()
-                                    ? info.consLock.getResult()
-                                    : info.aie1Locks[i % info.aie1Locks.size()].getResult()))
+                            : (info.aie1Locks.empty()
+                                   ? info.consLock.getResult()
+                                   : info.aie1Locks[i % info.aie1Locks.size()]
+                                         .getResult()))
                   : mlir::Value{};
           mlir::Value blockRelVal =
               info.prodLock
                   ? (isAIE2 ? info.prodLock.getResult()
-                             : (info.aie1Locks.empty()
-                                    ? info.prodLock.getResult()
-                                    : info.aie1Locks[i % info.aie1Locks.size()].getResult()))
+                            : (info.aie1Locks.empty()
+                                   ? info.prodLock.getResult()
+                                   : info.aie1Locks[i % info.aie1Locks.size()]
+                                         .getResult()))
                   : mlir::Value{};
           // Case B: compute MM2S to shim — no BDDimLayout.
           state.emitBDBlock(
-              state.deviceOp.getLoc(), bdBlocks[i],
-              blockAcqVal, state.lockAcqValue(Port::Consume, 1),
-              info.buffers[(i / caseBBdRepeat) % info.buffers.size()].getResult(),
-              0, perBufLen,
-              blockRelVal, state.lockRelValue(Port::Consume));
-          bool caseBIsLast = (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
+              state.deviceOp.getLoc(), bdBlocks[i], blockAcqVal,
+              state.lockAcqValue(Port::Consume, 1),
+              info.buffers[(i / caseBBdRepeat) % info.buffers.size()]
+                  .getResult(),
+              0, perBufLen, blockRelVal, state.lockRelValue(Port::Consume));
+          bool caseBIsLast =
+              (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
           if (caseBIsLast)
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), endMemBlock);
           else
-            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                          bdBlocks[(i + 1) % caseBEffectiveBDs]);
+            builder.create<AIE::NextBDOp>(
+                state.deviceOp.getLoc(), bdBlocks[(i + 1) % caseBEffectiveBDs]);
         }
         builder.setInsertionPointToEnd(endMemBlock);
         builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -2072,10 +2108,11 @@ void linkPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen = info.numElems > 0
-                             ? info.numElems
-                             : (info.slotElems > 0 ? info.slotElems / depth : 1);
-      // nConsumerBuffers() >= depth; extra slots support sliding-window patterns.
+      int64_t perBufLen =
+          info.numElems > 0 ? info.numElems
+                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
+      // nConsumerBuffers() >= depth; extra slots support sliding-window
+      // patterns.
       int64_t nBufs = info.nConsumerBuffers();
 
       for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
@@ -2105,13 +2142,14 @@ void linkPhase(ConduitToDMAState &state) {
             tileConsLock = lockIt->second.second;
           }
           auto aie1It = info.consumerTileAIE1Locks.find(consTileVal);
-          if (aie1It != info.consumerTileAIE1Locks.end() && !aie1It->second.empty())
+          if (aie1It != info.consumerTileAIE1Locks.end() &&
+              !aie1It->second.empty())
             tileAIE1Locks = &aie1It->second;
         }
 
-        // For disable_synchronization, locks are null by design — still emit BDs.
-        if ((!tileProdLock || !tileConsLock) &&
-            !info.disableSynchronization)
+        // For disable_synchronization, locks are null by design — still emit
+        // BDs.
+        if ((!tileProdLock || !tileConsLock) && !info.disableSynchronization)
           continue;
         if (tileBuffers->empty())
           continue;
@@ -2144,8 +2182,8 @@ void linkPhase(ConduitToDMAState &state) {
                 state.deviceOp.getLoc(), consTileVal2);
             dmaRegionPtr = &mtOp.getBody();
           } else {
-            auto memOp = builder.create<AIE::MemOp>(
-                state.deviceOp.getLoc(), consTileVal2);
+            auto memOp = builder.create<AIE::MemOp>(state.deviceOp.getLoc(),
+                                                    consTileVal2);
             dmaRegionPtr = &memOp.getBody();
           }
           tileToDMARegion[consTileVal2] = dmaRegionPtr;
@@ -2164,8 +2202,8 @@ void linkPhase(ConduitToDMAState &state) {
         }
 
         // Compute DMAStartOp repeat_count from dma_repeat.
-        int32_t dmaRepeatCount = (info.dmaRepeat > 0) ?
-            static_cast<int32_t>(info.dmaRepeat - 1) : 0;
+        int32_t dmaRepeatCount =
+            (info.dmaRepeat > 0) ? static_cast<int32_t>(info.dmaRepeat - 1) : 0;
 
         llvm::SmallVector<mlir::Block *> bdBlocks;
         for (int64_t i = 0; i < nBufs; ++i)
@@ -2182,8 +2220,8 @@ void linkPhase(ConduitToDMAState &state) {
         // Linear chain condition: either dma_repeat>0 (finite DMA task queue),
         // or putCount>1 with no dmaRepeat (N sequential puts merged by
         // --conduit-fuse-channels; annotation-free temporal multiplexing).
-        bool isLinearChain = (info.dmaRepeat > 0)
-                          || (info.putCount > 1 && info.dmaRepeat == 0);
+        bool isLinearChain =
+            (info.dmaRepeat > 0) || (info.putCount > 1 && info.dmaRepeat == 0);
         mlir::Block *bdTermBlock =
             (isLinearChain && existingEndBlock) ? addMemBlock() : nullptr;
         mlir::Block *endMemBlock = addMemBlock();
@@ -2192,50 +2230,55 @@ void linkPhase(ConduitToDMAState &state) {
           mlir::Operation *oldEnd = existingEndBlock->getTerminator();
           builder.setInsertionPointToEnd(existingEndBlock);
           oldEnd->erase();
-          builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM,
-                                          s2mmChannel, dmaRepeatCount,
-                                          bdBlocks[0], endMemBlock);
+          builder.create<AIE::DMAStartOp>(
+              state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM, s2mmChannel,
+              dmaRepeatCount, bdBlocks[0], endMemBlock);
         } else {
           mlir::Block *dmaStartBlock = addMemBlock();
           dmaStartBlock->moveBefore(&memRegion.front());
           builder.setInsertionPointToEnd(dmaStartBlock);
-          builder.create<AIE::DMAStartOp>(state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM,
-                                          s2mmChannel, dmaRepeatCount,
-                                          bdBlocks[0], endMemBlock);
+          builder.create<AIE::DMAStartOp>(
+              state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM, s2mmChannel,
+              dmaRepeatCount, bdBlocks[0], endMemBlock);
         }
 
         // Pick consumer BDDimLayout for this consumer index.
         AIE::BDDimLayoutArrayAttr consDims;
         if (!info.consumerDimensions.empty())
-          consDims = info.consumerDimensions[consIdx % info.consumerDimensions.size()];
+          consDims =
+              info.consumerDimensions[consIdx % info.consumerDimensions.size()];
 
         for (int64_t i = 0; i < nBufs; ++i) {
           // Null locks for disable_synchronization — emitBDBlock skips them.
           mlir::Value blockLockAcq =
               tileProdLock
                   ? (isAIE2 ? tileProdLock.getResult()
-                             : (tileAIE1Locks->empty()
-                                    ? tileProdLock.getResult()
-                                    : (*tileAIE1Locks)[i % tileAIE1Locks->size()].getResult()))
+                            : (tileAIE1Locks->empty()
+                                   ? tileProdLock.getResult()
+                                   : (*tileAIE1Locks)[i % tileAIE1Locks->size()]
+                                         .getResult()))
                   : mlir::Value{};
           mlir::Value blockLockRel =
               tileConsLock
                   ? (isAIE2 ? tileConsLock.getResult()
-                             : (tileAIE1Locks->empty()
-                                    ? tileConsLock.getResult()
-                                    : (*tileAIE1Locks)[i % tileAIE1Locks->size()].getResult()))
+                            : (tileAIE1Locks->empty()
+                                   ? tileConsLock.getResult()
+                                   : (*tileAIE1Locks)[i % tileAIE1Locks->size()]
+                                         .getResult()))
                   : mlir::Value{};
-          state.emitBDBlock(
-              state.deviceOp.getLoc(), bdBlocks[i],
-              blockLockAcq, state.lockAcqValue(Port::Produce, 1),
-              (*tileBuffers)[i % tileBuffers->size()].getResult(), 0, perBufLen,
-              blockLockRel, state.lockRelValue(Port::Produce), consDims);
+          state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], blockLockAcq,
+                            state.lockAcqValue(Port::Produce, 1),
+                            (*tileBuffers)[i % tileBuffers->size()].getResult(),
+                            0, perBufLen, blockLockRel,
+                            state.lockRelValue(Port::Produce), consDims);
           // Non-circular chain when iter_count > 0 or putCount > 1:
-          // last BD → bdTermBlock (if existingEndBlock) or endMemBlock (fresh region).
+          // last BD → bdTermBlock (if existingEndBlock) or endMemBlock (fresh
+          // region).
           bool isLast = (i == nBufs - 1) && isLinearChain;
           if (isLast)
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                          bdTermBlock ? bdTermBlock : endMemBlock);
+                                          bdTermBlock ? bdTermBlock
+                                                      : endMemBlock);
           else
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdBlocks[(i + 1) % nBufs]);

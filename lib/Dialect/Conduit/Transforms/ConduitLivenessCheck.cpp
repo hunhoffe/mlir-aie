@@ -31,7 +31,8 @@
 //   M8a (checkWindowReleaseCumulativeCount): fires when release count > acquire
 //        count — catches over-release (double-release).
 //   M9  (ConduitPairingCheck): fires when no release is in the SAME BLOCK —
-//        weaker heuristic, covers the common case but misses cross-block release.
+//        weaker heuristic, covers the common case but misses cross-block
+//        release.
 //   M11 (this pass): fires when no release exists ANYWHERE in the function —
 //        catches the strict "lock leaked entirely" case.
 //
@@ -86,8 +87,7 @@ namespace {
 // Note: release_async with the SSA $window operand is also captured here (by
 // name), and additionally matched directly in checkWindowLiveness via the use
 // list of the window SSA value.
-static llvm::StringSet<>
-collectAsyncReleaseNames(mlir::func::FuncOp func) {
+static llvm::StringSet<> collectAsyncReleaseNames(mlir::func::FuncOp func) {
   llvm::StringSet<> names;
   func.walk([&](ReleaseAsync relOp) { names.insert(relOp.getName()); });
   return names;
@@ -122,14 +122,14 @@ checkWindowLiveness(mlir::Operation *producerOp, mlir::Value windowVal,
   // Include the channel name, producer op kind, and enclosing function name
   // to help the user locate the problematic acquire.
   llvm::StringRef opKind = producerOp->getName().getStringRef();
-  auto diag = producerOp->emitError(
-      "M11: window lock grant from ")
-      << opKind << " on channel '" << conduitName
-      << "' is never released — "
-         "no conduit.release or conduit.release_async found";
+  auto diag = producerOp->emitError("M11: window lock grant from ")
+              << opKind << " on channel '" << conduitName
+              << "' is never released — "
+                 "no conduit.release or conduit.release_async found";
   // Attach a note with the enclosing function name for context.
   if (auto funcOp = producerOp->getParentOfType<mlir::func::FuncOp>())
-    diag.attachNote(funcOp.getLoc()) << "in function '@" << funcOp.getName() << "'";
+    diag.attachNote(funcOp.getLoc())
+        << "in function '@" << funcOp.getName() << "'";
   return mlir::failure();
 }
 
@@ -177,7 +177,8 @@ static bool checkMixedModeLiveness(mlir::Region &coreRegion,
   llvm::SmallVector<UseLockOp, 4> dmaWaits;
   coreRegion.walk([&](UseLockOp lockOp) {
     auto action = lockOp.getAction();
-    if (action != LockAction::Acquire && action != LockAction::AcquireGreaterEqual)
+    if (action != LockAction::Acquire &&
+        action != LockAction::AcquireGreaterEqual)
       return;
     // value >= 1 indicates a data-ready signal (not a zero-init acquire).
     auto maybeVal = lockOp.getValue();
@@ -188,9 +189,7 @@ static bool checkMixedModeLiveness(mlir::Region &coreRegion,
 
   // Collect aie.put_cascade ops.
   llvm::SmallVector<PutCascadeOp, 4> cascadePuts;
-  coreRegion.walk([&](PutCascadeOp putOp) {
-    cascadePuts.push_back(putOp);
-  });
+  coreRegion.walk([&](PutCascadeOp putOp) { cascadePuts.push_back(putOp); });
 
   // If either set is empty, no mixed-mode interaction exists.
   if (dmaWaits.empty() || cascadePuts.empty())
@@ -211,9 +210,8 @@ static bool checkMixedModeLiveness(mlir::Region &coreRegion,
     // Check that every DMA wait dominates this put_cascade.
     for (UseLockOp lockOp : dmaWaits) {
       if (!domInfo.dominates(lockOp.getOperation(), putOp.getOperation())) {
-        putOp.emitError(
-            "put_cascade may fire before DMA transfer completes: "
-            "ensure aie.use_lock(Acquire) dominates this op");
+        putOp.emitError("put_cascade may fire before DMA transfer completes: "
+                        "ensure aie.use_lock(Acquire) dominates this op");
         anyError = true;
         break; // one error per put_cascade is sufficient
       }

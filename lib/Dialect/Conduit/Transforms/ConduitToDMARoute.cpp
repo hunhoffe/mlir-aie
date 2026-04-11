@@ -46,13 +46,11 @@ namespace xilinx::conduit {
 // On failure: returns false; caller emits Step 4 error or skips.
 // ---------------------------------------------------------------------------
 static bool tryPacketFallback(ConduitToDMAState &state,
-                               const std::string &conduitName,
-                               ConduitInfo &info,
-                               mlir::Value prodTileVal, int64_t prodCol,
-                               int64_t prodRow,
-                               mlir::Value consTileVal, int64_t consCol,
-                               int64_t consRow,
-                               unsigned consIdx) {
+                              const std::string &conduitName, ConduitInfo &info,
+                              mlir::Value prodTileVal, int64_t prodCol,
+                              int64_t prodRow, mlir::Value consTileVal,
+                              int64_t consCol, int64_t consRow,
+                              unsigned consIdx) {
   mlir::Operation *prodTileOp = prodTileVal.getDefiningOp();
   mlir::Operation *consTileOp = consTileVal.getDefiningOp();
 
@@ -88,12 +86,10 @@ static bool tryPacketFallback(ConduitToDMAState &state,
     uint32_t consLockTotal = state.targetModel->getNumLocks(
         static_cast<int>(consCol), static_cast<int>(consRow));
 
-    int32_t prodBDUsed = state.tileBDUsed.count(prodTileVal)
-                             ? state.tileBDUsed[prodTileVal]
-                             : 0;
-    int32_t consBDUsed = state.tileBDUsed.count(consTileVal)
-                             ? state.tileBDUsed[consTileVal]
-                             : 0;
+    int32_t prodBDUsed =
+        state.tileBDUsed.count(prodTileVal) ? state.tileBDUsed[prodTileVal] : 0;
+    int32_t consBDUsed =
+        state.tileBDUsed.count(consTileVal) ? state.tileBDUsed[consTileVal] : 0;
     int32_t prodLockUsed = state.lockIdCounter.count(prodTileVal)
                                ? state.lockIdCounter[prodTileVal]
                                : 0;
@@ -179,11 +175,11 @@ static bool tryPacketFallback(ConduitToDMAState &state,
       // Two packet flows with different IDs routing to the same consumer
       // through the same output port → ordering hazard.
       state.deviceOp.emitWarning(
-          llvm::Twine("conduit-to-dma: packet DMA ordering hazard: conduit '")
-          + conduitName
-          + "' and an existing flow both route to the same consumer tile "
-            "through the same MM2S channel; ordering between them is not "
-            "guaranteed under sustained load");
+          llvm::Twine("conduit-to-dma: packet DMA ordering hazard: conduit '") +
+          conduitName +
+          "' and an existing flow both route to the same consumer tile "
+          "through the same MM2S channel; ordering between them is not "
+          "guaranteed under sustained load");
     }
   }
 
@@ -229,8 +225,7 @@ static bool tryPacketFallback(ConduitToDMAState &state,
   // Instead, build the aie.PacketFlowOp directly with the ID we already hold.
   mlir::OpBuilder &builder = *state.builder;
   auto pktFlow = builder.create<AIE::PacketFlowOp>(
-      state.deviceOp.getLoc(),
-      static_cast<int8_t>(*pktID),
+      state.deviceOp.getLoc(), static_cast<int8_t>(*pktID),
       /*keep_pkt_header=*/mlir::BoolAttr{},
       /*priority_route=*/mlir::BoolAttr{});
   mlir::Region &region = pktFlow.getPorts();
@@ -298,7 +293,8 @@ void routePhase(ConduitToDMAState &state) {
       // runtime via aiex.npu.dma_memcpy_nd). The MemTile S2MM synchronization
       // uses per-destination locks allocated on the MemTile by linkPhase
       // (sliceProdLocks/sliceConsLocks). Allocating locks on the shim tile
-      // produces dead resources with wrong init values and wrong tile placement.
+      // produces dead resources with wrong init values and wrong tile
+      // placement.
       bool isDistributeLinkSrc = state.linkSrcNamesEarly.count(name) > 0;
       if (isAIE2 && !info.disableSynchronization && !isDistributeLinkSrc) {
         {
@@ -340,8 +336,7 @@ void routePhase(ConduitToDMAState &state) {
       // aie.shim_dma_allocation: assign next available MM2S channel on this
       // shim tile.  Multiple shim-producer conduits on the same shim tile
       // must each use a distinct MM2S channel (0, 1, ...).
-      int32_t shimMM2SCh =
-          state.tileNextMM2SChannel[shimTile.getResult()]++;
+      int32_t shimMM2SCh = state.tileNextMM2SChannel[shimTile.getResult()]++;
       state.conduitMM2SChannel[name] = shimMM2SCh;
 
       std::string allocSym = name + "_shim_alloc";
@@ -370,28 +365,27 @@ void routePhase(ConduitToDMAState &state) {
           maxS2MM_4a = state.targetModel->getNumDestSwitchboxConnections(
               static_cast<int>(consCol), static_cast<int>(consRow),
               AIE::WireBundle::DMA);
-        int32_t nextS2MM_4a = state.tileNextS2MMChannel.count(
-                                  consTile.getResult())
-                                  ? state.tileNextS2MMChannel[consTile.getResult()]
-                                  : 0;
+        int32_t nextS2MM_4a =
+            state.tileNextS2MMChannel.count(consTile.getResult())
+                ? state.tileNextS2MMChannel[consTile.getResult()]
+                : 0;
         if (static_cast<uint32_t>(nextS2MM_4a) >= maxS2MM_4a) {
           state.deviceOp.emitError(
-              llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on tile (")
-              + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
-              + "): all " + llvm::Twine(maxS2MM_4a) + " channels in use");
+              llvm::Twine(
+                  "conduit-to-dma: S2MM DMA channel exhausted on tile (") +
+              llvm::Twine(consCol) + "," + llvm::Twine(consRow) + "): all " +
+              llvm::Twine(maxS2MM_4a) + " channels in use");
           // B-3 fix: set passFailed and return immediately so the enclosing
           // conduit loop does not continue processing with broken state.
           state.passFailed = true;
           return;
         }
-        int32_t s2mmCh =
-            state.tileNextS2MMChannel[consTile.getResult()]++;
+        int32_t s2mmCh = state.tileNextS2MMChannel[consTile.getResult()]++;
         state.conduitConsS2MMChannel[{name, consIdx}] = s2mmCh;
-        auto shimBundle = info.plio ? AIE::WireBundle::PLIO
-                                    : AIE::WireBundle::DMA;
-        state.emitFlow(info.routingMode, shimTile.getResult(),
-                       shimBundle, shimMM2SCh,
-                       consTile.getResult(), AIE::WireBundle::DMA,
+        auto shimBundle =
+            info.plio ? AIE::WireBundle::PLIO : AIE::WireBundle::DMA;
+        state.emitFlow(info.routingMode, shimTile.getResult(), shimBundle,
+                       shimMM2SCh, consTile.getResult(), AIE::WireBundle::DMA,
                        s2mmCh);
       }
     }
@@ -418,9 +412,8 @@ void routePhase(ConduitToDMAState &state) {
                             info.shimConsumerTileCoords.size()) > 1;
       unsigned globalConsIdx =
           static_cast<unsigned>(info.consumerTileCoords.size()) + shimConsIdx;
-      std::string consSuffix = multiConsumer
-                                   ? "_cons_" + std::to_string(globalConsIdx)
-                                   : "_cons";
+      std::string consSuffix =
+          multiConsumer ? "_cons_" + std::to_string(globalConsIdx) : "_cons";
 
       // Shim-side consumer locks (AIE2: prod_lock + cons_lock;
       // AIE1: not needed — shim locks managed differently).
@@ -459,22 +452,21 @@ void routePhase(ConduitToDMAState &state) {
         maxS2MM_4b = state.targetModel->getNumDestShimMuxConnections(
             static_cast<int>(shimCol), static_cast<int>(shimRow),
             AIE::WireBundle::DMA);
-      int32_t nextS2MM_4b = state.tileNextS2MMChannel.count(
-                                shimTile.getResult())
-                                ? state.tileNextS2MMChannel[shimTile.getResult()]
-                                : 0;
+      int32_t nextS2MM_4b =
+          state.tileNextS2MMChannel.count(shimTile.getResult())
+              ? state.tileNextS2MMChannel[shimTile.getResult()]
+              : 0;
       if (static_cast<uint32_t>(nextS2MM_4b) >= maxS2MM_4b) {
         state.deviceOp.emitError(
             llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
-                        "shim tile (")
-            + llvm::Twine(shimCol) + "," + llvm::Twine(shimRow)
-            + "): all " + llvm::Twine(maxS2MM_4b) + " channels in use");
+                        "shim tile (") +
+            llvm::Twine(shimCol) + "," + llvm::Twine(shimRow) + "): all " +
+            llvm::Twine(maxS2MM_4b) + " channels in use");
         // B-3 fix: return immediately to stop processing with broken state.
         state.passFailed = true;
         return;
       }
-      int32_t shimS2MMCh =
-          state.tileNextS2MMChannel[shimTile.getResult()]++;
+      int32_t shimS2MMCh = state.tileNextS2MMChannel[shimTile.getResult()]++;
 
       std::string allocSym = name + "_shim_alloc";
       state.shimConduitNames.insert(name);
@@ -500,8 +492,8 @@ void routePhase(ConduitToDMAState &state) {
       int32_t mm2sChForShimCons =
           state.tileNextMM2SChannel[prodTile.getResult()]++;
       state.conduitMM2SChannel[name] = mm2sChForShimCons;
-      auto shimBundle = info.plio ? AIE::WireBundle::PLIO
-                                  : AIE::WireBundle::DMA;
+      auto shimBundle =
+          info.plio ? AIE::WireBundle::PLIO : AIE::WireBundle::DMA;
       state.emitFlow(info.routingMode, prodTile.getResult(),
                      AIE::WireBundle::DMA, mm2sChForShimCons,
                      shimTile.getResult(), shimBundle, shimS2MMCh);
@@ -673,16 +665,15 @@ void routePhase(ConduitToDMAState &state) {
       state.conduitPacketID[name] = *pktID;
 
       auto pktFlow = builder.create<AIE::PacketFlowOp>(
-          state.deviceOp.getLoc(),
-          static_cast<int8_t>(*pktID),
+          state.deviceOp.getLoc(), static_cast<int8_t>(*pktID),
           /*keep_pkt_header=*/mlir::BoolAttr{},
           /*priority_route=*/mlir::BoolAttr{});
       mlir::Region &region = pktFlow.getPorts();
       mlir::Block *pktBlock = builder.createBlock(&region);
       builder.setInsertionPointToStart(pktBlock);
-      builder.create<AIE::PacketSourceOp>(
-          state.deviceOp.getLoc(), prodTileVal,
-          AIE::WireBundle::DMA, static_cast<int32_t>(mm2sChannel));
+      builder.create<AIE::PacketSourceOp>(state.deviceOp.getLoc(), prodTileVal,
+                                          AIE::WireBundle::DMA,
+                                          static_cast<int32_t>(mm2sChannel));
 
       for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
            ++consIdx) {
@@ -707,18 +698,18 @@ void routePhase(ConduitToDMAState &state) {
         if (static_cast<uint32_t>(nextS2MM_pkt) >= maxS2MM_pkt) {
           state.deviceOp.emitError(
               llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
-                          "tile (")
-              + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
-              + "): all " + llvm::Twine(maxS2MM_pkt) + " channels in use");
+                          "tile (") +
+              llvm::Twine(consCol) + "," + llvm::Twine(consRow) + "): all " +
+              llvm::Twine(maxS2MM_pkt) + " channels in use");
           state.passFailed = true;
           return;
         }
         int32_t s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
         state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
 
-        builder.create<AIE::PacketDestOp>(
-            state.deviceOp.getLoc(), consTileVal,
-            AIE::WireBundle::DMA, static_cast<int32_t>(s2mmChannel));
+        builder.create<AIE::PacketDestOp>(state.deviceOp.getLoc(), consTileVal,
+                                          AIE::WireBundle::DMA,
+                                          static_cast<int32_t>(s2mmChannel));
       }
 
       builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -759,19 +750,18 @@ void routePhase(ConduitToDMAState &state) {
 
       if (usedPacketFallback) {
         // Step 3.5: attempt packet DMA fallback.
-        bool ok = tryPacketFallback(state, name, info, prodTileVal, prodCol,
-                                    prodRow, consTileVal, consCol, consRow,
-                                    consIdx);
+        bool ok =
+            tryPacketFallback(state, name, info, prodTileVal, prodCol, prodRow,
+                              consTileVal, consCol, consRow, consIdx);
         if (!ok) {
           // Step 4: all modes exhausted — emit a hard error.
           state.deviceOp.emitError(
               llvm::Twine("conduit-to-dma: no DMA resources available for "
-                          "conduit '")
-              + name
-              + "': circuit DMA MM2S channels exhausted on tile ("
-              + llvm::Twine(prodCol) + "," + llvm::Twine(prodRow)
-              + ") and packet DMA fallback is also ineligible "
-                "(check BD budget, lock budget, and packet flow ID budget)");
+                          "conduit '") +
+              name + "': circuit DMA MM2S channels exhausted on tile (" +
+              llvm::Twine(prodCol) + "," + llvm::Twine(prodRow) +
+              ") and packet DMA fallback is also ineligible "
+              "(check BD budget, lock budget, and packet flow ID budget)");
           // B-3 fix: return immediately so the outer conduit loop does not
           // continue processing subsequent conduits with broken state after
           // both circuit DMA and packet fallback have been exhausted.
@@ -794,9 +784,10 @@ void routePhase(ConduitToDMAState &state) {
                                 : 0;
       if (static_cast<uint32_t>(nextS2MM_4c) >= maxS2MM_4c) {
         state.deviceOp.emitError(
-            llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on tile (")
-            + llvm::Twine(consCol) + "," + llvm::Twine(consRow)
-            + "): all " + llvm::Twine(maxS2MM_4c) + " channels in use");
+            llvm::Twine(
+                "conduit-to-dma: S2MM DMA channel exhausted on tile (") +
+            llvm::Twine(consCol) + "," + llvm::Twine(consRow) + "): all " +
+            llvm::Twine(maxS2MM_4c) + " channels in use");
         // B-3 fix: return immediately so the outer conduit loop does not
         // continue emitting flows for subsequent conduits with broken state.
         state.passFailed = true;
@@ -836,7 +827,8 @@ void routePhase(ConduitToDMAState &state) {
     if (info.consumerTileCoords.size() != 1) {
       state.deviceOp.emitError(
           llvm::Twine("conduit-to-dma: cascade conduit '") + name +
-          "' must have exactly one consumer tile (cascade is point-to-point), got ")
+          "' must have exactly one consumer tile (cascade is point-to-point), "
+          "got ")
           << info.consumerTileCoords.size();
       // B-3 fix: return immediately so the cascade loop does not continue
       // processing subsequent conduits with already-broken state.
@@ -870,9 +862,8 @@ void routePhase(ConduitToDMAState &state) {
     }
 
     builder.setInsertionPoint(state.deviceBody->getTerminator());
-    builder.create<AIE::CascadeFlowOp>(state.deviceOp.getLoc(),
-                                        prodTile.getResult(),
-                                        consTile.getResult());
+    builder.create<AIE::CascadeFlowOp>(
+        state.deviceOp.getLoc(), prodTile.getResult(), consTile.getResult());
   }
 }
 

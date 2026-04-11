@@ -44,7 +44,7 @@ namespace {
 /// Check whether a window value has a matching release in the same block.
 /// Returns true if a release (sync or async by name) is found.
 static bool hasReleaseInBlock(mlir::Value win, mlir::Block *block,
-                               llvm::StringRef conduitName) {
+                              llvm::StringRef conduitName) {
   // First check direct Release users in same block.
   for (mlir::OpOperand &use : win.getUses()) {
     if (mlir::isa<Release>(use.getOwner()) &&

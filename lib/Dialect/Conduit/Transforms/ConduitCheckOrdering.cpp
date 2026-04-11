@@ -105,10 +105,10 @@ struct ConduitCheckOrderingPass
 
     module.walk([&](Create op) {
       llvm::StringRef name = op.getSymName();
-      auto prodRates = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
-          "producer_rates");
-      auto consRates = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
-          "consumer_rates");
+      auto prodRates =
+          op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_rates");
+      auto consRates =
+          op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_rates");
 
       if (name.empty() || !prodRates || !consRates)
         return; // no rate annotations — skip
@@ -123,14 +123,14 @@ struct ConduitCheckOrderingPass
 
       // Extract tile coordinates.
       info.producerTileKey = -1;
-      if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
-              "producer_tile")) {
+      if (auto pt =
+              op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
         auto arr = pt.asArrayRef();
         if (arr.size() >= 2)
           info.producerTileKey = tileKey(arr[0], arr[1]);
       }
-      if (auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
-              "consumer_tiles")) {
+      if (auto ct =
+              op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
         auto arr = ct.asArrayRef();
         for (size_t i = 0; i + 1 < arr.size(); i += 2)
           info.consumerTileKeys.push_back(tileKey(arr[i], arr[i + 1]));

@@ -8,18 +8,18 @@
 //
 // When inferRates=false (the default), rates are NOT attached.
 //
-// This test uses scalar transfers (no sizes → num_elems=1) so that the
-// inferred rates [1] are compatible with slot_elems =1 (M7 requires
-// peak_occupancy ≤ capacity).
+// This test uses full-buffer transfers (no sizes → num_elems=64 from
+// memref<64xi32>).  Phase 2b patches slot_elems from the sentinel (1) to
+// 64, and Phase 6 infers rates [64] from num_elems.
 //
-// Topology: scalar channel @chan with one scalar put and one scalar get.
+// Topology: channel @chan with one put and one get over memref<64xi32>.
 
 // Explicit inferRates=true: rates should be attached.
 // MLIR prints attributes alphabetically: consumer_rates, name, producer_rates.
 // CHECK-LABEL: module
 // CHECK: conduit.create @chan
-// CHECK-SAME: consumer_rates = array<i64: 1>
-// CHECK-SAME: producer_rates = array<i64: 1>
+// CHECK-SAME: consumer_rates = array<i64: 64>
+// CHECK-SAME: producer_rates = array<i64: 64>
 
 // Default (inferRates=false): rates must NOT be attached.
 // NOINFER-LABEL: module

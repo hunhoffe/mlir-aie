@@ -38,12 +38,13 @@
 //
 // IMPORTANT — PASSB-DEP-001 coverage gap:
 //   This pass requires Task #24 (PASSB-DEP-001) to be fixed before it provides
-//   complete coverage.  The bug: air.wait_all fan-in tokens are silently dropped
-//   by Pass B — the $deps operand list on conduit.wait_all_async is empty when
-//   it should carry the fan-in tokens.  Until the fix lands, cycles that route
-//   through conduit.wait_all_async will not be detected because the incoming
-//   edges into those nodes are missing.  After Task #24 lands, the dep-DAG will
-//   be complete and this pass will catch all static dep-token deadlocks.
+//   complete coverage.  The bug: air.wait_all fan-in tokens are silently
+//   dropped by Pass B — the $deps operand list on conduit.wait_all_async is
+//   empty when it should carry the fan-in tokens.  Until the fix lands, cycles
+//   that route through conduit.wait_all_async will not be detected because the
+//   incoming edges into those nodes are missing.  After Task #24 lands, the
+//   dep-DAG will be complete and this pass will catch all static dep-token
+//   deadlocks.
 //
 // Severity: hard error + signalPassFailure().  A dep-token cycle is always a
 // deadlock — there is no valid program with a circular completion dependency.

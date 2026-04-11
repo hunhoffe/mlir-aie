@@ -1,4 +1,5 @@
-//===- ConduitToDMACollect.cpp - Phase 1-2.5: metadata collection --*-C++-*-===//
+//===- ConduitToDMACollect.cpp - Phase 1-2.5: metadata collection
+//--*-C++-*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -75,8 +76,7 @@ void collectPhase(ConduitToDMAState &state) {
       info.routingMode = "any"; // absent = unresolved; let Pass C decide
 
     // Core stream port for routing_mode="stream".
-    if (auto aspAttr =
-            op->getAttrOfType<mlir::IntegerAttr>("aie_stream_port"))
+    if (auto aspAttr = op->getAttrOfType<mlir::IntegerAttr>("aie_stream_port"))
       info.aieStreamPort = static_cast<int32_t>(aspAttr.getInt());
 
     // Fused DMA channel group label.
@@ -87,8 +87,7 @@ void collectPhase(ConduitToDMAState &state) {
       // Reject fuse_mode="runtime" — static BD chain lowering is incorrect
       // for conditional programs; the DMA engine runs both members
       // unconditionally even when the scf.if branch is not taken.
-      if (auto modeAttr =
-              op->getAttrOfType<mlir::StringAttr>("fuse_mode")) {
+      if (auto modeAttr = op->getAttrOfType<mlir::StringAttr>("fuse_mode")) {
         if (modeAttr.getValue() == "runtime") {
           op.emitError(
               "conduit-to-dma: fuse_mode=\"runtime\" is not yet supported "
@@ -118,7 +117,8 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto attr = op.getBdRepeat())
       info.bdRepeat = static_cast<int64_t>(*attr);
     // Note: time_multiplex_count has been removed from conduit.create.
-    // Pass C infers BD chain length from putCount (Phase 1 put_memref_async walk).
+    // Pass C infers BD chain length from putCount (Phase 1 put_memref_async
+    // walk).
     if (auto attr = op.getProducerDimensions()) {
       if (auto typed = mlir::dyn_cast<AIE::BDDimLayoutArrayAttr>(*attr))
         info.producerDimensions = typed;
@@ -191,8 +191,7 @@ void collectPhase(ConduitToDMAState &state) {
   // provide unambiguous producer/consumer tile identification.
   for (AIE::DeviceOp dev : state.deviceOps) {
     dev.walk([&](AIE::CoreOp coreOp) {
-      AIE::TileOp tileOp =
-          coreOp.getTile().getDefiningOp<AIE::TileOp>();
+      AIE::TileOp tileOp = coreOp.getTile().getDefiningOp<AIE::TileOp>();
       if (!tileOp)
         return;
       int64_t col = static_cast<int64_t>(tileOp.getCol());
@@ -253,7 +252,8 @@ void collectPhase(ConduitToDMAState &state) {
     });
   }
 
-  // Apply inferred coordinates to conduitMap, using fallback to existing values.
+  // Apply inferred coordinates to conduitMap, using fallback to existing
+  // values.
   for (auto &[name, info] : state.conduitMap) {
     // Producer tile: IR walk wins if found.
     auto prodIt = channelToProducerTile.find(name);
@@ -271,8 +271,7 @@ void collectPhase(ConduitToDMAState &state) {
 
     // Consumer tiles: IR walk wins if found.
     auto consIt = channelToConsumerTiles.find(name);
-    if (consIt != channelToConsumerTiles.end() &&
-        !consIt->second.empty()) {
+    if (consIt != channelToConsumerTiles.end() && !consIt->second.empty()) {
       info.consumerTileCoords.clear();
       info.consumerTileStrs.clear();
       for (auto [col, row] : consIt->second) {
@@ -308,7 +307,8 @@ void collectPhase(ConduitToDMAState &state) {
           info.shimConsumerTileCoords.end())
         info.shimConsumerTileCoords.push_back(coord);
     }
-    // Case 1 (sym_name match, S2MM only) — conduitMap key matches shim alloc sym.
+    // Case 1 (sym_name match, S2MM only) — conduitMap key matches shim alloc
+    // sym.
     auto shimIt = shimConsumerAllocMap.find(name);
     if (shimIt != shimConsumerAllocMap.end()) {
       auto [col, row] = shimIt->second;
@@ -322,8 +322,8 @@ void collectPhase(ConduitToDMAState &state) {
     for (auto &[shimName, coord] : shimConsumerAllocMap) {
       llvm::StringRef shimRef = shimName;
       if (shimRef.ends_with("_shim_alloc")) {
-        llvm::StringRef stripped = shimRef.drop_back(
-            llvm::StringLiteral("_shim_alloc").size());
+        llvm::StringRef stripped =
+            shimRef.drop_back(llvm::StringLiteral("_shim_alloc").size());
         if (stripped == name) {
           std::pair<int64_t, int64_t> c = {coord.first, coord.second};
           if (llvm::find(info.shimConsumerTileCoords, c) ==
@@ -381,9 +381,8 @@ void collectPhase(ConduitToDMAState &state) {
 
   state.targetModel = &AIE::getTargetModel(state.deviceOp);
   state.aieArch = state.targetModel->getTargetArch();
-  state.acqAction = state.isAIE2Plus()
-                        ? AIE::LockAction::AcquireGreaterEqual
-                        : AIE::LockAction::Acquire;
+  state.acqAction = state.isAIE2Plus() ? AIE::LockAction::AcquireGreaterEqual
+                                       : AIE::LockAction::Acquire;
 
   // Build unified tile cache across all devices.
   // Each device's tiles have unique coordinates after --conduit-fuse-operators.
@@ -518,8 +517,8 @@ void collectPhase(ConduitToDMAState &state) {
   // The DMA ring must have extra buffer slots: max(depth, maxAcquire + 1).
   //
   // Strategy: scan acquire/release pairs (via window SSA def-use chain) and
-  // record the maximum acquire count across all pairs where acqCount > relCount,
-  // separately for Consume-port and Produce-port.
+  // record the maximum acquire count across all pairs where acqCount >
+  // relCount, separately for Consume-port and Produce-port.
   //
   // ReleaseAsync ops are omitted (async pattern never forms a sliding window
   // in practice; and they lack a direct window SSA operand).
@@ -587,7 +586,6 @@ void collectPhase(ConduitToDMAState &state) {
         cinfo->externalBuffers.push_back(buf);
     }
   });
-
 }
 
 } // namespace xilinx::conduit

@@ -109,21 +109,23 @@ static int64_t numElemsInMemref(mlir::Type ty) {
 // ---------------------------------------------------------------------------
 
 struct FifoInfo {
-  llvm::SmallVector<int64_t> producerTileArr; // [col, row]
-  llvm::SmallVector<int64_t> consumerTilesArr;     // non-shim: [col0,row0,...]
-  llvm::SmallVector<int64_t> shimConsumerTilesArr; // shim (row==0): [col0,row0,...]
+  llvm::SmallVector<int64_t> producerTileArr;  // [col, row]
+  llvm::SmallVector<int64_t> consumerTilesArr; // non-shim: [col0,row0,...]
+  llvm::SmallVector<int64_t>
+      shimConsumerTilesArr; // shim (row==0): [col0,row0,...]
   int64_t depth = 1;
   int64_t numElems = 1;
   mlir::MemRefType elemType; // the actual element memref type
   // Cyclostatic (CSDF) access pattern.
   // Populated in Phase 1.5 by scanning acquire counts for each consumer of this
-  // fifo.  If all acquires use the same count the pattern is absent (uniform SDF).
-  // If acquires vary, this holds the sequence of counts in program order.
+  // fifo.  If all acquires use the same count the pattern is absent (uniform
+  // SDF). If acquires vary, this holds the sequence of counts in program order.
   llvm::SmallVector<int64_t> accessPattern;
-  // CSDF rates inferred from Phase 1.5 acquire/release scans (infer-rates=true).
-  // Only populated for single-consumer fifos.  For multi-consumer fifos,
-  // rate annotation is skipped (per-consumer rates differ; no single merged rate
-  // sequence is correct for the conduit.create's M6 check).
+  // CSDF rates inferred from Phase 1.5 acquire/release scans
+  // (infer-rates=true). Only populated for single-consumer fifos.  For
+  // multi-consumer fifos, rate annotation is skipped (per-consumer rates
+  // differ; no single merged rate sequence is correct for the conduit.create's
+  // M6 check).
   llvm::SmallVector<int64_t> inferredProducerRates;
   llvm::SmallVector<int64_t> inferredConsumerRates;
   // MVE-2: set when Phase 1.5 detected a sliding-window pattern
@@ -230,8 +232,8 @@ struct ObjectFifoToConduitPass
         info.numElems = numElemsInMemref(mrefTy);
       } else {
         // Fallback: treat as single-element i32 memref
-        info.elemType = mlir::MemRefType::get(
-            {1}, mlir::IntegerType::get(ctx, 32));
+        info.elemType =
+            mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
         info.numElems = 1;
       }
 
@@ -300,8 +302,7 @@ struct ObjectFifoToConduitPass
         return;
       CoreKey key = {nameAttr, coreOp};
       if (op.getPort() == AIE::ObjectFifoPort::Produce) {
-        perCoreProduceCounts[key].push_back(
-            static_cast<int64_t>(op.getSize()));
+        perCoreProduceCounts[key].push_back(static_cast<int64_t>(op.getSize()));
         fifoProducerCore[nameAttr] = coreOp;
       } else if (op.getPort() == AIE::ObjectFifoPort::Consume) {
         perCoreConsumeRelCounts[key].push_back(
@@ -327,8 +328,8 @@ struct ObjectFifoToConduitPass
         const auto &counts = countIt->second;
         if (counts.empty())
           continue;
-        bool uniform = llvm::all_of(counts,
-                                    [&](int64_t c) { return c == counts[0]; });
+        bool uniform =
+            llvm::all_of(counts, [&](int64_t c) { return c == counts[0]; });
         if (!uniform)
           info.accessPattern = counts;
 
@@ -361,7 +362,8 @@ struct ObjectFifoToConduitPass
             // Consumer rates = the acquire count sequence for this core.
             info.inferredConsumerRates.assign(counts.begin(), counts.end());
 
-            // Producer rates = the release count sequence from the producer core.
+            // Producer rates = the release count sequence from the producer
+            // core.
             auto prodIt = fifoProducerCore.find(nameAttr);
             if (prodIt != fifoProducerCore.end()) {
               CoreKey prodKey = {nameAttr, prodIt->second};
@@ -400,9 +402,8 @@ struct ObjectFifoToConduitPass
     // Users who need register_process expansion must run
     // --aie-register-objectFifos before --objectfifo-to-conduit.
     llvm::SmallVector<AIE::ObjectFifoRegisterProcessOp> regProcOps;
-    module.walk([&](AIE::ObjectFifoRegisterProcessOp op) {
-      regProcOps.push_back(op);
-    });
+    module.walk(
+        [&](AIE::ObjectFifoRegisterProcessOp op) { regProcOps.push_back(op); });
     for (auto op : regProcOps)
       op.erase();
   }
@@ -443,14 +444,13 @@ struct ObjectFifoToConduitPass
       mlir::DenseI64ArrayAttr inferredCRAttr;
       if (inferRates) {
         // Count the number of non-shim consumer tiles to detect multi-consumer.
-        int64_t numConsumers = static_cast<int64_t>(
-            info.consumerTilesArr.size() / 2 +
-            info.shimConsumerTilesArr.size() / 2);
+        int64_t numConsumers =
+            static_cast<int64_t>(info.consumerTilesArr.size() / 2 +
+                                 info.shimConsumerTilesArr.size() / 2);
         if (numConsumers > 1) {
           // Multi-consumer fifo: skip rate annotation with a remark.
-          op.emitRemark(
-              "conduit-objectfifo: skipping CSDF rate annotation for "
-              "multi-consumer fifo '")
+          op.emitRemark("conduit-objectfifo: skipping CSDF rate annotation for "
+                        "multi-consumer fifo '")
               << name
               << "' — per-consumer acquire sequences differ; use explicit "
                  "annotations or --conduit-infer-rates for Pass B programs";
@@ -458,9 +458,8 @@ struct ObjectFifoToConduitPass
           // MVE-2: sliding-window fifo: skip rate annotation with a remark.
           // Attaching rates from acquire counts would give M6 an unbalanced
           // rate (acquire > release per step), causing a false rejection.
-          op.emitRemark(
-              "conduit-objectfifo: skipping CSDF rate annotation for "
-              "sliding-window fifo '")
+          op.emitRemark("conduit-objectfifo: skipping CSDF rate annotation for "
+                        "sliding-window fifo '")
               << name
               << "' (acquire_count > release_count); use explicit "
                  "producer_rates/consumer_rates with window_size for M7 check";
@@ -529,8 +528,8 @@ struct ObjectFifoToConduitPass
       // Auto-set via_DMA=true when:
       //   (a) dimensionsToStream or dimensionsFromStream are non-empty: the
       //       shared-memory path skips DMA BDs entirely, silently dropping N-D
-      //       transforms. Forcing DMA ensures BDDimLayout attributes are applied
-      //       at the hardware level.
+      //       transforms. Forcing DMA ensures BDDimLayout attributes are
+      //       applied at the hardware level.
       //   (b) bd_repeat > 1: the BD chain is replayed N times by the DMA
       //       engine. Shared-memory has no BD replay mechanism — the hardware
       //       lock protocol would need the core to re-acquire N times, but with
@@ -538,8 +537,8 @@ struct ObjectFifoToConduitPass
       //       drives the lock. Forcing DMA ensures the BD chain is emitted and
       //       the bd_repeat is applied via DMAStartOp.
       mlir::BoolAttr viaDMAAttr;
-      bool hasRepeat = op.getRepeatCount().has_value() &&
-                       op.getRepeatCount().value() > 1;
+      bool hasRepeat =
+          op.getRepeatCount().has_value() && op.getRepeatCount().value() > 1;
       if (op.getVia_DMA() || prodDimsAttr || consDimsAttr || hasRepeat)
         viaDMAAttr = mlir::BoolAttr::get(ctx, true);
 
@@ -562,9 +561,8 @@ struct ObjectFifoToConduitPass
         // Detect CSDF by checking whether Phase 1.5 observed varying acquire
         // counts (non-empty accessPattern means at least two distinct counts).
         if (!info.accessPattern.empty()) {
-          op.emitError(
-              "cascade conduit requires SDF rate (1,1); CSDF patterns "
-              "require buffering which cascade cannot provide");
+          op.emitError("cascade conduit requires SDF rate (1,1); CSDF patterns "
+                       "require buffering which cascade cannot provide");
           signalPassFailure();
           passFailed = true;
           return; // skip conduit.create for this fifo
@@ -598,8 +596,7 @@ struct ObjectFifoToConduitPass
         routingModeAttr = RoutingModeAttr::get(ctx, RoutingMode::Stream);
 
       auto createOp = builder.create<Create>(
-          loc,
-          mlir::StringAttr::get(ctx, name),
+          loc, mlir::StringAttr::get(ctx, name),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), slot_elems),
           /*sync_mode=*/SyncModeAttr{},
           /*window_size=*/mlir::IntegerAttr{},
@@ -609,15 +606,11 @@ struct ObjectFifoToConduitPass
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
           routingModeAttr,
           /*producer_rates=*/inferredPRAttr,
-          /*consumer_rates=*/inferredCRAttr,
-          repeatCountAttr,
-          disableSyncAttr,
+          /*consumer_rates=*/inferredCRAttr, repeatCountAttr, disableSyncAttr,
           viaDMAAttr,
           /*plio=*/op.getPlio() ? mlir::BoolAttr::get(ctx, true)
                                 : mlir::BoolAttr{},
-          iterCountAttr,
-          prodDimsAttr,
-          consDimsAttr);
+          iterCountAttr, prodDimsAttr, consDimsAttr);
 
       // Set aie_stream_port as a generic attribute for stream conduits.
       if (streamPortIt != aieStreamFifoPort.end()) {
@@ -630,7 +623,8 @@ struct ObjectFifoToConduitPass
       fifosToErase.push_back(op);
     });
 
-    // Phase 3: rewrite aie.objectfifo.link → conduit.distribute or conduit.join.
+    // Phase 3: rewrite aie.objectfifo.link → conduit.distribute or
+    // conduit.join.
     module.walk([&](AIE::ObjectFifoLinkOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
@@ -647,9 +641,9 @@ struct ObjectFifoToConduitPass
       else {
         // Fix 4h: N→M link (N>1 sources AND N>1 destinations) is not
         // supported. Emit an error rather than silently using "distribute".
-        op.emitError(
-            "objectfifo-to-conduit: N→M link (N>1 sources AND N>1 "
-            "destinations) is not supported; use cascade mode when implemented");
+        op.emitError("objectfifo-to-conduit: N→M link (N>1 sources AND N>1 "
+                     "destinations) is not supported; use cascade mode when "
+                     "implemented");
         signalPassFailure();
         passFailed = true;
         return;
@@ -688,8 +682,7 @@ struct ObjectFifoToConduitPass
         auto firstDstSym = mlir::cast<mlir::FlatSymbolRefAttr>(fifoOuts[0]);
         auto nameAttr = mlir::StringAttr::get(ctx, firstDstSym.getValue());
         auto it = fifoInfoMap.find(nameAttr);
-        if (it != fifoInfoMap.end() &&
-            it->second.producerTileArr.size() >= 2) {
+        if (it != fifoInfoMap.end() && it->second.producerTileArr.size() >= 2) {
           int64_t col = it->second.producerTileArr[0];
           int64_t row = it->second.producerTileArr[1];
           std::string s;
@@ -742,8 +735,8 @@ struct ObjectFifoToConduitPass
                                   /*sync_mode=*/SyncModeAttr{});
       } else {
         auto dstRef = mlir::cast<mlir::FlatSymbolRefAttr>(dstAttrs[0]);
-        builder.create<GatherOp>(loc, srcsArr, dstRef, memtileAttr,
-                                 offsetsAttr, /*lock_id=*/nullptr,
+        builder.create<GatherOp>(loc, srcsArr, dstRef, memtileAttr, offsetsAttr,
+                                 /*lock_id=*/nullptr,
                                  /*sync_mode=*/SyncModeAttr{});
       }
 
@@ -803,13 +796,14 @@ struct ObjectFifoToConduitPass
     // findWindowInDominatingBlock can find the earliest window that precedes
     // a given fence op.  The bug this fixes: when a block has multiple
     // acquire groups for the same fifo separated by a nested scf.for/scf.if
-    // (e.g., preamble acquire(2) before scf.for, tail acquire(2) after scf.for),
-    // a single-entry map stores only the tail window.  Queries from inside the
-    // scf.for body fail the SSA dominance check against the tail window and
-    // find nothing, causing the scf.for body to emit a full acquire instead of a delta.
-    llvm::DenseMap<mlir::Block *,
-                   llvm::DenseMap<mlir::StringAttr,
-                                  llvm::SmallVector<mlir::Value, 4>>>
+    // (e.g., preamble acquire(2) before scf.for, tail acquire(2) after
+    // scf.for), a single-entry map stores only the tail window.  Queries from
+    // inside the scf.for body fail the SSA dominance check against the tail
+    // window and find nothing, causing the scf.for body to emit a full acquire
+    // instead of a delta.
+    llvm::DenseMap<
+        mlir::Block *,
+        llvm::DenseMap<mlir::StringAttr, llvm::SmallVector<mlir::Value, 4>>>
         allBlockWindowMaps;
 
     // Track conduit.window SSA values that have been released.
@@ -831,8 +825,7 @@ struct ObjectFifoToConduitPass
     // spurious C1 warning. Forward-declared-then-released patterns trigger
     // false positives.
     auto findWindowInDominatingBlock =
-        [&](mlir::Block *startBlock,
-            mlir::Operation *beforeOp,
+        [&](mlir::Block *startBlock, mlir::Operation *beforeOp,
             mlir::StringAttr nameAttr) -> mlir::Value {
       mlir::Block *cursor = startBlock;
       // fence tracks the op in `cursor` that the window must precede
@@ -869,7 +862,8 @@ struct ObjectFifoToConduitPass
                 dominates = defOp->isBeforeInBlock(fence);
               if (dominates)
                 return v;
-              // This window doesn't dominate the fence — try the next earlier one.
+              // This window doesn't dominate the fence — try the next earlier
+              // one.
             }
             // No window in this block dominates the fence — continue up.
           }
@@ -885,10 +879,10 @@ struct ObjectFifoToConduitPass
       return {};
     };
 
-    // Use PreOrder so parent blocks are visited before their nested child blocks.
-    // This ensures that when the scf.if body block is visited, the enclosing
-    // core entry block's window map is already populated — enabling the
-    // parent-block walk in findWindowInDominatingBlock to succeed.
+    // Use PreOrder so parent blocks are visited before their nested child
+    // blocks. This ensures that when the scf.if body block is visited, the
+    // enclosing core entry block's window map is already populated — enabling
+    // the parent-block walk in findWindowInDominatingBlock to succeed.
     module.walk<mlir::WalkOrder::PreOrder>([&](mlir::Block *block) {
       // Per-block window map: fifo name → all conduit.acquire SSA values
       // emitted in this block, in program order.  Multiple entries arise when
@@ -903,13 +897,15 @@ struct ObjectFifoToConduitPass
       // ObjectFIFO acquire semantics: acquire(N) means "I need N total
       // elements right now", not "give me N more".  If you call acquire(2)
       // then acquire(1) then acquire(3) then release(3), the stateful
-      // transform emits: AcquireGreaterEqual(2), [nothing], AcquireGreaterEqual(1),
-      // [nothing], Release(3) — only the incremental delta is acquired each step.
+      // transform emits: AcquireGreaterEqual(2), [nothing],
+      // AcquireGreaterEqual(1), [nothing], Release(3) — only the incremental
+      // delta is acquired each step.
       //
       // The Conduit IR window model is acquire-one-window-at-a-time.  To match
       // the oracle, Pass A collapses each release-group of consecutive acquires
       // into a SINGLE conduit.acquire with the MAXIMUM count in the group, then
-      // reuses that one window for all subview_access rewrites within the group.
+      // reuses that one window for all subview_access rewrites within the
+      // group.
       //
       // Pre-scan: for each block, walk its ops in program order and group
       // consecutive acquires on the same (fifo, port) pair between releases.
@@ -951,7 +947,8 @@ struct ObjectFifoToConduitPass
             int64_t newCount = acqOp.acqNumber();
             int64_t &held = heldMax[key];
             if (newCount > held) {
-              // This acquire extends the group (or starts a new one if held==0).
+              // This acquire extends the group (or starts a new one if
+              // held==0).
               if (held == 0) {
                 // New group: this op is the leader.
                 groupLeader[key] = &rawOp;
@@ -1021,28 +1018,30 @@ struct ObjectFifoToConduitPass
           if (it != fifoInfoMap.end())
             elemType = it->second.elemType;
           if (!elemType)
-            elemType = mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
+            elemType =
+                mlir::MemRefType::get({1}, mlir::IntegerType::get(ctx, 32));
 
           // Cascade path: two sub-cases.
           //
           // Consume: emit get_cascade with the memref's element type (scalar),
-          //   find all memref.load users of %elem0 and replace their results with
-          //   the get value, then erase the loads.  The subview and acquire are
-          //   collected for deferred erasure in the normal order.
+          //   find all memref.load users of %elem0 and replace their results
+          //   with the get value, then erase the loads.  The subview and
+          //   acquire are collected for deferred erasure in the normal order.
           //
           // Produce: do NOT process at acquire time — the stored value isn't
-          //   available until the user's memref.store runs.  The release handler
-          //   below walks the produce acquire, finds the subview, finds the store,
-          //   extracts the stored value, emits put_cascade, then erases the store,
-          //   subview, and acquire in dependency order (store → subview → acquire).
-          //   The acquire is NOT added to acquiresToErase here; the release handler
-          //   takes ownership of erasure.
+          //   available until the user's memref.store runs.  The release
+          //   handler below walks the produce acquire, finds the subview, finds
+          //   the store, extracts the stored value, emits put_cascade, then
+          //   erases the store, subview, and acquire in dependency order (store
+          //   → subview → acquire). The acquire is NOT added to acquiresToErase
+          //   here; the release handler takes ownership of erasure.
           if (cascadeFifoNames.count(nameAttr)) {
             if (port == Port::Consume) {
               // Scalar element type (e.g., i32 from memref<1xi32>).
               mlir::Type elemTy = elemType.getElementType();
               auto getCascOp = builder.create<AIE::GetCascadeOp>(loc, elemTy);
-              mlir::Value cascVal = getCascOp.getCascadeValue(); // scalar i32/vector
+              mlir::Value cascVal =
+                  getCascOp.getCascadeValue(); // scalar i32/vector
 
               mlir::Value subviewResult = op.getResult();
               for (mlir::Operation *user :
@@ -1084,16 +1083,16 @@ struct ObjectFifoToConduitPass
           //   the same or fewer elements than an open acquire in a dominating
           //   parent block, the nested acquire is subsumed — no new use_lock
           //   is needed because the elements are already held.  Matches the
-          //   stateful transform which tracks held counts across block boundaries.
+          //   stateful transform which tracks held counts across block
+          //   boundaries.
 
           mlir::Value winVal;
           bool isLeader = acqIsGroupLeader.lookup(&rawOp);
 
           // Compute effective count up-front (needed for both parent-window
           // count comparison and for the conduit.acquire emission below).
-          int64_t effectiveCount = acqGroupMax.count(&rawOp)
-                                       ? acqGroupMax[&rawOp]
-                                       : count;
+          int64_t effectiveCount =
+              acqGroupMax.count(&rawOp) ? acqGroupMax[&rawOp] : count;
 
           if (isLeader || !blockGroupWindow.count(nameAttr)) {
             // Before emitting a new conduit.acquire, check if a dominating
@@ -1103,8 +1102,7 @@ struct ObjectFifoToConduitPass
             mlir::Value parentWin = findWindowInDominatingBlock(
                 block->getParentOp() ? block->getParentOp()->getBlock()
                                      : nullptr,
-                block->getParentOp(),
-                nameAttr);
+                block->getParentOp(), nameAttr);
 
             // Non-uniform acquire count fix: if the dominating window was
             // acquired with a count less than the requested effective count,
@@ -1118,7 +1116,7 @@ struct ObjectFifoToConduitPass
                 int64_t parentCount =
                     static_cast<int64_t>(parentAcq.getCount());
                 if (parentCount < effectiveCount) {
-                  parentWin = {};  // insufficient count — don't reuse
+                  parentWin = {}; // insufficient count — don't reuse
                 }
               }
             }
@@ -1136,7 +1134,8 @@ struct ObjectFifoToConduitPass
                   loc, winTy, mlir::FlatSymbolRefAttr::get(ctx, name),
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
                                          effectiveCount),
-                  PortAttr::get(ctx, port), /*window_size=*/mlir::IntegerAttr{});
+                  PortAttr::get(ctx, port),
+                  /*window_size=*/mlir::IntegerAttr{});
               // Record as the group leader window.
               blockGroupWindow[nameAttr] = winVal;
             }
@@ -1216,7 +1215,8 @@ struct ObjectFifoToConduitPass
               if (!acqOp) {
                 op->emitWarning(
                     "objectfifo-to-conduit: cascade Produce release for '")
-                    << name << "' has no matching acquire — put_cascade skipped";
+                    << name
+                    << "' has no matching acquire — put_cascade skipped";
                 releasesToErase.push_back(op);
                 continue;
               }
@@ -1224,14 +1224,16 @@ struct ObjectFifoToConduitPass
               // Find the subview.access op (user of the acquire result).
               AIE::ObjectFifoSubviewAccessOp accessOp;
               for (mlir::Operation *user : acqOp.getResult().getUsers()) {
-                if (auto a = mlir::dyn_cast<AIE::ObjectFifoSubviewAccessOp>(user))
+                if (auto a =
+                        mlir::dyn_cast<AIE::ObjectFifoSubviewAccessOp>(user))
                   accessOp = a;
               }
 
               if (!accessOp) {
                 op->emitWarning(
                     "objectfifo-to-conduit: cascade Produce acquire for '")
-                    << name << "' has no subview.access user — put_cascade skipped";
+                    << name
+                    << "' has no subview.access user — put_cascade skipped";
                 releasesToErase.push_back(op);
                 acqOp->erase();
                 continue;
@@ -1255,9 +1257,9 @@ struct ObjectFifoToConduitPass
                 builder.setInsertionPoint(op);
                 builder.create<AIE::PutCascadeOp>(loc, storedVal);
               } else {
-                op->emitWarning(
-                    "objectfifo-to-conduit: cascade Produce '")
-                    << name << "' has no memref.store into elem0 — "
+                op->emitWarning("objectfifo-to-conduit: cascade Produce '")
+                    << name
+                    << "' has no memref.store into elem0 — "
                        "put_cascade skipped (no value to send)";
               }
 
@@ -1273,7 +1275,8 @@ struct ObjectFifoToConduitPass
               continue;
             }
 
-            // Cascade Consume releases are no-ops (no hardware lock to release).
+            // Cascade Consume releases are no-ops (no hardware lock to
+            // release).
             releasesToErase.push_back(op);
             continue;
           }
@@ -1305,8 +1308,7 @@ struct ObjectFifoToConduitPass
             winVal = findWindowInDominatingBlock(
                 block->getParentOp() ? block->getParentOp()->getBlock()
                                      : nullptr,
-                block->getParentOp(),
-                nameAttr);
+                block->getParentOp(), nameAttr);
           }
 
           if (!winVal) {
@@ -1361,7 +1363,8 @@ struct ObjectFifoToConduitPass
 
   void eraseOriginalOps(mlir::ModuleOp module, mlir::OpBuilder &builder,
                         mlir::MLIRContext *ctx) {
-    // Deferred erasure: erase subviews before acquires (subview uses acquire result).
+    // Deferred erasure: erase subviews before acquires (subview uses acquire
+    // result).
     for (auto op : subviewsToErase)
       op.erase();
     for (auto op : acquiresToErase)
@@ -1393,8 +1396,7 @@ struct ObjectFifoToConduitPass
       llvm::SmallVector<mlir::Value> extBufs(extBufOp.getExternalBuffers());
 
       builder.create<RegisterBuffersOp>(
-          extBufOp.getLoc(), mlir::FlatSymbolRefAttr::get(ctx, name),
-          extBufs);
+          extBufOp.getLoc(), mlir::FlatSymbolRefAttr::get(ctx, name), extBufs);
 
       extBufOp.erase();
     }
@@ -1459,12 +1461,12 @@ struct ObjectFifoToConduitPass
 
         builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
         auto shimAllocOp = builder.create<AIE::ShimDMAAllocationOp>(
-            op.getLoc(), allocSym, shimTile.getResult(),
-            channelDir,
+            op.getLoc(), allocSym, shimTile.getResult(), channelDir,
             /*channel_index=*/static_cast<int64_t>(channelIdx),
             /*plio=*/op.getPlio(),
             /*packet=*/nullptr);
-        shimAllocOp->setAttr("conduit_channel",
+        shimAllocOp->setAttr(
+            "conduit_channel",
             mlir::FlatSymbolRefAttr::get(ctx, op.getSymName().str()));
 
         // Only rewrite symbol uses for the first (or only) allocation so that
@@ -1493,14 +1495,14 @@ struct ObjectFifoToConduitPass
             if (walkOp.getNameAttr() == allocRef)
               walkOp.setNameAttr(origRef);
           };
-          deviceOp.walk([&](Acquire op)              { revertIfRenamed(op); });
-          deviceOp.walk([&](AcquireAsync op)         { revertIfRenamed(op); });
-          deviceOp.walk([&](ReleaseAsync op)         { revertIfRenamed(op); });
-          deviceOp.walk([&](PutMemref op)            { revertIfRenamed(op); });
-          deviceOp.walk([&](GetMemref op)            { revertIfRenamed(op); });
-          deviceOp.walk([&](PutMemrefAsync op)       { revertIfRenamed(op); });
-          deviceOp.walk([&](GetMemrefAsync op)       { revertIfRenamed(op); });
-          deviceOp.walk([&](WaitWindow op)           { revertIfRenamed(op); });
+          deviceOp.walk([&](Acquire op) { revertIfRenamed(op); });
+          deviceOp.walk([&](AcquireAsync op) { revertIfRenamed(op); });
+          deviceOp.walk([&](ReleaseAsync op) { revertIfRenamed(op); });
+          deviceOp.walk([&](PutMemref op) { revertIfRenamed(op); });
+          deviceOp.walk([&](GetMemref op) { revertIfRenamed(op); });
+          deviceOp.walk([&](PutMemrefAsync op) { revertIfRenamed(op); });
+          deviceOp.walk([&](GetMemrefAsync op) { revertIfRenamed(op); });
+          deviceOp.walk([&](WaitWindow op) { revertIfRenamed(op); });
           deviceOp.walk([&](RegisterBuffersOp op) { revertIfRenamed(op); });
           // Also revert srcs/dsts arrays on distribute/join/forward ops.
           // replaceAllSymbolUses renames FlatSymbolRefAttr elements inside
@@ -1526,11 +1528,13 @@ struct ObjectFifoToConduitPass
             if (op.getSrcAttr() == allocRef)
               op.setSrcAttr(origRef);
             auto newDsts = revertArray(op.getDsts());
-            if (newDsts != op.getDsts()) op.setDstsAttr(newDsts);
+            if (newDsts != op.getDsts())
+              op.setDstsAttr(newDsts);
           });
           deviceOp.walk([&](GatherOp op) {
             auto newSrcs = revertArray(op.getSrcs());
-            if (newSrcs != op.getSrcs()) op.setSrcsAttr(newSrcs);
+            if (newSrcs != op.getSrcs())
+              op.setSrcsAttr(newSrcs);
             if (op.getDstAttr() == allocRef)
               op.setDstAttr(origRef);
           });
@@ -1549,9 +1553,8 @@ struct ObjectFifoToConduitPass
     // erase the create op first, any surviving allocate op fires the
     // verifier.  Fix: erase all allocate ops before erasing the create ops.
     llvm::SmallVector<AIE::ObjectFifoAllocateOp> allocatesToErase;
-    module.walk([&](AIE::ObjectFifoAllocateOp op) {
-      allocatesToErase.push_back(op);
-    });
+    module.walk(
+        [&](AIE::ObjectFifoAllocateOp op) { allocatesToErase.push_back(op); });
     for (AIE::ObjectFifoAllocateOp op : allocatesToErase)
       op.erase();
 

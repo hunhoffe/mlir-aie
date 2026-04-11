@@ -135,8 +135,8 @@ static void inferRatesInScope(mlir::Operation *scope, mlir::MLIRContext *ctx) {
   // Walk in program order (top-down, left-to-right within blocks) so the
   // sequence matches the CSDF phase order the programmer intended.
   // -----------------------------------------------------------------------
-  llvm::StringMap<llvm::SmallVector<int64_t>> putElems;  // name → [p0,p1,...]
-  llvm::StringMap<llvm::SmallVector<int64_t>> getElems;  // name → [c0,c1,...]
+  llvm::StringMap<llvm::SmallVector<int64_t>> putElems; // name → [p0,p1,...]
+  llvm::StringMap<llvm::SmallVector<int64_t>> getElems; // name → [c0,c1,...]
   // Tracks names that have a non-constant num_elems (skip entirely).
   llvm::StringMap<bool> hasDynamicElems;
 
@@ -179,8 +179,8 @@ static void inferRatesInScope(mlir::Operation *scope, mlir::MLIRContext *ctx) {
   // count exceeds the minimum release count for a channel, that channel
   // uses a sliding window and M6 balance would fire spuriously.
   // -----------------------------------------------------------------------
-  llvm::StringMap<int64_t> maxAcquireCount;   // name → max count seen
-  llvm::StringMap<int64_t> minReleaseCount;   // name → min count seen
+  llvm::StringMap<int64_t> maxAcquireCount; // name → max count seen
+  llvm::StringMap<int64_t> minReleaseCount; // name → min count seen
 
   scope->walk([&](mlir::Operation *op) {
     if (mlir::isa<Acquire, AcquireAsync>(op)) {
@@ -241,8 +241,7 @@ static void inferRatesInScope(mlir::Operation *scope, mlir::MLIRContext *ctx) {
   // -----------------------------------------------------------------------
   scope->walk([&](Create op) {
     // Skip if rates are already explicitly set.
-    if (op.getProducerRates().has_value() ||
-        op.getConsumerRates().has_value())
+    if (op.getProducerRates().has_value() || op.getConsumerRates().has_value())
       return;
 
     llvm::StringRef name = op.getSymName();
@@ -252,8 +251,7 @@ static void inferRatesInScope(mlir::Operation *scope, mlir::MLIRContext *ctx) {
     // Skip conduits with dynamic num_elems.
     if (hasDynamicElems.count(name)) {
       op->emitRemark("conduit-infer-rates: skipping '")
-          << name
-          << "': num_elems is non-constant on at least one put/get op";
+          << name << "': num_elems is non-constant on at least one put/get op";
       return;
     }
 
@@ -270,10 +268,8 @@ static void inferRatesInScope(mlir::Operation *scope, mlir::MLIRContext *ctx) {
     if (acqIt != maxAcquireCount.end() && relIt != minReleaseCount.end()) {
       if (acqIt->second > relIt->second) {
         op->emitRemark("conduit-infer-rates: skipping '")
-            << name
-            << "': sliding-window channel (acquire count "
-            << acqIt->second << " > release count " << relIt->second
-            << ")";
+            << name << "': sliding-window channel (acquire count "
+            << acqIt->second << " > release count " << relIt->second << ")";
         return;
       }
     }
@@ -310,10 +306,8 @@ static void inferRatesInScope(mlir::Operation *scope, mlir::MLIRContext *ctx) {
 
     if (!hasPuts || !hasGets) {
       op->emitRemark("conduit-infer-rates: skipping '")
-          << name << "': found "
-          << (hasPuts ? "put" : "get")
-          << " ops but no matching "
-          << (hasPuts ? "get" : "put")
+          << name << "': found " << (hasPuts ? "put" : "get")
+          << " ops but no matching " << (hasPuts ? "get" : "put")
           << " ops; rates not inferred";
       return;
     }
@@ -322,19 +316,13 @@ static void inferRatesInScope(mlir::Operation *scope, mlir::MLIRContext *ctx) {
     llvm::ArrayRef<int64_t> pRates = putIt->second;
     llvm::ArrayRef<int64_t> cRates = getIt->second;
 
-    op->setAttr("producer_rates",
-                mlir::DenseI64ArrayAttr::get(ctx, pRates));
-    op->setAttr("consumer_rates",
-                mlir::DenseI64ArrayAttr::get(ctx, cRates));
+    op->setAttr("producer_rates", mlir::DenseI64ArrayAttr::get(ctx, pRates));
+    op->setAttr("consumer_rates", mlir::DenseI64ArrayAttr::get(ctx, cRates));
 
     op->emitRemark("conduit-infer-rates: attached producer_rates=[")
-        << pRates[0]
-        << (pRates.size() > 1 ? ",..." : "")
-        << "] consumer_rates=["
-        << cRates[0]
-        << (cRates.size() > 1 ? ",..." : "")
-        << "] to conduit '"
-        << name << "'";
+        << pRates[0] << (pRates.size() > 1 ? ",..." : "")
+        << "] consumer_rates=[" << cRates[0]
+        << (cRates.size() > 1 ? ",..." : "") << "] to conduit '" << name << "'";
   });
 }
 

@@ -129,10 +129,6 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
           AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
-          if (info.hasAllocTile) {
-            allocTile = state.lookupTileByCoord(info.allocTileCoord.first,
-                                                info.allocTileCoord.second);
-          }
           if (allocTile && consTile && prodTile) {
             int64_t depth = info.depth > 0 ? info.depth : 1;
             if (depth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
@@ -184,9 +180,10 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
             if (pTile && !info.consumerTileBuffers.count(pTile.getResult())) {
               int64_t effDepth =
                   info.effectiveDepth > 0 ? info.effectiveDepth : depth;
-              int64_t prodDepth = (info.maxProduceAcquire > 0)
-                  ? std::max(effDepth, info.maxProduceAcquire + 1)
-                  : effDepth;
+              int64_t prodDepth =
+                  (info.maxProduceAcquire > 0)
+                      ? std::max(effDepth, info.maxProduceAcquire + 1)
+                      : effDepth;
               if (prodDepth > 1 &&
                   state.conduitNamesWithProducerAcquire.count(name))
                 addProducerSlot(pTile.getResult());
@@ -248,8 +245,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     int64_t depth = info.depth > 0 ? info.depth : 1;
     int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
     int64_t prodDepth = (info.maxProduceAcquire > 0)
-        ? std::max(effDepth, info.maxProduceAcquire + 1)
-        : effDepth;
+                            ? std::max(effDepth, info.maxProduceAcquire + 1)
+                            : effDepth;
     if (prodDepth > 1 && state.conduitNamesWithConsumerAcquire.count(name))
       addConsumerSlot(prodTileVal);
     if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
@@ -393,11 +390,12 @@ void allocPhase(ConduitToDMAState &state) {
         continue;
 
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      // Producer buffer count: effectiveDepth, inflated by partial-release when needed.
-      // effectiveDepth = min(depth, maxProdAcquire+1) reduces allocation for
-      // producers that never hold more than maxProdAcquire+1 slots simultaneously.
-      // When maxProduceAcquire > 0 (partial-release pattern), inflate to at least
-      // maxProduceAcquire+1 so the DMA can drain while the core holds extra slots.
+      // Producer buffer count: effectiveDepth, inflated by partial-release when
+      // needed. effectiveDepth = min(depth, maxProdAcquire+1) reduces
+      // allocation for producers that never hold more than maxProdAcquire+1
+      // slots simultaneously. When maxProduceAcquire > 0 (partial-release
+      // pattern), inflate to at least maxProduceAcquire+1 so the DMA can drain
+      // while the core holds extra slots.
       int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
       // Partial-release Produce-port: need max(effDepth, maxProduceAcquire+1).
       int64_t prodDepth = (info.maxProduceAcquire > 0)
@@ -423,8 +421,7 @@ void allocPhase(ConduitToDMAState &state) {
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
       if (!info.disableSynchronization) {
         // bd_repeat > 1 scales prod lock init: each buffer is DMA'd N times.
-        int64_t repeatN =
-            info.bdRepeat > 1 ? info.bdRepeat : 1;
+        int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
         int64_t prodInit = prodDepth * repeatN;
         auto locks =
             state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
@@ -464,52 +461,9 @@ void allocPhase(ConduitToDMAState &state) {
         bool leftShared =
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         if (rightShared || leftShared) {
-          // Defensive adjacency guard: assert the tiles that established
-          // shared-memory eligibility are still adjacent.  This should
-          // always hold here (the condition above guarantees it), but
-          // if alloc_tile is provided we additionally verify that the
-          // alloc tile is adjacent to both producer and consumer tiles
-          // so that the physical buffer is reachable from both cores.
-          if (info.hasAllocTile) {
-            int64_t aCol = info.allocTileCoord.first;
-            int64_t aRow = info.allocTileCoord.second;
-            bool allocAdjToProd = targetModel.isLegalMemAffinity(
-                aCol, aRow, prodCol, prodRow) ||
-                                  targetModel.isLegalMemAffinity(
-                                      prodCol, prodRow, aCol, aRow);
-            bool allocAdjToCons = targetModel.isLegalMemAffinity(
-                aCol, aRow, consCol, consRow) ||
-                                  targetModel.isLegalMemAffinity(
-                                      consCol, consRow, aCol, aRow);
-            if (!allocAdjToProd || !allocAdjToCons) {
-              // Find an existing conduit.create op to emit the error on.
-              state.module.walk([&](Create createOp) {
-                if (createOp.getName() == name) {
-                  createOp.emitError(
-                      "shared-memory conduit requires adjacent tiles; "
-                      "alloc_tile (" + std::to_string(aCol) + "," +
-                      std::to_string(aRow) + ") is not adjacent to both "
-                      "producer (" + std::to_string(prodCol) + "," +
-                      std::to_string(prodRow) + ") and consumer (" +
-                      std::to_string(consCol) + "," +
-                      std::to_string(consRow) + ")");
-                  state.passFailed = true;
-                }
-              });
-              if (state.passFailed)
-                return;
-            }
-          }
-
           info.sharedMemory = true;
 
-          int64_t allocCol = prodCol, allocRow = prodRow;
-          if (info.hasAllocTile) {
-            allocCol = info.allocTileCoord.first;
-            allocRow = info.allocTileCoord.second;
-          }
-
-          AIE::TileOp allocTile = state.lookupTileByCoord(allocCol, allocRow);
+          AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
           AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
           if (!allocTile || !consTile || !prodTile) {
@@ -528,8 +482,8 @@ void allocPhase(ConduitToDMAState &state) {
                                             mlir::IntegerType::get(ctx, 32));
             }
 
-            // Multi-device: allocate into the device that owns the alloc tile.
-            state.switchDeviceForTile(allocCol, allocRow);
+            // Multi-device: allocate into the device that owns the producer tile.
+            state.switchDeviceForTile(prodCol, prodRow);
 
             if (state.insertAfterTile)
               builder.setInsertionPointAfter(state.insertAfterTile);
@@ -541,7 +495,8 @@ void allocPhase(ConduitToDMAState &state) {
             mlir::Value consTileVal = consTile.getResult();
 
             // Allocate nBufs-many buffers on the allocation tile.
-            // nBufs >= depth; extra slots support sliding-window acquire>release.
+            // nBufs >= depth; extra slots support sliding-window
+            // acquire>release.
             llvm::SmallVector<AIE::BufferOp> sharedBuffers =
                 state.allocateBuffers(allocTileVal, name, bufTy, nBufs);
             info.buffers = sharedBuffers;
@@ -550,8 +505,7 @@ void allocPhase(ConduitToDMAState &state) {
             // disable_synchronization).
             AIE::LockOp sharedProdLock, sharedConsLock;
             if (!info.disableSynchronization) {
-              int64_t repeatN =
-                  info.bdRepeat > 1 ? info.bdRepeat : 1;
+              int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
               int64_t prodInit = nBufs * repeatN;
               auto locks =
                   state.allocateLockPair(allocTileVal, name, nBufs, prodInit);
@@ -627,8 +581,7 @@ void allocPhase(ConduitToDMAState &state) {
 
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
       if (!info.disableSynchronization) {
-        int64_t repeatN =
-            info.bdRepeat > 1 ? info.bdRepeat : 1;
+        int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
         int64_t prodInit = prodDepth * repeatN;
         auto locks =
             state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);
@@ -682,16 +635,16 @@ void allocPhase(ConduitToDMAState &state) {
       // (shim consumer) lock names.
       bool multiConsumer = (info.consumerTileCoords.size() +
                             info.shimConsumerTileCoords.size()) > 1;
-      std::string bufSuffix = multiConsumer
-                                  ? "_cons_" + std::to_string(consIdx)
-                                  : "_cons";
+      std::string bufSuffix =
+          multiConsumer ? "_cons_" + std::to_string(consIdx) : "_cons";
 
       std::string consPrefix = name + bufSuffix;
       // Allocate consumer buffers, unless --conduit-materialize-buffers already
       // did so (pre-materialized case: info.buffers populated in Phase 1.5).
       llvm::SmallVector<AIE::BufferOp> consBuffers;
       if (!preMaterialized) {
-        consBuffers = state.allocateBuffers(consTileVal, consPrefix, bufTy, nBufs);
+        consBuffers =
+            state.allocateBuffers(consTileVal, consPrefix, bufTy, nBufs);
         // Intentionally assigned before the linkSrcNamesEarly branch so the
         // branch's continue does not skip it.
         if (consIdx == 0)
@@ -726,15 +679,17 @@ void allocPhase(ConduitToDMAState &state) {
               if (!info.consumerTileBuffers.count(pTileVal)) {
                 int64_t effDepth =
                     info.effectiveDepth > 0 ? info.effectiveDepth : depth;
-                int64_t prodDepth = (info.maxProduceAcquire > 0)
-                    ? std::max(effDepth, info.maxProduceAcquire + 1)
-                    : effDepth;
+                int64_t prodDepth =
+                    (info.maxProduceAcquire > 0)
+                        ? std::max(effDepth, info.maxProduceAcquire + 1)
+                        : effDepth;
                 auto pBufs =
                     state.allocateBuffers(pTileVal, name, bufTy, prodDepth);
 
                 AIE::LockOp pProdLock, pConsLock;
                 if (!info.disableSynchronization) {
-                  auto pLocks = state.allocateLockPair(pTileVal, name, prodDepth);
+                  auto pLocks =
+                      state.allocateLockPair(pTileVal, name, prodDepth);
                   pProdLock = pLocks.prodLock;
                   pConsLock = pLocks.consLock;
                   if (!isAIE2)
@@ -850,8 +805,8 @@ void allocPhase(ConduitToDMAState &state) {
     int64_t depth = info.depth > 0 ? info.depth : 1;
     int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
     int64_t prodDepth = (info.maxProduceAcquire > 0)
-        ? std::max(effDepth, info.maxProduceAcquire + 1)
-        : effDepth;
+                            ? std::max(effDepth, info.maxProduceAcquire + 1)
+                            : effDepth;
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
       int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
@@ -871,8 +826,7 @@ void allocPhase(ConduitToDMAState &state) {
 
     AIE::LockOp prodLockProd, prodLockCons;
     if (!info.disableSynchronization) {
-      int64_t repeatN =
-          info.bdRepeat > 1 ? info.bdRepeat : 1;
+      int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
       int64_t prodInit = prodDepth * repeatN;
       auto prodLocks =
           state.allocateLockPair(prodTileVal, name, prodDepth, prodInit);

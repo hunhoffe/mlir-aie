@@ -52,15 +52,17 @@
 // CHECK: 'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=5 != sum(consumer_rates)*len(producer_rates)=2
 // PAIR: 'conduit.create' op CSDF rate imbalance
 
+aie.device(npu1) {
+conduit.create @csdf_imbal {slot_elems = 5 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 5 : i64,
+                producer_rates = array<i64: 2, 3>,
+                consumer_rates = array<i64: 1>}
 func.func @case1_m6_csdf_rate_imbalance() {
-  conduit.create @csdf_imbal {slot_elems = 5 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 5 : i64,
-                  producer_rates = array<i64: 2, 3>,
-                  consumer_rates = array<i64: 1>}
   return
+}
 }
 
 // -----
@@ -76,15 +78,17 @@ func.func @case1_m6_csdf_rate_imbalance() {
 
 // CHECK: M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2
 
+aie.device(npu1) {
+conduit.create @csdf_cap {slot_elems = 2 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<i32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 3, 1>,
+                consumer_rates = array<i64: 2>}
 func.func @case2_m7_capacity_insufficient() {
-  conduit.create @csdf_cap {slot_elems = 2 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<i32>,
-                  depth = 2 : i64,
-                  producer_rates = array<i64: 3, 1>,
-                  consumer_rates = array<i64: 2>}
   return
+}
 }
 
 // -----
@@ -97,16 +101,18 @@ func.func @case2_m7_capacity_insufficient() {
 // RUN lines. The test IR is retained for when the verifier is added.
 // ============================================================================
 
+aie.device(npu1) {
+conduit.create @cas_c3_src {slot_elems = 1 : i64, depth = 1 : i64,
+                routing_mode = #conduit.routing_mode<cascade>,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 1>}
+conduit.create @cas_c3_dst {slot_elems = 1 : i64, depth = 1 : i64,
+                producer_tile = array<i64: 0, 1>,
+                consumer_tiles = array<i64: 1, 2>}
 func.func @case3_cascade_scatter_src() {
-  conduit.create @cas_c3_src {slot_elems = 1 : i64, depth = 1 : i64,
-                  routing_mode = #conduit.routing_mode<cascade>,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 1>}
-  conduit.create @cas_c3_dst {slot_elems = 1 : i64, depth = 1 : i64,
-                  producer_tile = array<i64: 0, 1>,
-                  consumer_tiles = array<i64: 1, 2>}
   conduit.scatter{src = @cas_c3_src, dsts = [@cas_c3_dst] {memtile = "tile(0,1)"}}
   return
+}
 }
 
 // -----
@@ -334,12 +340,13 @@ module @case8_ambiguous_get_cascade {
 
 // CHECK: 'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow
 
+aie.device(npu1) {
+conduit.create @dbl_rel {slot_elems = 1 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 3>,
+                element_type = memref<1xi32>,
+                depth = 1 : i64}
 func.func @case10_m8a_double_release() {
-  conduit.create @dbl_rel {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 3>,
-                  element_type = memref<1xi32>,
-                  depth = 1 : i64}
   %win = conduit.acquire {name = @dbl_rel, count = 1 : i64,
                           port = #conduit.port<Consume>}
              : !conduit.window<memref<1xi32>>
@@ -348,4 +355,5 @@ func.func @case10_m8a_double_release() {
   conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
       : !conduit.window<memref<1xi32>>
   return
+}
 }

@@ -337,7 +337,7 @@ def Conduit_WindowType : TypeDef<Conduit_Dialect, "Window"> {
 // Infrastructure ops (no tier constraint — used by all tiers)
 // ---------------------------------------------------------------------------
 
-def Conduit_Create : Conduit_Op<"create"> {
+def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">, Symbol]> {
   let summary = "declare a named conduit channel with a given slot_elems count";
   let description = [{
     Declares a named FIFO channel (slot_elems elements per slot).

@@ -85,7 +85,8 @@ using TileCoord = std::pair<int64_t, int64_t>;
 // hard correctness violation (it depends on workload timing).
 // ---------------------------------------------------------------------------
 
-// Key identifying a physical source port: (tile_col, tile_row, bundle, channel).
+// Key identifying a physical source port: (tile_col, tile_row, bundle,
+// channel).
 struct SourcePortKey {
   int32_t col;
   int32_t row;
@@ -93,18 +94,14 @@ struct SourcePortKey {
   uint32_t channel;
 
   bool operator==(const SourcePortKey &o) const {
-    return col == o.col && row == o.row &&
-           bundle == o.bundle && channel == o.channel;
+    return col == o.col && row == o.row && bundle == o.bundle &&
+           channel == o.channel;
   }
 };
 
 struct SourcePortKeyInfo : public llvm::DenseMapInfo<SourcePortKey> {
-  static SourcePortKey getEmptyKey() {
-    return {-1, -1, ~0u, ~0u};
-  }
-  static SourcePortKey getTombstoneKey() {
-    return {-2, -2, ~0u - 1, ~0u - 1};
-  }
+  static SourcePortKey getEmptyKey() { return {-1, -1, ~0u, ~0u}; }
+  static SourcePortKey getTombstoneKey() { return {-2, -2, ~0u - 1, ~0u - 1}; }
   static unsigned getHashValue(const SourcePortKey &k) {
     return llvm::hash_combine(k.col, k.row, k.bundle, k.channel);
   }
@@ -125,7 +122,8 @@ struct FlowEntry {
 static bool checkConvergenceHazards(mlir::ModuleOp module) {
   // Map: source port → list of (flowId, dstTile, flowOp) entries.
   llvm::DenseMap<SourcePortKey, llvm::SmallVector<FlowEntry, 2>,
-                 SourcePortKeyInfo> portMap;
+                 SourcePortKeyInfo>
+      portMap;
 
   module.walk([&](AIE::PacketFlowOp flowOp) {
     int8_t flowId = flowOp.getID();
@@ -181,8 +179,8 @@ static bool checkConvergenceHazards(mlir::ModuleOp module) {
               << "packet flows with different IDs ("
               << static_cast<int>(a.flowId) << " and "
               << static_cast<int>(b.flowId)
-              << ") route to the same consumer tile ("
-              << b.dstTile.first << ", " << b.dstTile.second
+              << ") route to the same consumer tile (" << b.dstTile.first
+              << ", " << b.dstTile.second
               << ") through the same switchbox source port on tile ("
               << port.col << ", " << port.row
               << "); ordering is not guaranteed under sustained load";
@@ -218,7 +216,8 @@ struct ConduitCheckChannelsPass
     // Per-tile channel usage tracking.
     //
     // Each entry in the StringSet is a "channel ID":
-    //   - If the conduit has a fused_dma_channel_group attribute, the channel ID
+    //   - If the conduit has a fused_dma_channel_group attribute, the channel
+    //   ID
     //     is the group label (conduits sharing a group share one channel).
     //   - Otherwise, the channel ID is the conduit name (each conduit gets its
     //     own channel).
@@ -238,9 +237,8 @@ struct ConduitCheckChannelsPass
       // Check for fusion annotation (set by --conduit-fuse-channels).
       // Conduits in the same group share one hardware channel.
       std::string channelId = name;
-      if (auto groupAttr =
-              createOp->getAttrOfType<mlir::StringAttr>(
-                  "fused_dma_channel_group"))
+      if (auto groupAttr = createOp->getAttrOfType<mlir::StringAttr>(
+              "fused_dma_channel_group"))
         channelId = groupAttr.getValue().str();
 
       // --- Producer tile: needs one MM2S channel ---

@@ -2,25 +2,19 @@
 //
 // Regression test (A-9): wait_window channel name must match the acquire_async
 // token's channel name.
-//
-// A mismatch means the caller is presenting a lock-grant token from channel
-// "foo" to a wait_window that expects channel "bar". Pass C would then emit
-// use_lock on the wrong lock, silently corrupting synchronization.
-//
-// The verifier must detect and reject this at IR parse / verification time.
 
+aie.device(npu1) {
+conduit.create @foo {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 4>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
+conduit.create @bar {slot_elems = 8 : i64,
+                producer_tile = array<i64: 0, 2>,
+                consumer_tiles = array<i64: 0, 4>,
+                element_type = memref<8xi32>,
+                depth = 1 : i64}
 func.func @bad_wait_window_name_mismatch() {
-  conduit.create @foo {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 4>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
-  conduit.create @bar {slot_elems = 8 : i64,
-                  producer_tile = array<i64: 0, 2>,
-                  consumer_tiles = array<i64: 0, 4>,
-                  element_type = memref<8xi32>,
-                  depth = 1 : i64}
-
   // acquire_async for @foo produces a token.
   %tok = conduit.acquire_async {name = @foo, count = 1 : i64,
              port = #conduit.port<Consume>}
@@ -32,4 +26,5 @@ func.func @bad_wait_window_name_mismatch() {
              : !conduit.window.token -> !conduit.window<memref<8xi32>>
 
   return
+}
 }

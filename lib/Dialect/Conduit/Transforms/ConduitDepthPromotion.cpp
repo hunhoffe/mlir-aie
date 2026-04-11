@@ -84,8 +84,7 @@ static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
 
 /// Collect conduit names that appear in any relay op (src/dst of scatter,
 /// gather, transpose).
-static llvm::StringSet<>
-collectLinkedConduitNames(mlir::ModuleOp module) {
+static llvm::StringSet<> collectLinkedConduitNames(mlir::ModuleOp module) {
   llvm::StringSet<> linked;
   auto collect = [&](mlir::Operation *op) {
     // Array attrs: scatter.dsts, gather.srcs.
@@ -130,7 +129,7 @@ static bool isPassthroughAcquire(mlir::Operation *acqOp) {
   for (mlir::Operation *user : window.getUsers())
     if (mlir::isa<SubviewAccess>(user))
       return false; // has a subview user — not passthrough
-  return true; // no subview users — is passthrough
+  return true;      // no subview users — is passthrough
 }
 
 /// Estimate single-slot buffer size in bytes from element type.
@@ -189,14 +188,15 @@ struct ConduitDepthPromotePass
             op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_rates");
         if (prodRates && consRates) {
           int64_t P = 0, C = 0;
-          for (int64_t r : prodRates.asArrayRef()) P += r;
-          for (int64_t r : consRates.asArrayRef()) C += r;
+          for (int64_t r : prodRates.asArrayRef())
+            P += r;
+          for (int64_t r : consRates.asArrayRef())
+            C += r;
           if (P > 0 && C > 0) {
             int64_t maxPC = std::max(P, C);
             int64_t minPC = std::min(P, C);
-            resolvedDepth = static_cast<int64_t>(
-                std::ceil(static_cast<double>(maxPC) * eta /
-                          static_cast<double>(minPC)));
+            resolvedDepth = static_cast<int64_t>(std::ceil(
+                static_cast<double>(maxPC) * eta / static_cast<double>(minPC)));
             if (resolvedDepth < 1)
               resolvedDepth = 1;
             op->emitRemark("conduit-depth-promote: sentinel depth=0 → depth=")
@@ -224,7 +224,8 @@ struct ConduitDepthPromotePass
     // #3, #4, #5).
     //
     // Tier 2 (ObjectFIFO-originated): conduit.acquire/release
-    // Tier 3 (air.channel-originated): conduit.put_memref[_async]/get_memref[_async]
+    // Tier 3 (air.channel-originated):
+    // conduit.put_memref[_async]/get_memref[_async]
     //
     // Separate maps for Tier 3 num_elems to avoid cross-tier confusion
     // (a cross-tier channel can have both acquire{count=1} and
@@ -301,17 +302,18 @@ struct ConduitDepthPromotePass
 
     // Pre-populate from existing conduit.create ops.
     module.walk([&](Create op) {
-      // Cascade conduits use no buffers, locks, or BDs — skip resource counting.
+      // Cascade conduits use no buffers, locks, or BDs — skip resource
+      // counting.
       if (auto rm = op.getRoutingMode())
         if (*rm == RoutingMode::Cascade)
           return;
 
       auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
       int64_t depth = depthAttr ? depthAttr.getInt() : 1;
-      auto consTiles = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
-          "consumer_tiles");
-      auto prodTile = op->getAttrOfType<mlir::DenseI64ArrayAttr>(
-          "producer_tile");
+      auto consTiles =
+          op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles");
+      auto prodTile =
+          op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile");
       auto capAttr = op->getAttrOfType<mlir::IntegerAttr>("slot_elems");
       auto elemTypeAttr = op->getAttrOfType<mlir::TypeAttr>("element_type");
 
@@ -323,7 +325,8 @@ struct ConduitDepthPromotePass
           tileLockCount[key] += 2; // prod + cons lock pair
           tileBDCount[key] += depth;
           if (capAttr && elemTypeAttr) {
-            int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
+            int64_t perSlotBytes =
+                estimateSingleSlotBytes(elemTypeAttr.getValue());
             // Use the conduit's actual depth, not a hardcoded constant.
             // Using 2 here underestimates memory for depth>2 conduits, which
             // allows promotion past the tile memory budget.
@@ -361,9 +364,10 @@ struct ConduitDepthPromotePass
         continue;
 
       // Criterion 0: cascade conduits — depth is architecturally fixed at 1.
-      // The cascade stream is a hardware register (rendezvous channel), not a FIFO.
-      // Promoting to depth-2 would emit an incorrect depth attribute that Pass C
-      // cannot implement. Skip silently; do not emit a remark (this is expected).
+      // The cascade stream is a hardware register (rendezvous channel), not a
+      // FIFO. Promoting to depth-2 would emit an incorrect depth attribute that
+      // Pass C cannot implement. Skip silently; do not emit a remark (this is
+      // expected).
       if (auto typedOp = mlir::dyn_cast<Create>(createOp)) {
         if (auto rm = typedOp.getRoutingMode())
           if (*rm == RoutingMode::Cascade)
@@ -371,8 +375,7 @@ struct ConduitDepthPromotePass
       }
 
       // Criterion 1: CSDF / cyclostatic access pattern.
-      if (createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
-              "access_pattern")) {
+      if (createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("access_pattern")) {
         createOp->emitRemark("conduit-depth-promote: skipping '")
             << name << "' -- CSDF access pattern";
         continue;
@@ -388,10 +391,10 @@ struct ConduitDepthPromotePass
       // where P = sum(producer_rates), C = sum(consumer_rates),
       // η = target efficiency (default 1.0 = stall-free).
       int64_t targetDepth = 2;
-      auto prodRatesAttr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
-          "producer_rates");
-      auto consRatesAttr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
-          "consumer_rates");
+      auto prodRatesAttr =
+          createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_rates");
+      auto consRatesAttr =
+          createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_rates");
       if (prodRatesAttr || consRatesAttr) {
         if (!csdfa || !prodRatesAttr || !consRatesAttr) {
           // Flag disabled or incomplete rate annotation — skip as before.
@@ -503,18 +506,19 @@ struct ConduitDepthPromotePass
       }
 
       // Criterion 6: memory budget.
-      auto consTiles = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
-          "consumer_tiles");
+      auto consTiles =
+          createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles");
       auto capAttr = createOp->getAttrOfType<mlir::IntegerAttr>("slot_elems");
-      auto elemTypeAttr = createOp->getAttrOfType<mlir::TypeAttr>(
-          "element_type");
+      auto elemTypeAttr =
+          createOp->getAttrOfType<mlir::TypeAttr>("element_type");
       bool memOverBudget = false;
       if (consTiles && capAttr && elemTypeAttr) {
         int64_t bufBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
         auto tiles = consTiles.asArrayRef();
         for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
           int64_t key = tileKey(tiles[i], tiles[i + 1]);
-          if (tileMemUsed[key] + bufBytes * targetDepth > kDefaultTileMemoryBytes) {
+          if (tileMemUsed[key] + bufBytes * targetDepth >
+              kDefaultTileMemoryBytes) {
             memOverBudget = true;
             break;
           }
@@ -563,13 +567,12 @@ struct ConduitDepthPromotePass
       }
 
       // All checks passed — promote to targetDepth.
-      createOp->setAttr("depth",
-          builder.getI64IntegerAttr(targetDepth));
+      createOp->setAttr("depth", builder.getI64IntegerAttr(targetDepth));
 
       // Scale capacity proportionally (slot_elems = depth * elemCount).
       if (capAttr) {
-        createOp->setAttr("slot_elems",
-            builder.getI64IntegerAttr(capAttr.getInt() * targetDepth));
+        createOp->setAttr("slot_elems", builder.getI64IntegerAttr(
+                                            capAttr.getInt() * targetDepth));
       }
 
       // Update per-tile resource counters.
@@ -580,7 +583,8 @@ struct ConduitDepthPromotePass
           tileLockCount[key] += 1;
           tileBDCount[key] += (targetDepth - 1);
           if (capAttr && elemTypeAttr) {
-            int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
+            int64_t perSlotBytes =
+                estimateSingleSlotBytes(elemTypeAttr.getValue());
             tileMemUsed[key] += perSlotBytes * targetDepth;
           }
         }

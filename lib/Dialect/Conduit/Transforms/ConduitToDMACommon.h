@@ -111,8 +111,8 @@ struct PacketChannelState {
   // Collision probability is negligible for designs with <256^7 tiles.
   static int64_t portKey(mlir::Operation *tileOp, int channel) {
     auto addr = reinterpret_cast<uintptr_t>(tileOp);
-    return static_cast<int64_t>((addr & 0x00FFFFFFFFFFFFFFULL) << 8)
-           | static_cast<int64_t>(channel & 0xFF);
+    return static_cast<int64_t>((addr & 0x00FFFFFFFFFFFFFFULL) << 8) |
+           static_cast<int64_t>(channel & 0xFF);
   }
 };
 
@@ -137,7 +137,7 @@ inline std::pair<int64_t, int64_t> parseTileCoord(llvm::StringRef s) {
 // Populated incrementally across phases:
 //   Phase 1 (Collect): producerTileCoord, consumerTileCoords,
 //       shimConsumerTileCoords, depth, capacity, elemType, accessPattern,
-//       routingMode, hasAllocTile, allocTileCoord, fuseGroup,
+//       routingMode, fuseGroup,
 //       producerTileStr, consumerTileStrs
 //   Phase 2.5 (Collect): effectiveDepth
 //   Phase 3 (Alloc): buffers, prodLock, consLock, aie1Locks,
@@ -166,9 +166,6 @@ struct ConduitInfo {
   std::string routingMode = "circuit";
   // Core stream port index for routing_mode="stream" (-1 if not stream).
   int32_t aieStreamPort = -1;
-  // Alloc tile override from objectfifo.allocate delegate tile.
-  bool hasAllocTile = false;
-  std::pair<int64_t, int64_t> allocTileCoord = {-1, -1};
   // Legacy string form for Link memtile lookup.
   std::string producerTileStr; // "tile(col,row)"
   llvm::SmallVector<std::string> consumerTileStrs;
@@ -261,20 +258,20 @@ struct ConduitInfo {
   // (stack-allocated inside the core body); each conduit is assigned a
   // unique slot index within it.  Using alloca instead of aie.buffer
   // eliminates spurious buffer entries in the device-level IR.
-  mlir::Value rotationBuf;           // shared tile alloca (consumer direction)
-  int64_t rotationBufSlot = 0;       // slot index within that alloca
+  mlir::Value rotationBuf;     // shared tile alloca (consumer direction)
+  int64_t rotationBufSlot = 0; // slot index within that alloca
   llvm::DenseMap<mlir::Value, mlir::Value>
-      consumerTileRotationBufs;      // tile → shared rotation alloca
+      consumerTileRotationBufs; // tile → shared rotation alloca
   llvm::DenseMap<mlir::Value, int64_t>
-      consumerTileRotationBufSlots;  // tile → slot index for this conduit
+      consumerTileRotationBufSlots; // tile → slot index for this conduit
 
   // For depth>1 produce-mode: rotation counter on the producer tile.
-  mlir::Value producerRotationBuf;   // shared tile alloca (producer direction)
+  mlir::Value producerRotationBuf; // shared tile alloca (producer direction)
   int64_t producerRotationBufSlot = 0; // slot index within that alloca
   llvm::DenseMap<mlir::Value, mlir::Value>
-      producerTileRotationBufs;      // tile → shared rotation alloca
+      producerTileRotationBufs; // tile → shared rotation alloca
   llvm::DenseMap<mlir::Value, int64_t>
-      producerTileRotationBufSlots;  // tile → slot index for this conduit
+      producerTileRotationBufSlots; // tile → slot index for this conduit
 
   // --- New feature flags (populated by Phase 1 from conduit.create attrs) ---
 
@@ -286,7 +283,8 @@ struct ConduitInfo {
   // Flows use WireBundle::PLIO and shim_dma_allocation carries {plio = true}.
   bool plio = false;
   // dma_repeat: number of times the DMA engine runs the whole BD chain
-  // (> 0 → DMAStartOp repeat_count = K-1, non-circular BD chain with terminal aie.end).
+  // (> 0 → DMAStartOp repeat_count = K-1, non-circular BD chain with terminal
+  // aie.end).
   int64_t dmaRepeat = 0;
   // bdRepeat: from objectfifo bd_repeat (formerly repeat_count).  BD-level
   // unroll factor: number of times each BD fires before advancing.  0/1 = once.
@@ -308,8 +306,9 @@ struct ConduitInfo {
   // maxConsumerAcquire = 0 for normal SDF/CSDF (full release per step).
   int64_t nConsumerBuffers() const {
     // Annotation-free inference: putCount > 1 with no dma_repeat means N
-    // sequential puts were merged (by --conduit-fuse-channels or Pass B Phase 2d).
-    // dma_repeat wins if set (ObjectFIFO task-queue loops have putCount=1).
+    // sequential puts were merged (by --conduit-fuse-channels or Pass B Phase
+    // 2d). dma_repeat wins if set (ObjectFIFO task-queue loops have
+    // putCount=1).
     if (putCount > 1 && dmaRepeat == 0)
       return putCount;
     int64_t d = depth > 0 ? depth : 1;
@@ -321,9 +320,9 @@ struct ConduitInfo {
   // Compute the producer-side buffer count for this conduit.
   // Mirrors nConsumerBuffers() for the Produce port: when a producer acquires
   // K output slots but releases fewer than K per step, extra slots must be
-  // allocated so the DMA engine can drain one slot while the core holds the rest.
-  // Formula: max(depth, maxProduceAcquire + 1)
-  // maxProduceAcquire = 0 for normal (non-sliding-window) producers.
+  // allocated so the DMA engine can drain one slot while the core holds the
+  // rest. Formula: max(depth, maxProduceAcquire + 1) maxProduceAcquire = 0 for
+  // normal (non-sliding-window) producers.
   int64_t nProducerBuffers() const {
     int64_t d = depth > 0 ? depth : 1;
     if (maxProduceAcquire <= 0)
@@ -420,7 +419,7 @@ struct AsyncAcquireInfo {
 struct ConduitToDMAState {
   // Module and device references.
   mlir::ModuleOp module;
-  AIE::DeviceOp deviceOp;              // first device (primary; for legacy code)
+  AIE::DeviceOp deviceOp; // first device (primary; for legacy code)
   llvm::SmallVector<AIE::DeviceOp> deviceOps; // ALL devices in module order
   mlir::OpBuilder *builder;
   mlir::MLIRContext *ctx;
@@ -629,8 +628,8 @@ struct ConduitToDMAState {
     if (routingMode == "packet") {
       // Allocate a packet flow ID; fail gracefully if budget is exhausted.
       if (!packetIDAllocator) {
-        module.emitError(
-            "internal error: packetIDAllocator not initialized before emitFlow");
+        module.emitError("internal error: packetIDAllocator not initialized "
+                         "before emitFlow");
         passFailed = true;
         return;
       }
@@ -640,22 +639,21 @@ struct ConduitToDMAState {
         return;
       }
       auto pktFlow = builder->create<AIE::PacketFlowOp>(
-          loc,
-          static_cast<int8_t>(*pktID),
+          loc, static_cast<int8_t>(*pktID),
           /*keep_pkt_header=*/mlir::BoolAttr{},
           /*priority_route=*/mlir::BoolAttr{});
       mlir::Region &region = pktFlow.getPorts();
       mlir::Block *block = builder->createBlock(&region);
       builder->setInsertionPointToStart(block);
-      builder->create<AIE::PacketSourceOp>(
-          loc, srcTile, srcBundle, static_cast<int32_t>(srcChan));
+      builder->create<AIE::PacketSourceOp>(loc, srcTile, srcBundle,
+                                           static_cast<int32_t>(srcChan));
       builder->create<AIE::PacketDestOp>(loc, dstTile, dstBundle,
                                          static_cast<int32_t>(dstChan));
       builder->create<AIE::EndOp>(loc);
       builder->setInsertionPointAfter(pktFlow);
     } else {
-      builder->create<AIE::FlowOp>(loc, srcTile, srcBundle,
-                                   srcChan, dstTile, dstBundle, dstChan);
+      builder->create<AIE::FlowOp>(loc, srcTile, srcBundle, srcChan, dstTile,
+                                   dstBundle, dstChan);
     }
   }
 
@@ -691,8 +689,8 @@ struct ConduitToDMAState {
       {
         int lockIdx = lockIdCounter[tileVal]++;
         std::string symName = (prefix + "_cons_lock_0").str();
-        AIE::LockOp lk = builder->create<AIE::LockOp>(
-            loc, tileVal, lockIdx, static_cast<int>(0));
+        AIE::LockOp lk = builder->create<AIE::LockOp>(loc, tileVal, lockIdx,
+                                                      static_cast<int>(0));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         locks.consLock = lk;
       }
@@ -700,8 +698,8 @@ struct ConduitToDMAState {
       for (int64_t i = 0; i < depth; ++i) {
         int lockIdx = lockIdCounter[tileVal]++;
         std::string symName = (prefix + "_lock_" + llvm::Twine(i)).str();
-        AIE::LockOp lk = builder->create<AIE::LockOp>(
-            loc, tileVal, lockIdx, static_cast<int>(0));
+        AIE::LockOp lk = builder->create<AIE::LockOp>(loc, tileVal, lockIdx,
+                                                      static_cast<int>(0));
         lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
         locks.aie1Locks.push_back(lk);
       }
@@ -734,12 +732,11 @@ struct ConduitToDMAState {
   void emitBDBlock(mlir::Location loc, mlir::Block *block, mlir::Value acqLock,
                    int32_t acqVal, mlir::Value buffer, int64_t offset,
                    int64_t len, mlir::Value relLock, int32_t relVal,
-                   AIE::BDDimLayoutArrayAttr dims = {},
-                   int pktID = -1) {
+                   AIE::BDDimLayoutArrayAttr dims = {}, int pktID = -1) {
     if (!buffer) {
       mlir::emitError(loc,
-          "conduit-to-dma: emitBDBlock called with null buffer — "
-          "internal allocation error in Phase 3");
+                      "conduit-to-dma: emitBDBlock called with null buffer — "
+                      "internal allocation error in Phase 3");
       return;
     }
     builder->setInsertionPointToEnd(block);
