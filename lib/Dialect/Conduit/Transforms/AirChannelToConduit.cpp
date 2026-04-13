@@ -92,7 +92,8 @@
 // Known limitations (documented honestly)
 // ----------------------------------------
 // - Only [1,1] scalar channels supported; multi-dimensional indices ignored.
-// - num_elems is computed from static sizes only; dynamic sizes fall back to 1.
+// - num_elems is computed from static sizes only; dynamic sizes emit a hard
+//   error (run --air-hierarchy-to-aie --air-split-devices first to specialize).
 // - Offset/size/stride Index SSA values are extracted when they come from
 //   arith.constant (ConstantIndexOp, ConstantIntOp, or generic ConstantOp with
 //   integer attribute).  Truly dynamic values (loop induction variables, block
@@ -1227,11 +1228,16 @@ struct AirChannelToConduitPass
         int64_t numElems = computeNumElems(sizesRange);
         if (sizesRange.empty() && memrefType && memrefType.hasStaticShape()) {
           numElems = memrefType.getNumElements();
-        } else if (numElems == 0) {
-          numElems = 1; // fallback for dynamic
-          op->emitWarning()
-              << "AirChannelToConduit: channel @" << chanName
-              << " has all-dynamic sizes; num_elems defaulting to 1";
+        } else if (numElems == 0 ||
+                   (sizesRange.empty() && memrefType &&
+                    !memrefType.hasStaticShape())) {
+          op->emitError(
+              "dynamic channel size not supported in "
+              "--air-channel-to-conduit; run --air-hierarchy-to-aie "
+              "--air-split-devices before this pass to specialize channel "
+              "sizes");
+          signalPassFailure();
+          continue;
         }
 
         // Determine routing mode first — cascade channels skip the
