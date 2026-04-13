@@ -1547,16 +1547,128 @@ struct ObjectFifoToConduitPass
       }
     }
 
-    // Erase objectfifo.allocate ops (alloc_tile attr removed from dialect).
-    // Erasure order matters: ObjectFifoAllocateOp's verifier does a
-    // symbol-table lookup for the referenced ObjectFifoCreateOp.  If we
-    // erase the create op first, any surviving allocate op fires the
-    // verifier.  Fix: erase all allocate ops before erasing the create ops.
+    // Phase 4.6: alloc_tile → scatter{N=1} lowering.
+    //
+    // An aie.objectfifo.allocate @fifo (%memtile) directive means "allocate
+    // @fifo's buffers on %memtile's memory module instead of the default
+    // tile."  When the delegate is a MemTile (row==1), this is semantically
+    // equivalent to a 1:1 relay through the MemTile — the producer writes
+    // into the MemTile, and the MemTile forwards to the original consumers.
+    //
+    // Lower this to:
+    //   1. Update @fifo's consumer_tiles to point at the MemTile.
+    //   2. Create @fifo_relay with producer_tile=MemTile, consumer_tiles=orig.
+    //   3. Emit conduit.scatter { src=@fifo, dsts=[@fifo_relay] }.
+    //   4. Rewrite consumer-side Acquire/AcquireAsync/ReleaseAsync ops from
+    //      @fifo to @fifo_relay.
+    //
+    // For non-MemTile delegates (row>1): emit a warning and erase — the
+    // existing test corpus only uses compute-tile delegates for buffer
+    // coalescing, which the oracle already handles without relay.
     llvm::SmallVector<AIE::ObjectFifoAllocateOp> allocatesToErase;
     module.walk(
         [&](AIE::ObjectFifoAllocateOp op) { allocatesToErase.push_back(op); });
-    for (AIE::ObjectFifoAllocateOp op : allocatesToErase)
-      op.erase();
+    for (AIE::ObjectFifoAllocateOp allocOp : allocatesToErase) {
+      auto delegateTile = allocOp.getDelegateTileOp();
+      int64_t delegateCol = delegateTile.getCol();
+      int64_t delegateRow = delegateTile.getRow();
+
+      if (delegateRow != 1) {
+        // Non-MemTile delegate: emit warning and erase (current behavior).
+        allocOp.emitWarning(
+            "objectfifo-to-conduit: ignoring objectfifo.allocate with "
+            "non-MemTile delegate tile (row=")
+            << delegateRow
+            << "); only MemTile (row=1) delegates are "
+               "lowered to scatter{N=1} relays";
+        allocOp.erase();
+        continue;
+      }
+
+      // MemTile delegate (row==1): emit scatter{N=1} relay.
+      std::string fifoName = allocOp.getObjFifoName().str();
+      std::string relayName = fifoName + "_relay";
+
+      // Find the conduit.create for this objectfifo.
+      Create srcCreateOp = nullptr;
+      module.walk([&](Create createOp) {
+        if (createOp.getSymName() == fifoName)
+          srcCreateOp = createOp;
+      });
+      if (!srcCreateOp) {
+        allocOp.emitWarning(
+            "objectfifo-to-conduit: cannot find conduit.create for '")
+            << fifoName << "'; skipping alloc_tile lowering";
+        allocOp.erase();
+        continue;
+      }
+
+      // Save the original consumer_tiles before overwriting.
+      llvm::SmallVector<int64_t> origConsumerTilesVec;
+      if (auto ct = srcCreateOp.getConsumerTiles()) {
+        for (int64_t v : *ct)
+          origConsumerTilesVec.push_back(v);
+      }
+
+      // Step 1: Redirect @fifo's consumers to the MemTile.
+      llvm::SmallVector<int64_t> memtileConsumer = {delegateCol, delegateRow};
+      srcCreateOp.setConsumerTilesAttr(
+          mlir::DenseI64ArrayAttr::get(ctx, memtileConsumer));
+
+      // Step 2: Create @fifo_relay conduit.create with same characteristics.
+      llvm::SmallVector<int64_t> relayProducerTile = {delegateCol, delegateRow};
+      builder.setInsertionPointAfter(srcCreateOp);
+      builder.create<Create>(
+          srcCreateOp.getLoc(), mlir::StringAttr::get(ctx, relayName),
+          srcCreateOp.getSlotElemsAttr(),
+          /*sync_mode=*/SyncModeAttr{},
+          /*window_size=*/mlir::IntegerAttr{},
+          mlir::DenseI64ArrayAttr::get(ctx, relayProducerTile),
+          mlir::DenseI64ArrayAttr::get(ctx, origConsumerTilesVec),
+          srcCreateOp.getElementTypeAttr(), srcCreateOp.getDepthAttr(),
+          /*routing_mode=*/RoutingModeAttr{},
+          /*producer_rates=*/nullptr,
+          /*consumer_rates=*/nullptr,
+          /*bd_repeat=*/nullptr,
+          /*disable_synchronization=*/nullptr,
+          /*viaDMA=*/nullptr,
+          /*plio=*/nullptr,
+          /*dma_repeat=*/nullptr,
+          /*producer_dimensions=*/nullptr,
+          /*consumer_dimensions=*/nullptr);
+
+      // Step 3: Emit conduit.scatter { src=@fifo, dsts=[@fifo_relay] }.
+      std::string memtileStr;
+      {
+        llvm::raw_string_ostream os(memtileStr);
+        os << "tile(" << delegateCol << "," << delegateRow << ")";
+      }
+      mlir::FlatSymbolRefAttr srcRef =
+          mlir::FlatSymbolRefAttr::get(ctx, fifoName);
+      mlir::ArrayAttr dstsArr = mlir::ArrayAttr::get(
+          ctx, {mlir::FlatSymbolRefAttr::get(ctx, relayName)});
+      mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
+      builder.create<ScatterOp>(srcCreateOp.getLoc(), srcRef, dstsArr,
+                                memtileAttr,
+                                /*offsets=*/nullptr, /*lock_id=*/nullptr,
+                                /*sync_mode=*/SyncModeAttr{});
+
+      // Step 4: Rewrite consumer-side ops from @fifo to @fifo_relay.
+      mlir::FlatSymbolRefAttr origNameRef =
+          mlir::FlatSymbolRefAttr::get(ctx, fifoName);
+      mlir::FlatSymbolRefAttr relayRef =
+          mlir::FlatSymbolRefAttr::get(ctx, relayName);
+      auto rewriteConsumer = [&](auto walkOp) {
+        if (walkOp.getNameAttr() == origNameRef &&
+            walkOp.getPort() == Port::Consume)
+          walkOp.setNameAttr(relayRef);
+      };
+      module.walk([&](Acquire op) { rewriteConsumer(op); });
+      module.walk([&](AcquireAsync op) { rewriteConsumer(op); });
+      module.walk([&](ReleaseAsync op) { rewriteConsumer(op); });
+
+      allocOp.erase();
+    }
 
     for (AIE::ObjectFifoCreateOp op : fifosToErase)
       op.erase();

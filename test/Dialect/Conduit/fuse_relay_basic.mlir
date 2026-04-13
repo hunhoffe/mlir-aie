@@ -68,3 +68,32 @@ func.func @no_fuse_intermediate_has_users() {
   return
 }
 }
+
+// -----
+
+// Negative test: budget overflow — 6 srcs * 6 dsts = 36 > 32 (packet ID limit).
+// The pass should NOT fuse even though gather.dst == scatter.src and same memtile.
+
+aie.device(npu1) {
+conduit.create @s0 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @s1 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @s2 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @s3 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @s4 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @s5 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @mid {slot_elems = 96 : i64, depth = 0 : i64}
+conduit.create @d0 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @d1 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @d2 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @d3 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @d4 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @d5 {slot_elems = 16 : i64, depth = 0 : i64}
+// CHECK-LABEL: func.func @no_fuse_budget_overflow
+// CHECK:       conduit.gather
+// CHECK:       conduit.scatter
+func.func @no_fuse_budget_overflow() {
+  conduit.gather{srcs = [@s0, @s1, @s2, @s3, @s4, @s5], dst = @mid {memtile = "tile(0,1)"}}
+  conduit.scatter{src = @mid, dsts = [@d0, @d1, @d2, @d3, @d4, @d5] {memtile = "tile(0,1)"}}
+  return
+}
+}
