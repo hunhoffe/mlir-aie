@@ -78,6 +78,9 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "ConduitTileInference.h"
+
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -223,26 +226,44 @@ struct ConduitFuseChannelsPass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
+    // Infer tile coordinates from IR structure.
+    auto inferredMap = inferAllTiles(module);
+    auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
+      if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
+        return {static_cast<int64_t>(tileOp.getCol()),
+                static_cast<int64_t>(tileOp.getRow())};
+      return {-1, -1};
+    };
+
     // -----------------------------------------------------------------------
     // MM2S Live-Interval Fusion
     //
-    // Groups conduit.create ops by producer_tile and fuses them using greedy
+    // Groups conduit.create ops by producer tile and fuses them using greedy
     // interval coloring when their live intervals are non-overlapping in a
     // basic block.
     // -----------------------------------------------------------------------
 
-    // Step 1: collect conduit.create ops grouped by producer_tile [col, row].
+    // Step 1: collect conduit.create ops grouped by producer tile [col, row].
+    // Prefer inferred tile coordinates; fallback to producer_tile attribute
+    // for cascade channels or hand-written IR outside aie.core.
     // DenseMapInfo for std::pair<int64_t,int64_t> is provided by LLVM.
     llvm::DenseMap<std::pair<int64_t, int64_t>,
                    llvm::SmallVector<ConduitInfo, 4>>
         tileGroups;
 
     module.walk([&](Create createOp) {
-      auto tileAttr = createOp.getProducerTile();
-      if (!tileAttr || tileAttr->size() != 2)
+      int64_t col = -1, row = -1;
+      auto tileIt = inferredMap.find(createOp.getName().str());
+      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
+        std::tie(col, row) = extractCoord(tileIt->second.producerTile);
+      } else if (auto tileAttr = createOp.getProducerTile()) {
+        if (tileAttr->size() >= 2) {
+          col = (*tileAttr)[0];
+          row = (*tileAttr)[1];
+        }
+      }
+      if (col < 0 || row < 0)
         return;
-      int64_t col = (*tileAttr)[0];
-      int64_t row = (*tileAttr)[1];
       // Shim tiles (row == 0) use a separate DMA model; exclude them.
       if (row == 0)
         return;
