@@ -36,6 +36,8 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "ConduitTileInference.h"
+
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -100,6 +102,15 @@ struct ConduitCheckOrderingPass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
+    // Infer tile coordinates from IR structure.
+    auto inferredMap = inferAllTiles(module);
+    auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
+      if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
+        return {static_cast<int64_t>(tileOp.getCol()),
+                static_cast<int64_t>(tileOp.getRow())};
+      return {-1, -1};
+    };
+
     // Step 1: Collect DMA-only channels with rate annotations.
     llvm::SmallVector<ChannelInfo> channels;
 
@@ -121,17 +132,28 @@ struct ConduitCheckOrderingPass
       info.createOp = op.getOperation();
       info.name = name;
 
-      // Extract tile coordinates.
+      // Extract tile coordinates: prefer inference, fallback to attribute
+      // for cascade channels or hand-written IR outside aie.core.
       info.producerTileKey = -1;
-      if (auto pt =
-              op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-        auto arr = pt.asArrayRef();
-        if (arr.size() >= 2)
-          info.producerTileKey = tileKey(arr[0], arr[1]);
+      auto tileIt = inferredMap.find(name.str());
+      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
+        auto [col, row] = extractCoord(tileIt->second.producerTile);
+        if (col >= 0)
+          info.producerTileKey = tileKey(col, row);
+      } else if (auto pt = op.getProducerTile()) {
+        if (pt->size() >= 2)
+          info.producerTileKey = tileKey((*pt)[0], (*pt)[1]);
       }
-      if (auto ct =
-              op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
-        auto arr = ct.asArrayRef();
+
+      if (tileIt != inferredMap.end() &&
+          !tileIt->second.consumerTiles.empty()) {
+        for (mlir::Value tv : tileIt->second.consumerTiles) {
+          auto [col, row] = extractCoord(tv);
+          if (col >= 0)
+            info.consumerTileKeys.push_back(tileKey(col, row));
+        }
+      } else if (auto ct = op.getConsumerTiles()) {
+        auto arr = *ct;
         for (size_t i = 0; i + 1 < arr.size(); i += 2)
           info.consumerTileKeys.push_back(tileKey(arr[i], arr[i + 1]));
       }
