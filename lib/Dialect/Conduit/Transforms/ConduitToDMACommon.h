@@ -126,8 +126,7 @@ struct PacketChannelState {
 // Populated incrementally across phases:
 //   Phase 1 (Collect): producerTileCoord, consumerTileCoords,
 //       shimConsumerTileCoords, depth, capacity, elemType, accessPattern,
-//       routingMode, fuseGroup,
-//       producerTileStr, consumerTileStrs
+//       routingMode, fuseGroup
 //   Phase 2.5 (Collect): effectiveDepth
 //   Phase 3 (Alloc): buffers, prodLock, consLock, aie1Locks,
 //       consumerTileLocks, consumerTileBuffers, consumerTileAIE1Locks,
@@ -155,9 +154,6 @@ struct ConduitInfo {
   std::string routingMode = "circuit";
   // Core stream port index for routing_mode="stream" (-1 if not stream).
   int32_t aieStreamPort = -1;
-  // Legacy string form for Link memtile lookup.
-  std::string producerTileStr; // "tile(col,row)"
-  llvm::SmallVector<std::string> consumerTileStrs;
   // DMA channel fusion group label (from --conduit-fuse-channels annotation).
   std::string fuseGroup;
 
