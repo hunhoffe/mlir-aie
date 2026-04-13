@@ -236,30 +236,69 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
   // plio verifier: plio=true requires a shim-row (row == 0) endpoint — either
   // the producer tile or at least one consumer tile must be on the shim row.
   //
-  // Caveat: inside a DeviceOp, Pass A records shim consumers via
-  // aie.shim_dma_allocation ops rather than consumer_tiles.  We cannot do a
-  // module-level walk in the verifier, so skip the consumer-tiles check when
-  // inside a DeviceOp (trust Pass A correctness).  For hand-written IR
-  // outside a DeviceOp, consumer_tiles is the authoritative list.
+  // Inside a DeviceOp (enforced by HasParent<DeviceOp>), the producer tile
+  // is inferred by walking aie.core ops for Acquire(Port::Produce) or by
+  // checking aie.shim_dma_allocation ops.  Falls back to producer_tile attr
+  // for cascade channels.
   //
-  // NOTE: Since Phase 9 enforces HasParent<DeviceOp> on conduit.create, the
-  // !insideDevice branch below is effectively dead code for valid IR — all
-  // conduit.create ops are now required to be inside a DeviceOp.  The branch
-  // is retained as a safety net for test contexts that may construct ops
-  // outside DeviceOp programmatically.
+  // Shim consumers inside a DeviceOp are identified via
+  // aie.shim_dma_allocation ops (set by Pass A) — the consumer-tiles check
+  // is skipped when inside a DeviceOp (trust Pass A correctness).
   if (auto plioAttr = getPlio()) {
     if (*plioAttr) {
       bool producerIsShim = false;
-      if (auto tileArr = getProducerTile()) {
-        auto arr = *tileArr;
-        if (arr.size() >= 2 && arr[1] == 0)
-          producerIsShim = true;
+
+      // Try to infer producer tile from the enclosing DeviceOp.
+      auto deviceOp =
+          getOperation()->getParentOfType<xilinx::AIE::DeviceOp>();
+      if (deviceOp) {
+        llvm::StringRef chanName = getName();
+        deviceOp->walk([&](AIE::CoreOp coreOp) {
+          if (producerIsShim)
+            return;
+          mlir::Value tileVal = coreOp.getTile();
+          if (!tileVal)
+            return;
+          coreOp.walk([&](Acquire acqOp) {
+            if (acqOp.getPort() == Port::Produce &&
+                acqOp.getName() == chanName) {
+              if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
+                producerIsShim = (tileOp.getRow() == 0);
+            }
+          });
+        });
+        // Also check shim_dma_allocation MM2S for shim producer.
+        if (!producerIsShim) {
+          deviceOp->walk([&](AIE::ShimDMAAllocationOp shimOp) {
+            if (producerIsShim)
+              return;
+            if (shimOp.getChannelDir() != AIE::DMAChannelDir::MM2S)
+              return;
+            // Match via conduit_channel attr or sym_name.
+            if (auto ccAttr = shimOp->getAttrOfType<mlir::FlatSymbolRefAttr>(
+                    "conduit_channel")) {
+              if (ccAttr.getValue() == chanName)
+                producerIsShim = true;
+            } else if (shimOp.getSymName() == chanName) {
+              producerIsShim = true;
+            }
+          });
+        }
       }
+      // Fallback to producer_tile attribute (cascade channels, hand-written IR).
       if (!producerIsShim) {
-        bool insideDevice =
-            getOperation()->getParentOfType<xilinx::AIE::DeviceOp>() != nullptr;
-        if (!insideDevice) {
-          // Hand-written IR: consumer_tiles is authoritative.
+        if (auto tileArr = getProducerTile()) {
+          auto arr = *tileArr;
+          if (arr.size() >= 2 && arr[1] == 0)
+            producerIsShim = true;
+        }
+      }
+
+      if (!producerIsShim) {
+        if (!deviceOp) {
+          // Outside DeviceOp (dead code for valid IR after HasParent
+          // enforcement, retained as safety net): consumer_tiles is
+          // authoritative.
           bool consumerHasShim = false;
           if (auto consArr = getConsumerTiles()) {
             auto arr = *consArr;
