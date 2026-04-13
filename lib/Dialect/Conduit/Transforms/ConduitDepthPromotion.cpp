@@ -42,6 +42,8 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "ConduitTileInference.h"
+
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
@@ -291,6 +293,15 @@ struct ConduitDepthPromotePass
       }
     });
 
+    // Infer tile coordinates from IR structure for budget checks.
+    auto inferredMap = inferAllTiles(module);
+    auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
+      if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
+        return {static_cast<int64_t>(tileOp.getCol()),
+                static_cast<int64_t>(tileOp.getRow())};
+      return {-1, -1};
+    };
+
     // Step 4: Per-tile resource counters for budget checks.
     // key = (col, row) packed as int64_t
     auto tileKey = [](int64_t col, int64_t row) -> int64_t {
@@ -300,7 +311,7 @@ struct ConduitDepthPromotePass
     llvm::DenseMap<int64_t, int64_t> tileBDCount;
     llvm::DenseMap<int64_t, int64_t> tileMemUsed;
 
-    // Pre-populate from existing conduit.create ops.
+    // Pre-populate from existing conduit.create ops using inferred tiles.
     module.walk([&](Create op) {
       // Cascade conduits use no buffers, locks, or BDs — skip resource
       // counting.
@@ -310,38 +321,47 @@ struct ConduitDepthPromotePass
 
       auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
       int64_t depth = depthAttr ? depthAttr.getInt() : 1;
-      auto consTiles =
-          op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles");
-      auto prodTile =
-          op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile");
       auto capAttr = op->getAttrOfType<mlir::IntegerAttr>("slot_elems");
       auto elemTypeAttr = op->getAttrOfType<mlir::TypeAttr>("element_type");
 
+      // Get consumer tile coords: prefer inference, fallback to attribute
+      // for channels outside aie.core (e.g. in func.func or hand-written IR).
+      llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
+      auto tileIt = inferredMap.find(op.getName().str());
+      if (tileIt != inferredMap.end() && !tileIt->second.consumerTiles.empty()) {
+        for (mlir::Value tv : tileIt->second.consumerTiles) {
+          auto [col, row] = extractCoord(tv);
+          if (col >= 0)
+            consCoords.push_back({col, row});
+        }
+      } else if (auto ct = op.getConsumerTiles()) {
+        for (size_t i = 0; i + 1 < ct->size(); i += 2)
+          consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+      }
+
       // Estimate per-consumer resources.
-      if (consTiles) {
-        auto tiles = consTiles.asArrayRef();
-        for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
-          int64_t key = tileKey(tiles[i], tiles[i + 1]);
-          tileLockCount[key] += 2; // prod + cons lock pair
-          tileBDCount[key] += depth;
-          if (capAttr && elemTypeAttr) {
-            int64_t perSlotBytes =
-                estimateSingleSlotBytes(elemTypeAttr.getValue());
-            // Use the conduit's actual depth, not a hardcoded constant.
-            // Using 2 here underestimates memory for depth>2 conduits, which
-            // allows promotion past the tile memory budget.
-            tileMemUsed[key] += perSlotBytes * depth;
-          }
+      for (auto [col, row] : consCoords) {
+        int64_t key = tileKey(col, row);
+        tileLockCount[key] += 2; // prod + cons lock pair
+        tileBDCount[key] += depth;
+        if (capAttr && elemTypeAttr) {
+          int64_t perSlotBytes =
+              estimateSingleSlotBytes(elemTypeAttr.getValue());
+          tileMemUsed[key] += perSlotBytes * depth;
         }
       }
       // Producer tile also uses resources for non-shim.
-      if (prodTile) {
-        auto pt = prodTile.asArrayRef();
-        if (pt.size() >= 2 && pt[1] != 0) { // non-shim
-          int64_t key = tileKey(pt[0], pt[1]);
-          tileLockCount[key] += 2;
-          tileBDCount[key] += depth;
-        }
+      std::pair<int64_t, int64_t> prodCoord = {-1, -1};
+      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
+        prodCoord = extractCoord(tileIt->second.producerTile);
+      } else if (auto pt = op.getProducerTile()) {
+        if (pt->size() >= 2)
+          prodCoord = {(*pt)[0], (*pt)[1]};
+      }
+      if (prodCoord.first >= 0 && prodCoord.second != 0) { // non-shim
+        int64_t key = tileKey(prodCoord.first, prodCoord.second);
+        tileLockCount[key] += 2;
+        tileBDCount[key] += depth;
       }
     });
 
@@ -505,18 +525,38 @@ struct ConduitDepthPromotePass
         continue;
       }
 
+      // Look up consumer tile coordinates: prefer inference, fallback to
+      // attribute for channels outside aie.core.
+      llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
+      {
+        auto tileIt = inferredMap.find(name);
+        if (tileIt != inferredMap.end() &&
+            !tileIt->second.consumerTiles.empty()) {
+          for (mlir::Value tv : tileIt->second.consumerTiles) {
+            auto [col, row] = extractCoord(tv);
+            if (col >= 0)
+              consCoords.push_back({col, row});
+          }
+        } else {
+          auto typedCreate = mlir::dyn_cast<Create>(createOp);
+          if (typedCreate) {
+            if (auto ct = typedCreate.getConsumerTiles()) {
+              for (size_t i = 0; i + 1 < ct->size(); i += 2)
+                consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+            }
+          }
+        }
+      }
+
       // Criterion 6: memory budget.
-      auto consTiles =
-          createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles");
       auto capAttr = createOp->getAttrOfType<mlir::IntegerAttr>("slot_elems");
       auto elemTypeAttr =
           createOp->getAttrOfType<mlir::TypeAttr>("element_type");
       bool memOverBudget = false;
-      if (consTiles && capAttr && elemTypeAttr) {
+      if (!consCoords.empty() && capAttr && elemTypeAttr) {
         int64_t bufBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
-        auto tiles = consTiles.asArrayRef();
-        for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
-          int64_t key = tileKey(tiles[i], tiles[i + 1]);
+        for (auto [col, row] : consCoords) {
+          int64_t key = tileKey(col, row);
           if (tileMemUsed[key] + bufBytes * targetDepth >
               kDefaultTileMemoryBytes) {
             memOverBudget = true;
@@ -531,11 +571,10 @@ struct ConduitDepthPromotePass
       }
 
       // Criterion 7: AIE1 lock budget.
-      if (isAIE1 && consTiles) {
+      if (isAIE1 && !consCoords.empty()) {
         bool lockOverBudget = false;
-        auto tiles = consTiles.asArrayRef();
-        for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
-          int64_t key = tileKey(tiles[i], tiles[i + 1]);
+        for (auto [col, row] : consCoords) {
+          int64_t key = tileKey(col, row);
           if (tileLockCount[key] + 1 > kAIE1MaxLocksPerTile) {
             lockOverBudget = true;
             break;
@@ -549,11 +588,10 @@ struct ConduitDepthPromotePass
       }
 
       // Criterion 8: BD budget.
-      if (consTiles) {
+      if (!consCoords.empty()) {
         bool bdOverBudget = false;
-        auto tiles = consTiles.asArrayRef();
-        for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
-          int64_t key = tileKey(tiles[i], tiles[i + 1]);
+        for (auto [col, row] : consCoords) {
+          int64_t key = tileKey(col, row);
           if (tileBDCount[key] + (targetDepth - 1) > kMaxBDSlotsPerTile) {
             bdOverBudget = true;
             break;
@@ -576,17 +614,14 @@ struct ConduitDepthPromotePass
       }
 
       // Update per-tile resource counters.
-      if (consTiles) {
-        auto tiles = consTiles.asArrayRef();
-        for (size_t i = 0; i + 1 < tiles.size(); i += 2) {
-          int64_t key = tileKey(tiles[i], tiles[i + 1]);
-          tileLockCount[key] += 1;
-          tileBDCount[key] += (targetDepth - 1);
-          if (capAttr && elemTypeAttr) {
-            int64_t perSlotBytes =
-                estimateSingleSlotBytes(elemTypeAttr.getValue());
-            tileMemUsed[key] += perSlotBytes * targetDepth;
-          }
+      for (auto [col, row] : consCoords) {
+        int64_t key = tileKey(col, row);
+        tileLockCount[key] += 1;
+        tileBDCount[key] += (targetDepth - 1);
+        if (capAttr && elemTypeAttr) {
+          int64_t perSlotBytes =
+              estimateSingleSlotBytes(elemTypeAttr.getValue());
+          tileMemUsed[key] += perSlotBytes * targetDepth;
         }
       }
 
