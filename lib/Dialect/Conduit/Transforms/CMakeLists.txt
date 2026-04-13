@@ -24,6 +24,7 @@ add_mlir_dialect_library(ConduitTransforms
   ConduitMaterializeBuffers.cpp
   ConduitPairingCheck.cpp
   ConduitPlaceBuffers.cpp
+  ConduitTileInference.cpp
   ConduitToDMAAlloc.cpp
   ConduitToDMACollect.cpp
   ConduitToDMALink.cpp

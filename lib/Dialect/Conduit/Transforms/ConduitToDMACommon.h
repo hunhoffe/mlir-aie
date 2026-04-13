@@ -17,6 +17,8 @@
 #ifndef AIE_DIALECT_CONDUIT_TRANSFORMS_CONDUITTODMACOMMON_H
 #define AIE_DIALECT_CONDUIT_TRANSFORMS_CONDUITTODMACOMMON_H
 
+#include "ConduitTileInference.h"
+
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
@@ -116,20 +118,7 @@ struct PacketChannelState {
   }
 };
 
-// ---------------------------------------------------------------------------
-// Helper: parse "tile(col,row)" → (col, row).  Returns {-1,-1} on failure.
-// ---------------------------------------------------------------------------
-inline std::pair<int64_t, int64_t> parseTileCoord(llvm::StringRef s) {
-  if (!s.starts_with("tile("))
-    return {-1, -1};
-  s = s.drop_front(5); // drop "tile("
-  s = s.drop_back(1);  // drop ")"
-  auto [colStr, rowStr] = s.split(',');
-  int64_t col, row;
-  if (colStr.getAsInteger(10, col) || rowStr.getAsInteger(10, row))
-    return {-1, -1};
-  return {col, row};
-}
+// parseTileCoord is defined in ConduitTileInference.h (included above).
 
 // ---------------------------------------------------------------------------
 // Per-conduit info gathered from conduit.create typed attributes.
