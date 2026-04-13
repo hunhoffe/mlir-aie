@@ -282,7 +282,7 @@ module @test_multicast_uniform_dims {
                     consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    consumer_dimensions = [[1 : i64, 2 : i64], [1 : i64, 2 : i64], [1 : i64, 2 : i64]]
+                    consumer_dimensions = #aie<bd_dim_layout_array_array[[<size = 1, stride = 2>], [<size = 1, stride = 2>], [<size = 1, stride = 2>]]>
                     }
   }
 }
@@ -310,7 +310,7 @@ module @test_multicast_nonuniform_dims {
                     consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    consumer_dimensions = [[1 : i64, 2 : i64], [3 : i64, 4 : i64], [1 : i64, 2 : i64]]
+                    consumer_dimensions = #aie<bd_dim_layout_array_array[[<size = 1, stride = 2>], [<size = 3, stride = 4>], [<size = 1, stride = 2>]]>
                     }
   }
 }

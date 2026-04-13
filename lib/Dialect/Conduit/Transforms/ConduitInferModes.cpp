@@ -218,12 +218,14 @@ struct ConduitInferModesPass
       // -----------------------------------------------------------------------
       if (ct && ct->size() > 2) {
         bool uniform = true;
-        if (auto cdAttr =
-                op->getAttrOfType<mlir::ArrayAttr>("consumer_dimensions")) {
-          for (size_t i = 1; i < cdAttr.size(); ++i) {
-            if (cdAttr[i] != cdAttr[0]) {
-              uniform = false;
-              break;
+        if (auto cdRaw = op.getConsumerDimensions()) {
+          if (auto cdAttr = mlir::dyn_cast<xilinx::AIE::BDDimLayoutArrayArrayAttr>(*cdRaw)) {
+            auto vals = cdAttr.getValue();
+            for (size_t i = 1; i < vals.size(); ++i) {
+              if (vals[i] != vals[0]) {
+                uniform = false;
+                break;
+              }
             }
           }
         }

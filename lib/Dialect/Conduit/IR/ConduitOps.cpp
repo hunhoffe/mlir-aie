@@ -229,34 +229,9 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
   // M5: routing_mode is now an ODS enum (RoutingModeAttr) — invalid values are
   // rejected by the parser before the verifier runs. No explicit check needed.
 
-  // B-5: producer_dimensions / consumer_dimensions type guard.
-  //
-  // Both attributes are stored as AnyAttr to avoid a cross-dialect TableGen
-  // dependency on AIE::BDDimLayoutArrayAttr / AIE::BDDimLayoutArrayArrayAttr.
-  //
-  // AIE::BDDimLayoutArrayAttr is NOT a subclass of mlir::ArrayAttr — it is a
-  // custom attribute defined with ArrayOfAttr<> in TableGen, which produces
-  // its own C++ class.  Therefore mlir::isa<mlir::ArrayAttr>() cannot be used
-  // to validate it from this file (which does not include the AIE dialect).
-  //
-  // The minimal safe check: reject obviously wrong scalar attribute types
-  // (StringAttr, IntegerAttr) that can NEVER be valid BDDimLayout descriptors
-  // and would cause a crash when Pass C attempts to cast the attribute.
-  // Valid BDDimLayoutArrayAttr attributes will always pass this check.
-  if (auto prodDimsAttr = getProducerDimensions()) {
-    if (mlir::isa<mlir::StringAttr, mlir::IntegerAttr>(*prodDimsAttr))
-      return emitOpError(
-          "producer_dimensions must be an AIE::BDDimLayoutArrayAttr; "
-          "got a scalar attribute — was this conduit.create round-tripped "
-          "without the AIE dialect loaded?");
-  }
-  if (auto consDimsAttr = getConsumerDimensions()) {
-    if (mlir::isa<mlir::StringAttr, mlir::IntegerAttr>(*consDimsAttr))
-      return emitOpError(
-          "consumer_dimensions must be an AIE::BDDimLayoutArrayArrayAttr; "
-          "got a scalar attribute — was this conduit.create round-tripped "
-          "without the AIE dialect loaded?");
-  }
+  // B-5: producer_dimensions / consumer_dimensions type checking is now
+  // enforced by ODS (BDDimLayoutArrayAttr / BDDimLayoutArrayArrayAttr
+  // constraints in Conduit.td). Invalid types are rejected at parse time.
 
   // plio verifier: plio=true requires a shim-row (row == 0) endpoint — either
   // the producer tile or at least one consumer tile must be on the shim row.

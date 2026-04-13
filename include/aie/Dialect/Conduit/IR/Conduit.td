@@ -124,6 +124,29 @@ include "mlir/IR/EnumAttr.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+// Custom attribute constraints for AIE BD dimension layout attrs.
+// Conduit depends on AIE at C++ level (ConduitDialect.h includes AIEDialect.h),
+// so the C++ types are available.  We define CPred-based constraints here
+// instead of including AIEAttrs.td to avoid TableGen re-generating AIE enums
+// in Conduit's .inc files (which causes redefinition errors).
+def AIE_BDDimLayoutArrayAttr : Attr<
+    CPred<"::llvm::isa<::xilinx::AIE::BDDimLayoutArrayAttr>($_self)">,
+    "AIE::BDDimLayoutArrayAttr"> {
+  let storageType = [{ ::mlir::Attribute }];
+  let returnType = [{ ::mlir::Attribute }];
+  let convertFromStorage = "$_self";
+  let constBuilderCall = "$0";
+}
+
+def AIE_BDDimLayoutArrayArrayAttr : Attr<
+    CPred<"::llvm::isa<::xilinx::AIE::BDDimLayoutArrayArrayAttr>($_self)">,
+    "AIE::BDDimLayoutArrayArrayAttr"> {
+  let storageType = [{ ::mlir::Attribute }];
+  let returnType = [{ ::mlir::Attribute }];
+  let convertFromStorage = "$_self";
+  let constBuilderCall = "$0";
+}
+
 // ---------------------------------------------------------------------------
 // Dialect definition
 // ---------------------------------------------------------------------------
@@ -455,30 +478,10 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
                        // Pass A propagates from objectfifo.create iter_count.
                        OptionalAttr<I64Attr>:$dma_repeat,
                        // producer_dimensions: BDDimLayout traversal descriptor for
-                       // the producer (MM2S) DMA BD chain. Stored as AnyAttr
-                       // (AIE::BDDimLayoutArrayAttr at runtime) to avoid a cross-dialect
-                       // TableGen dependency on the AIE dialect.
-                       //
-                       // LIMITATION (B-5): Using AnyAttr means the TableGen-generated
-                       // parser/printer accepts any attribute here, so the type is NOT
-                       // enforced at the IR level. Round-tripping through aie-opt
-                       // --mlir-print-op-generic when the AIE dialect is NOT loaded
-                       // will lose the BDDimLayout structure (printed as opaque).
-                       // When the AIE dialect IS loaded (normal usage), the attribute
-                       // round-trips correctly.
-                       //
-                       // The Create::verify() in ConduitOps.cpp emits a clear error if
-                       // the attribute is present but not a BDDimLayoutArrayAttr at runtime,
-                       // preventing a silent cast failure downstream in Pass C.
-                       //
-                       // Future fix: once mlir-aie provides a stable C++ API for
-                       // BDDimLayoutArrayAttr without requiring AIE dialect inclusion at
-                       // TableGen time, change AnyAttr to the proper constrained type.
-                       OptionalAttr<AnyAttr>:$producer_dimensions,
+                       // the producer (MM2S) DMA BD chain.
+                       OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions,
                        // consumer_dimensions: per-consumer BDDimLayout array.
-                       // Stored as AnyAttr (AIE::BDDimLayoutArrayArrayAttr at runtime).
-                       // Same AnyAttr limitation as producer_dimensions above.
-                       OptionalAttr<AnyAttr>:$consumer_dimensions
+                       OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions
   );
   // Print as: conduit.create @sym_name { slot_elems = ..., ... }
   // sym_name is consumed by $sym_name so attr-dict omits it automatically.
