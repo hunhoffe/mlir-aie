@@ -43,6 +43,8 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "ConduitTileInference.h"
+
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
@@ -199,6 +201,15 @@ struct ConduitCheckChannelsPass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
+    // Infer tile coordinates from IR structure.
+    auto inferredMap = inferAllTiles(module);
+    auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
+      if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
+        return {static_cast<int64_t>(tileOp.getCol()),
+                static_cast<int64_t>(tileOp.getRow())};
+      return {-1, -1};
+    };
+
     // Find the first aie.device op (needed for target model).
     AIE::DeviceOp deviceOp;
     module.walk([&](AIE::DeviceOp op) {
@@ -241,32 +252,48 @@ struct ConduitCheckChannelsPass
               "fused_dma_channel_group"))
         channelId = groupAttr.getValue().str();
 
+      auto tileIt = inferredMap.find(name);
+
       // --- Producer tile: needs one MM2S channel ---
-      if (auto pt = createOp.getProducerTile()) {
+      // Prefer inference, fallback to attribute for cascade channels.
+      int64_t prodCol = -1, prodRow = -1;
+      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
+        std::tie(prodCol, prodRow) = extractCoord(tileIt->second.producerTile);
+      } else if (auto pt = createOp.getProducerTile()) {
         if (pt->size() >= 2) {
-          int64_t col = (*pt)[0], row = (*pt)[1];
-          // Shim tiles (row == 0) use shim DMA allocation, not switchbox DMA.
-          if (row > 0) {
-            TileCoord tc = {col, row};
-            prodChannels[tc].insert(channelId);
-            if (!prodFirstCreate.count(tc))
-              prodFirstCreate[tc] = createOp;
-          }
+          prodCol = (*pt)[0];
+          prodRow = (*pt)[1];
         }
+      }
+      if (prodCol >= 0 && prodRow > 0) {
+        TileCoord tc = {prodCol, prodRow};
+        prodChannels[tc].insert(channelId);
+        if (!prodFirstCreate.count(tc))
+          prodFirstCreate[tc] = createOp;
       }
 
       // --- Consumer tiles: each needs one S2MM channel ---
       // Consumer-side fusion is not yet implemented, so each conduit gets
       // its own S2MM channel regardless of fusion annotations.
-      if (auto ct = createOp.getConsumerTiles()) {
-        for (size_t i = 0; i + 1 < ct->size(); i += 2) {
-          int64_t col = (*ct)[i], row = (*ct)[i + 1];
-          if (row > 0) {
-            TileCoord tc = {col, row};
-            consChannels[tc].insert(name);
-            if (!consFirstCreate.count(tc))
-              consFirstCreate[tc] = createOp;
-          }
+      // Prefer inference, fallback to attribute.
+      llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
+      if (tileIt != inferredMap.end() &&
+          !tileIt->second.consumerTiles.empty()) {
+        for (mlir::Value tv : tileIt->second.consumerTiles) {
+          auto [c, r] = extractCoord(tv);
+          if (c >= 0)
+            consCoords.push_back({c, r});
+        }
+      } else if (auto ct = createOp.getConsumerTiles()) {
+        for (size_t i = 0; i + 1 < ct->size(); i += 2)
+          consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+      }
+      for (auto [col, row] : consCoords) {
+        if (row > 0) {
+          TileCoord tc = {col, row};
+          consChannels[tc].insert(name);
+          if (!consFirstCreate.count(tc))
+            consFirstCreate[tc] = createOp;
         }
       }
     });

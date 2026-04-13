@@ -39,6 +39,8 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "ConduitTileInference.h"
+
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
@@ -66,6 +68,15 @@ struct ConduitInferModesPass
 
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
+
+    // Infer tile coordinates from IR structure.
+    auto inferredMap = inferAllTiles(module);
+    auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
+      if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
+        return {static_cast<int64_t>(tileOp.getCol()),
+                static_cast<int64_t>(tileOp.getRow())};
+      return {-1, -1};
+    };
 
     // Find the aie.device op; required for target model queries.
     AIE::DeviceOp deviceOp;
@@ -120,10 +131,19 @@ struct ConduitInferModesPass
       if (rm && *rm == RoutingMode::Cascade)
         continue;
 
-      auto pt = op.getProducerTile();
-      if (!pt || pt->size() < 2)
+      // Get producer tile: prefer inference, fallback to attribute.
+      int64_t prodCol = -1, prodRow = -1;
+      auto tileIt = inferredMap.find(op.getName().str());
+      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
+        std::tie(prodCol, prodRow) = extractCoord(tileIt->second.producerTile);
+      } else if (auto pt = op.getProducerTile()) {
+        if (pt->size() >= 2) {
+          prodCol = (*pt)[0];
+          prodRow = (*pt)[1];
+        }
+      }
+      if (prodCol < 0 || prodRow < 0)
         continue;
-      int64_t prodCol = (*pt)[0], prodRow = (*pt)[1];
       if (prodRow == 0) // shim producer — no compute tile MM2S consumed
         continue;
 
@@ -133,9 +153,23 @@ struct ConduitInferModesPass
 
       // Check if this conduit uses shared memory (skip DMA channel allocation).
       // Shared memory: single consumer, adjacent tile, via_DMA not set.
-      auto ct = op.getConsumerTiles();
-      if (ct && ct->size() == 2) {
-        int64_t consCol = (*ct)[0], consRow = (*ct)[1];
+      // Get consumer tiles: prefer inference, fallback to attribute.
+      llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
+      if (tileIt != inferredMap.end() &&
+          !tileIt->second.consumerTiles.empty()) {
+        for (mlir::Value tv : tileIt->second.consumerTiles) {
+          auto [c, r] = extractCoord(tv);
+          if (c >= 0)
+            consCoords.push_back({c, r});
+        }
+      } else if (auto ct = op.getConsumerTiles()) {
+        for (size_t i = 0; i + 1 < ct->size(); i += 2)
+          consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+      }
+
+      if (consCoords.size() == 1) {
+        int64_t consCol = consCoords[0].first;
+        int64_t consRow = consCoords[0].second;
         auto viaDMAAttr = op->getAttrOfType<mlir::BoolAttr>("viaDMA");
         bool viaDMA = viaDMAAttr && viaDMAAttr.getValue();
         if (!viaDMA) {
@@ -157,15 +191,24 @@ struct ConduitInferModesPass
 
     // Now resolve each unresolved conduit (absent routing_mode).
     for (Create op : anyConduits) {
-      auto pt = op.getProducerTile();
-      if (!pt || pt->size() < 2) {
+      // Get producer tile: prefer inference, fallback to attribute.
+      int64_t prodCol = -1, prodRow = -1;
+      auto tileIt = inferredMap.find(op.getName().str());
+      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
+        std::tie(prodCol, prodRow) = extractCoord(tileIt->second.producerTile);
+      } else if (auto pt = op.getProducerTile()) {
+        if (pt->size() >= 2) {
+          prodCol = (*pt)[0];
+          prodRow = (*pt)[1];
+        }
+      }
+      if (prodCol < 0 || prodRow < 0) {
         // No producer tile info — cannot determine topology; default to
         // circuit.
         op.setRoutingModeAttr(
             RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
         continue;
       }
-      int64_t prodCol = (*pt)[0], prodRow = (*pt)[1];
 
       // Shim producer: always use circuit mode (shim DMA).
       if (prodRow == 0) {
@@ -183,7 +226,20 @@ struct ConduitInferModesPass
         continue;
       }
 
-      auto ct = op.getConsumerTiles();
+      // Get consumer tiles: prefer inference, fallback to attribute.
+      llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
+      if (tileIt != inferredMap.end() &&
+          !tileIt->second.consumerTiles.empty()) {
+        for (mlir::Value tv : tileIt->second.consumerTiles) {
+          auto [c, r] = extractCoord(tv);
+          if (c >= 0)
+            consCoords.push_back({c, r});
+        }
+      } else if (auto ct = op.getConsumerTiles()) {
+        for (size_t i = 0; i + 1 < ct->size(); i += 2)
+          consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+      }
+
       auto viaDMAAttr = op->getAttrOfType<mlir::BoolAttr>("viaDMA");
       bool viaDMA = viaDMAAttr && viaDMAAttr.getValue();
 
@@ -195,8 +251,9 @@ struct ConduitInferModesPass
       // then Pass C will use shared memory.  Assign Circuit — Pass C Phase 3c
       // handles the shared-memory path without consuming a DMA channel.
       // -----------------------------------------------------------------------
-      if (!viaDMA && ct && ct->size() == 2) {
-        int64_t consCol = (*ct)[0], consRow = (*ct)[1];
+      if (!viaDMA && consCoords.size() == 1) {
+        int64_t consCol = consCoords[0].first;
+        int64_t consRow = consCoords[0].second;
         bool adj =
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol,
                                            consRow) ||
@@ -216,7 +273,7 @@ struct ConduitInferModesPass
       // identical), resolve to "packet".  Multicast costs only 1 packet ID
       // regardless of N consumers (the switchbox broadcasts).
       // -----------------------------------------------------------------------
-      if (ct && ct->size() > 2) {
+      if (consCoords.size() > 1) {
         bool uniform = true;
         if (auto cdRaw = op.getConsumerDimensions()) {
           if (auto cdAttr = mlir::dyn_cast<xilinx::AIE::BDDimLayoutArrayArrayAttr>(*cdRaw)) {
@@ -273,7 +330,8 @@ struct ConduitInferModesPass
       // Circuit DMA is exhausted on this tile.  If packet IDs remain, assign
       // Packet.  Each packet assignment per consumer tile costs one packet ID.
       // -----------------------------------------------------------------------
-      unsigned numConsumers = ct ? (ct->size() / 2) : 1;
+      unsigned numConsumers = consCoords.empty() ? 1
+                                                   : consCoords.size();
       if (pktBudget >= numConsumers) {
         pktBudget -= static_cast<uint8_t>(numConsumers);
         op.setRoutingModeAttr(
