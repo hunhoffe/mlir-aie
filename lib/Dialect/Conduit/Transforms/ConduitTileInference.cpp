@@ -53,6 +53,30 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
       }
     });
 
+    // AcquireAsync has the same name/port attrs as Acquire.
+    coreOp.walk([&](AcquireAsync acqOp) {
+      std::string name = acqOp.getName().str();
+      auto &entry = result[name];
+      if (acqOp.getPort() == Port::Produce) {
+        entry.producerTile = tileVal;
+      } else {
+        if (!contains(entry.consumerTiles, tileVal))
+          entry.consumerTiles.push_back(tileVal);
+      }
+    });
+
+    // ReleaseAsync carries name/port; infer tile from port direction.
+    coreOp.walk([&](ReleaseAsync relOp) {
+      std::string name = relOp.getName().str();
+      auto &entry = result[name];
+      if (relOp.getPort() == Port::Produce) {
+        entry.producerTile = tileVal;
+      } else {
+        if (!contains(entry.consumerTiles, tileVal))
+          entry.consumerTiles.push_back(tileVal);
+      }
+    });
+
     coreOp.walk([&](GetMemrefAsync getOp) {
       std::string name = getOp.getName().str();
       auto &entry = result[name];
@@ -277,6 +301,56 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
         dstEntry.relayTiles.push_back(memtileVal);
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Source 7: Fused MemTile standalone producer inference.
+  //
+  // For conduit.create ops that have a fused_dma_channel_group attr but still
+  // have no inferred producerTile after Sources 1–6, infer the producer from
+  // MemTile aie.tile declarations.  This handles the case where a MemTile is
+  // the standalone producer (no scatter/gather relay op, no aie.core with
+  // Acquire(Produce)).
+  //
+  // Algorithm: collect all MemTile aie.tile ops in the device scope, exclude
+  // any that are already a consumerTile or relayTile for this channel.  If
+  // exactly one MemTile candidate remains, use it as the producerTile.
+  // -------------------------------------------------------------------------
+
+  // Collect all MemTile tile Values from the tile cache.
+  llvm::SmallVector<mlir::Value> memTileValues;
+  for (auto &[coords, tileVal] : tileCache) {
+    auto tileOp = llvm::dyn_cast<AIE::TileOp>(tileVal.getDefiningOp());
+    if (tileOp && tileOp.isMemTile())
+      memTileValues.push_back(tileVal);
+  }
+
+  if (!memTileValues.empty()) {
+    scope->walk([&](Create createOp) {
+      std::string name = createOp.getName().str();
+      auto &entry = result[name];
+
+      // Only act on channels with fused_dma_channel_group and no producer yet.
+      if (entry.producerTile)
+        return;
+      if (!createOp->getAttrOfType<mlir::StringAttr>(
+              "fused_dma_channel_group"))
+        return;
+
+      // Filter out MemTiles already used as consumer or relay for this channel.
+      llvm::SmallVector<mlir::Value> candidates;
+      for (mlir::Value mt : memTileValues) {
+        if (contains(entry.consumerTiles, mt))
+          continue;
+        if (contains(entry.relayTiles, mt))
+          continue;
+        candidates.push_back(mt);
+      }
+
+      // Unambiguous: exactly one MemTile candidate → infer as producer.
+      if (candidates.size() == 1)
+        entry.producerTile = candidates[0];
+    });
+  }
 
   return result;
 }
