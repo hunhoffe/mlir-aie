@@ -131,16 +131,11 @@ struct ConduitInferModesPass
       if (rm && *rm == RoutingMode::Cascade)
         continue;
 
-      // Get producer tile: prefer inference, fallback to attribute.
+      // Get producer tile from inference.
       int64_t prodCol = -1, prodRow = -1;
       auto tileIt = inferredMap.find(op.getName().str());
       if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
         std::tie(prodCol, prodRow) = extractCoord(tileIt->second.producerTile);
-      } else if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-        if (pt.size() >= 2) {
-          prodCol = pt[0];
-          prodRow = pt[1];
-        }
       }
       if (prodCol < 0 || prodRow < 0)
         continue;
@@ -153,7 +148,7 @@ struct ConduitInferModesPass
 
       // Check if this conduit uses shared memory (skip DMA channel allocation).
       // Shared memory: single consumer, adjacent tile, via_DMA not set.
-      // Get consumer tiles: prefer inference, fallback to attribute.
+      // Get consumer tiles from inference.
       llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
       if (tileIt != inferredMap.end() &&
           !tileIt->second.consumerTiles.empty()) {
@@ -162,9 +157,6 @@ struct ConduitInferModesPass
           if (c >= 0)
             consCoords.push_back({c, r});
         }
-      } else if (auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
-        for (size_t i = 0; i + 1 < ct.size(); i += 2)
-          consCoords.push_back({ct[i], ct[i + 1]});
       }
 
       if (consCoords.size() == 1) {
@@ -191,16 +183,11 @@ struct ConduitInferModesPass
 
     // Now resolve each unresolved conduit (absent routing_mode).
     for (Create op : anyConduits) {
-      // Get producer tile: prefer inference, fallback to attribute.
+      // Get producer tile from inference.
       int64_t prodCol = -1, prodRow = -1;
       auto tileIt = inferredMap.find(op.getName().str());
       if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
         std::tie(prodCol, prodRow) = extractCoord(tileIt->second.producerTile);
-      } else if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-        if (pt.size() >= 2) {
-          prodCol = pt[0];
-          prodRow = pt[1];
-        }
       }
       if (prodCol < 0 || prodRow < 0) {
         // No producer tile info — cannot determine topology; default to
@@ -226,7 +213,7 @@ struct ConduitInferModesPass
         continue;
       }
 
-      // Get consumer tiles: prefer inference, fallback to attribute.
+      // Get consumer tiles from inference.
       llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
       if (tileIt != inferredMap.end() &&
           !tileIt->second.consumerTiles.empty()) {
@@ -235,9 +222,6 @@ struct ConduitInferModesPass
           if (c >= 0)
             consCoords.push_back({c, r});
         }
-      } else if (auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
-        for (size_t i = 0; i + 1 < ct.size(); i += 2)
-          consCoords.push_back({ct[i], ct[i + 1]});
       }
 
       auto viaDMAAttr = op->getAttrOfType<mlir::BoolAttr>("viaDMA");

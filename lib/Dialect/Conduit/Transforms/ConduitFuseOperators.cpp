@@ -131,19 +131,13 @@ static bool isOutputChannel(Create op,
   bool noComputeConsumers = true;
   if (tileIt != inferredMap.end() && !tileIt->second.consumerTiles.empty())
     noComputeConsumers = false;
-  else if (tileIt == inferredMap.end() || tileIt->second.consumerTiles.empty()) {
-    // Fallback to attribute.
-    auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles");
-    noComputeConsumers = (!ct || ct.empty());
-  }
+  // No inferred consumer tiles — assume no compute consumers.
 
   // Check producer is shim (row == 0).
   bool producerIsShim = false;
   if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
     auto [col, row] = extractCoord(tileIt->second.producerTile);
     producerIsShim = (row == 0);
-  } else if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-    producerIsShim = (pt.size() >= 2 && pt[1] == 0);
   }
 
   return noComputeConsumers && producerIsShim;
@@ -163,11 +157,8 @@ static bool isInputChannel(Create op,
     auto [col, row] = extractCoord(tileIt->second.producerTile);
     return row == 0;
   }
-  // Fallback to attribute.
-  auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile");
-  if (!pt || pt.size() < 2)
-    return false;
-  return pt[1] == 0;
+  // No inferred producer tile — cannot determine if shim.
+  return false;
 }
 
 // ---------------------------------------------------------------------------

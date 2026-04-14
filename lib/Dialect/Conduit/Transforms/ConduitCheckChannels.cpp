@@ -259,11 +259,6 @@ struct ConduitCheckChannelsPass
       int64_t prodCol = -1, prodRow = -1;
       if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
         std::tie(prodCol, prodRow) = extractCoord(tileIt->second.producerTile);
-      } else if (auto pt = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-        if (pt.size() >= 2) {
-          prodCol = pt[0];
-          prodRow = pt[1];
-        }
       }
       if (prodCol >= 0 && prodRow > 0) {
         TileCoord tc = {prodCol, prodRow};
@@ -284,9 +279,6 @@ struct ConduitCheckChannelsPass
           if (c >= 0)
             consCoords.push_back({c, r});
         }
-      } else if (auto ct = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
-        for (size_t i = 0; i + 1 < ct.size(); i += 2)
-          consCoords.push_back({ct[i], ct[i + 1]});
       }
       for (auto [col, row] : consCoords) {
         if (row > 0) {

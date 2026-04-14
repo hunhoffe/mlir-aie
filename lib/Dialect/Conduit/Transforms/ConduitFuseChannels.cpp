@@ -257,17 +257,13 @@ struct ConduitFuseChannelsPass
       auto tileIt = inferredMap.find(createOp.getName().str());
       if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
         std::tie(col, row) = extractCoord(tileIt->second.producerTile);
-      } else if (auto tileAttr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-        if (tileAttr.size() >= 2) {
-          col = tileAttr[0];
-          row = tileAttr[1];
-        }
       }
-      if (col < 0 || row < 0)
-        return;
       // Shim tiles (row == 0) use a separate DMA model; exclude them.
-      if (row == 0)
+      if (col >= 0 && row == 0)
         return;
+      // Unknown tile: place in a default group {-1, -1}.
+      // This allows fusion analysis for conduits whose producer tile is not
+      // in an aie.core (e.g. hand-written IR with conduit ops in func.func).
       tileGroups[{col, row}].push_back({createOp.getName().str(), createOp});
     });
 

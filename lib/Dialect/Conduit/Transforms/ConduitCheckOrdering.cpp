@@ -141,9 +141,6 @@ struct ConduitCheckOrderingPass
         auto [col, row] = extractCoord(tileIt->second.producerTile);
         if (col >= 0)
           info.producerTileKey = tileKey(col, row);
-      } else if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-        if (pt.size() >= 2)
-          info.producerTileKey = tileKey(pt[0], pt[1]);
       }
 
       if (tileIt != inferredMap.end() &&
@@ -153,9 +150,6 @@ struct ConduitCheckOrderingPass
           if (col >= 0)
             info.consumerTileKeys.push_back(tileKey(col, row));
         }
-      } else if (auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
-        for (size_t i = 0; i + 1 < ct.size(); i += 2)
-          info.consumerTileKeys.push_back(tileKey(ct[i], ct[i + 1]));
       }
 
       channels.push_back(std::move(info));

@@ -285,34 +285,10 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
           });
         }
       }
-      // Fallback to producer_tile attribute (hand-written IR outside aie.core).
       if (!producerIsShim) {
-        if (auto tileArr = (*this)->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-          if (tileArr.size() >= 2 && tileArr[1] == 0)
-            producerIsShim = true;
-        }
-      }
-
-      if (!producerIsShim) {
-        if (!deviceOp) {
-          // Outside DeviceOp (dead code for valid IR after HasParent
-          // enforcement, retained as safety net): consumer_tiles is
-          // authoritative.
-          bool consumerHasShim = false;
-          if (auto consArr = (*this)->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
-            for (size_t i = 0; i + 1 < consArr.size(); i += 2) {
-              if (consArr[i + 1] == 0) {
-                consumerHasShim = true;
-                break;
-              }
-            }
-          }
-          if (!consumerHasShim)
-            return emitOpError("plio=true requires a shim tile (row 0) as "
-                               "producer_tile or consumer_tiles");
-        }
         // Inside a DeviceOp: shim consumers may exist via
-        // aie.shim_dma_allocation — skip the check.
+        // aie.shim_dma_allocation — skip the check; outside DeviceOp
+        // (dead code after HasParent enforcement), also skip.
       }
     }
   }

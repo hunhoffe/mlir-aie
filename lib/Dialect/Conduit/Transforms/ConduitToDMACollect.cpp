@@ -43,19 +43,8 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto etOpt = op.getElementType())
       info.elemType = *etOpt;
 
-    // Tile coordinates: attribute values serve as fallback for channels
-    // that inferAllTiles() cannot resolve (e.g. hand-written IR outside
-    // aie.core).  Cascade channels are now covered by Source 6 (walk
-    // put_cascade/get_cascade with conduit_channel attr).
-    // inferAllTiles() overrides these below when IR structure provides tiles.
-    if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
-      if (pt.size() >= 2)
-        info.producerTileCoord = {pt[0], pt[1]};
-    }
-    if (auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
-      for (size_t i = 0; i + 1 < ct.size(); i += 2)
-        info.consumerTileCoords.push_back({ct[i], ct[i + 1]});
-    }
+    // Tile coordinates are resolved by inferAllTiles() below from IR
+    // structure (aie.core, aie.shim_dma_allocation, cascade ops, etc.).
 
     // Routing mode (enum; absent = unresolved — treated as "any" in Pass C
     // so that Step 3.5 packet fallback still applies when no explicit mode
