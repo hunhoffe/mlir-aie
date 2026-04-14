@@ -1671,7 +1671,15 @@ def AIE_GetCascadeOp: AIE_Op<"get_cascade", []>, Results<(outs AnyType:$cascade_
     An op to read from a cascading stream from a neighboring core.
     The result type of this operation must have a size that matches the cascade size,
     which is architecture-dependent. e.g. AIE1: i384 or vector<8xi48>  AIE2: i512 or vector<16xi32>
+
+    The optional `conduit_channel` attribute is a back-reference to the
+    conduit.create op that owns this cascade stream, enabling tile inference
+    in inferAllTiles() without requiring producer_tile / consumer_tiles on
+    conduit.create.
   }];
+  let arguments = (ins
+    OptionalAttr<FlatSymbolRefAttr>:$conduit_channel
+  );
   let hasVerifier = 1;
   let assemblyFormat = [{ `(` `)` attr-dict `:` type($cascade_value) }];
 }
@@ -1682,9 +1690,16 @@ def AIE_PutCascadeOp: AIE_Op<"put_cascade", []> {
     An op to write to a cascading stream from a neighboring core.
     The argument type of this operation must have a size that matches the cascade size,
     which is architecture-dependent. e.g. AIE1: i384 or vector<8xi48>  AIE2: i512 or vector<16xi32>
+
+    The optional `conduit_channel` attribute is a back-reference to the
+    conduit.create op that owns this cascade stream, enabling tile inference
+    in inferAllTiles() without requiring producer_tile / consumer_tiles on
+    conduit.create.
   }];
 
-  let arguments = (ins AnyType:$cascade_value);
+  let arguments = (ins AnyType:$cascade_value,
+    OptionalAttr<FlatSymbolRefAttr>:$conduit_channel
+  );
   let hasVerifier = 1;
   let assemblyFormat = [{ `(` $cascade_value `:` type($cascade_value) `)` attr-dict }];
 }

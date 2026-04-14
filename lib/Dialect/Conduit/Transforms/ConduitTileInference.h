@@ -68,12 +68,14 @@ inline std::pair<int64_t, int64_t> parseTileCoord(llvm::StringRef s) {
 struct InferredTiles {
   /// Producer tile SSA value (aie.tile / aie.logical_tile result).
   /// Null if no producer tile inferred.
-  /// Sources: Acquire(Port::Produce) inside aie.core, or
-  ///          aie.shim_dma_allocation with MM2S direction.
+  /// Sources: Acquire(Port::Produce) inside aie.core,
+  ///          aie.shim_dma_allocation with MM2S direction, or
+  ///          aie.put_cascade with conduit_channel attr.
   mlir::Value producerTile;
 
   /// Non-shim consumer tiles.
-  /// Sources: Acquire(Port::Consume) or GetMemrefAsync inside aie.core.
+  /// Sources: Acquire(Port::Consume) or GetMemrefAsync inside aie.core,
+  ///          or aie.get_cascade with conduit_channel attr.
   llvm::SmallVector<mlir::Value> consumerTiles;
 
   /// Shim consumer tiles (row == 0).
@@ -95,6 +97,8 @@ struct InferredTiles {
 //   3. aie.shim_dma_allocation (MM2S) → shim producer tile
 //   4. aie.shim_dma_allocation (S2MM) → shim consumer tiles
 //   5. conduit.scatter / conduit.gather / conduit.transpose → relay MemTiles
+//   6. aie.core → PutCascade(conduit_channel) → cascade producer tile
+//      aie.core → GetCascade(conduit_channel) → cascade consumer tiles
 //
 // For efficiency, call this once per pass and reuse the result map.
 // ---------------------------------------------------------------------------

@@ -255,14 +255,14 @@ struct ConduitCheckChannelsPass
       auto tileIt = inferredMap.find(name);
 
       // --- Producer tile: needs one MM2S channel ---
-      // Prefer inference, fallback to attribute for cascade channels.
+      // Prefer inference, fallback to attribute for hand-written IR.
       int64_t prodCol = -1, prodRow = -1;
       if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
         std::tie(prodCol, prodRow) = extractCoord(tileIt->second.producerTile);
-      } else if (auto pt = createOp.getProducerTile()) {
-        if (pt->size() >= 2) {
-          prodCol = (*pt)[0];
-          prodRow = (*pt)[1];
+      } else if (auto pt = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
+        if (pt.size() >= 2) {
+          prodCol = pt[0];
+          prodRow = pt[1];
         }
       }
       if (prodCol >= 0 && prodRow > 0) {
@@ -284,9 +284,9 @@ struct ConduitCheckChannelsPass
           if (c >= 0)
             consCoords.push_back({c, r});
         }
-      } else if (auto ct = createOp.getConsumerTiles()) {
-        for (size_t i = 0; i + 1 < ct->size(); i += 2)
-          consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+      } else if (auto ct = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
+        for (size_t i = 0; i + 1 < ct.size(); i += 2)
+          consCoords.push_back({ct[i], ct[i + 1]});
       }
       for (auto [col, row] : consCoords) {
         if (row > 0) {

@@ -334,9 +334,9 @@ struct ConduitDepthPromotePass
           if (col >= 0)
             consCoords.push_back({col, row});
         }
-      } else if (auto ct = op.getConsumerTiles()) {
-        for (size_t i = 0; i + 1 < ct->size(); i += 2)
-          consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+      } else if (auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
+        for (size_t i = 0; i + 1 < ct.size(); i += 2)
+          consCoords.push_back({ct[i], ct[i + 1]});
       }
 
       // Estimate per-consumer resources.
@@ -354,9 +354,9 @@ struct ConduitDepthPromotePass
       std::pair<int64_t, int64_t> prodCoord = {-1, -1};
       if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
         prodCoord = extractCoord(tileIt->second.producerTile);
-      } else if (auto pt = op.getProducerTile()) {
-        if (pt->size() >= 2)
-          prodCoord = {(*pt)[0], (*pt)[1]};
+      } else if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
+        if (pt.size() >= 2)
+          prodCoord = {pt[0], pt[1]};
       }
       if (prodCoord.first >= 0 && prodCoord.second != 0) { // non-shim
         int64_t key = tileKey(prodCoord.first, prodCoord.second);
@@ -540,9 +540,9 @@ struct ConduitDepthPromotePass
         } else {
           auto typedCreate = mlir::dyn_cast<Create>(createOp);
           if (typedCreate) {
-            if (auto ct = typedCreate.getConsumerTiles()) {
-              for (size_t i = 0; i + 1 < ct->size(); i += 2)
-                consCoords.push_back({(*ct)[i], (*ct)[i + 1]});
+            if (auto ct = typedCreate->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
+              for (size_t i = 0; i + 1 < ct.size(); i += 2)
+                consCoords.push_back({ct[i], ct[i + 1]});
             }
           }
         }

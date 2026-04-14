@@ -119,7 +119,8 @@ static std::pair<int64_t, int64_t> extractCoord(mlir::Value tileVal) {
 // Helper: check if a conduit.create is an operator "output" channel.
 // Criterion: no compute consumers and producer tile is a shim (row==0).
 // Uses inferred tiles; falls back to producer_tile/consumer_tiles attrs
-// for cascade channels or hand-written IR outside aie.core.
+// for hand-written IR outside aie.core (cascade channels are now
+// covered by Source 6 in inferAllTiles).
 // ---------------------------------------------------------------------------
 static bool isOutputChannel(Create op,
                             const llvm::StringMap<InferredTiles> &inferredMap) {
@@ -132,8 +133,8 @@ static bool isOutputChannel(Create op,
     noComputeConsumers = false;
   else if (tileIt == inferredMap.end() || tileIt->second.consumerTiles.empty()) {
     // Fallback to attribute.
-    auto ct = op.getConsumerTiles();
-    noComputeConsumers = (!ct || ct->empty());
+    auto ct = op->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles");
+    noComputeConsumers = (!ct || ct.empty());
   }
 
   // Check producer is shim (row == 0).
@@ -141,8 +142,8 @@ static bool isOutputChannel(Create op,
   if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
     auto [col, row] = extractCoord(tileIt->second.producerTile);
     producerIsShim = (row == 0);
-  } else if (auto pt = op.getProducerTile()) {
-    producerIsShim = (pt->size() >= 2 && (*pt)[1] == 0);
+  } else if (auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
+    producerIsShim = (pt.size() >= 2 && pt[1] == 0);
   }
 
   return noComputeConsumers && producerIsShim;
@@ -151,7 +152,7 @@ static bool isOutputChannel(Create op,
 // ---------------------------------------------------------------------------
 // Helper: check if a conduit.create is an operator "input" channel.
 // Criterion: producer tile is a shim tile (row == 0).
-// Uses inferred tiles; falls back to producer_tile attr.
+// Uses inferred tiles; falls back to producer_tile attr for hand-written IR.
 // ---------------------------------------------------------------------------
 static bool isInputChannel(Create op,
                            const llvm::StringMap<InferredTiles> &inferredMap) {
@@ -163,10 +164,10 @@ static bool isInputChannel(Create op,
     return row == 0;
   }
   // Fallback to attribute.
-  auto pt = op.getProducerTile();
-  if (!pt || pt->size() < 2)
+  auto pt = op->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile");
+  if (!pt || pt.size() < 2)
     return false;
-  return (*pt)[1] == 0;
+  return pt[1] == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,75 +331,17 @@ struct ConduitFuseOperatorsPass
       // find in Pass C's module-scope walk.
       builder.setInsertionPoint(devA);
 
-      // Re-infer tiles after offsetting so that TileOp coordinates reflect
-      // the post-offset state.  The tile Value objects are unchanged (same
-      // SSA values), but their col attributes have been updated.
-      inferredMap = inferAllTiles(module);
-
       for (auto [outCh, inCh] : matched) {
-        // Producer tile: from outCh (inferred; col stays since it's in dev A).
-        // Consumer tiles: from inCh (inferred; TileOp cols already offset).
         std::string outName = outCh.getName().str();
         std::string inName = inCh.getName().str();
-        auto outIt = inferredMap.find(outName);
-        auto inIt = inferredMap.find(inName);
-
-        // Get producer tile coordinates (prefer inference, fallback to attr).
-        llvm::SmallVector<int64_t, 2> prodCoords;
-        if (outIt != inferredMap.end() && outIt->second.producerTile) {
-          auto [col, row] = extractCoord(outIt->second.producerTile);
-          if (col >= 0)
-            prodCoords = {col, row};
-        }
-        if (prodCoords.empty()) {
-          if (auto outPT = outCh.getProducerTile()) {
-            if (outPT->size() >= 2)
-              prodCoords = {(*outPT)[0], (*outPT)[1]};
-          }
-        }
-        if (prodCoords.empty()) {
-          outCh.emitError("conduit-fuse-operators: output channel has no "
-                          "producer tile (inferred or attribute); cannot fuse");
-          signalPassFailure();
-          return;
-        }
-
-        // Get consumer tile coordinates (prefer inference, fallback to attr).
-        llvm::SmallVector<int64_t> consCoords;
-        if (inIt != inferredMap.end() &&
-            !inIt->second.consumerTiles.empty()) {
-          for (mlir::Value tv : inIt->second.consumerTiles) {
-            auto [col, row] = extractCoord(tv);
-            if (col >= 0) {
-              consCoords.push_back(col);
-              consCoords.push_back(row);
-            }
-          }
-        }
-        if (consCoords.empty()) {
-          if (auto inCT = inCh.getConsumerTiles()) {
-            consCoords.assign(inCT->begin(), inCT->end());
-          }
-        }
-        if (consCoords.empty()) {
-          inCh.emitError("conduit-fuse-operators: input channel has no "
-                         "consumer tiles (inferred or attribute); cannot fuse");
-          signalPassFailure();
-          return;
-        }
 
         std::string fusedName =
             "fused_intermediate_" + std::to_string(fuseCount++);
 
         // Gather attributes for the fused conduit.create.
-
-        // producer_tile: from device A's output channel.
-        mlir::DenseI64ArrayAttr producerTileAttr =
-            builder.getDenseI64ArrayAttr(prodCoords);
-
-        // consumer_tiles: from device B's input channel (post-offset).
-        mlir::DenseI64ArrayAttr consumerTilesAttr =
-            builder.getDenseI64ArrayAttr(consCoords);
+        // Note: producer_tile/consumer_tiles are no longer emitted —
+        // tile coordinates are inferred from IR structure via inferAllTiles()
+        // after Step 6 renames channel references in the core bodies.
 
         // depth = 2: standard double-buffering for circuit DMA.
         // No sentinel needed — we accept DMA routing, no shared-mem required.
@@ -457,8 +400,6 @@ struct ConduitFuseOperatorsPass
         builder.create<Create>(devA.getLoc(), fusedName, slotElems,
                                /*sync_mode=*/SyncModeAttr{},
                                /*window_size=*/mlir::IntegerAttr{},
-                               /*producer_tile=*/producerTileAttr,
-                               /*consumer_tiles=*/consumerTilesAttr,
                                /*element_type=*/elemTypeAttr,
                                /*depth=*/depthAttr,
                                /*routing_mode=*/routingModeAttr,

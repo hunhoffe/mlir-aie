@@ -245,7 +245,8 @@ struct ConduitFuseChannelsPass
 
     // Step 1: collect conduit.create ops grouped by producer tile [col, row].
     // Prefer inferred tile coordinates; fallback to producer_tile attribute
-    // for cascade channels or hand-written IR outside aie.core.
+    // for hand-written IR outside aie.core (cascade channels are now
+    // covered by Source 6 in inferAllTiles).
     // DenseMapInfo for std::pair<int64_t,int64_t> is provided by LLVM.
     llvm::DenseMap<std::pair<int64_t, int64_t>,
                    llvm::SmallVector<ConduitInfo, 4>>
@@ -256,10 +257,10 @@ struct ConduitFuseChannelsPass
       auto tileIt = inferredMap.find(createOp.getName().str());
       if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
         std::tie(col, row) = extractCoord(tileIt->second.producerTile);
-      } else if (auto tileAttr = createOp.getProducerTile()) {
-        if (tileAttr->size() >= 2) {
-          col = (*tileAttr)[0];
-          row = (*tileAttr)[1];
+      } else if (auto tileAttr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
+        if (tileAttr.size() >= 2) {
+          col = tileAttr[0];
+          row = tileAttr[1];
         }
       }
       if (col < 0 || row < 0)

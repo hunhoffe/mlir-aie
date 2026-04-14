@@ -285,11 +285,10 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
           });
         }
       }
-      // Fallback to producer_tile attribute (cascade channels, hand-written IR).
+      // Fallback to producer_tile attribute (hand-written IR outside aie.core).
       if (!producerIsShim) {
-        if (auto tileArr = getProducerTile()) {
-          auto arr = *tileArr;
-          if (arr.size() >= 2 && arr[1] == 0)
+        if (auto tileArr = (*this)->getAttrOfType<mlir::DenseI64ArrayAttr>("producer_tile")) {
+          if (tileArr.size() >= 2 && tileArr[1] == 0)
             producerIsShim = true;
         }
       }
@@ -300,10 +299,9 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
           // enforcement, retained as safety net): consumer_tiles is
           // authoritative.
           bool consumerHasShim = false;
-          if (auto consArr = getConsumerTiles()) {
-            auto arr = *consArr;
-            for (size_t i = 0; i + 1 < arr.size(); i += 2) {
-              if (arr[i + 1] == 0) {
+          if (auto consArr = (*this)->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles")) {
+            for (size_t i = 0; i + 1 < consArr.size(); i += 2) {
+              if (consArr[i + 1] == 0) {
                 consumerHasShim = true;
                 break;
               }

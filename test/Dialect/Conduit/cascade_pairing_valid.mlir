@@ -26,13 +26,13 @@ module {
     // Producer core: aie.put_cascade matched by aie.get_cascade below.
     aie.core(%tile03) {
       %v = arith.constant dense<42> : vector<16xi32>
-      aie.put_cascade(%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>) {conduit_channel = @cas}
       aie.end
     }
 
     // Consumer core: aie.get_cascade matches the put_cascade above.
     aie.core(%tile13) {
-      %r = aie.get_cascade() : vector<16xi32>
+      %r = aie.get_cascade() {conduit_channel = @cas} : vector<16xi32>
       aie.end
     }
   }

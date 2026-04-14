@@ -212,6 +212,43 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
     }
   });
 
+  // -------------------------------------------------------------------------
+  // Source 6: Walk aie.put_cascade and aie.get_cascade ops for cascade
+  // channels.
+  //
+  // Cascade conduits (routing_mode = "cascade") do not use
+  // Acquire/Release ops inside aie.core, so Sources 1/2 miss them.
+  // Instead, aie.put_cascade / aie.get_cascade carry an optional
+  // conduit_channel = @name back-reference.
+  //
+  // PutCascade(conduit_channel = @name) inside aie.core → producer tile.
+  // GetCascade(conduit_channel = @name) inside aie.core → consumer tile.
+  // -------------------------------------------------------------------------
+  scope->walk([&](AIE::CoreOp coreOp) {
+    mlir::Value tileVal = coreOp.getTile();
+    if (!tileVal)
+      return;
+
+    coreOp.walk([&](AIE::PutCascadeOp putOp) {
+      auto cc = putOp.getConduitChannel();
+      if (!cc)
+        return;
+      std::string name = cc->str();
+      auto &entry = result[name];
+      entry.producerTile = tileVal;
+    });
+
+    coreOp.walk([&](AIE::GetCascadeOp getOp) {
+      auto cc = getOp.getConduitChannel();
+      if (!cc)
+        return;
+      std::string name = cc->str();
+      auto &entry = result[name];
+      if (!contains(entry.consumerTiles, tileVal))
+        entry.consumerTiles.push_back(tileVal);
+    });
+  });
+
   // TransposeOp: N:M relay with $srcs (array) and $dsts (array).
   scope->walk([&](TransposeOp transposeOp) {
     mlir::Value memtileVal = resolveTileStr(transposeOp.getMemtile());

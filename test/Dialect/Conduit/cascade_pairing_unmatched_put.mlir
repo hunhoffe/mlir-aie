@@ -29,7 +29,7 @@ module {
     // npu2 (AIE2): cascade width = 512 bits → vector<16xi32> is valid.
     aie.core(%tile03) {
       %v = arith.constant dense<7> : vector<16xi32>
-      aie.put_cascade(%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>) {conduit_channel = @cas}
       aie.end
     }
   }

@@ -27,13 +27,13 @@ module {
     // Producer core.
     aie.core(%tile03) {
       %v = arith.constant dense<5> : vector<16xi32>
-      aie.put_cascade(%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>) {conduit_channel = @cas}
       aie.end
     }
 
     // First consumer: valid aie.get_cascade.
     aie.core(%tile13) {
-      %r = aie.get_cascade() : vector<16xi32>
+      %r = aie.get_cascade() {conduit_channel = @cas} : vector<16xi32>
       aie.end
     }
 
@@ -41,7 +41,7 @@ module {
     // but --conduit-check-pairing does not check this after migration #27;
     // use --aie-check-cascade-pairing for this validation).
     aie.core(%tile23) {
-      %r2 = aie.get_cascade() : vector<16xi32>
+      %r2 = aie.get_cascade() {conduit_channel = @cas} : vector<16xi32>
       aie.end
     }
   }
