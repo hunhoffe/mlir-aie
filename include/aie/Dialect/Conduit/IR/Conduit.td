@@ -376,9 +376,6 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
 
     Typed lowering attributes (emitted by Pass A, consumed by Pass C).
     These replace the old conduit.annotate string-keyed approach:
-    - producer_tile        : I64 array [col, row] of the producer tile
-    - consumer_tiles       : flat I64 array [col0, row0, col1, row1, ...] for
-                             each non-shim consumer tile in order (row > 0)
     - element_type    : TypeAttr — actual element memref type (e.g. memref<10xi32>)
                         Pass C uses this for aie.buffer allocation; never defaults to i32.
     - depth           : I64Attr — double-buffering depth
@@ -410,14 +407,11 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
 
     Example:
       conduit.create @c1 {slot_elems = 10 : i64,
-                          producer_tile = array<i64: 0, 2>,
                           element_type = memref<10xi32>,
                           depth = 1 : i64}
 
     Full CSDF example with explicit producer and consumer rates:
       conduit.create @csdf_full {slot_elems = 6 : i64,
-                                 producer_tile = array<i64: 0, 2>,
-                                 consumer_tiles = array<i64: 0, 3>,
                                  element_type = memref<i32>,
                                  depth = 6 : i64,
                                  producer_rates = array<i64: 1, 2>,
@@ -442,8 +436,6 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
                        I64Attr:$slot_elems,
                        OptionalAttr<Conduit_SyncModeAttr>:$sync_mode,
                        OptionalAttr<I64Attr>:$window_size,
-                       OptionalAttr<DenseI64ArrayAttr>:$producer_tile,
-                       OptionalAttr<DenseI64ArrayAttr>:$consumer_tiles,
                        OptionalAttr<TypeAttr>:$element_type,
                        OptionalAttr<I64Attr>:$depth,
                        OptionalAttr<Conduit_RoutingModeAttr>:$routing_mode,
@@ -469,8 +461,8 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
                        OptionalAttr<BoolAttr>:$viaDMA,
                        // plio: when true, the shim endpoint uses Platform I/O (PLIO)
                        // instead of DMA.  Pass C emits WireBundle::PLIO flows and sets
-                       // plio=true on shim_dma_allocation ops.  Requires producer_tile
-                       // to be a shim tile (row == 0).
+                       // plio=true on shim_dma_allocation ops.  Requires the producer
+                       // tile (inferred via inferAllTiles) to be a shim tile (row == 0).
                        OptionalAttr<BoolAttr>:$plio,
                        // dma_repeat: number of times the DMA engine runs the whole
                        // BD chain.  Maps to DMAStartOp.repeat_count = dma_repeat - 1

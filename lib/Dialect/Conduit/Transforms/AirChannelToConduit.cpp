@@ -714,8 +714,6 @@ struct AirChannelToConduitPass
                                    broadcastCapacity),
             /*sync_mode=*/SyncModeAttr{},
             /*window_size=*/mlir::IntegerAttr{},
-            /*producer_tile=*/mlir::DenseI64ArrayAttr{},
-            /*consumer_tiles=*/mlir::DenseI64ArrayAttr{},
             /*element_type=*/mlir::TypeAttr{},
             mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 0),
             /*routing_mode=*/routingMode,
@@ -731,36 +729,10 @@ struct AirChannelToConduitPass
 
         channelCreateOps[name] = createOp;
 
-        // Patch producer_tile and consumer_tiles when tile coordinates are
-        // available from aie.core enclosure (hierarchy-produced IR).
-        // Pass C requires these to allocate locks and flows on the correct
-        // tiles. DEFERRED-13: structural removal of these attrs deferred to
-        // Sprint 5.
-        if (auto createTypedOp = mlir::dyn_cast<Create>(createOp)) {
-          auto prodIt = channelProducerTile.find(name);
-          if (prodIt != channelProducerTile.end()) {
-            auto [col, row] = prodIt->second;
-            createTypedOp.setProducerTileAttr(
-                mlir::DenseI64ArrayAttr::get(ctx, {col, row}));
-          }
-          auto consIt = channelConsumerTiles.find(name);
-          if (consIt != channelConsumerTiles.end() && !consIt->second.empty()) {
-            llvm::SmallVector<int64_t> flat;
-            // Deduplicate consumer tile coordinates: loop-unrolled
-            // air.channel.get ops on the same physical tile produce duplicate
-            // (col, row) entries. Each unique tile gets exactly one S2MM
-            // channel allocation in Pass C.
-            std::set<std::pair<int64_t, int64_t>> seen;
-            for (auto &[col, row] : consIt->second) {
-              if (seen.insert({col, row}).second) {
-                flat.push_back(col);
-                flat.push_back(row);
-              }
-            }
-            createTypedOp.setConsumerTilesAttr(
-                mlir::DenseI64ArrayAttr::get(ctx, flat));
-          }
-        }
+        // Note: producer_tile/consumer_tiles attrs are no longer emitted —
+        // tile coordinates are inferred from IR structure via inferAllTiles().
+        // Pass C reads tiles from aie.core Acquire/GetMemrefAsync ops and
+        // aie.shim_dma_allocation ops.
 
         // Broadcast Step 2: if consumer tile coordinates are known, emit
         // per-consumer conduit.create aliases and a conduit.link{distribute}.
@@ -809,10 +781,6 @@ struct AirChannelToConduitPass
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
                   /*sync_mode=*/SyncModeAttr{},
                   /*window_size=*/mlir::IntegerAttr{},
-                  /*producer_tile=*/mlir::DenseI64ArrayAttr{},
-                  /*consumer_tiles=*/
-                  mlir::DenseI64ArrayAttr::get(
-                      ctx, {consumerCoords[i].first, consumerCoords[i].second}),
                   /*element_type=*/mlir::TypeAttr{},
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 0),
                   /*routing_mode=*/routingMode,

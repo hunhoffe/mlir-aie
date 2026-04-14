@@ -600,8 +600,6 @@ struct ObjectFifoToConduitPass
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), slot_elems),
           /*sync_mode=*/SyncModeAttr{},
           /*window_size=*/mlir::IntegerAttr{},
-          mlir::DenseI64ArrayAttr::get(ctx, info.producerTileArr),
-          mlir::DenseI64ArrayAttr::get(ctx, info.consumerTilesArr),
           mlir::TypeAttr::get(info.elemType),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
           routingModeAttr,
@@ -1603,28 +1601,19 @@ struct ObjectFifoToConduitPass
         continue;
       }
 
-      // Save the original consumer_tiles before overwriting.
-      llvm::SmallVector<int64_t> origConsumerTilesVec;
-      if (auto ct = srcCreateOp.getConsumerTiles()) {
-        for (int64_t v : *ct)
-          origConsumerTilesVec.push_back(v);
-      }
-
-      // Step 1: Redirect @fifo's consumers to the MemTile.
-      llvm::SmallVector<int64_t> memtileConsumer = {delegateCol, delegateRow};
-      srcCreateOp.setConsumerTilesAttr(
-          mlir::DenseI64ArrayAttr::get(ctx, memtileConsumer));
+      // Note: producer_tile/consumer_tiles attrs are no longer emitted —
+      // tile coordinates are inferred from IR structure via inferAllTiles().
+      // The conduit.scatter op (Step 3) establishes the MemTile relay
+      // relationship, and consumer-side acquire/release ops (Step 4) associate
+      // the relay channel with consumer tiles.
 
       // Step 2: Create @fifo_relay conduit.create with same characteristics.
-      llvm::SmallVector<int64_t> relayProducerTile = {delegateCol, delegateRow};
       builder.setInsertionPointAfter(srcCreateOp);
       builder.create<Create>(
           srcCreateOp.getLoc(), mlir::StringAttr::get(ctx, relayName),
           srcCreateOp.getSlotElemsAttr(),
           /*sync_mode=*/SyncModeAttr{},
           /*window_size=*/mlir::IntegerAttr{},
-          mlir::DenseI64ArrayAttr::get(ctx, relayProducerTile),
-          mlir::DenseI64ArrayAttr::get(ctx, origConsumerTilesVec),
           srcCreateOp.getElementTypeAttr(), srcCreateOp.getDepthAttr(),
           /*routing_mode=*/RoutingModeAttr{},
           /*producer_rates=*/nullptr,
