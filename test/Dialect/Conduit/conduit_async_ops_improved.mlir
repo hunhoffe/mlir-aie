@@ -16,8 +16,6 @@
 
 aie.device(npu1) {
 conduit.create @fifo {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // CHECK-LABEL: func.func @acquire_async_consume_port
@@ -42,8 +40,6 @@ func.func @acquire_async_consume_port() {
 
 aie.device(npu1) {
 conduit.create @out {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // CHECK-LABEL: func.func @acquire_async_produce_port
@@ -68,8 +64,6 @@ func.func @acquire_async_produce_port() {
 
 aie.device(npu1) {
 conduit.create @ch {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // CHECK-LABEL: func.func @release_async_with_window_operand
@@ -95,8 +89,6 @@ func.func @release_async_with_window_operand() {
 
 aie.device(npu1) {
 conduit.create @fifo {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // CHECK-LABEL: func.func @release_async_name_only
@@ -119,13 +111,9 @@ func.func @release_async_name_only() {
 
 aie.device(npu1) {
 conduit.create @ch {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 conduit.create @other {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @release_async_window_name_mismatch() {

@@ -66,9 +66,8 @@ module @conduit_partial_release_buffers {
     // Pass C must allocate 2 + (3-1) = 4 physical buffers.
     // slot_elems = 64 = 32 elements * depth(2); perBufLen = 64/2 = 32.
     conduit.create @fifo {slot_elems = 64 : i64, depth = 2 : i64,
-                    element_type = memref<32xi32>,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>}
+                    element_type = memref<32xi32>
+                    }
 
     aie.shim_dma_allocation @fifo_shim_alloc(%shim, MM2S, 0)
 

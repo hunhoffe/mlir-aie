@@ -31,14 +31,10 @@ module @passC_circuit_packet_exhausted_once {
     // conduit_a and conduit_b: circuit-mode, each consume one MM2S channel.
     conduit.create @conduit_a {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
-                    producer_tile = array<i64: 3, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     shim_consumer_tiles = array<i64>,
                                         routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @conduit_b {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
-                    producer_tile = array<i64: 3, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     shim_consumer_tiles = array<i64>,
                                         routing_mode = #conduit.routing_mode<circuit>}
 
@@ -46,8 +42,6 @@ module @passC_circuit_packet_exhausted_once {
     // This is the B-3 site (passFailed+continue → passFailed+return).
     conduit.create @conduit_c {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
-                    producer_tile = array<i64: 3, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     shim_consumer_tiles = array<i64>
                     }
 
@@ -55,12 +49,22 @@ module @passC_circuit_packet_exhausted_once {
     // CHECK-NOT above verifies the loop returned after conduit_c.
     conduit.create @conduit_d {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
-                    producer_tile = array<i64: 3, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     shim_consumer_tiles = array<i64>
                     }
 
-    %cprod = aie.core(%prod)  { aie.end }
-    %ccons = aie.core(%cons1) { aie.end }
+    %cprod = aie.core(%prod) {
+      conduit.acquire {name = @conduit_a, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      conduit.acquire {name = @conduit_b, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      conduit.acquire {name = @conduit_c, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      conduit.acquire {name = @conduit_d, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      aie.end
+    }
+    %ccons = aie.core(%cons1) {
+      conduit.acquire {name = @conduit_a, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      conduit.acquire {name = @conduit_b, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      conduit.acquire {name = @conduit_c, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      conduit.acquire {name = @conduit_d, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<32xi32>>
+      aie.end
+    }
   }
 }

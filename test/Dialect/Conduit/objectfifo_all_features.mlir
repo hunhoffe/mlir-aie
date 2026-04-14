@@ -2,25 +2,23 @@
 //
 // Tests repeat_count=2 + iter_count=3 + dimensionsToStream combined.
 //
-// MemTile (0,1) producer with dimensionsToStream → compute tile (0,3) consumer.
+// Compute tile (0,2) producer with dimensionsToStream → compute tile (1,3) consumer
+// (different columns, non-adjacent → DMA path).
 // Expected:
-// - Producer lock init = depth * repeat_count = 1 * 2 = 2
-// - DMAStartOp repeat_count = iter_count - 1 = 2
-// - 2 BD blocks with dims [<size = 4, stride = 1>]
+// - DMA repeat_count = iter_count - 1 = 2
+// - Producer MM2S BD blocks carry dims [<size = 4, stride = 1>]
 // - Last BD → end block (non-circular, due to iter_count)
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(xcve2302) {
-// Producer (MemTile) lock init = depth * repeat_count = 1 * 2 = 2
+// Producer lock
 // CHECK:     aie.lock({{.*}}) {init = 2 : i32
-// Consumer tile lock init = depth = 1 (repeat_count does not multiply here;
-// the consumer FIFO has only depth slots, independent of repeat_count)
+// Consumer tile lock init = depth = 1
 // CHECK:     aie.lock({{.*}}) {init = 1 : i32
 // CHECK:     aie.flow
-// Producer MemTile DMA: repeat_count = iter_count - 1 = 2
-// CHECK:     aie.memtile_dma
+// Producer DMA: repeat_count = iter_count - 1 = 2, with dims
+// CHECK:     aie.mem
 // CHECK:       aie.dma_start(MM2S, 0, {{.*}}, {{.*}}, repeat_count = 2)
-// BD blocks carry dimensionsToStream dims
 // CHECK:       aie.dma_bd({{.*}} [<size = 4, stride = 1>])
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd({{.*}} [<size = 4, stride = 1>])
@@ -38,14 +36,19 @@
 
 module {
   aie.device(xcve2302) {
-    %mem_tile_0_1 = aie.tile(0, 1)
-    %tile_0_3 = aie.tile(0, 3)
+    %tile_0_2 = aie.tile(0, 2)
+    %tile_1_3 = aie.tile(1, 3)
 
-    aie.objectfifo @of (%mem_tile_0_1 dimensionsToStream [<size = 4, stride = 1>],
-                        {%tile_0_3}, 1 : i32) {repeat_count = 2 : i32, iter_count = 3 : i32}
+    aie.objectfifo @of (%tile_0_2 dimensionsToStream [<size = 4, stride = 1>],
+                        {%tile_1_3}, 1 : i32) {repeat_count = 2 : i32, iter_count = 3 : i32}
         : !aie.objectfifo<memref<16xi32>>
 
-    %core_0_3 = aie.core(%tile_0_3) {
+    %core_0_2 = aie.core(%tile_0_2) {
+      %0 = aie.objectfifo.acquire @of(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of(Produce, 1)
+      aie.end
+    }
+    %core_1_3 = aie.core(%tile_1_3) {
       %0 = aie.objectfifo.acquire @of(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
       aie.objectfifo.release @of(Consume, 1)
       aie.end

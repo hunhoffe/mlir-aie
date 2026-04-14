@@ -27,8 +27,6 @@ module {
     %tile13 = aie.tile(1, 3)
 
     conduit.create @cas {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}

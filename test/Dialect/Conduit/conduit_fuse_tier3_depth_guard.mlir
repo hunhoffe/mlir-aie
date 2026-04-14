@@ -21,38 +21,26 @@ aie.device(npu1) {
 
 // (a) Tier 3 depth=1 fused normally — no remark.
 conduit.create @shallow_dma {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 conduit.create @tier2_shallow {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 
 // (b) Tier 3 depth=2 skipped with remark.
 // expected-remark @+1 {{conduit-fuse-channels: skipping 'deep_tier3' — Tier 3 channel with depth>1 not supported in fuse groups}}
 conduit.create @deep_tier3 {slot_elems = 16 : i64,
-                producer_tile = array<i64: 1, 2>,
-                consumer_tiles = array<i64: 1, 3>,
                 element_type = memref<8xi32>,
                 depth = 2 : i64}
 conduit.create @tier2_partner {slot_elems = 8 : i64,
-                producer_tile = array<i64: 1, 2>,
-                consumer_tiles = array<i64: 1, 4>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 
 // (c) Two Tier 2 channels on same tile — fused normally.
 conduit.create @t2_a {slot_elems = 8 : i64,
-                producer_tile = array<i64: 2, 2>,
-                consumer_tiles = array<i64: 2, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 conduit.create @t2_b {slot_elems = 8 : i64,
-                producer_tile = array<i64: 2, 2>,
-                consumer_tiles = array<i64: 2, 4>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 

@@ -44,7 +44,6 @@ module @tier3_bd_length {
     // Producer tile declared via producer_tile attr (shim side, no alloc op
     // needed — this test only checks BD length, not shim DMA chain emission).
     conduit.create @t3_bd {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 0>,
                     element_type = memref<128xi32>,
                     depth = 1 : i64}
 

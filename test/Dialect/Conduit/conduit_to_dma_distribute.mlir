@@ -1,9 +1,8 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
-// Pass A + Pass C end-to-end test: 1→3 distribute link with byte offsets.
-// Input: same as objectfifo_to_conduit_distribute.mlir
+// Pass C test: 1→3 distribute link with byte offsets.
 //
-// After --objectfifo-to-conduit --conduit-to-dma the module should contain:
+// After --conduit-to-dma the module should contain:
 //   - aie.buffer ops for each conduit (depth-many per consumer)
 //   - Independent lock pairs per destination slice on the MemTile (2*N=6 locks)
 //   - aie.memtile_dma for the distribute MemTile DMA BD chain
@@ -74,7 +73,7 @@
 // CHECK:       aie.end
 // CHECK:     }
 // CHECK-NOT: conduit.create
-// CHECK-NOT: conduit.link
+// CHECK-NOT: conduit.scatter
 
 module @link_distribute_offsets {
   aie.device(xcve2302) {
@@ -84,11 +83,40 @@ module @link_distribute_offsets {
     %tile23 = aie.tile(2, 3)
     %tile33 = aie.tile(3, 3)
 
-    aie.objectfifo @link1 (%tile20, {%tile21}, 2 : i32) : !aie.objectfifo<memref<48xi32>>
-    aie.objectfifo @link2 (%tile21, {%tile22}, 2 : i32) : !aie.objectfifo<memref<4x4xi32>>
-    aie.objectfifo @link3 (%tile21, {%tile23}, 2 : i32) : !aie.objectfifo<memref<20xi32>>
-    aie.objectfifo @link4 (%tile21, {%tile33}, 2 : i32) : !aie.objectfifo<memref<12xi32>>
+    // Ingress: shim → MemTile
+    conduit.create @link1 {slot_elems = 96 : i64, element_type = memref<48xi32>, depth = 2 : i64}
+    // Egress: MemTile → compute tiles (3 destinations with byte offsets)
+    conduit.create @link2 {slot_elems = 32 : i64, element_type = memref<4x4xi32>, depth = 2 : i64}
+    conduit.create @link3 {slot_elems = 40 : i64, element_type = memref<20xi32>, depth = 2 : i64}
+    conduit.create @link4 {slot_elems = 24 : i64, element_type = memref<12xi32>, depth = 2 : i64}
 
-    aie.objectfifo.link [@link1] -> [@link2, @link3, @link4] ([][0, 16, 36])
+    // Distribute link: MemTile(2,1) splits link1 into link2/link3/link4
+    conduit.scatter{src = @link1, dsts = [@link2, @link3, @link4] {memtile = "tile(2,1)", offsets = array<i64: 0, 16, 36>}}
+
+    // Shim producer allocation for ingress channel.
+    aie.shim_dma_allocation @link1_shim_alloc(%tile20, MM2S, 0) {conduit_channel = @link1}
+
+    // Consumer cores — structural info for tile inference.
+    %core_2_2 = aie.core(%tile22) {
+      %0 = conduit.acquire {count = 1 : i64, name = @link2,
+                            port = #conduit.port<Consume>} : <memref<4x4xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<4x4xi32>>
+      aie.end
+    }
+    %core_2_3 = aie.core(%tile23) {
+      %0 = conduit.acquire {count = 1 : i64, name = @link3,
+                            port = #conduit.port<Consume>} : <memref<20xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<20xi32>>
+      aie.end
+    }
+    %core_3_3 = aie.core(%tile33) {
+      %0 = conduit.acquire {count = 1 : i64, name = @link4,
+                            port = #conduit.port<Consume>} : <memref<12xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<12xi32>>
+      aie.end
+    }
   }
 }

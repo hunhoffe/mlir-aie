@@ -36,15 +36,12 @@ module @conduit_direct_sliding_window_prior_count {
 
     // Input: shim → tile, depth=4.
     conduit.create @fifo {slot_elems = 512 : i64, depth = 4 : i64,
-                    element_type = memref<128xi32>,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>}
+                    element_type = memref<128xi32>
+                    }
 
     // Output: tile → shim, depth=2.
     conduit.create @out {slot_elems = 256 : i64, depth = 2 : i64,
                     element_type = memref<64xi32>,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64>,
                     shim_consumer_tiles = array<i64: 0, 0>}
 
     aie.shim_dma_allocation @fifo_shim_alloc(%shim, MM2S, 0)

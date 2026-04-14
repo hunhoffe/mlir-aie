@@ -42,6 +42,7 @@
 // CHECK:     %[[CONS_CONS:.*]] = aie.lock(%{{.*}}tile_0_2
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "fifo_async_cons_cons_lock_0"
+// CHECK:     aie.shim_dma_allocation @fifo_async_shim_alloc
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       scf.for
 // --- acquire_async emits nothing (deferred to wait_window) ---
@@ -51,8 +52,7 @@
 // CHECK:         func.call @process(%[[BUFF0]])
 // --- release emits use_lock on prod_lock ---
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
-// CHECK:     aie.shim_dma_allocation @fifo_async_shim_alloc
-// CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
+// CHECK:     aie.flow({{.*}}, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
 // CHECK:     aie.mem(%{{.*}}tile_0_2) {
 // CHECK:       aie.dma_start(S2MM
 // CHECK:       aie.use_lock(%[[CONS_PROD]], AcquireGreaterEqual, 1)
@@ -76,10 +76,11 @@ module @async_window_path {
     // Hand-written Conduit IR that the async path would produce.
     // conduit.create declares the channel metadata for Pass C.
     conduit.create @fifo_async {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64}
+
+    // Shim producer allocation: inferAllTiles() matches via _shim_alloc suffix.
+    aie.shim_dma_allocation @fifo_async_shim_alloc(%tile_0_0, MM2S, 0)
 
     %core_0_2 = aie.core(%tile_0_2) {
       %c0 = arith.constant 0 : index

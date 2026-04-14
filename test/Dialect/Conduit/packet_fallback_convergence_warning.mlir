@@ -22,34 +22,40 @@ module @pkt_fallback_convergence_warning {
 
     // pkt_a and pkt_b: explicit packet, filling MM2S ch 0 and ch 1.
     conduit.create @pkt_a {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
     conduit.create @pkt_b {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // fallback1: circuit exhausted; Step 3.5c finds ch 0; no prior (ch0→(2,3)).
     // Records occupancy. No warning.
     conduit.create @fallback1 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     // fallback2: Step 3.5d finds (ch0 → (2,3)) already recorded → hazard.
     // Warning emitted on aie.device op (annotation above).
     conduit.create @fallback2 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64
                     }
 
-    %core03 = aie.core(%t03) { aie.end }
-    %core23 = aie.core(%t23) { aie.end }
-    %core33 = aie.core(%t33) { aie.end }
+    %core03 = aie.core(%t03) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @fallback1, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @fallback2, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core23 = aie.core(%t23) {
+      conduit.acquire {name = @fallback1, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @fallback2, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core33 = aie.core(%t33) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }

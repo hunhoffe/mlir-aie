@@ -1,17 +1,16 @@
 // RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit --conduit-depth-promote --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: Tier 3 use_lock on adjacent tiles (shared memory path).
+// Regression test: Tier 3 use_lock on adjacent tiles via air.channel pipeline.
 //
-// When producer and consumer are adjacent (tiles 2,3 and 2,4), Pass C uses
-// the shared-memory path: one buffer and one lock pair on the producer tile,
-// no DMA BD chains.  The core-side use_lock ops from Steps 8e-8f are the
-// ONLY lock synchronization in this case.
+// Adjacent tiles (2,3) and (2,4): Pass B generates conduit.create, Pass C
+// lowers to DMA with locks on the consumer tile.  Core-side use_lock ops
+// synchronize producer and consumer with the DMA engine.
 //
 // Verifies:
-//   1. Both cores reference the same lock pair (on producer tile)
+//   1. Both cores reference the same lock pair (on consumer tile)
 //   2. Producer: acquire prodLock, release consLock
 //   3. Consumer: acquire consLock, release prodLock
-//   4. No DMA BD chains (no aie.mem ops)
+//   4. DMA BD chain exists on consumer tile
 //   5. No residual conduit ops
 
 // CHECK:       %[[PROD_LOCK:.*]] = aie.lock(%{{.*}}, 0) {init = 1
@@ -27,9 +26,9 @@
 // CHECK:         aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 1)
 // CHECK-NEXT:    aie.use_lock(%[[PROD_LOCK]], Release, 1)
 
-// --- No DMA (shared memory) ---
-// CHECK-NOT: aie.mem
-// CHECK-NOT: aie.dma_start
+// --- DMA BD chain on consumer tile ---
+// CHECK:       aie.mem
+// CHECK:         aie.dma_start(S2MM
 
 // --- No residual conduit ops ---
 // CHECK-NOT: conduit.put_memref_async

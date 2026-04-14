@@ -7,8 +7,6 @@ aie.device(npu1) {
 // CHECK: conduit.create @w1
 // CHECK-SAME: slot_elems = 8 : i64
 conduit.create @w1 {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 conduit.create @ch_a {slot_elems = 64 : i64, depth = 0 : i64}
@@ -21,8 +19,6 @@ conduit.create @out {slot_elems = 2 : i64, depth = 0 : i64}
 // CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
 // CHECK-SAME: slot_elems = 10 : i64
 conduit.create @pkt_ch {slot_elems = 10 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<10xi32>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<packet>}
@@ -30,8 +26,6 @@ conduit.create @pkt_ch {slot_elems = 10 : i64,
 // CHECK-SAME: consumer_rates = array<i64: 1, 2>
 // CHECK-SAME: producer_rates = array<i64: 1, 2>
 conduit.create @csdf_full {slot_elems = 6 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 6 : i64,
                 producer_rates = array<i64: 1, 2>,
@@ -40,8 +34,6 @@ conduit.create @csdf_full {slot_elems = 6 : i64,
 // CHECK-SAME: consumer_rates = array<i64: 2>
 // CHECK-SAME: producer_rates = array<i64: 3, 1>
 conduit.create @csdf_diff_period {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 3, 1>,
@@ -212,8 +204,6 @@ aie.device(npu2) {
   %t13 = aie.tile(1, 3)
   // CHECK: conduit.create @cas
   conduit.create @cas {slot_elems = 1 : i64,
-                  producer_tile = array<i64: 0, 3>,
-                  consumer_tiles = array<i64: 1, 3>,
                   depth = 1 : i64,
                   routing_mode = #conduit.routing_mode<cascade>}
   aie.core(%t03) {

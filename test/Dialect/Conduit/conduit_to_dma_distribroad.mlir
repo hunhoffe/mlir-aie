@@ -60,18 +60,20 @@
 // CHECK:         aie.use_lock(%[[IS_PROD_LOCK]], Release, 1)
 // CHECK:         aie.use_lock(%[[SW_PROD_LOCK]], Release, 1)
 //
+// --- Shim-side allocations (from input, passed through by Pass C) ---
+// CHECK:     aie.shim_dma_allocation @input_slice_shim_alloc
+// CHECK:     aie.shim_dma_allocation @shared_weights_shim_alloc
+//
 // --- Shim-side locks (Phase 4a, one pair per shim conduit) ---
 // CHECK:     aie.lock(%[[TILE_2_0]]
 // CHECK-SAME:   sym_name = "input_slice_prod_lock_0"
 // CHECK:     aie.lock(%[[TILE_2_0]]
 // CHECK-SAME:   sym_name = "input_slice_cons_lock_0"
-// CHECK:     aie.shim_dma_allocation @input_slice_shim_alloc
 // CHECK:     aie.flow(%[[TILE_2_0]], DMA : 0, %[[TILE_2_2]], DMA : 0)
 // CHECK:     aie.lock(%[[TILE_2_0]]
 // CHECK-SAME:   sym_name = "shared_weights_prod_lock_0"
 // CHECK:     aie.lock(%[[TILE_2_0]]
 // CHECK-SAME:   sym_name = "shared_weights_cons_lock_0"
-// CHECK:     aie.shim_dma_allocation @shared_weights_shim_alloc
 // CHECK:     aie.flow(%[[TILE_2_0]], DMA : 1, %[[TILE_2_2]], DMA : 1)
 //
 // --- Tile DMA region (Phase 5.5): single aie.mem with S2MM per conduit ---
@@ -118,16 +120,12 @@ module @distribroad {
     // Conduit 1: shim DMA (MM2S) → tile(2,2).
     // Carries a unique input slice (distribute: each consumer gets different data).
     conduit.create @input_slice {slot_elems = 16 : i64,
-                    producer_tile = array<i64: 2, 0>,
-                    consumer_tiles = array<i64: 2, 2>,
                     element_type = memref<16xi32>,
                     depth = 1 : i64}
 
     // Conduit 2: shim DMA (MM2S) → tile(2,2).
     // Carries broadcast shared weights (all consumers receive the same data).
     conduit.create @shared_weights {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 2, 0>,
-                    consumer_tiles = array<i64: 2, 2>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64}
 
@@ -183,5 +181,9 @@ module @distribroad {
 
       aie.end
     }
+
+    // Shim producer allocations — structural info for tile inference.
+    aie.shim_dma_allocation @input_slice_shim_alloc(%tile_2_0, MM2S, 0) {conduit_channel = @input_slice}
+    aie.shim_dma_allocation @shared_weights_shim_alloc(%tile_2_0, MM2S, 1) {conduit_channel = @shared_weights}
   }
 }

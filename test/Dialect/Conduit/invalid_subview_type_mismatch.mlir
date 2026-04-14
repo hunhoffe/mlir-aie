@@ -4,8 +4,6 @@
 
 aie.device(npu1) {
 conduit.create @typed_fifo {slot_elems = 10 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<10xi32>,
                 depth = 1 : i64}
 func.func @subview_type_mismatch() {

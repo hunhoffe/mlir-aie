@@ -17,8 +17,6 @@ module {
 
     // expected-error @+1 {{cascade conduit must have depth = 1; hardware has no FIFO on the cascade stream}}
     conduit.create @cas {slot_elems = 2 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
                     depth = 2 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}

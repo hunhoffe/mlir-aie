@@ -1,36 +1,16 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
-// Pass A + Pass C end-to-end test: 3 producers -> 1 consumer (join link).
+// Pass C test: 3 producers -> 1 consumer (join link).
 //
 // Fix 2: Pass C now generates N independent S2MM channels (one per source),
 // each with its own BD ring using the source conduit's lock pair.
 // The MM2S channel outputs the joined destination buffer.
 // Flows: source compute tiles → memtile S2MM channels i, memtile → shim.
-//
-// Ground truth (from --aie-objectFifo-stateful-transform on the same input):
-//   Total aie.buffer:  8  (link1: 2 on tile_2_2; link2: 2 on tile_2_3;
-//                          link3: 2 on tile_3_3; link4: 2 on memtile_2_1)
-//   Total aie.lock:   14  (link4: 2 on shim + 6 on memtile + link3: 2 + link2: 2 + link1: 2)
-//   Total aie.flow:    4  (tile_2_2→memtile, tile_2_3→memtile, tile_3_3→memtile,
-//                          memtile→shim_2_0)
-//   aie.dma_start(S2MM): 3  (channels 0,1,2 in memtile_dma — one per src fifo)
-//   aie.dma_start(MM2S): 4  (1 in memtile_dma + 3 in compute tile aie.mem blocks)
-//   aie.dma_bd: 18 total
-//   aie.next_bd: 18 total
-//
-// The join lowering pattern in aie.memtile_dma:
-//   - S2MM channel 0 ingests link4_buff slices for link1 (offset 0, len 16)
-//   - S2MM channel 1 ingests link4_buff slices for link2 (offset 16, len 20)
-//   - S2MM channel 2 ingests link4_buff slices for link3 (offset 36, len 12)
-//   - MM2S channel 0 outputs the joined link4 buffer (full 48 elements)
-//
-// This test also verifies the compute tile aie.mem blocks (MM2S from each src tile).
 
 // CHECK-LABEL: module @link_join_offsets
 // CHECK:   aie.device(xcve2302) {
 // --- Exactly one shim_dma_allocation for the join destination (link4),
-//     direction S2MM channel 0 — routePhase owns this allocation since
-//     linkPhase() emits only the flow, not the ShimDMAAllocationOp ---
+//     direction S2MM channel 0 ---
 // CHECK:     aie.shim_dma_allocation @link4_shim_alloc(%{{.*}}shim{{.*}}2_0, S2MM, 0)
 // CHECK-NOT: aie.shim_dma_allocation @link4_shim_alloc(
 // --- Shim-side locks for link4 consumer endpoint (init=0, host programs these) ---
@@ -67,7 +47,7 @@
 // CHECK:       aie.end
 // CHECK:     }
 // CHECK-NOT: conduit.create
-// CHECK-NOT: conduit.link
+// CHECK-NOT: conduit.gather
 
 module @link_join_offsets {
   aie.device(xcve2302) {
@@ -77,13 +57,40 @@ module @link_join_offsets {
     %tile23 = aie.tile(2, 3)
     %tile33 = aie.tile(3, 3)
 
-    // Three sources join into one destination at the MemTile (tile21)
-    aie.objectfifo @link1 (%tile22, {%tile21}, 2 : i32) : !aie.objectfifo<memref<4x4xi32>>
-    aie.objectfifo @link2 (%tile23, {%tile21}, 2 : i32) : !aie.objectfifo<memref<20xi32>>
-    aie.objectfifo @link3 (%tile33, {%tile21}, 2 : i32) : !aie.objectfifo<memref<12xi32>>
-    aie.objectfifo @link4 (%tile21, {%tile20}, 2 : i32) : !aie.objectfifo<memref<48xi32>>
+    // Three source conduits: compute tiles → MemTile
+    conduit.create @link1 {slot_elems = 32 : i64, element_type = memref<4x4xi32>, depth = 2 : i64}
+    conduit.create @link2 {slot_elems = 40 : i64, element_type = memref<20xi32>, depth = 2 : i64}
+    conduit.create @link3 {slot_elems = 24 : i64, element_type = memref<12xi32>, depth = 2 : i64}
+    // Join destination: MemTile → shim
+    conduit.create @link4 {slot_elems = 96 : i64, element_type = memref<48xi32>, depth = 2 : i64}
 
-    // Join: 3 sources -> 1 destination with byte offsets
-    aie.objectfifo.link [@link1, @link2, @link3] -> [@link4] ([0, 16, 36][])
+    // Join link: 3 sources → 1 destination with byte offsets at MemTile(2,1)
+    conduit.gather{srcs = [@link1, @link2, @link3], dst = @link4 {memtile = "tile(2,1)", offsets = array<i64: 0, 16, 36>}}
+
+    // Shim consumer allocation for output channel.
+    aie.shim_dma_allocation @link4_shim_alloc(%tile20, S2MM, 0) {conduit_channel = @link4}
+
+    // Producer cores — structural info for tile inference.
+    %core_2_2 = aie.core(%tile22) {
+      %0 = conduit.acquire {count = 1 : i64, name = @link1,
+                            port = #conduit.port<Produce>} : <memref<4x4xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Produce>} : <memref<4x4xi32>>
+      aie.end
+    }
+    %core_2_3 = aie.core(%tile23) {
+      %0 = conduit.acquire {count = 1 : i64, name = @link2,
+                            port = #conduit.port<Produce>} : <memref<20xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Produce>} : <memref<20xi32>>
+      aie.end
+    }
+    %core_3_3 = aie.core(%tile33) {
+      %0 = conduit.acquire {count = 1 : i64, name = @link3,
+                            port = #conduit.port<Produce>} : <memref<12xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Produce>} : <memref<12xi32>>
+      aie.end
+    }
   }
 }

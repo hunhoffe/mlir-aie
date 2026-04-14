@@ -53,6 +53,13 @@
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
+// Consumer tile S2MM: BD chains with locks
+// CHECK:     aie.mem
+// CHECK:       aie.dma_start(S2MM
+// CHECK:       aie.dma_bd
+// CHECK:     aie.mem
+// CHECK:       aie.dma_start(S2MM
+// CHECK:       aie.dma_bd
 // No residual Conduit ops
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
@@ -69,5 +76,16 @@ module @linkDistRepeat {
     aie.objectfifo @of1 (%tile11, {%tile12}, 2 : i32) {repeat_count = 2 : i32} : !aie.objectfifo<memref<16xi32>>
     aie.objectfifo @of2 (%tile11, {%tile33}, 2 : i32) {repeat_count = 2 : i32} : !aie.objectfifo<memref<16xi32>>
     aie.objectfifo.link [@of0] -> [@of1, @of2] ([] [0, 16])
+
+    %core12 = aie.core(%tile12) {
+      %sv = aie.objectfifo.acquire @of1(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of1(Consume, 1)
+      aie.end
+    }
+    %core33 = aie.core(%tile33) {
+      %sv = aie.objectfifo.acquire @of2(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of2(Consume, 1)
+      aie.end
+    }
  }
 }

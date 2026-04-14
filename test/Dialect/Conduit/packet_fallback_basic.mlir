@@ -39,29 +39,37 @@ module @pkt_fallback_basic {
 
     // pkt_a: explicit packet mode — MM2S ch 0 designated packet-mode.
     conduit.create @pkt_a {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // pkt_b: explicit packet mode — MM2S ch 1 designated packet-mode.
     conduit.create @pkt_b {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // fallback: mode=any; both MM2S channels allocated (packet-mode ch 0 and
     // ch 1); Step 3.5c finds existing packet-mode ch 0, shares it.
     conduit.create @fallback {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64
                     }
 
-    %core03 = aie.core(%t03) { aie.end }
-    %core23 = aie.core(%t23) { aie.end }
-    %core33 = aie.core(%t33) { aie.end }
-    %core15 = aie.core(%t15) { aie.end }
+    %core03 = aie.core(%t03) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @fallback, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core23 = aie.core(%t23) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core33 = aie.core(%t33) {
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core15 = aie.core(%t15) {
+      conduit.acquire {name = @fallback, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }

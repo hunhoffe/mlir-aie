@@ -3,8 +3,6 @@
 // M2: subview_access index out of bounds for acquire count
 aie.device(npu1) {
 conduit.create @fifo {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 2 : i64}
 func.func @bad_subview_index() {
@@ -25,8 +23,6 @@ func.func @bad_subview_index() {
 // device level, acquire in nested func body (the common case for real programs).
 aie.device(npu1) {
 conduit.create @xblock {slot_elems = 16 : i64,
-                producer_tile = array<i64: 1, 2>,
-                consumer_tiles = array<i64: 1, 3>,
                 element_type = memref<16xi32>,
                 depth = 2 : i64}
 func.func @bad_subview_cross_block() {
@@ -60,8 +56,6 @@ func.func @bad_scatter_zero_dsts() {
 aie.device(npu1) {
 // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=10}}
 conduit.create @csdf_bad {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 8 : i64,
                 producer_rates = array<i64: 1, 2>,
@@ -80,8 +74,6 @@ func.func @bad_csdf_imbalanced_rates() {
 aie.device(npu1) {
 // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=3}}
 conduit.create @csdf_sum_equal_bad {slot_elems = 6 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 6 : i64,
                 producer_rates = array<i64: 3>,
@@ -97,8 +89,6 @@ func.func @bad_csdf_sum_equal_period_imbalanced() {
 aie.device(npu1) {
 // expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
 conduit.create @csdf_incomplete {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1, 2>}
@@ -113,8 +103,6 @@ func.func @bad_csdf_missing_consumer_rates() {
 aie.device(npu1) {
 // expected-error@+1 {{'conduit.create' op CSDF requires both producer_rates and consumer_rates; only one was provided}}
 conduit.create @csdf_incomplete2 {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 4 : i64,
                 consumer_rates = array<i64: 1, 2>}
@@ -164,8 +152,6 @@ func.func @bad_wait_with_dma_token() {
 aie.device(npu1) {
 // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2}}
 conduit.create @csdf_cap_bad {slot_elems = 2 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 3, 1>,
@@ -190,8 +176,6 @@ func.func @bad_csdf_capacity_insufficient() {
 aie.device(npu1) {
 // expected-warning@+1 {{M7: CSDF hyper-period simulation: momentary underflow at step 0}}
 conduit.create @csdf_underflow {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1, 3>,
@@ -207,8 +191,6 @@ func.func @warn_csdf_underflow() {
 // = cumulative 2 > acquired 1 → hardware lock-counter overflow.
 aie.device(npu1) {
 conduit.create @dbl {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<1xi32>,
                 depth = 1 : i64}
 func.func @m8a_double_release() {
@@ -228,8 +210,6 @@ func.func @m8a_double_release() {
 // M8c: !conduit.window<T> is not a token type — rejected by wait_all.
 aie.device(npu1) {
 conduit.create @unx {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<1xi32>,
                 depth = 1 : i64}
 func.func @m8c_wait_all_window_value() {
@@ -246,8 +226,6 @@ func.func @m8c_wait_all_window_value() {
 // M8b: two wait_window on same token → double-materialization, deadlock.
 aie.device(npu1) {
 conduit.create @dbl_tok {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<1xi32>,
                 depth = 1 : i64}
 func.func @m8b_double_wait_window() {

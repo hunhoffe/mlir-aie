@@ -68,15 +68,11 @@ module @fuse_channels_memtile_test {
     // mt_b: producer=[0,1] (MemTile row=1), consumer=[0,5]
     // Pre-annotated with fused_dma_channel_group = "group0", fuse_mode = "static".
     conduit.create @mt_a {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 1>,
-                    consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
     conduit.create @mt_b {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 1>,
-                    consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64,
                     fuse_mode = "static",

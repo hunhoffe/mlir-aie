@@ -49,8 +49,6 @@ module @subview_wait_window_produce_side {
     %tile_0_4 = aie.tile(0, 4)
 
     conduit.create @fifo {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64}
 

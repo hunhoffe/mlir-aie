@@ -55,8 +55,6 @@ module @shim_to_memtile_relay_locks {
     // Stage 1: shim→MemTile, depth=4 ring.
     conduit.create @weights_stage1 {
       slot_elems = 4 : i64,
-      producer_tile = array<i64: 0, 0>,
-      consumer_tiles = array<i64: 0, 1>,
       element_type = memref<1xi32>,
       depth = 4 : i64
     }
@@ -64,8 +62,6 @@ module @shim_to_memtile_relay_locks {
     // Stage 2: MemTile→compute, depth=4 ring.
     conduit.create @weights {
       slot_elems = 4 : i64,
-      producer_tile = array<i64: 0, 1>,
-      consumer_tiles = array<i64: 0, 2>,
       element_type = memref<1xi32>,
       depth = 4 : i64
     }

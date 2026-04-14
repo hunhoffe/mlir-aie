@@ -1,4 +1,4 @@
-// RUN: not aie-opt --objectfifo-to-conduit --conduit-to-dma %s 2>&1 | FileCheck %s
+// RUN: not aie-opt --conduit-to-dma %s 2>&1 | FileCheck %s
 //
 // Negative test: S2MM DMA channel overflow on a compute tile.
 //
@@ -15,12 +15,48 @@ module @s2mm_overflow {
     %t22 = aie.tile(2, 2)
 
     // Three non-adjacent producers all targeting tile(2,2).
-    // tile(0,2): col diff = 2, non-adjacent.
-    // tile(0,3): different col and row, non-adjacent.
-    // tile(4,2): col diff = 2, non-adjacent.
-    // tile(2,2) has only 2 S2MM channels — the third must fail.
-    aie.objectfifo @a (%t02, {%t22}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
-    aie.objectfifo @b (%t03, {%t22}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
-    aie.objectfifo @c (%t42, {%t22}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
+    conduit.create @a {slot_elems = 32 : i64, element_type = memref<16xi32>, depth = 2 : i64}
+    conduit.create @b {slot_elems = 32 : i64, element_type = memref<16xi32>, depth = 2 : i64}
+    conduit.create @c {slot_elems = 32 : i64, element_type = memref<16xi32>, depth = 2 : i64}
+
+    // Producer cores — structural info for tile inference.
+    %core_0_2 = aie.core(%t02) {
+      %0 = conduit.acquire {count = 1 : i64, name = @a,
+                            port = #conduit.port<Produce>} : <memref<16xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Produce>} : <memref<16xi32>>
+      aie.end
+    }
+    %core_0_3 = aie.core(%t03) {
+      %0 = conduit.acquire {count = 1 : i64, name = @b,
+                            port = #conduit.port<Produce>} : <memref<16xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Produce>} : <memref<16xi32>>
+      aie.end
+    }
+    %core_4_2 = aie.core(%t42) {
+      %0 = conduit.acquire {count = 1 : i64, name = @c,
+                            port = #conduit.port<Produce>} : <memref<16xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Produce>} : <memref<16xi32>>
+      aie.end
+    }
+
+    // Consumer core — tile(2,2) consumes all 3 channels.
+    %core_2_2 = aie.core(%t22) {
+      %0 = conduit.acquire {count = 1 : i64, name = @a,
+                            port = #conduit.port<Consume>} : <memref<16xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<16xi32>>
+      %1 = conduit.acquire {count = 1 : i64, name = @b,
+                            port = #conduit.port<Consume>} : <memref<16xi32>>
+      conduit.release %1 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<16xi32>>
+      %2 = conduit.acquire {count = 1 : i64, name = @c,
+                            port = #conduit.port<Consume>} : <memref<16xi32>>
+      conduit.release %2 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<16xi32>>
+      aie.end
+    }
   }
 }

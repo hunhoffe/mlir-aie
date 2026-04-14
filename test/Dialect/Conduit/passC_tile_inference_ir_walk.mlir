@@ -51,7 +51,6 @@ module @tile_inference_ir_walk {
     // shim back-reference (conduit_channel attr on aie.shim_dma_allocation
     // or a new conduit.shim_endpoint op).
     conduit.create @fifo_shim_alloc {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 0>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64}
 

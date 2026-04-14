@@ -8,11 +8,11 @@
 // emitted inside the loop body.
 //
 // Input pattern:
-//   acquire @fifo (Produce, 1)       ← pre-loop; hold = 1
+//   acquire @fifo (Produce, 1)       <- pre-loop; hold = 1
 //   scf.for ... {
-//     acquire @fifo (Produce, 1)     ← in-loop; hold already 1, delta = 0
+//     acquire @fifo (Produce, 1)     <- in-loop; hold already 1, delta = 0
 //     store ...
-//     release @fifo (Produce, 1)     ← release; hold = 0 after iteration
+//     release @fifo (Produce, 1)     <- release; hold = 0 after iteration
 //   }
 //
 // Oracle (stateful transform) emits exactly 6 use_lock ops:
@@ -42,6 +42,14 @@ module @aie2_dynamic_locks {
         %tile22 = aie.tile(2, 2)  // producer tile
         %tile43 = aie.tile(4, 3)  // consumer tile
         aie.objectfifo @fifo (%tile22, {%tile43}, 1 : i32) : !aie.objectfifo<memref<i64>>
+
+        // Consumer core: provides structural tile info for consumer endpoint.
+        %core43 = aie.core(%tile43) {
+            %sv = aie.objectfifo.acquire @fifo (Consume, 1) : !aie.objectfifosubview<memref<i64>>
+            %e = aie.objectfifo.subview.access %sv[0] : !aie.objectfifosubview<memref<i64>> -> memref<i64>
+            aie.objectfifo.release @fifo (Consume, 1)
+            aie.end
+        }
 
         // Producer core: acquire before loop, acquire again inside loop
         // (same count — should not generate a second lock acquire),

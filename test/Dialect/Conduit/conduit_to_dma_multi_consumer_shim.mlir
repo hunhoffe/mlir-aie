@@ -3,7 +3,7 @@
 // Pass C test: conduit with BOTH a compute consumer AND a shim consumer.
 //
 // This exercises the Phase 4b (routePhase) multiConsumer=true path:
-//   - consumer_tiles=[0,3] (compute) AND shim_consumer_tiles=[0,0] (shim)
+//   - (compute) AND shim_consumer_tiles=[0,0] (shim)
 //     → multiConsumer=true → shim lock names use indexed suffix "_cons_1"
 //       (globalConsIdx = numComputeConsumers=1 + shimConsIdx=0 = 1)
 //   - Phase 4b allocates the MM2S channel and records it in conduitMM2SChannel.
@@ -54,8 +54,6 @@ module @multi_consumer_shim {
     conduit.create @chan {depth = 1 : i64,
                     slot_elems = 16 : i64,
                     element_type = memref<16xi32>,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 3>,
                     shim_consumer_tiles = array<i64: 0, 0>,
                                         routing_mode = #conduit.routing_mode<circuit>}
 

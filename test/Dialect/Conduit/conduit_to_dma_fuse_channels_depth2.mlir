@@ -67,18 +67,35 @@ module @fuse_depth2_nocore {
     %tile_0_5 = aie.tile(0, 5)
 
     conduit.create @chan_a {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<4xi32>,
                     depth = 2 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
     conduit.create @chan_b {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<4xi32>,
                     depth = 2 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
+
+    // Minimal aie.core blocks for inferAllTiles() Source 1.
+    // Producer core only; consumer cores omitted to avoid rotation-counter
+    // memref.load crash with depth>1 consumer acquire ops.
+    aie.core(%tile_0_2) {
+      %w_a = conduit.acquire {name = @chan_a, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w_a {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      %w_b = conduit.acquire {name = @chan_b, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w_b {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    aie.core(%tile_0_4) {
+      %w = conduit.acquire {name = @chan_a, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    } {dynamic_objfifo_lowering = true}
+    aie.core(%tile_0_5) {
+      %w = conduit.acquire {name = @chan_b, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    } {dynamic_objfifo_lowering = true}
   }
 }

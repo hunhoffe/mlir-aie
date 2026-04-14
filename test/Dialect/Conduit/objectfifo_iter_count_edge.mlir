@@ -9,7 +9,7 @@
 // CHECK:     aie.lock({{.*}}) {init = 2 : i32
 // CHECK:     aie.lock({{.*}}) {init = 0 : i32
 // DMAStartOp must NOT have repeat_count attribute (default 0 = K-1 where K=1)
-// CHECK:     aie.memtile_dma
+// CHECK:     aie.mem
 // CHECK:       aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK-NOT:   repeat_count
 // BD chain is non-circular: last BD goes to end block
@@ -25,9 +25,15 @@
 module {
   aie.device(xcve2302) {
     %shim_noc_tile_0_0 = aie.tile(0, 0)
-    %mem_tile_0_1 = aie.tile(0, 1)
+    %tile_0_2 = aie.tile(0, 2)
 
-    aie.objectfifo @in(%shim_noc_tile_0_0, {%mem_tile_0_1}, 2 : i32) {iter_count = 1 : i32}
+    aie.objectfifo @in(%shim_noc_tile_0_0, {%tile_0_2}, 2 : i32) {iter_count = 1 : i32}
         : !aie.objectfifo<memref<1024xi32>>
+
+    %core_0_2 = aie.core(%tile_0_2) {
+      %sv = aie.objectfifo.acquire @in(Consume, 1) : !aie.objectfifosubview<memref<1024xi32>>
+      aie.objectfifo.release @in(Consume, 1)
+      aie.end
+    }
   }
 }

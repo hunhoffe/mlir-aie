@@ -18,8 +18,6 @@ module @conduit_create_producer_dims_type_check {
     // BDDimLayoutArrayAttr. The ODS constraint should catch and reject this.
     conduit.create @badDims {slot_elems = 32 : i64, depth = 1 : i64,
                     element_type = memref<32xi32>,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
                     producer_dimensions = "not_a_bd_dim_layout_array"}
   }
 }

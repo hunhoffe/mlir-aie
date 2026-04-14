@@ -5,13 +5,9 @@
 
 aie.device(npu1) {
 conduit.create @foo {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 conduit.create @bar {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @bad_wait_window_name_mismatch() {

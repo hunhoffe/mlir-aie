@@ -29,20 +29,14 @@
 
 aie.device(npu1) {
 conduit.create @src_skip {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 1>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 conduit.create @dst0_skip {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 1>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64}
 conduit.create @dst1_skip {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 1>,
-                consumer_tiles = array<i64: 1, 3>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64}
 func.func @distribute_unannotated_skip() {
@@ -60,22 +54,16 @@ func.func @distribute_unannotated_skip() {
 
 aie.device(npu1) {
 conduit.create @src_sym {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 1>,
                 element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 conduit.create @dst0_sym {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 1>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 conduit.create @dst1_sym {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 1>,
-                consumer_tiles = array<i64: 1, 3>,
                 element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
@@ -94,15 +82,11 @@ func.func @distribute_symmetric_pass() {
 
 aie.device(npu1) {
 conduit.create @src_one {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 1>,
                 element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 conduit.create @dst0_one {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 1>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,

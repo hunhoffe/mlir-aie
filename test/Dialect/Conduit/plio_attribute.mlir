@@ -17,11 +17,10 @@
 
 // -----
 
-// (a) plio=true with producer_tile=[0,0] (shim row) — valid, no error expected.
+// (a) plio=true with (shim row) — valid, no error expected.
 
 aie.device(npu1) {
 conduit.create @plio_shim_producer {slot_elems = 4 : i64, depth = 0 : i64,
-               producer_tile = array<i64: 0, 0>,
                plio = true}
 }
 
@@ -32,7 +31,5 @@ conduit.create @plio_shim_producer {slot_elems = 4 : i64, depth = 0 : i64,
 
 aie.device(npu1) {
 conduit.create @plio_shim_consumer {slot_elems = 4 : i64, depth = 0 : i64,
-               producer_tile = array<i64: 0, 2>,
-               consumer_tiles = array<i64: 0, 0>,
                plio = true}
 }

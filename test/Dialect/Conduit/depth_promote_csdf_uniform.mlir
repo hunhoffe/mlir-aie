@@ -20,8 +20,6 @@ aie.device(npu1) {
 
 // expected-remark @+1 {{conduit-depth-promote: promoted 'csdf_ch' from depth-1 to depth-2}}
 conduit.create @csdf_ch {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,

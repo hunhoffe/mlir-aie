@@ -22,8 +22,6 @@ module @release_count_exceeds_depth {
     %tile_0_2 = aie.tile(0, 2)
 
     conduit.create @fifo {slot_elems = 16 : i64,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<8xi32>,
                     depth = 2 : i64}
 

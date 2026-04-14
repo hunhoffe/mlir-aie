@@ -17,19 +17,13 @@
 // The cascade channel rejection fires in --conduit-to-dma, not here.
 aie.device(npu1) {
 conduit.create @casc_src {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
 conduit.create @out0 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64}
 conduit.create @out1 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 5>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64}
 func.func @scatter_with_cascade_src() {
@@ -43,18 +37,12 @@ func.func @scatter_with_cascade_src() {
 // gather with cascade-mode destination conduit — parses without verifier error.
 aie.device(npu1) {
 conduit.create @in0 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64}
 conduit.create @in1 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 3>,
-                consumer_tiles = array<i64: 0, 4>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64}
 conduit.create @casc_dst {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 4>,
-                consumer_tiles = array<i64: 0, 5>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}

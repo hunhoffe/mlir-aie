@@ -1,21 +1,9 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
 // MemTile distribute to same-column compute tiles (pathfinder-safe pattern).
 //
-// This test verifies the safe pattern for MemTile→compute DMA distribution:
-// all destination compute tiles are in the SAME column as the MemTile.
-// Cross-column MemTile→compute flows trigger a pathfinder assertion crash
-// (CRITICAL-1), so this pattern must always be used instead.
-//
 // Topology:
 //   shim(2,0) → MemTile(2,1) → {tile(2,2), tile(2,3)}  [same column 2]
-//
-// Expected:
-//   aie.flow(%shim..., DMA:0, %mem_tile_2_1, DMA:0)  [shim → MemTile]
-//   aie.flow(%mem_tile_2_1, DMA:0, %tile_2_2, DMA:0)  [MemTile → compute, col 2]
-//   aie.flow(%mem_tile_2_1, DMA:1, %tile_2_3, DMA:0)  [MemTile → compute, col 2]
-//
-// No cross-column MemTile flows should appear.
 
 // CHECK-LABEL: module @memsame_column_relay
 // CHECK:   aie.device(xcve2302) {
@@ -39,7 +27,7 @@
 
 // --- No residual Conduit ops ---
 // CHECK-NOT: conduit.create
-// CHECK-NOT: conduit.link
+// CHECK-NOT: conduit.scatter
 
 module @memsame_column_relay {
   aie.device(xcve2302) {
@@ -48,16 +36,32 @@ module @memsame_column_relay {
     %tile_2_2 = aie.tile(2, 2)
     %tile_2_3 = aie.tile(2, 3)
 
-    // Shim → MemTile (ingest from host)
-    aie.objectfifo @relay_in (%shim_2_0, {%mem_tile_2_1}, 2 : i32) : !aie.objectfifo<memref<512xi8>>
+    // Ingress: shim → MemTile
+    conduit.create @relay_in {slot_elems = 1024 : i64, element_type = memref<512xi8>, depth = 2 : i64}
+    // Egress: MemTile → compute tiles
+    conduit.create @relay_dst0 {slot_elems = 512 : i64, element_type = memref<256xi8>, depth = 2 : i64}
+    conduit.create @relay_dst1 {slot_elems = 512 : i64, element_type = memref<256xi8>, depth = 2 : i64}
 
-    // MemTile → compute tile 0 (first 256 bytes)
-    aie.objectfifo @relay_dst0 (%mem_tile_2_1, {%tile_2_2}, 2 : i32) : !aie.objectfifo<memref<256xi8>>
+    // Distribute link: split 512B buffer into two 256B slices at MemTile(2,1)
+    conduit.scatter{src = @relay_in, dsts = [@relay_dst0, @relay_dst1] {memtile = "tile(2,1)", offsets = array<i64: 0, 256>}}
 
-    // MemTile → compute tile 1 (second 256 bytes)
-    aie.objectfifo @relay_dst1 (%mem_tile_2_1, {%tile_2_3}, 2 : i32) : !aie.objectfifo<memref<256xi8>>
+    // Shim producer allocation for ingress channel.
+    aie.shim_dma_allocation @relay_in_shim_alloc(%shim_2_0, MM2S, 0) {conduit_channel = @relay_in}
 
-    // Distribute link: split 512B buffer into two 256B slices
-    aie.objectfifo.link [@relay_in] -> [@relay_dst0, @relay_dst1] ([][0, 256])
+    // Consumer cores — structural info for tile inference.
+    %core_2_2 = aie.core(%tile_2_2) {
+      %0 = conduit.acquire {count = 1 : i64, name = @relay_dst0,
+                            port = #conduit.port<Consume>} : <memref<256xi8>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<256xi8>>
+      aie.end
+    }
+    %core_2_3 = aie.core(%tile_2_3) {
+      %0 = conduit.acquire {count = 1 : i64, name = @relay_dst1,
+                            port = #conduit.port<Consume>} : <memref<256xi8>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<256xi8>>
+      aie.end
+    }
   }
 }

@@ -1,4 +1,4 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
 // Regression test for Task #54: broadcast link distribute flow emission.
 //
@@ -36,11 +36,34 @@ module {
     %shim_0_0 = aie.tile(0, 0)
     %mem_tile_0_1 = aie.tile(0, 1)
 
-    aie.objectfifo @src(%shim_0_0, {%mem_tile_0_1}, 2 : i32)
-        : !aie.objectfifo<memref<64xi32>>
-    aie.objectfifo @dst(%mem_tile_0_1, {%tile_0_2, %tile_0_3, %tile_0_4}, 2 : i32)
-        : !aie.objectfifo<memref<64xi32>>
+    conduit.create @src {slot_elems = 128 : i64, element_type = memref<64xi32>, depth = 2 : i64}
+    conduit.create @dst {slot_elems = 128 : i64, element_type = memref<64xi32>, depth = 2 : i64}
 
-    aie.objectfifo.link [@src] -> [@dst]([] [])
+    conduit.scatter{src = @src, dsts = [@dst] {memtile = "tile(0,1)"}}
+
+    aie.shim_dma_allocation @src_shim_alloc(%shim_0_0, MM2S, 0) {conduit_channel = @src}
+
+    // Consumer cores — structural info for tile inference.
+    %core_0_2 = aie.core(%tile_0_2) {
+      %0 = conduit.acquire {count = 1 : i64, name = @dst,
+                            port = #conduit.port<Consume>} : <memref<64xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<64xi32>>
+      aie.end
+    }
+    %core_0_3 = aie.core(%tile_0_3) {
+      %0 = conduit.acquire {count = 1 : i64, name = @dst,
+                            port = #conduit.port<Consume>} : <memref<64xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<64xi32>>
+      aie.end
+    }
+    %core_0_4 = aie.core(%tile_0_4) {
+      %0 = conduit.acquire {count = 1 : i64, name = @dst,
+                            port = #conduit.port<Consume>} : <memref<64xi32>>
+      conduit.release %0 {count = 1 : i64,
+                          port = #conduit.port<Consume>} : <memref<64xi32>>
+      aie.end
+    }
   }
 }

@@ -36,8 +36,6 @@ module {
     // Expected: warning emitted on @short_dma.
     // -----------------------------------------------------------------------
     conduit.create @short_dma {slot_elems = 16 : i64,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<16xi32>,
                     depth = 1 : i64,
                     dma_repeat = 4 : i64}
@@ -46,8 +44,6 @@ module {
     // CASE 2: Valid — dma_repeat(64) == loop trip count(64). No warning.
     // -----------------------------------------------------------------------
     conduit.create @long_dma {slot_elems = 16 : i64,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<16xi32>,
                     depth = 1 : i64,
                     dma_repeat = 64 : i64}
@@ -58,8 +54,6 @@ module {
     // Expected: no warning even though the acquire is inside the loop.
     // -----------------------------------------------------------------------
     conduit.create @no_iter {slot_elems = 16 : i64,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<16xi32>,
                     depth = 1 : i64,
                     bd_repeat = 4 : i64}

@@ -35,5 +35,20 @@ module @plio {
         aie.objectfifo @of_0 (%tile20, {%tile22}, 2 : i32) {plio = true} : !aie.objectfifo<memref<64xi16>>
         aie.objectfifo @of_1 (%tile22, {%tile20}, 2 : i32) {plio = true} : !aie.objectfifo<memref<64xi16>>
         aie.objectfifo @of_2 (%tile22, {%tile20, %tile23}, 2 : i32) {plio = true} : !aie.objectfifo<memref<64xi16>>
+
+        %core22 = aie.core(%tile22) {
+          %sv0 = aie.objectfifo.acquire @of_0(Consume, 1) : !aie.objectfifosubview<memref<64xi16>>
+          aie.objectfifo.release @of_0(Consume, 1)
+          %sv1 = aie.objectfifo.acquire @of_1(Produce, 1) : !aie.objectfifosubview<memref<64xi16>>
+          aie.objectfifo.release @of_1(Produce, 1)
+          %sv2 = aie.objectfifo.acquire @of_2(Produce, 1) : !aie.objectfifosubview<memref<64xi16>>
+          aie.objectfifo.release @of_2(Produce, 1)
+          aie.end
+        }
+        %core23 = aie.core(%tile23) {
+          %sv = aie.objectfifo.acquire @of_2(Consume, 1) : !aie.objectfifosubview<memref<64xi16>>
+          aie.objectfifo.release @of_2(Consume, 1)
+          aie.end
+        }
     }
 }

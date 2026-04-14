@@ -57,9 +57,8 @@ module @conduit_partial_release_depth4 {
     // max(depth, maxAcquire+1) = max(4, 4) = 4 (no extra buffers needed).
     // slot_elems = 128 = 32 elements * depth(4); perBufLen = 128/4 = 32.
     conduit.create @fifo {slot_elems = 128 : i64, depth = 4 : i64,
-                    element_type = memref<32xi32>,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>}
+                    element_type = memref<32xi32>
+                    }
 
     aie.shim_dma_allocation @fifo_shim_alloc(%shim, MM2S, 0)
 

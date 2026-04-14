@@ -66,5 +66,16 @@ module {
                         {%tile_2_3}, 2 : i32) : !aie.objectfifo<memref<128xi32>>
 
     aie.objectfifo.link [ @of0 ] -> [ @of1, @of2 ] ([][0, 512])
+
+    %core_2_2 = aie.core(%tile_2_2) {
+      %sv = aie.objectfifo.acquire @of1(Consume, 1) : !aie.objectfifosubview<memref<128xi32>>
+      aie.objectfifo.release @of1(Consume, 1)
+      aie.end
+    }
+    %core_2_3 = aie.core(%tile_2_3) {
+      %sv = aie.objectfifo.acquire @of2(Consume, 1) : !aie.objectfifosubview<memref<128xi32>>
+      aie.objectfifo.release @of2(Consume, 1)
+      aie.end
+    }
   }
 }

@@ -59,8 +59,6 @@ module @memtile_to_memtile_relay {
     // Stage 1: compute(0,2) → MemTile(0,1), depth=2
     conduit.create @src {
       slot_elems = 4 : i64,
-      producer_tile = array<i64: 0, 2>,
-      consumer_tiles = array<i64: 0, 1>,
       element_type = memref<4xi32>,
       depth = 2 : i64
     }
@@ -68,8 +66,6 @@ module @memtile_to_memtile_relay {
     // Stage 2: MemTile(0,1) → MemTile(1,1), depth=2
     conduit.create @mid {
       slot_elems = 4 : i64,
-      producer_tile = array<i64: 0, 1>,
-      consumer_tiles = array<i64: 1, 1>,
       element_type = memref<4xi32>,
       depth = 2 : i64
     }
@@ -77,8 +73,6 @@ module @memtile_to_memtile_relay {
     // Stage 3: MemTile(1,1) → compute(1,2), depth=2
     conduit.create @dst {
       slot_elems = 4 : i64,
-      producer_tile = array<i64: 1, 1>,
-      consumer_tiles = array<i64: 1, 2>,
       element_type = memref<4xi32>,
       depth = 2 : i64
     }

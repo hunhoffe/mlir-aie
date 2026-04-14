@@ -26,8 +26,6 @@
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @ok_sync_release() {
@@ -47,8 +45,6 @@ func.func @ok_sync_release() {
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @ok_async_acquire() {
@@ -71,8 +67,6 @@ func.func @ok_async_acquire() {
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @ok_release_async() {
@@ -96,8 +90,6 @@ func.func @ok_release_async() {
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 24 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<24xi32>,
                 depth = 3 : i64}
 func.func @ok_partial_release() {
@@ -117,8 +109,6 @@ func.func @ok_partial_release() {
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_no_release'}}
@@ -138,8 +128,6 @@ func.func @fail_no_release() {
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_wait_window_no_release'}}
@@ -162,8 +150,6 @@ func.func @fail_wait_window_no_release() {
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 2 : i64}
 // expected-note@+1 {{in function '@fail_second_acquire_leaked'}}
@@ -190,8 +176,6 @@ func.func @fail_second_acquire_leaked() {
 
 aie.device(npu1) {
 conduit.create @c {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_wrong_channel_release_async'}}

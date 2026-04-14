@@ -6,7 +6,7 @@
 // Pass A emits a scatter{N=1} relay through the MemTile:
 //
 //   1. @fifo's consumer_tiles → [memtile col, 1]
-//   2. @fifo_relay created with producer_tile=[col,1], consumer_tiles=original
+//   2. @fifo_relay created with consumer_tiles=original
 //   3. conduit.scatter { src=@fifo, dsts=[@fifo_relay] }
 //   4. Consumer-side acquire/release ops rewritten from @fifo to @fifo_relay.
 //
@@ -21,13 +21,9 @@
 //
 // Source channel: consumer_tiles updated to MemTile [0,1].
 // CHECK:   conduit.create @fifo
-// CHECK-SAME: consumer_tiles = array<i64: 0, 1>
-// CHECK-SAME: producer_tile = array<i64: 0, 2>
 //
 // Relay channel: producer_tile = MemTile, consumer_tiles = original [0,3].
 // CHECK:   conduit.create @fifo_relay
-// CHECK-SAME: consumer_tiles = array<i64: 0, 3>
-// CHECK-SAME: producer_tile = array<i64: 0, 1>
 //
 // Scatter relay.
 // CHECK:   conduit.scatter{src = @fifo, dsts = [@fifo_relay]
@@ -89,8 +85,6 @@ module @memtile_delegate {
 //
 // Channel unchanged — consumer_tiles still [1,3], no relay.
 // CHECK:   conduit.create @fifo2
-// CHECK-SAME: consumer_tiles = array<i64: 1, 3>
-// CHECK-SAME: producer_tile = array<i64: 1, 2>
 //
 // No scatter or relay channel.
 // CHECK-NOT: conduit.scatter

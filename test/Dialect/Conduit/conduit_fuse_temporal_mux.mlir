@@ -49,13 +49,9 @@
 // CHECK-LABEL: func.func @no_dep_no_merge
 aie.device(npu1) {
 conduit.create @nd1 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 1, 1>,
-                consumer_tiles = array<i64: 1, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 conduit.create @nd2 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 1, 1>,
-                consumer_tiles = array<i64: 1, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @no_dep_no_merge() {
@@ -96,18 +92,12 @@ func.func @no_dep_no_merge() {
 // CHECK-LABEL: func.func @partial_dep
 aie.device(npu1) {
 conduit.create @pd1 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 2, 1>,
-                consumer_tiles = array<i64: 2, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 conduit.create @pd2 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 2, 1>,
-                consumer_tiles = array<i64: 2, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 conduit.create @pd3 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 2, 1>,
-                consumer_tiles = array<i64: 2, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @partial_dep() {
@@ -148,13 +138,10 @@ func.func @partial_dep() {
 // CHECK-LABEL: func.func @different_consumer_tile
 aie.device(npu1) {
 conduit.create @de1 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 3, 1>,
-                consumer_tiles = array<i64: 3, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 conduit.create @de2 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 3, 1>,
-                consumer_tiles = array<i64: 3, 3>,   // different consumer row
+                // different consumer row
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @different_consumer_tile() {
@@ -190,14 +177,10 @@ func.func @different_consumer_tile() {
 // CHECK-LABEL: func.func @packet_mode_excluded
 aie.device(npu1) {
 conduit.create @pkt1 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 4, 1>,
-                consumer_tiles = array<i64: 4, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<packet>}
 conduit.create @pkt2 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 4, 1>,
-                consumer_tiles = array<i64: 4, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<packet>}
@@ -233,13 +216,9 @@ func.func @packet_mode_excluded() {
 // CHECK-LABEL: func.func @depth2_excluded
 aie.device(npu1) {
 conduit.create @d2a {slot_elems = 2 : i64,
-                producer_tile = array<i64: 5, 1>,
-                consumer_tiles = array<i64: 5, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 2 : i64}
 conduit.create @d2b {slot_elems = 2 : i64,
-                producer_tile = array<i64: 5, 1>,
-                consumer_tiles = array<i64: 5, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 2 : i64}
 func.func @depth2_excluded() {
@@ -280,18 +259,12 @@ func.func @depth2_excluded() {
 // CHECK-LABEL: func.func @link_src_excluded
 aie.device(npu1) {
 conduit.create @lk1 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 6, 2>,
-                consumer_tiles = array<i64: 6, 3>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 conduit.create @lk2 {slot_elems = 1 : i64,
-                producer_tile = array<i64: 6, 2>,
-                consumer_tiles = array<i64: 6, 3>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 conduit.create @lk_dst {slot_elems = 1 : i64,
-                producer_tile = array<i64: 6, 1>,
-                consumer_tiles = array<i64: 6, 2>,
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @link_src_excluded() {

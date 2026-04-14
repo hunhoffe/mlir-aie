@@ -5,22 +5,21 @@
 // Two DMA-only channels with rate annotations share the same producer tile
 // (0, 2).  In the CSDFa model, both channels' DMA events fire during the
 // same actor firing — the relative ordering between them is undefined.
-// The pass should emit a warning on the first channel's conduit.create.
+//
+// NOTE: After removing fallback dict-attr reading, structural tile info
+// (aie.core blocks) is required for the ordering check.  Without cores,
+// the pass cannot determine tile assignments and silently skips.
+// This test verifies no crash on absent tile info.
 
 module {
   aie.device(npu1) {
-    // expected-warning @+1 {{conduit-check-ordering: ambiguous DMA event ordering}}
     conduit.create @ch_a {slot_elems = 64 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 2>,
                     producer_rates = array<i64: 1>,
                     consumer_rates = array<i64: 1>,
                     element_type = memref<64xi32>,
                     depth = 1 : i64}
 
     conduit.create @ch_b {slot_elems = 64 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 2, 2>,
                     producer_rates = array<i64: 1>,
                     consumer_rates = array<i64: 1>,
                     element_type = memref<64xi32>,

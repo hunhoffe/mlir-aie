@@ -44,20 +44,20 @@
 
 // --- Producer rotation counter: memref.alloca() inside core body ---
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:         %alloca = memref.alloca() : memref<1xi32>
+// CHECK:         %[[ALLOCA:.*]] = memref.alloca()
 // --- Counter init to 0 at top of core body ---
-// CHECK:         memref.store {{.*}}, %alloca[{{.*}}] : memref<1xi32>
+// CHECK:         memref.store {{.*}}, %[[ALLOCA]][{{.*}}]
 // CHECK:       scf.for
 // --- Blocking acquire: waits for free slot on Produce port ---
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
 // --- release_async: signals buffer filled ---
 // CHECK:         aie.use_lock(%[[CONS_LOCK]], Release, 1)
 // --- BLOCK-2 fix: producer rotation counter increment in release_async path (arith.andi) ---
-// CHECK:         memref.load %alloca
+// CHECK:         memref.load %[[ALLOCA]]
 // CHECK:         arith.addi
 // CHECK:         %[[MASK:.*]] = arith.constant 1 : i32
 // CHECK:         arith.andi {{.*}}, %[[MASK]] : i32
-// CHECK:         memref.store {{.*}}, %alloca
+// CHECK:         memref.store {{.*}}, %[[ALLOCA]]
 // CHECK:     }
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
@@ -72,8 +72,6 @@ module @release_async_producer_block2 {
     // Pass C allocates 2 producer buffers + prod/cons locks on tile_0_2,
     // plus the producer rotation counter memref<1xi32>.
     conduit.create @fifo_async {slot_elems = 16 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>,
                     depth = 2 : i64}
 
@@ -98,6 +96,21 @@ module @release_async_producer_block2 {
 
         // wait_all consumes the window token directly.
         conduit.wait_all %rel_tok : !conduit.window.token
+      }
+      aie.end
+    } {dynamic_objfifo_lowering = true}
+
+    // Consumer core: minimal acquire/release for tile inference.
+    %core_0_4 = aie.core(%tile_0_4) {
+      %c0b = arith.constant 0 : index
+      %c1b = arith.constant 1 : index
+      %c4b = arith.constant 4 : index
+      scf.for %i = %c0b to %c4b step %c1b {
+        %cwin = conduit.acquire {name = @fifo_async, count = 1 : i64,
+                                 port = #conduit.port<Consume>}
+                    : !conduit.window<memref<8xi32>>
+        conduit.release %cwin {count = 1 : i64, port = #conduit.port<Consume>}
+            : !conduit.window<memref<8xi32>>
       }
       aie.end
     } {dynamic_objfifo_lowering = true}

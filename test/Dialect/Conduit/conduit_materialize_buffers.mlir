@@ -48,7 +48,6 @@ module @materialize_buffers {
     // depth = 1: explicit single-buffer depth.
     // No consumer_tiles attr: consumer tile inferred from acquire{Consume} walk.
     conduit.create @fifo_shim_alloc {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 0>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64}
 

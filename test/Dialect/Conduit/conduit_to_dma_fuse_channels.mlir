@@ -111,13 +111,9 @@ module @fuse_channels_test {
     // chan_b: producer=[0,2], consumer=[0,5]  (non-adjacent: 3 rows apart)
     // Both use depth=1, 8 i32 elements (slot_elems =8).
     conduit.create @chan_a {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64}
     conduit.create @chan_b {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64}
 

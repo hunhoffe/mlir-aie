@@ -15,9 +15,7 @@
 //
 // Expected IR after --air-channel-to-conduit:
 //   conduit.create with name="bcast", slot_elems =2  (source)
-//   conduit.create with name="bcast_c0", consumer_tiles=[2,2]
-//   conduit.create with name="bcast_c1", consumer_tiles=[3,2]
-//   conduit.distribute with srcs=["bcast"], dsts=["bcast_c0","bcast_c1"]
+//   conduit.create with name="bcast_c0", //   conduit.create with name="bcast_c1", //   conduit.distribute with srcs=["bcast"], dsts=["bcast_c0","bcast_c1"]
 //
 // Note: the remark "found 2 consumer tiles from aie.core enclosure" is emitted.
 
@@ -31,12 +29,8 @@
 
 // Consumer alias for tile (2,2).
 // CHECK: conduit.create @bcast_c0
-// CHECK-SAME: consumer_tiles = array<i64: 2, 2>
-
 // Consumer alias for tile (3,2).
 // CHECK: conduit.create @bcast_c1
-// CHECK-SAME: consumer_tiles = array<i64: 3, 2>
-
 // Scatter op (Sprint 4: distribute renamed to scatter, srcs array→src single).
 // CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0, @bcast_c1]
 // CHECK-SAME: memtile = "tile(2,1)"

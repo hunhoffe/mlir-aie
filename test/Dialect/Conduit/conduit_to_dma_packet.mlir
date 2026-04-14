@@ -49,11 +49,12 @@ module @packet_routing_mode {
     // Conduit channel with routing_mode = #conduit.routing_mode<packet>.
     // Pass C Phase 4 should emit aie.packet_flow instead of aie.flow.
     conduit.create @pkt_fifo {slot_elems = 10 : i64,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<10xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
+
+    // Shim producer allocation: inferAllTiles() matches via _shim_alloc suffix.
+    aie.shim_dma_allocation @pkt_fifo_shim_alloc(%tile_0_0, MM2S, 0)
 
     %core_0_2 = aie.core(%tile_0_2) {
       %c0 = arith.constant 0 : index

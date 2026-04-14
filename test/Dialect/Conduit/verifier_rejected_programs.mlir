@@ -54,8 +54,6 @@
 
 aie.device(npu1) {
 conduit.create @csdf_imbal {slot_elems = 5 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 5 : i64,
                 producer_rates = array<i64: 2, 3>,
@@ -80,8 +78,6 @@ func.func @case1_m6_csdf_rate_imbalance() {
 
 aie.device(npu1) {
 conduit.create @csdf_cap {slot_elems = 2 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<i32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 3, 1>,
@@ -103,12 +99,10 @@ func.func @case2_m7_capacity_insufficient() {
 
 aie.device(npu1) {
 conduit.create @cas_c3_src {slot_elems = 1 : i64, depth = 1 : i64,
-                routing_mode = #conduit.routing_mode<cascade>,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 1>}
-conduit.create @cas_c3_dst {slot_elems = 1 : i64, depth = 1 : i64,
-                producer_tile = array<i64: 0, 1>,
-                consumer_tiles = array<i64: 1, 2>}
+                routing_mode = #conduit.routing_mode<cascade>
+                }
+conduit.create @cas_c3_dst {slot_elems = 1 : i64, depth = 1 : i64
+                }
 func.func @case3_cascade_scatter_src() {
   conduit.scatter{src = @cas_c3_src, dsts = [@cas_c3_dst] {memtile = "tile(0,1)"}}
   return
@@ -137,8 +131,6 @@ module @case4_cascade_depth_gt1 {
     %tile13 = aie.tile(1, 3)
 
     conduit.create @cas_d2 {slot_elems = 2 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>,
                     depth = 2 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
@@ -260,8 +252,6 @@ module @case7_unmatched_put_cascade {
     %tile03 = aie.tile(0, 3)
 
     conduit.create @cas_unmatched {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
@@ -292,8 +282,6 @@ module @case8_ambiguous_get_cascade {
     %tile23 = aie.tile(2, 3)
 
     conduit.create @cas_ambig {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
@@ -342,8 +330,6 @@ module @case8_ambiguous_get_cascade {
 
 aie.device(npu1) {
 conduit.create @dbl_rel {slot_elems = 1 : i64,
-                producer_tile = array<i64: 0, 2>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<1xi32>,
                 depth = 1 : i64}
 func.func @case10_m8a_double_release() {

@@ -36,6 +36,14 @@ module @ssa_dominance_regression {
             return
         }
 
+        // Consumer core: provides structural tile info for consumer endpoint.
+        %core13 = aie.core(%tile13) {
+            %sv = aie.objectfifo.acquire @fifo (Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+            %e = aie.objectfifo.subview.access %sv[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+            aie.objectfifo.release @fifo (Consume, 1)
+            aie.end
+        }
+
         %core12 = aie.core(%tile12) {
             %c0 = arith.constant 0 : index
             %c1 = arith.constant 1 : index

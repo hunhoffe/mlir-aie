@@ -26,8 +26,6 @@
 // PASSA:       aie.device(xcve2302) {
 
 // Phase 3: scatter emitted with original conduit.create names.
-// conduit.scatter src must be the conduit.create symbol, NOT
-// the Phase 4.5 shim_alloc symbol (@link_in_shim_alloc).
 // PASSA:       conduit.create @link_in
 // PASSA:       conduit.create @link_out_a
 // PASSA:       conduit.create @link_out_b
@@ -35,8 +33,6 @@
 // PASSA-NOT:   src = @link_in_shim_alloc
 
 // Phase 3: gather emitted with original conduit.create names.
-// conduit.gather dst must be the conduit.create symbol, NOT
-// the Phase 4.5 shim_alloc symbol (@join_out_shim_alloc).
 // PASSA:       conduit.create @join_src_a
 // PASSA:       conduit.create @join_src_b
 // PASSA:       conduit.create @join_out
@@ -82,5 +78,31 @@ module @phase45_shim_rename_scope {
     aie.objectfifo @join_src_b (%comp_d, {%memtile2}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
     aie.objectfifo @join_out   (%memtile2, {%shim_cons}, 2 : i32) : !aie.objectfifo<memref<32xi32>>
     aie.objectfifo.link [@join_src_a, @join_src_b] -> [@join_out] ([0, 16][])
+
+    // All cores at the end: provides structural tile info for Pass C.
+    %core_a = aie.core(%comp_a) {
+      %sv = aie.objectfifo.acquire @link_out_a (Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+      %e = aie.objectfifo.subview.access %sv[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      aie.objectfifo.release @link_out_a (Consume, 1)
+      aie.end
+    }
+    %core_b = aie.core(%comp_b) {
+      %sv = aie.objectfifo.acquire @link_out_b (Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+      %e = aie.objectfifo.subview.access %sv[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      aie.objectfifo.release @link_out_b (Consume, 1)
+      aie.end
+    }
+    %core_c = aie.core(%comp_c) {
+      %sv = aie.objectfifo.acquire @join_src_a (Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
+      %e = aie.objectfifo.subview.access %sv[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      aie.objectfifo.release @join_src_a (Produce, 1)
+      aie.end
+    }
+    %core_d = aie.core(%comp_d) {
+      %sv = aie.objectfifo.acquire @join_src_b (Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
+      %e = aie.objectfifo.subview.access %sv[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      aie.objectfifo.release @join_src_b (Produce, 1)
+      aie.end
+    }
   }
 }

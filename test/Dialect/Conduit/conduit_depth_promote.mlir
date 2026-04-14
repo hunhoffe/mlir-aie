@@ -40,8 +40,6 @@ aie.device(npu1) {
 // Pass must promote to depth=2, slot_elems =16.
 // expected-remark @+1 {{conduit-depth-promote: promoted 'loop_fifo' from depth-1 to depth-2}}
 conduit.create @loop_fifo {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 
@@ -49,14 +47,10 @@ conduit.create @loop_fifo {slot_elems = 8 : i64,
 // Pass must skip it (exclusion criterion #2).
 // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_fifo' -- linked conduit}}
 conduit.create @linked_fifo {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 1>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_out' -- linked conduit}}
 conduit.create @linked_out {slot_elems = 8 : i64,
-                producer_tile = array<i64: 0, 1>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<8xi32>,
                 depth = 1 : i64}
 
@@ -64,8 +58,6 @@ conduit.create @linked_out {slot_elems = 8 : i64,
 // Pass must skip it (exclusion criterion #4).
 // expected-remark @+1 {{conduit-depth-promote: skipping 'passthrough_fifo' -- passthrough-only (no compute)}}
 conduit.create @passthrough_fifo {slot_elems = 4 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 3>,
                 element_type = memref<4xi32>,
                 depth = 1 : i64}
 

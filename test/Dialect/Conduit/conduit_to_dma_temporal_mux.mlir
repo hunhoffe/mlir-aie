@@ -118,8 +118,6 @@ module @tm_count2 {
     // and emits a linear 2-entry S2MM BD chain (last BD → aie.end, not ^bd0).
     conduit.create @kv {
       slot_elems = 1 : i64,
-      producer_tile = array<i64: 0, 0>,
-      consumer_tiles = array<i64: 0, 2>,
       element_type = memref<64xi32>,
       depth = 1 : i64
     }
@@ -161,6 +159,9 @@ module @tm_count2 {
       conduit.wait_all %t2 : !conduit.dma.token
       return
     }
+
+    // Shim producer allocation — structural info for tile inference.
+    aie.shim_dma_allocation @kv_shim_alloc(%tile_0_0, MM2S, 0) {conduit_channel = @kv}
   }
 }
 
@@ -237,8 +238,6 @@ module @tm_count3 {
     // and emits a linear 3-entry S2MM BD chain (last BD → aie.end).
     conduit.create @kvs {
       slot_elems = 1 : i64,
-      producer_tile = array<i64: 0, 0>,
-      consumer_tiles = array<i64: 0, 2>,
       element_type = memref<32xi32>,
       depth = 1 : i64
     }
@@ -292,6 +291,9 @@ module @tm_count3 {
       conduit.wait_all %t3 : !conduit.dma.token
       return
     }
+
+    // Shim producer allocation — structural info for tile inference.
+    aie.shim_dma_allocation @kvs_shim_alloc(%tile_0_0, MM2S, 0) {conduit_channel = @kvs}
   }
 }
 
@@ -364,8 +366,6 @@ module @tm_baseline_depth1 {
     // Standard depth=1 channel: single put_memref_async → 1-entry circular ring.
     conduit.create @single {
       slot_elems = 1 : i64,
-      producer_tile = array<i64: 0, 0>,
-      consumer_tiles = array<i64: 0, 2>,
       element_type = memref<64xi32>,
       depth = 1 : i64
     }
@@ -396,5 +396,8 @@ module @tm_baseline_depth1 {
       conduit.wait_all %t : !conduit.dma.token
       return
     }
+
+    // Shim producer allocation — structural info for tile inference.
+    aie.shim_dma_allocation @single_shim_alloc(%tile_0_0, MM2S, 0) {conduit_channel = @single}
   }
 }

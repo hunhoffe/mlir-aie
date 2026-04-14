@@ -24,10 +24,9 @@ module @passC_conduit_outside_core {
     %tile = aie.tile(0, 2)
 
     conduit.create @myChan {slot_elems = 32 : i64, depth = 1 : i64,
-                    element_type = memref<32xi32>,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>,
-                    shim_consumer_tiles = array<i64>}
+                    element_type = memref<32xi32>}
+
+    aie.shim_dma_allocation @myChan_shim_alloc(%shim, MM2S, 0)
 
     // conduit.acquire/release placed OUTSIDE aie.core — in the device body.
     // B-11: resolveForTile() should NOT walk past DeviceOp (sentinel stop).
@@ -38,7 +37,13 @@ module @passC_conduit_outside_core {
     conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
         : !conduit.window<memref<32xi32>>
 
+    // Minimal consumer core — provides structural tile info so inferAllTiles()
+    // knows tile(0,2) is the consumer. The actual regression (acquire outside
+    // core) is still exercised by the conduit.acquire/release above.
     %core = aie.core(%tile) {
+      conduit.acquire {name = @myChan, count = 1 : i64,
+                       port = #conduit.port<Consume>}
+                   : !conduit.window<memref<32xi32>>
       aie.end
     }
   }

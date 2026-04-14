@@ -36,41 +36,45 @@ module @pkt_fallback_with_cascade {
     // Cascade conduit — zero DMA, zero locks.
     // (0,3) → (1,3): East direction (col+1, same row). Valid cascade topology.
     conduit.create @cascade_ab {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<1xvector<16xi32>>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
     // Packet conduits — fill both MM2S channels on (0,3) as packet-mode.
     conduit.create @pkt_a {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
     conduit.create @pkt_b {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // mode=any: circuit exhausted → Step 3.5 shares packet ch 0.
     conduit.create @fallback {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     %core03 = aie.core(%t03) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @fallback, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
       %v = arith.constant dense<0> : vector<16xi32>
-      aie.put_cascade(%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>) {conduit_channel = @cascade_ab}
       aie.end
     }
     %core13 = aie.core(%t13) {
-      %r = aie.get_cascade() : vector<16xi32>
+      %r = aie.get_cascade() {conduit_channel = @cascade_ab} : vector<16xi32>
       aie.end
     }
-    %core23 = aie.core(%t23) { aie.end }
-    %core33 = aie.core(%t33) { aie.end }
-    %core15 = aie.core(%t15) { aie.end }
+    %core23 = aie.core(%t23) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core33 = aie.core(%t33) {
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core15 = aie.core(%t15) {
+      conduit.acquire {name = @fallback, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }

@@ -11,15 +11,15 @@
 //   consumer_tiles because AIR channel ops do not carry tile coordinates — those
 //   come from a separate tile-placement step between Pass B and Pass C.
 //
-//   This test simulates that placement step by including a pre-specified conduit.create
-//   with tile info alongside the air.channel declaration.  Pass B converts the
-//   air.channel.put/get ops; Pass C lowers the conduit.create (with tile info)
-//   to hardware ops (aie.buffer, aie.lock, aie.flow, aie.mem with DMA BDs).
+//   This test provides structural tile info via aie.shim_dma_allocation (for
+//   shim producer) and aie.core (for compute consumer) so that Pass C's
+//   inferAllTiles() can determine tile assignments.
 //
 // Input:
 //   - aie.device(npu1_1col) with two tiles: shim(0,0) and compute(0,2)
-//   - conduit.create @mychan with tile info (producer_tile=[0,0] shim,
-//     consumer_tiles=[0,2] compute) and element_type=memref<64xi32>
+//   - conduit.create @mychan with element_type=memref<64xi32>
+//   - aie.shim_dma_allocation for shim producer (MM2S)
+//   - aie.core for compute consumer with conduit.acquire/release
 //   - air.channel.put and air.channel.get with 1-D descriptor:
 //       offsets=[0], sizes=[64], strides=[1] → num_elems=64
 //
@@ -34,12 +34,6 @@
 //   - aie.shim_dma_allocation on tile(0,0)
 //   - aie.flow: tile(0,0) DMA:0 → tile(0,2) DMA:0
 //   - aie.mem on tile(0,2) with aie.dma_start(S2MM, 0, ...) and aie.dma_bd
-//
-// Note on put_memref_async / get_memref_async: Phase 7 of Pass C erases these
-// ops after their token consumers are gone.  DMA descriptor lowering for these
-// ops (aie.dma_bd on the producer side) is a separate future gap; for now they
-// are erased with no hardware op emitted.  The func body is empty of Conduit
-// ops after Pass C.
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
@@ -59,14 +53,14 @@
 // --- func body: put_memref_async and get_memref_async are erased by Phase 7 ---
 // CHECK:     func.func @test(
 
-// --- Shim-side locks ---
+// --- Shim DMA allocation (from input, precedes generated locks) ---
+// CHECK:     aie.shim_dma_allocation @mychan_shim_alloc
+
+// --- Shim-side locks and flow ---
 // CHECK:     aie.lock(%{{.*}}tile_0_0
 // CHECK-SAME:   sym_name = "mychan_prod_lock_0"
 // CHECK:     aie.lock(%{{.*}}tile_0_0
 // CHECK-SAME:   sym_name = "mychan_cons_lock_0"
-
-// --- Shim DMA allocation and flow ---
-// CHECK:     aie.shim_dma_allocation @mychan_shim_alloc
 // CHECK:     aie.flow(%{{.*}}tile_0_0, DMA : 0, %{{.*}}tile_0_2, DMA : 0)
 
 // --- Tile DMA region: conduit.create → aie.mem with S2MM BD ---
@@ -92,13 +86,17 @@ module {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // conduit.create with tile placement already filled in (simulates the
-    // tile-placement step that runs between Pass B and Pass C).
-    // producer_tile=[0,0] = shim tile, consumer_tiles=[0,2] = compute tile.
+    // conduit.create without tile attrs (structural tile info below).
     conduit.create @mychan {slot_elems = 1 : i64, depth = 1 : i64,
-                    element_type = memref<64xi32>,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>}
+                    element_type = memref<64xi32>}
+
+    // Structural tile info: compute tile(0,2) consumes @mychan.
+    %core = aie.core(%tile_0_2) {
+      %w = conduit.acquire {name = @mychan, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<64xi32>>
+      %e = conduit.subview_access %w {index = 0 : i64} : !conduit.window<memref<64xi32>> -> memref<64xi32>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<64xi32>>
+      aie.end
+    }
 
     func.func @test(%src: memref<64xi32>, %dst: memref<64xi32>) {
       %c0 = arith.constant 0 : index
@@ -121,5 +119,8 @@ module {
 
       return
     }
+
+    // Structural tile info: shim tile(0,0) is the MM2S producer for @mychan.
+    aie.shim_dma_allocation @mychan_shim_alloc(%tile_0_0, MM2S, 0) {conduit_channel = @mychan}
   }
 }

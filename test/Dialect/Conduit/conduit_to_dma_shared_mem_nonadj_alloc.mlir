@@ -18,8 +18,6 @@ module {
     %tile_0_3 = aie.tile(0, 3)
 
     conduit.create @shm_chan {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<16xi32>,
                     depth = 1 : i64}
 

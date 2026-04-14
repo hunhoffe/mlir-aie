@@ -29,11 +29,18 @@ module @test_adjacent_shared_mem {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
     conduit.create @adj {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @adj, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core03 = aie.core(%t03) {
+      %w = conduit.acquire {name = @adj, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -53,11 +60,18 @@ module @test_non_adjacent_circuit {
     %t02 = aie.tile(0, 2)
     %t14 = aie.tile(1, 4)
     conduit.create @non_adj {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @non_adj, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @non_adj, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -82,23 +96,28 @@ module @test_already_resolved {
     %t04 = aie.tile(0, 4)
     %t14 = aie.tile(1, 4)
     conduit.create @already_circuit {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @already_packet {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 4>,
-                    consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
     conduit.create @to_infer {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
+    // Structural tile info for @to_infer (producer 0,2 → consumer 1,4).
+    // already_circuit and already_packet are skipped by the pass.
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @to_infer, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @to_infer, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -120,16 +139,22 @@ module @test_cascade_unchanged {
     %t03 = aie.tile(0, 3)
     %t14 = aie.tile(1, 4)
     conduit.create @cas {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 3>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
     conduit.create @dma_any {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
+    // Structural tile info for @dma_any (producer 0,2 → consumer 1,4).
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @dma_any, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @dma_any, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -157,24 +182,42 @@ module @test_packet_fallback {
     %t15 = aie.tile(1, 5)
     // Two circuit conduits consuming both MM2S channels on tile(0,2).
     conduit.create @c1 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @c2 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
     // Third conduit: circuit exhausted → packet fallback.
     conduit.create @c3_any {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
+    // Structural tile info: tile(0,2) produces all three conduits.
+    %core02 = aie.core(%t02) {
+      %w1 = conduit.acquire {name = @c1, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w1 {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      %w2 = conduit.acquire {name = @c2, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w2 {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      %w3 = conduit.acquire {name = @c3_any, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w3 {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core13 = aie.core(%t13) {
+      %w = conduit.acquire {name = @c1, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @c2, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core15 = aie.core(%t15) {
+      %w = conduit.acquire {name = @c3_any, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -196,17 +239,28 @@ module @test_two_any_both_circuit {
     %t13 = aie.tile(1, 3)
     %t14 = aie.tile(1, 4)
     conduit.create @a1 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 3>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
     conduit.create @a2 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
+    %core02 = aie.core(%t02) {
+      %w1 = conduit.acquire {name = @a1, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w1 {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      %w2 = conduit.acquire {name = @a2, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w2 {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core13 = aie.core(%t13) {
+      %w = conduit.acquire {name = @a1, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @a2, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -225,12 +279,20 @@ module @test_via_dma_override {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
     conduit.create @forced_dma {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 3>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     viaDMA = true
                     }
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @forced_dma, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core03 = aie.core(%t03) {
+      %w = conduit.acquire {name = @forced_dma, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -252,11 +314,28 @@ module @test_multicast_uniform {
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
     conduit.create @bcast {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
                     element_type = memref<4xi32>,
-                    depth = 1 : i64
-                    }
+                    depth = 1 : i64}
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @bcast, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core13 = aie.core(%t13) {
+      %w = conduit.acquire {name = @bcast, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @bcast, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core15 = aie.core(%t15) {
+      %w = conduit.acquire {name = @bcast, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -278,12 +357,30 @@ module @test_multicast_uniform_dims {
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
     conduit.create @bcast_dims_uniform {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     consumer_dimensions = #aie<bd_dim_layout_array_array[[<size = 1, stride = 2>], [<size = 1, stride = 2>], [<size = 1, stride = 2>]]>
                     }
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @bcast_dims_uniform, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core13 = aie.core(%t13) {
+      %w = conduit.acquire {name = @bcast_dims_uniform, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @bcast_dims_uniform, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core15 = aie.core(%t15) {
+      %w = conduit.acquire {name = @bcast_dims_uniform, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }
 
@@ -306,11 +403,29 @@ module @test_multicast_nonuniform_dims {
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
     conduit.create @bcast_dims_nonuniform {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 3, 1, 4, 1, 5>,
                     element_type = memref<4xi32>,
                     depth = 1 : i64,
                     consumer_dimensions = #aie<bd_dim_layout_array_array[[<size = 1, stride = 2>], [<size = 3, stride = 4>], [<size = 1, stride = 2>]]>
                     }
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @bcast_dims_nonuniform, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core13 = aie.core(%t13) {
+      %w = conduit.acquire {name = @bcast_dims_nonuniform, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core14 = aie.core(%t14) {
+      %w = conduit.acquire {name = @bcast_dims_nonuniform, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core15 = aie.core(%t15) {
+      %w = conduit.acquire {name = @bcast_dims_nonuniform, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }

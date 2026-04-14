@@ -33,21 +33,19 @@ module {
     // Cascade conduit: producer is tile(0,3), consumer is tile(1,3).
     // No buffers, no locks, no DMA — just a cascade_flow connection.
     conduit.create @cas {slot_elems = 1 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 1, 3>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
     // Producer core: computes a vector and puts it on the cascade stream.
     aie.core(%tile03) {
       %v = arith.constant dense<42> : vector<16xi32>
-      aie.put_cascade(%v : vector<16xi32>)
+      aie.put_cascade(%v : vector<16xi32>) {conduit_channel = @cas}
       aie.end
     }
 
     // Consumer core: reads the cascade value.
     aie.core(%tile13) {
-      %r = aie.get_cascade() : vector<16xi32>
+      %r = aie.get_cascade() {conduit_channel = @cas} : vector<16xi32>
       aie.end
     }
   }

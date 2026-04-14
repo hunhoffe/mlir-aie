@@ -66,28 +66,53 @@ module @fuse_2groups_test {
     %tile_1_5 = aie.tile(1, 5)
 
     conduit.create @chan_a {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
     conduit.create @chan_b {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 5>,
                     element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group1"}
     conduit.create @chan_c {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 4>,
                     element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group0"}
     conduit.create @chan_d {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 1, 5>,
                     element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
                     fused_dma_channel_group = "group1"}
+
+    // Minimal aie.core blocks for inferAllTiles() Source 1.
+    aie.core(%tile_0_2) {
+      %w_a = conduit.acquire {name = @chan_a, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      conduit.release %w_a {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      %w_b = conduit.acquire {name = @chan_b, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      conduit.release %w_b {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      %w_c = conduit.acquire {name = @chan_c, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      conduit.release %w_c {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      %w_d = conduit.acquire {name = @chan_d, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      conduit.release %w_d {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<8xi32>>
+      aie.end
+    }
+    aie.core(%tile_0_4) {
+      %w = conduit.acquire {name = @chan_a, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      aie.end
+    }
+    aie.core(%tile_0_5) {
+      %w = conduit.acquire {name = @chan_b, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      aie.end
+    }
+    aie.core(%tile_1_4) {
+      %w = conduit.acquire {name = @chan_c, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      aie.end
+    }
+    aie.core(%tile_1_5) {
+      %w = conduit.acquire {name = @chan_d, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<8xi32>>
+      aie.end
+    }
   }
 }

@@ -13,14 +13,17 @@
 //
 // Setup (xcve2302): compute tile(2,3) → shim tile(2,0).
 // Shim tiles have max 2 S2MM channels (getNumDestShimMuxConnections).
-//   of1: claims shim S2MM channel 0  ✓
-//   of2: claims shim S2MM channel 1  ✓
+//   of1: claims shim S2MM channel 0  ok
+//   of2: claims shim S2MM channel 1  ok
 //   of3: needs channel 2 → OVERFLOW (expected-error)
 //   of4: would need channel 3 → second error IF loop continued (unexpected)
 //
 // With `return` (correct): one error, test passes.
 // With `continue` (buggy): two errors, unexpected second error seen by
 //   --verify-diagnostics → test fails.
+//
+// NOTE: The aie.core block must use the objectfifos so that structural tile
+// inference (inferAllTiles) can determine the producer tile.
 
 module @passC_s2mm_overflow_once {
   // expected-error @below {{S2MM DMA channel exhausted on shim tile (2,0)}}
@@ -39,6 +42,16 @@ module @passC_s2mm_overflow_once {
     // With return (correct) this is never processed — no second error.
     aie.objectfifo @of4(%comp, {%shim}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
 
-    %core = aie.core(%comp) { aie.end }
+    %core = aie.core(%comp) {
+      %sv1 = aie.objectfifo.acquire @of1 (Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of1 (Produce, 1)
+      %sv2 = aie.objectfifo.acquire @of2 (Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of2 (Produce, 1)
+      %sv3 = aie.objectfifo.acquire @of3 (Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of3 (Produce, 1)
+      %sv4 = aie.objectfifo.acquire @of4 (Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of4 (Produce, 1)
+      aie.end
+    }
   }
 }

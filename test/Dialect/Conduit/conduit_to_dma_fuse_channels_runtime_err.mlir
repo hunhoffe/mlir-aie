@@ -25,8 +25,6 @@ module @runtime_fuse_error {
 
     // expected-error @+1 {{conduit-to-dma: fuse_mode="runtime" is not yet supported}}
     conduit.create @chan_a {slot_elems = 8 : i64,
-                    producer_tile = array<i64: 0, 2>,
-                    consumer_tiles = array<i64: 0, 4>,
                     element_type = memref<8xi32>,
                     depth = 1 : i64,
                     fuse_mode = "runtime",

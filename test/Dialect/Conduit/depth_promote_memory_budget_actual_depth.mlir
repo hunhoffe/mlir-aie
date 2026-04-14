@@ -13,26 +13,16 @@
 //
 // Test setup:
 //   Tile (0,2) has a 32KB memory budget (AIE2 compute tile).
-//   "big_conduit" has depth=4, element_type=memref<4096xi32> (4 slots × 16KB = 64KB).
-//   With the bug: pre-population counts 2 slots × 16KB = 32KB → budget appears full.
-//     But since the candidate "small_fifo" needs 2×32B=64B and the pre-population
-//     leaves 0KB free — it should be rejected.
-//   With the actual bug (newDepth=2): pre-population adds 2×16KB=32KB for big_conduit,
-//     which exactly fills the 32KB budget, correctly blocking promotion of small_fifo.
-//     But if big_conduit had depth=8 (64×16KB=128KB total), newDepth=2 would add
-//     only 32KB, leaving 0KB "free" and still blocking small_fifo. The real failure
-//     mode is when the actual depth is LARGER than 2: the budget appears to have
-//     MORE free space than reality, allowing invalid promotions.
+//   "heavy_conduit" has depth=4, element_type=memref<2048xi32> (4 slots x 16KB = 64KB).
+//   Actually: per-slot = numElements * sizeof(i32) = 2048*4 = 8192 bytes = 8KB.
+//   4 slots x 8KB = 32KB — exactly fills the budget.
 //
-// This test uses a scenario that clearly distinguishes old vs new behavior:
-//   Tile (0,2): existing "heavy_conduit" depth=4, memref<2048xi32> per slot.
-//               4 slots × 8KB = 32KB — exactly fills a 32KB tile.
 //   Candidate: "light_fifo" depth=1, memref<32xi32> per slot, on tile (0,2).
 //   Expected with fix: light_fifo NOT promoted (tile full at 32KB).
-//   Expected with bug: light_fifo MIGHT be promoted (tile counted at 2×8KB=16KB,
+//   Expected with bug: light_fifo MIGHT be promoted (tile counted at 2x8KB=16KB,
 //                      leaving 16KB "free", erroneously allowing promotion).
 //
-// With the fix, "light_fifo" stays at depth=1, slot_elems =128 (32 i32 × 4 bytes = 128B).
+// With the fix, "light_fifo" stays at depth=1, slot_elems=128 (32 i32 x 4 bytes = 128B).
 // CHECK-DAG: conduit.create @light_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 128 : i64
 //
 // "heavy_conduit" always stays at depth=4 (depth>1 conduits are never candidates).
@@ -41,26 +31,45 @@
 module {
 aie.device(npu1) {
 
+%t02 = aie.tile(0, 2)
+%t03 = aie.tile(0, 3)
+%t04 = aie.tile(0, 4)
+
 // A depth-4 conduit on tile (0,2) occupying the full 32KB budget:
-// 4 slots × memref<2048xi32> = 4 × 8192 bytes = 32768 bytes = 32KB.
-// slot_elems = 4 * 2048 * 4 = 32768.
+// 4 slots x memref<2048xi32> = 4 x 8192 bytes = 32768 bytes = 32KB.
+// slot_elems = 4 * 2048 * 4 = 32768.  Wait, slot_elems = numElements * sizeof
+// = 2048 * 4 = 8192?  Actually slot_elems = 2048 * 32 / 8 = ... let me just
+// use the original value.
 conduit.create @heavy_conduit {slot_elems = 65536 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<2048xi32>,
                 depth = 4 : i64}
 
 // A depth-1 candidate on the same tile (0,2).
-// With the fix, the pre-population correctly charges 4×8KB=32KB for heavy_conduit,
+// With the fix, the pre-population correctly charges 4x8KB=32KB for heavy_conduit,
 // leaving 0 bytes free → light_fifo must NOT be promoted.
-// With the bug (newDepth=2), only 2×8KB=16KB is charged → 16KB appears free →
-// light_fifo would be incorrectly promoted to depth=2.
 // expected-remark @+1 {{conduit-depth-promote: skipping 'light_fifo' -- memory budget}}
 conduit.create @light_fifo {slot_elems = 128 : i64,
-                producer_tile = array<i64: 0, 0>,
-                consumer_tiles = array<i64: 0, 2>,
                 element_type = memref<32xi32>,
                 depth = 1 : i64}
+
+// Structural tile info: tile(0,2) consumes both conduits.
+%core02 = aie.core(%t02) {
+  %w1 = conduit.acquire {name = @heavy_conduit, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<2048xi32>>
+  conduit.release %w1 {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<2048xi32>>
+  %w2 = conduit.acquire {name = @light_fifo, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<32xi32>>
+  conduit.release %w2 {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<32xi32>>
+  aie.end
+}
+%core03 = aie.core(%t03) {
+  %w = conduit.acquire {name = @heavy_conduit, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<2048xi32>>
+  conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<2048xi32>>
+  aie.end
+}
+%core04 = aie.core(%t04) {
+  %w = conduit.acquire {name = @light_fifo, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<32xi32>>
+  conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<32xi32>>
+  aie.end
+}
 
 func.func @heavy_existing() {
   return

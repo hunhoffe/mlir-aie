@@ -6,9 +6,7 @@
 //
 // After --objectfifo-to-conduit the module should contain:
 //   - conduit.create for the input_fifo with typed attributes:
-//       producer_tile = array<i64: 0, 0>
-//       consumer_tiles = array<i64: 0, 2>
-//       element_type = memref<10xi32>
+//       //       //       element_type = memref<10xi32>
 //       depth = 1 : i64
 //   - conduit.acquire {port="Consume"} inside the core loop body
 //   - conduit.release {port="Consume"} inside the core loop body
@@ -18,10 +16,8 @@
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
 // CHECK:     conduit.create @input_fifo
-// CHECK-SAME:   consumer_tiles = array<i64: 0, 2>
 // CHECK-SAME:   depth = 1 : i64
 // CHECK-SAME:   element_type = memref<10xi32>
-// CHECK-SAME:   producer_tile = array<i64: 0, 0>
 // CHECK-SAME:   slot_elems = 10 : i64
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       scf.for

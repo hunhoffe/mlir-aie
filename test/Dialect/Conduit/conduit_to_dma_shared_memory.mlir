@@ -1,4 +1,4 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
 // Pass A + Pass C end-to-end test: shared memory path for adjacent compute tiles.
 //
@@ -76,19 +76,39 @@ module @shared_memory_adjacent_tiles {
     %tile_2_3 = aie.tile(2, 3)
 
     // depth=1, single consumer, no DMA dimensions.
-    // The stateful transform detects shared memory and skips DMA setup.
-    aie.objectfifo @shared_fifo(%tile_2_2, {%tile_2_3}, 1 : i32) : !aie.objectfifo<memref<16xi32>>
+    // Pass C detects shared memory and skips DMA setup.
+    conduit.create @shared_fifo {slot_elems = 16 : i64,
+                    element_type = memref<16xi32>,
+                    depth = 1 : i64}
 
+    // Producer core on tile(2,2) — structural info for tile inference.
+    %core_2_2 = aie.core(%tile_2_2) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c4 = arith.constant 4 : index
+      scf.for %arg0 = %c0 to %c4 step %c1 {
+        %0 = conduit.acquire {count = 1 : i64, name = @shared_fifo,
+                              port = #conduit.port<Produce>} : <memref<16xi32>>
+        conduit.release %0 {count = 1 : i64,
+                            port = #conduit.port<Produce>} : <memref<16xi32>>
+      }
+      aie.end
+    } {dynamic_objfifo_lowering = true}
+
+    // Consumer core on tile(2,3).
     %core_2_3 = aie.core(%tile_2_3) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c4 = arith.constant 4 : index
 
       scf.for %arg0 = %c0 to %c4 step %c1 {
-        %0 = aie.objectfifo.acquire @shared_fifo(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-        %1 = aie.objectfifo.subview.access %0[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+        %0 = conduit.acquire {count = 1 : i64, name = @shared_fifo,
+                              port = #conduit.port<Consume>} : <memref<16xi32>>
+        %1 = conduit.subview_access %0 {index = 0 : i64}
+                : <memref<16xi32>> -> memref<16xi32>
         func.call @process(%1) : (memref<16xi32>) -> ()
-        aie.objectfifo.release @shared_fifo(Consume, 1)
+        conduit.release %0 {count = 1 : i64,
+                            port = #conduit.port<Consume>} : <memref<16xi32>>
       }
 
       aie.end

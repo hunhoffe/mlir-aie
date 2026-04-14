@@ -52,9 +52,8 @@ module @conduit_bd_ring_count {
     // depth=3, but maxConsumerAcquire=3 → max(3, 3+1) = 4 buffers needed.
     // slot_elems = 96 = 32 elements * depth(3); perBufLen = 96/3 = 32.
     conduit.create @fifo {slot_elems = 96 : i64, depth = 3 : i64,
-                    element_type = memref<32xi32>,
-                    producer_tile = array<i64: 0, 0>,
-                    consumer_tiles = array<i64: 0, 2>}
+                    element_type = memref<32xi32>
+                    }
 
     aie.shim_dma_allocation @fifo_shim_alloc(%shim, MM2S, 0)
 

@@ -19,16 +19,12 @@ module {
     conduit.create @my_channel {
       slot_elems = 128 : i64,
       depth = 2 : i64,
-      element_type = memref<32xi32>,
-      producer_tile = array<i64: 0, 0>,
-      consumer_tiles = array<i64: 0, 2>
+      element_type = memref<32xi32>
     }
     conduit.create @another_chan {
       slot_elems = 64 : i64,
       depth = 1 : i64,
-      element_type = memref<16xi32>,
-      producer_tile = array<i64: 1, 0>,
-      consumer_tiles = array<i64: 1, 2>
+      element_type = memref<16xi32>
     }
   }
 }

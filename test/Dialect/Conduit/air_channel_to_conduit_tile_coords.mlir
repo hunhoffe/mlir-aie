@@ -15,12 +15,7 @@
 //   - air.channel @channel_0 declaration inside the device
 //
 // Expected output:
-//   conduit.create with producer_tile = [2, 3] and consumer_tiles = [2, 4]
-
-// CHECK: conduit.create @channel_0
-// CHECK-SAME: consumer_tiles = array<i64: 2, 4>
-// CHECK-SAME: producer_tile = array<i64: 2, 3>
-
+//   conduit.create with // CHECK: conduit.create @channel_0
 module @test_tile_coords {
   aie.device(xcve2802) @segment_0 {
     %tile_2_3 = aie.tile(2, 3)

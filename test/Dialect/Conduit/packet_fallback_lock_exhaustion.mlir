@@ -30,13 +30,9 @@ module @pkt_fallback_lock_exhaustion {
     // 2 explicit packet conduits from (0,3): MM2S ch 0 and ch 1 (packet-mode).
     // Phase 3: 2×2 = 4 locks on (0,3) prod side; 2×2 = 4 on consumer tiles.
     conduit.create @pkt_a {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 2, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
     conduit.create @pkt_b {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 3, 3>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
@@ -44,48 +40,62 @@ module @pkt_fallback_lock_exhaustion {
     // Phase 3c: 2 locks each allocated on producer tile (0,3).
     // 6×2 = 12 locks on (0,3). Total with pkt_a/b: 4+12 = 16 = limit.
     conduit.create @sm0 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @sm1 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @sm2 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @sm3 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @sm4 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
     conduit.create @sm5 {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 0, 2>,
                     element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
 
     // mode=any: (0,3) → (2,5); circuit MM2S exhausted; Step 3.5 fires.
     // Step 3.5b: prodLockTotal(16) - prodLockUsed(16) = 0 < 2 → fail → Step 4.
     conduit.create @fallback {slot_elems = 4 : i64,
-                    producer_tile = array<i64: 0, 3>,
-                    consumer_tiles = array<i64: 2, 5>,
                     element_type = memref<4xi32>, depth = 1 : i64
                     }
 
-    %core02 = aie.core(%t02) { aie.end }
-    %core03 = aie.core(%t03) { aie.end }
-    %core23 = aie.core(%t23) { aie.end }
-    %core33 = aie.core(%t33) { aie.end }
-    %core25 = aie.core(%t25) { aie.end }
+    %core03 = aie.core(%t03) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm0, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm1, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm2, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm3, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm4, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm5, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @fallback, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core02 = aie.core(%t02) {
+      conduit.acquire {name = @sm0, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm1, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm2, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm3, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm4, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @sm5, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core23 = aie.core(%t23) {
+      conduit.acquire {name = @pkt_a, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core33 = aie.core(%t33) {
+      conduit.acquire {name = @pkt_b, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core25 = aie.core(%t25) {
+      conduit.acquire {name = @fallback, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
   }
 }

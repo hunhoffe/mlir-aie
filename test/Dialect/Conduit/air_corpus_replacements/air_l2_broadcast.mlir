@@ -23,11 +23,7 @@
 
 // Per-consumer aliases from broadcast Step 2.
 // CHECK: conduit.create @bcast_c0
-// CHECK-SAME: consumer_tiles = array<i64: 0, 3>
-
 // CHECK: conduit.create @bcast_c1
-// CHECK-SAME: consumer_tiles = array<i64: 1, 3>
-
 // Scatter op (Sprint 4: distribute renamed to scatter, srcs array→src single).
 // CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0, @bcast_c1]
 // CHECK-SAME: memtile = "tile(0,1)"
