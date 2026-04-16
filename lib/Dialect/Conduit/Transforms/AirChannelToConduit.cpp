@@ -1578,6 +1578,51 @@ struct AirChannelToConduitPass
         });
       }
 
+      // Phase 6.5: Set dma_channel_group on packet-mode conduit.create ops
+      // that target the same consumer tile.
+      //
+      // When multiple packet-mode channels share the same consumer tile, they
+      // must share one physical S2MM DMA port (differentiated by packet_id in
+      // BD headers).  Pass C uses the dma_channel_group attribute to group
+      // these channels onto one S2MM port instead of allocating separate ports
+      // per channel (which would exhaust the 2-port S2MM budget on compute
+      // tiles).
+      //
+      // Group key: "pkt_{col}_{row}" for each unique consumer tile coordinate.
+      // Non-packet and cascade channels are excluded.
+      {
+        // Build: consumer tile coord → list of packet-mode conduit.create ops.
+        llvm::DenseMap<std::pair<int64_t, int64_t>,
+                       llvm::SmallVector<mlir::Operation *>>
+            pktGroupByTile;
+
+        scopeOp->walk([&](Create createOp) {
+          auto rm = createOp.getRoutingMode();
+          if (!rm || *rm != RoutingMode::Packet)
+            return;
+          // Read consumer tile directly from discardable attr on conduit.create.
+          auto consTilesAttr =
+              createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_tiles");
+          if (!consTilesAttr || consTilesAttr.size() < 2)
+            return;
+          // consumer_tiles is a flat [col, row] array; use first pair.
+          std::pair<int64_t, int64_t> coord = {consTilesAttr[0],
+                                                consTilesAttr[1]};
+          pktGroupByTile[coord].push_back(createOp.getOperation());
+        });
+
+        for (auto &[coord, ops] : pktGroupByTile) {
+          if (ops.size() <= 1)
+            continue; // No sharing needed for single-channel tiles.
+          std::string groupName = "pkt_" + std::to_string(coord.first) + "_" +
+                                  std::to_string(coord.second);
+          for (mlir::Operation *op : ops) {
+            op->setAttr("dma_channel_group",
+                        mlir::StringAttr::get(ctx, groupName));
+          }
+        }
+      }
+
     } // end for (scopeOp : scopes)
 
     // After all device scopes: erase module-level air.channel decls.

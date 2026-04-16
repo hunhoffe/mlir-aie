@@ -24,6 +24,21 @@ void collectPhase(ConduitToDMAState &state) {
   mlir::ModuleOp module = state.module;
 
   // -----------------------------------------------------------------------
+  // Phase 0: Early device discovery (before Phase 1).
+  //
+  // Multi-device support: collect ALL DeviceOps so that Phase 1 can build
+  // device-qualified conduitMap keys when channels share names across
+  // devices.  Without this, the flat conduitMap overwrites device 0's
+  // ConduitInfo with device 1's, causing cross-device SSA references
+  // (region isolation violations) in lowerPhase.
+  // -----------------------------------------------------------------------
+  module.walk([&](AIE::DeviceOp op) {
+    state.deviceOps.push_back(op);
+    if (!state.deviceOp)
+      state.deviceOp = op;
+  });
+
+  // -----------------------------------------------------------------------
   // Phase 1: Collect ConduitInfo from conduit.create typed attributes.
   //
   // conduit.create carries all metadata as typed attributes:
@@ -111,27 +126,27 @@ void collectPhase(ConduitToDMAState &state) {
       return;
     }
 
-    state.conduitMap[op.getName().str()] = std::move(info);
+    // Store original name and device index for multi-device disambiguation.
+    info.origName = op.getName().str();
+    if (state.isMultiDevice()) {
+      auto dev = op->getParentOfType<AIE::DeviceOp>();
+      if (dev)
+        info.deviceIndex = state.getDeviceIndex(dev);
+    }
+
+    std::string key = state.makeConduitKey(op.getName(), op);
+    state.conduitMap[key] = std::move(info);
   });
 
   if (state.passFailed)
     return;
 
   // -----------------------------------------------------------------------
-  // Phase 2: Find aie.device ops, build unified tile cache, determine arch.
+  // Phase 2: Build unified tile cache, determine arch.
   //
-  // Multi-device support: collect ALL DeviceOps from the module.
-  // --conduit-fuse-operators offsets tile coordinates in device B so there
-  // are no coordinate conflicts.  The unified tile cache covers all devices.
-  // state.deviceOp is set to the first device (for legacy single-device code).
-  // state.deviceOps holds all devices in module order for multi-device paths.
+  // Device discovery was moved to Phase 0 (before Phase 1) so that
+  // conduitMap keys can be device-qualified during collection.
   // -----------------------------------------------------------------------
-
-  module.walk([&](AIE::DeviceOp op) {
-    state.deviceOps.push_back(op);
-    if (!state.deviceOp)
-      state.deviceOp = op;
-  });
 
   // -----------------------------------------------------------------------
   // Tile inference: populate producerTileCoord, consumerTileCoords, and
@@ -152,7 +167,9 @@ void collectPhase(ConduitToDMAState &state) {
     };
 
     for (auto &[name, info] : state.conduitMap) {
-      auto it = inferredMap.find(name);
+      // inferredMap is keyed by unqualified IR names; use origName
+      // for the lookup when conduitMap keys are device-qualified.
+      auto it = inferredMap.find(info.origName);
       if (it == inferredMap.end())
         continue;
       const auto &inferred = it->second;
@@ -192,10 +209,11 @@ void collectPhase(ConduitToDMAState &state) {
   for (auto &[name, info] : state.conduitMap) {
     if (info.depth == 0) {
       // Emit a diagnostic on the conduit.create op for this channel.
+      // Use origName for IR matching (conduitMap key may be qualified).
       module.walk([&](Create createOp) {
-        if (createOp.getName().str() == name) {
+        if (createOp.getName().str() == info.origName) {
           createOp.emitError(
-              "conduit-to-dma: channel @" + name +
+              "conduit-to-dma: channel @" + info.origName +
               " has depth = 0 — run --conduit-depth-promote before "
               "--conduit-to-dma");
           state.passFailed = true;
@@ -257,16 +275,18 @@ void collectPhase(ConduitToDMAState &state) {
   // Phase 3. Tracked separately for Phase 3 producer-tile reallocation.
   // -----------------------------------------------------------------------
   module.walk([&](ScatterOp scatterOp) {
-    state.linkSrcNamesEarly.insert(scatterOp.getSrc());
+    state.linkSrcNamesEarly.insert(
+        state.makeConduitKey(scatterOp.getSrc(), scatterOp));
     for (auto d : scatterOp.getDsts())
-      state.linkDstNames.insert(
-          mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
+      state.linkDstNames.insert(state.makeConduitKey(
+          mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue(), scatterOp));
   });
   module.walk([&](GatherOp gatherOp) {
     for (auto s : gatherOp.getSrcs())
-      state.linkJoinSrcNames.insert(
-          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    state.linkDstNames.insert(gatherOp.getDst());
+      state.linkJoinSrcNames.insert(state.makeConduitKey(
+          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue(), gatherOp));
+    state.linkDstNames.insert(
+        state.makeConduitKey(gatherOp.getDst(), gatherOp));
   });
 
   // Collect numElems from put/get_memref_async ops.
@@ -274,8 +294,8 @@ void collectPhase(ConduitToDMAState &state) {
   // per-transfer element count. Take the maximum num_elems seen across all
   // puts and gets for each channel.
   module.walk([&](PutMemrefAsync op) {
-    llvm::StringRef name = op.getName();
-    auto it = state.conduitMap.find(name.str());
+    std::string key = state.makeConduitKey(op.getName(), op);
+    auto it = state.conduitMap.find(key);
     if (it != state.conduitMap.end()) {
       int64_t n = static_cast<int64_t>(op.getNumElems());
       if (n > it->second.numElems)
@@ -286,14 +306,14 @@ void collectPhase(ConduitToDMAState &state) {
   // length inference. Tier-3 channels with N sequential token-chained puts
   // (after --conduit-fuse-channels TM merge) need an N-entry linear chain.
   module.walk([&](PutMemrefAsync op) {
-    llvm::StringRef name = op.getName();
-    auto it = state.conduitMap.find(name.str());
+    std::string key = state.makeConduitKey(op.getName(), op);
+    auto it = state.conduitMap.find(key);
     if (it != state.conduitMap.end())
       ++it->second.putCount;
   });
   module.walk([&](GetMemrefAsync op) {
-    llvm::StringRef name = op.getName();
-    auto it = state.conduitMap.find(name.str());
+    std::string key = state.makeConduitKey(op.getName(), op);
+    auto it = state.conduitMap.find(key);
     if (it != state.conduitMap.end()) {
       int64_t n = static_cast<int64_t>(op.getNumElems());
       if (n > it->second.numElems)
@@ -303,15 +323,18 @@ void collectPhase(ConduitToDMAState &state) {
 
   // Conduit names with at least one Consume-port acquire op (for rotation
   // counter allocation in Phase 3).
+  // Use device-qualified names so they match conduitMap keys in allocPhase.
   module.walk([&](Acquire acqOp) {
+    std::string qname = state.makeConduitKey(acqOp.getName(), acqOp);
     if (acqOp.getPort() == Port::Consume)
-      state.conduitNamesWithConsumerAcquire.insert(acqOp.getName());
+      state.conduitNamesWithConsumerAcquire.insert(qname);
     else if (acqOp.getPort() == Port::Produce)
-      state.conduitNamesWithProducerAcquire.insert(acqOp.getName());
+      state.conduitNamesWithProducerAcquire.insert(qname);
   });
   module.walk([&](AcquireAsync acqOp) {
     // AcquireAsync is always consumer-side.
-    state.conduitNamesWithConsumerAcquire.insert(acqOp.getName());
+    std::string qname = state.makeConduitKey(acqOp.getName(), acqOp);
+    state.conduitNamesWithConsumerAcquire.insert(qname);
   });
 
   // -----------------------------------------------------------------------
@@ -333,7 +356,8 @@ void collectPhase(ConduitToDMAState &state) {
     });
     for (auto &[name, info] : state.conduitMap) {
       int64_t depth = info.depth > 0 ? info.depth : 1;
-      auto it = maxProdAcquire.find(name);
+      // maxProdAcquire is keyed by unqualified IR names; use origName.
+      auto it = maxProdAcquire.find(info.origName);
       if (it != maxProdAcquire.end()) {
         int64_t effDepth = std::min(depth, it->second + 1);
         info.effectiveDepth = effDepth;
@@ -390,10 +414,11 @@ void collectPhase(ConduitToDMAState &state) {
     });
 
     for (auto &[name, info] : state.conduitMap) {
-      auto consIt = maxConsAcquire.find(name);
+      // Local maps keyed by unqualified IR names; use origName.
+      auto consIt = maxConsAcquire.find(info.origName);
       if (consIt != maxConsAcquire.end())
         info.maxConsumerAcquire = consIt->second;
-      auto prodIt = maxProdAcquirePartial.find(name);
+      auto prodIt = maxProdAcquirePartial.find(info.origName);
       if (prodIt != maxProdAcquirePartial.end())
         info.maxProduceAcquire = prodIt->second;
     }

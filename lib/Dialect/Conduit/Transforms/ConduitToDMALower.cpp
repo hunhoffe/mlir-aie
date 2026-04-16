@@ -61,7 +61,7 @@ void lowerPhase(ConduitToDMAState &state) {
         // Default to Consume; switch to Produce if the enclosing CoreOp's
         // tile matches the conduit's producerTileCoord.
         acquirePort = Port::Consume;
-        ConduitInfo *winCinfo = state.lookupConduit(conduitName);
+        ConduitInfo *winCinfo = state.lookupConduit(conduitName, op);
         if (winCinfo) {
           mlir::Operation *coreParent = op.getOperation()->getParentOp();
           while (coreParent && !mlir::isa<AIE::CoreOp>(coreParent))
@@ -83,7 +83,7 @@ void lowerPhase(ConduitToDMAState &state) {
 
       bool replaced = false;
       if (!conduitName.empty()) {
-        ConduitInfo *cinfo = state.lookupConduit(conduitName);
+        ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
         if (cinfo && !cinfo->buffers.empty()) {
           int64_t idx = op.getIndex();
 
@@ -258,7 +258,7 @@ void lowerPhase(ConduitToDMAState &state) {
       releasesToErase.push_back(op);
       return;
     }
-    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
     if (!cinfo) {
       releasesToErase.push_back(op);
       return;
@@ -411,7 +411,7 @@ void lowerPhase(ConduitToDMAState &state) {
   walkBlock = [&](mlir::Block *block, StateMap liveState) -> StateMap {
     for (mlir::Operation &rawOp : *block) {
       if (auto op = mlir::dyn_cast<Acquire>(rawOp)) {
-        ConduitInfo *cinfo = state.lookupConduit(op.getName());
+        ConduitInfo *cinfo = state.lookupConduit(op.getName(), op);
         if (!cinfo) {
           acquiresToErase.push_back(op);
           continue;
@@ -687,7 +687,7 @@ void lowerPhase(ConduitToDMAState &state) {
   llvm::SmallVector<WaitWindow> waitWindowsToErase;
   module.walk([&](WaitWindow op) {
     llvm::StringRef conduitName = op.getName();
-    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
     if (!cinfo) {
       op.emitError("conduit-to-dma: wait_window references unknown conduit '")
           << conduitName << "'";
@@ -809,7 +809,7 @@ void lowerPhase(ConduitToDMAState &state) {
         continue;
 
       const AsyncAcquireInfo &ainfo = ait->second;
-      ConduitInfo *cinfo = state.lookupConduit(ainfo.conduitName);
+      ConduitInfo *cinfo = state.lookupConduit(ainfo.conduitName, op);
       if (!cinfo)
         continue;
 
@@ -839,7 +839,7 @@ void lowerPhase(ConduitToDMAState &state) {
   llvm::SmallVector<ReleaseAsync> releaseAsyncsToErase;
   module.walk([&](ReleaseAsync op) {
     llvm::StringRef conduitName = op.getName();
-    ConduitInfo *cinfo = state.lookupConduit(conduitName);
+    ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
     if (!cinfo) {
       releaseAsyncsToErase.push_back(op);
       return;
@@ -943,7 +943,7 @@ void lowerPhase(ConduitToDMAState &state) {
     llvm::SmallVector<PutMemrefAsync> toErase;
     module.walk([&](PutMemrefAsync op) {
       llvm::StringRef conduitName = op.getName();
-      ConduitInfo *cinfo = state.lookupConduit(conduitName);
+      ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
       if (cinfo) {
         auto resolved = cinfo->resolveForTile(op);
         if (resolved.coreOp) {
@@ -990,7 +990,7 @@ void lowerPhase(ConduitToDMAState &state) {
     llvm::SmallVector<GetMemrefAsync> toErase;
     module.walk([&](GetMemrefAsync op) {
       llvm::StringRef conduitName = op.getName();
-      ConduitInfo *cinfo = state.lookupConduit(conduitName);
+      ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
       if (cinfo) {
         auto resolved = cinfo->resolveForTile(op);
         if (resolved.coreOp) {

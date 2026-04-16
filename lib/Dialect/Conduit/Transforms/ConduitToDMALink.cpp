@@ -36,17 +36,18 @@ void linkPhase(ConduitToDMAState &state) {
   (void)ctx; // suppress unused warning when not used in all paths
 
   // Collect ALL link source and destination names for Phase 5.5 skip logic.
+  // Use device-qualified keys so they match conduitMap iteration names.
   state.module.walk([&](ScatterOp op) {
-    state.linkSrcNames.insert(op.getSrc());
+    state.linkSrcNames.insert(state.makeConduitKey(op.getSrc(), op));
     for (auto d : op.getDsts())
-      state.linkDstNames.insert(
-          mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
+      state.linkDstNames.insert(state.makeConduitKey(
+          mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue(), op));
   });
   state.module.walk([&](GatherOp op) {
     for (auto s : op.getSrcs())
-      state.linkSrcNames.insert(
-          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
-    state.linkDstNames.insert(op.getDst());
+      state.linkSrcNames.insert(state.makeConduitKey(
+          mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue(), op));
+    state.linkDstNames.insert(state.makeConduitKey(op.getDst(), op));
   });
 
   // -----------------------------------------------------------------------
@@ -87,7 +88,7 @@ void linkPhase(ConduitToDMAState &state) {
       a.memtileStr = scatterOp.getMemtile();
     } else {
       llvm::StringRef srcName = scatterOp.getSrc();
-      ConduitInfo *srcInfo = state.lookupConduit(srcName);
+      ConduitInfo *srcInfo = state.lookupConduit(srcName, scatterOp);
       if (srcInfo && srcInfo->producerTileCoord.first >= 0) {
         int64_t col = srcInfo->producerTileCoord.first;
         std::string tileStr = "tile(" + std::to_string(col) + ",1)";
@@ -113,7 +114,7 @@ void linkPhase(ConduitToDMAState &state) {
       for (auto s : gatherOp.getSrcs()) {
         llvm::StringRef sName =
             mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue();
-        ConduitInfo *sInfo = state.lookupConduit(sName);
+        ConduitInfo *sInfo = state.lookupConduit(sName, gatherOp);
         if (sInfo && sInfo->producerTileCoord.first >= 0) {
           int64_t col = sInfo->producerTileCoord.first;
           std::string tileStr = "tile(" + std::to_string(col) + ",1)";
@@ -167,7 +168,8 @@ void linkPhase(ConduitToDMAState &state) {
     if (!relayIsMemTile) {
       std::string coreRelayName =
           mlir::cast<mlir::FlatSymbolRefAttr>(srcs[0]).getValue().str();
-      ConduitInfo *coreRelaySrcPtr = state.lookupConduit(coreRelayName);
+      ConduitInfo *coreRelaySrcPtr =
+          state.lookupConduit(coreRelayName, linkOp.op);
       if (!coreRelaySrcPtr) {
         linkOp.emitError("conduit-to-dma: CoreTile relay: src conduit '" +
                          coreRelayName + "' not found");
@@ -331,7 +333,7 @@ void linkPhase(ConduitToDMAState &state) {
                 mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx])
                     .getValue()
                     .str();
-            ConduitInfo *dstInfo = state.lookupConduit(dstName);
+            ConduitInfo *dstInfo = state.lookupConduit(dstName, linkOp.op);
             if (!dstInfo || dstInfo->consumerTileCoords.empty()) {
               continue;
             }
@@ -401,7 +403,7 @@ void linkPhase(ConduitToDMAState &state) {
 
     std::string srcName =
         mlir::cast<mlir::FlatSymbolRefAttr>(srcs[0]).getValue().str();
-    ConduitInfo *srcInfoPtr = state.lookupConduit(srcName);
+    ConduitInfo *srcInfoPtr = state.lookupConduit(srcName, linkOp.op);
 
     // Guard: cascade-mode conduits cannot be used with distribute/join/forward.
     if (srcInfoPtr && srcInfoPtr->routingMode == "cascade") {
@@ -489,7 +491,8 @@ void linkPhase(ConduitToDMAState &state) {
               mlir::cast<mlir::FlatSymbolRefAttr>(dsts[sliceIdx])
                   .getValue()
                   .str();
-          if (ConduitInfo *dstInfoR = state.lookupConduit(dstNameR))
+          if (ConduitInfo *dstInfoR =
+                  state.lookupConduit(dstNameR, linkOp.op))
             if (dstInfoR->bdRepeat > 1)
               dstRepeat = dstInfoR->bdRepeat;
         }
@@ -547,7 +550,7 @@ void linkPhase(ConduitToDMAState &state) {
     if (!isDistribute && !dsts.empty()) {
       std::string jDstName =
           mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
-      ConduitInfo *jDstInfo = state.lookupConduit(jDstName);
+      ConduitInfo *jDstInfo = state.lookupConduit(jDstName, linkOp.op);
       if (!jDstInfo) {
         linkOp.emitWarning("conduit-to-dma: join destination conduit '")
             << jDstName << "' not found — BD lengths defaulting to 1";
@@ -676,7 +679,7 @@ void linkPhase(ConduitToDMAState &state) {
       for (unsigned i = 0; i < static_cast<unsigned>(srcs.size()); ++i) {
         std::string sName =
             mlir::cast<mlir::FlatSymbolRefAttr>(srcs[i]).getValue().str();
-        ConduitInfo *sInfo = state.lookupConduit(sName);
+        ConduitInfo *sInfo = state.lookupConduit(sName, linkOp.op);
         bool reused = false;
         if (sInfo) {
           auto [sp, sr] = sInfo->producerTileCoord;
@@ -724,7 +727,7 @@ void linkPhase(ConduitToDMAState &state) {
       for (unsigned dstIdx = 0; dstIdx < numDsts; ++dstIdx) {
         std::string dstName =
             mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx]).getValue().str();
-        ConduitInfo *dstInfo = state.lookupConduit(dstName);
+        ConduitInfo *dstInfo = state.lookupConduit(dstName, linkOp.op);
         if (!dstInfo || dstInfo->consumerTileCoords.empty())
           continue;
 
@@ -771,7 +774,19 @@ void linkPhase(ConduitToDMAState &state) {
             if (!dstConsTile)
               continue;
             mlir::Value consTileVal = dstConsTile.getResult();
-            int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
+            // Packet-mode S2MM sharing: reuse existing packet S2MM port if
+            // one was already allocated on this tile (by routePhase or an
+            // earlier scatter destination).  Multiple packet channels share
+            // one physical S2MM port, differentiated by packet_id in BD
+            // headers.
+            int32_t s2mmCh;
+            auto pktIt = state.pktTileS2MMChannel.find(consTileVal);
+            if (pktIt != state.pktTileS2MMChannel.end()) {
+              s2mmCh = pktIt->second;
+            } else {
+              s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
+              state.pktTileS2MMChannel[consTileVal] = s2mmCh;
+            }
             state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
 
             builder.create<AIE::PacketDestOp>(
@@ -832,7 +847,7 @@ void linkPhase(ConduitToDMAState &state) {
       for (unsigned srcIdx = 0; srcIdx < srcs.size(); ++srcIdx) {
         std::string sName =
             mlir::cast<mlir::FlatSymbolRefAttr>(srcs[srcIdx]).getValue().str();
-        ConduitInfo *sInfo = state.lookupConduit(sName);
+        ConduitInfo *sInfo = state.lookupConduit(sName, linkOp.op);
         if (!sInfo)
           continue;
         auto [srcProdCol, srcProdRow] = sInfo->producerTileCoord;
@@ -871,7 +886,8 @@ void linkPhase(ConduitToDMAState &state) {
       if (!dsts.empty()) {
         std::string dstName =
             mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
-        if (ConduitInfo *dstFlowInfo = state.lookupConduit(dstName)) {
+        if (ConduitInfo *dstFlowInfo =
+                state.lookupConduit(dstName, linkOp.op)) {
           for (unsigned ci = 0; ci < dstFlowInfo->consumerTileCoords.size();
                ++ci) {
             auto [consCol, consRow] = dstFlowInfo->consumerTileCoords[ci];
@@ -1148,7 +1164,8 @@ void linkPhase(ConduitToDMAState &state) {
               mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx])
                   .getValue()
                   .str();
-          if (ConduitInfo *dstInfo = state.lookupConduit(dstName2)) {
+          if (ConduitInfo *dstInfo =
+                  state.lookupConduit(dstName2, linkOp.op)) {
             dstProdDims = dstInfo->producerDimensions;
             if (dstInfo->bdRepeat > 1)
               mm2sDstRepeat = dstInfo->bdRepeat;

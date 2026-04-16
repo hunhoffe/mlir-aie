@@ -135,6 +135,16 @@ struct PacketChannelState {
 struct ConduitInfo {
   // --- Populated by Phase 1 (collectConduitMap). ---
 
+  // Original (unqualified) channel name from conduit.create sym_name.
+  // When multiple aie.device ops have identically-named channels, the
+  // conduitMap key is device-qualified ("name#devIdx") to prevent
+  // overwrites.  origName retains the IR-level name for matching against
+  // attribute references and local auxiliary maps.
+  std::string origName;
+
+  // Device index within state.deviceOps (-1 = unknown / single-device).
+  int deviceIndex = -1;
+
   // Tile coordinates parsed from the typed Create attributes.
   std::pair<int64_t, int64_t> producerTileCoord = {-1, -1};
   llvm::SmallVector<std::pair<int64_t, int64_t>> consumerTileCoords;
@@ -418,6 +428,31 @@ struct ConduitToDMAState {
   // Convenience: true for AIE2 and AIE2p (all non-AIE1 architectures).
   bool isAIE2Plus() const { return aieArch != AIE::AIEArch::AIE1; }
 
+  // Multi-device support: true when the module contains >1 aie.device.
+  bool isMultiDevice() const { return deviceOps.size() > 1; }
+
+  // Return the index of a DeviceOp in deviceOps (0-based).
+  int getDeviceIndex(AIE::DeviceOp dev) const {
+    for (size_t i = 0; i < deviceOps.size(); ++i)
+      if (deviceOps[i] == dev)
+        return static_cast<int>(i);
+    return 0;
+  }
+
+  // Build a device-qualified conduitMap key from a channel name and context op.
+  // Single-device: returns the name as-is.
+  // Multi-device: returns "name__dN" to prevent cross-device overwrites.
+  // Uses "__d" separator which is valid in MLIR symbol names (unlike "#").
+  std::string makeConduitKey(llvm::StringRef name,
+                             mlir::Operation *contextOp) const {
+    if (!isMultiDevice())
+      return name.str();
+    auto dev = contextOp->getParentOfType<AIE::DeviceOp>();
+    if (!dev)
+      return name.str();
+    return name.str() + "__d" + std::to_string(getDeviceIndex(dev));
+  }
+
   /// Lock acquire value for DMA BD chains and core-side operations.
   /// Port::Produce (S2MM / core-produces): AIE1 acquires empty slot (0).
   /// Port::Consume (MM2S / core-consumes): AIE1 acquires full slot (1).
@@ -506,6 +541,13 @@ struct ConduitToDMAState {
   // Fuse group tracking for Phase 4.5a and Phase 5.5.
   llvm::StringMap<int32_t> fuseGroupMM2SChannel;
   llvm::StringMap<llvm::SmallVector<std::string, 4>> fuseGroupMembers;
+
+  // Packet-mode S2MM channel reuse per consumer tile.
+  // When multiple packet-mode channels target the same tile, they share
+  // one physical S2MM port (differentiated by packet_id in BD headers).
+  // Key: consumer tile SSA value.  Value: assigned S2MM channel index.
+  // Populated during Phase 4.5a packet-mode flow emission.
+  llvm::DenseMap<mlir::Value, int32_t> pktTileS2MMChannel;
 
   // Pre-computed used DMA channels per tile (populated before Phase 5.5).
   llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedMM2SChannels;
@@ -704,6 +746,21 @@ struct ConduitToDMAState {
     if (it == conduitMap.end())
       return nullptr;
     return &it->second;
+  }
+
+  /// Device-aware conduit lookup.  Builds a device-qualified key from
+  /// the channel name and the context op's enclosing aie.device, then
+  /// falls back to the unqualified name for single-device compatibility.
+  ConduitInfo *lookupConduit(mlir::StringRef name,
+                             mlir::Operation *contextOp) {
+    if (!contextOp || !isMultiDevice())
+      return lookupConduit(name);
+    std::string key = makeConduitKey(name, contextOp);
+    auto it = conduitMap.find(key);
+    if (it != conduitMap.end())
+      return &it->second;
+    // Fallback to unqualified name (single-device or non-colliding).
+    return lookupConduit(name);
   }
 
   /// Emit DMA BD block content into an existing block:
