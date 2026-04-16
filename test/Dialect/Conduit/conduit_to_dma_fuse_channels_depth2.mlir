@@ -7,7 +7,7 @@
 // the annotation pass).
 //
 // Both conduit.create ops have fuse_mode = "static" and
-// fused_dma_channel_group = "group0" pre-annotated in the source.
+// dma_channel_group = "group0" pre-annotated in the source.
 // Pass C must chain the two depth-2 BD rings into one circular list:
 //
 //   dma_start(MM2S, 0) → chan_a_BD0 → chan_a_BD1 → chan_b_BD0 → chan_b_BD1 → chan_a_BD0
@@ -66,16 +66,14 @@ module @fuse_depth2_nocore {
     %tile_0_4 = aie.tile(0, 4)
     %tile_0_5 = aie.tile(0, 5)
 
-    conduit.create @chan_a {slot_elems = 8 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @chan_a {                    element_type = memref<4xi32>,
                     depth = 2 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
-    conduit.create @chan_b {slot_elems = 8 : i64,
-                    element_type = memref<4xi32>,
+                    dma_channel_group = "group0"}
+    conduit.create @chan_b {                    element_type = memref<4xi32>,
                     depth = 2 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
+                    dma_channel_group = "group0"}
 
     // Minimal aie.core blocks for inferAllTiles() Source 1.
     // Producer core only; consumer cores omitted to avoid rotation-counter

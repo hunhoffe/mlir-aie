@@ -181,8 +181,7 @@ struct ConduitFuseRelayPass
 
       auto transposeOp = builder.create<TransposeOp>(
           gatherOp.getLoc(), srcs, dsts, gatherOp.getMemtileAttr(),
-          mlir::DenseI64ArrayAttr::get(ctx, offsets), gatherOp.getLockIdAttr(),
-          gatherOp.getSyncModeAttr());
+          mlir::DenseI64ArrayAttr::get(ctx, offsets));
       (void)transposeOp;
 
       // Erase scatter, gather, and intermediate conduit.create.

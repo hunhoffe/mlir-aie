@@ -18,8 +18,7 @@ module @depth_zero_error {
 
     // depth = 0: sentinel value emitted by Pass A/B when depth is unresolved.
     // --conduit-depth-promote is required before --conduit-to-dma to fill this in.
-    conduit.create @unresolved {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @unresolved {                    element_type = memref<8xi32>,
                     depth = 0 : i64}
 
     %core_0_2 = aie.core(%tile_0_2) {

@@ -18,7 +18,6 @@
 // CHECK:     conduit.create @input_fifo
 // CHECK-SAME:   depth = 1 : i64
 // CHECK-SAME:   element_type = memref<10xi32>
-// CHECK-SAME:   slot_elems = 10 : i64
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
 // CHECK:       scf.for
 // CHECK:         conduit.acquire

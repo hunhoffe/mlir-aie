@@ -117,8 +117,7 @@ module @tm_count2 {
     // Pass C Phase 1 collects putCount=2, nConsumerBuffers()=2,
     // and emits a linear 2-entry S2MM BD chain (last BD → aie.end, not ^bd0).
     conduit.create @kv {
-      slot_elems = 1 : i64,
-      element_type = memref<64xi32>,
+            element_type = memref<64xi32>,
       depth = 1 : i64
     }
 
@@ -237,8 +236,7 @@ module @tm_count3 {
     // Pass C Phase 1 collects putCount=3, nConsumerBuffers()=3,
     // and emits a linear 3-entry S2MM BD chain (last BD → aie.end).
     conduit.create @kvs {
-      slot_elems = 1 : i64,
-      element_type = memref<32xi32>,
+            element_type = memref<32xi32>,
       depth = 1 : i64
     }
 
@@ -365,8 +363,7 @@ module @tm_baseline_depth1 {
 
     // Standard depth=1 channel: single put_memref_async → 1-entry circular ring.
     conduit.create @single {
-      slot_elems = 1 : i64,
-      element_type = memref<64xi32>,
+            element_type = memref<64xi32>,
       depth = 1 : i64
     }
 

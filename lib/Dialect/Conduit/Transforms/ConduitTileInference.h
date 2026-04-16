@@ -99,7 +99,7 @@ struct InferredTiles {
 //   5. conduit.scatter / conduit.gather / conduit.transpose → relay MemTiles
 //   6. aie.core → PutCascade(conduit_channel) → cascade producer tile
 //      aie.core → GetCascade(conduit_channel) → cascade consumer tiles
-//   7. conduit.create with fused_dma_channel_group + no producer after 1–6 →
+//   7. conduit.create with dma_channel_group + no producer after 1–6 →
 //      standalone MemTile producer (exactly one unused MemTile in scope)
 //
 // For efficiency, call this once per pass and reuse the result map.

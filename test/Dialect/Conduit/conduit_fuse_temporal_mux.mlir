@@ -10,24 +10,24 @@
 // automatically.
 //
 // Remaining sections (c)-(h) test MM2S live-interval fusion via greedy interval
-// coloring, which annotates conduit.create ops with fused_dma_channel_group and
+// coloring, which annotates conduit.create ops with dma_channel_group and
 // fuse_mode when their live intervals are non-overlapping in a basic block.
 //
 // Test plan (MM2S live-interval fusion):
 //   (c) No token dependency: two puts at same endpoint with no dep chain ->
-//       both get fused_dma_channel_group (sequential in block) but no
+//       both get dma_channel_group (sequential in block) but no
 //       time_multiplex_count.
 //   (d) Partial dep: t1->t2 chained, t3 independent -> all three get fuse
 //       attrs; no time_multiplex_count on any of them.
 //   (e) Different endpoints: t1->t2 but different consumer_tile -> both get
-//       fused_dma_channel_group (same producer tile, sequential intervals) but
+//       dma_channel_group (same producer tile, sequential intervals) but
 //       no time_multiplex_count.
-//   (f) Packet-mode excluded: routing_mode="packet" -> fused_dma_channel_group
+//   (f) Packet-mode excluded: routing_mode="packet" -> dma_channel_group
 //       annotated (same producer tile) but no time_multiplex_count.
 //   (g) Depth > 1 excluded: capacity>1 / depth>1 -> NOT annotated with
-//       fused_dma_channel_group (Pass C remark emitted; skipped).
+//       dma_channel_group (Pass C remark emitted; skipped).
 //   (h) Link src excluded from temporal mux: conduit in scatter src ->
-//       fused_dma_channel_group annotated but no time_multiplex_count.
+//       dma_channel_group annotated but no time_multiplex_count.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,21 +38,19 @@
 //
 //     Without a token edge, the pass cannot prove non-overlap for TM purposes.
 //     The MM2S live-interval analysis sees sequential ops and annotates
-//     fused_dma_channel_group + fuse_mode, but does NOT add time_multiplex_count.
+//     dma_channel_group + fuse_mode, but does NOT add time_multiplex_count.
 //     Expected: neither create gains time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @nd1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @nd1 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
-// CHECK:       conduit.create @nd2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @nd2 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
 // CHECK-LABEL: func.func @no_dep_no_merge
 aie.device(npu1) {
-conduit.create @nd1 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @nd1 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
-conduit.create @nd2 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @nd2 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @no_dep_no_merge() {
   // No dep list on nd2 -- not ordered relative to nd1.
@@ -74,31 +72,28 @@ func.func @no_dep_no_merge() {
 // (d) Partial dep: t1->t2 chained, t3 independent at the same endpoint.
 //
 //     t1 and t2 form a 2-chain.  t3 has no dep on either.
-//     The MM2S analysis annotates all three with fused_dma_channel_group since
+//     The MM2S analysis annotates all three with dma_channel_group since
 //     they all live on the same producer tile with sequential intervals.
 //     TM (time_multiplex_count) is no longer set by this pass -- it moved to
 //     Pass C.  All three conduit.create ops survive (no erasure here).
 //     Expected: pd1, pd2, pd3 all get fuse attrs; no time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @pd1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @pd1 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
 // pd2 is NOT erased by this pass (TM erasure moved to Pass C).
-// CHECK:       conduit.create @pd2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @pd2 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
 // pd3 gets fuse attrs but no time_multiplex_count.
-// CHECK:       conduit.create @pd3 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @pd3 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
 // CHECK-LABEL: func.func @partial_dep
 aie.device(npu1) {
-conduit.create @pd1 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @pd1 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
-conduit.create @pd2 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @pd2 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
-conduit.create @pd3 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @pd3 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @partial_dep() {
   %ta = conduit.put_memref_async {name = @pd1, num_elems = 4096 : i64,
@@ -126,22 +121,20 @@ func.func @partial_dep() {
 //
 //     t1 and t2 are ordered by dep, but they go to different consumer tiles.
 //     They cannot share one physical S2MM because the destination differs.
-//     The MM2S analysis annotates them in a fused_dma_channel_group (same
+//     The MM2S analysis annotates them in a dma_channel_group (same
 //     producer tile, sequential intervals) but no time_multiplex_count.
 //     Expected: neither gets time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @de1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @de1 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
-// CHECK:       conduit.create @de2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @de2 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
 // CHECK-LABEL: func.func @different_consumer_tile
 aie.device(npu1) {
-conduit.create @de1 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @de1 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
-conduit.create @de2 {slot_elems = 1 : i64,
-                // different consumer row
+conduit.create @de2 {                // different consumer row
                 element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @different_consumer_tile() {
@@ -165,23 +158,21 @@ func.func @different_consumer_tile() {
 //     Two channels ordered by dep but routing_mode = "packet".
 //     Packet channels use shared physical channels with flow IDs -- temporal
 //     mux would clobber the packet ID assignment.
-//     The MM2S analysis still annotates fused_dma_channel_group on them
+//     The MM2S analysis still annotates dma_channel_group on them
 //     (same producer tile, sequential intervals), but no time_multiplex_count.
 //     Expected: neither gets time_multiplex_count.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @pkt1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @pkt1 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
-// CHECK:       conduit.create @pkt2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @pkt2 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
 // CHECK-LABEL: func.func @packet_mode_excluded
 aie.device(npu1) {
-conduit.create @pkt1 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @pkt1 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<packet>}
-conduit.create @pkt2 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @pkt2 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<packet>}
 func.func @packet_mode_excluded() {
@@ -206,7 +197,7 @@ func.func @packet_mode_excluded() {
 //     A depth>1 channel has concurrent semantics (producer pre-fills multiple
 //     slots) that are incompatible with one-shot temporal mux.
 //     The MM2S analysis also skips depth>1 channels (emits a remark and skips).
-//     Expected: neither gets time_multiplex_count or fused_dma_channel_group.
+//     Expected: neither gets time_multiplex_count or dma_channel_group.
 //===----------------------------------------------------------------------===//
 
 // CHECK:       conduit.create @d2a {
@@ -215,11 +206,9 @@ func.func @packet_mode_excluded() {
 // CHECK-NOT:   time_multiplex_count
 // CHECK-LABEL: func.func @depth2_excluded
 aie.device(npu1) {
-conduit.create @d2a {slot_elems = 2 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @d2a {                element_type = memref<4096xbf16>,
                 depth = 2 : i64}
-conduit.create @d2b {slot_elems = 2 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @d2b {                element_type = memref<4096xbf16>,
                 depth = 2 : i64}
 func.func @depth2_excluded() {
   %ta = conduit.put_memref_async {name = @d2a, num_elems = 4096 : i64,
@@ -244,28 +233,25 @@ func.func @depth2_excluded() {
 //     source (lk channel resources are managed by linkPhase), it must not
 //     be merged by the temporal mux analysis.
 //     The MM2S analysis sees lk1/lk2 as sequential at the same producer tile
-//     and annotates fused_dma_channel_group on them.
+//     and annotates dma_channel_group on them.
 //     Expected: lk1 and lk2 get fuse attrs but no time_multiplex_count.
 //              lk_dst is on a different producer tile, no fuse attrs.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @lk1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @lk1 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
-// CHECK:       conduit.create @lk2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @lk2 {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-NOT:   time_multiplex_count
 // lk_dst is on a different producer tile (6,1) vs lk1/lk2 (6,2) -- no fuse attrs.
 // CHECK:       conduit.create @lk_dst {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @link_src_excluded
 aie.device(npu1) {
-conduit.create @lk1 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @lk1 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
-conduit.create @lk2 {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @lk2 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
-conduit.create @lk_dst {slot_elems = 1 : i64,
-                element_type = memref<4096xbf16>,
+conduit.create @lk_dst {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @link_src_excluded() {
   conduit.scatter{src = @lk1, dsts = [@lk_dst] {memtile = "tile(6,1)"}}

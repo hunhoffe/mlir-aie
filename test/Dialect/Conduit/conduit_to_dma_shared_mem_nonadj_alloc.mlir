@@ -17,8 +17,7 @@ module {
     %tile_0_2 = aie.tile(0, 2)
     %tile_0_3 = aie.tile(0, 3)
 
-    conduit.create @shm_chan {slot_elems = 1 : i64,
-                    element_type = memref<16xi32>,
+    conduit.create @shm_chan {                    element_type = memref<16xi32>,
                     depth = 1 : i64}
 
     aie.core(%tile_0_2) {

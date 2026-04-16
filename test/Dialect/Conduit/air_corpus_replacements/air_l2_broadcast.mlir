@@ -17,13 +17,15 @@
 
 // CHECK-LABEL: module
 
-// Source conduit.create with slot_elems =2 (broadcast fan-out).
+// Source conduit.create with element_type (broadcast fan-out).
 // CHECK: conduit.create @bcast
-// CHECK-SAME: slot_elems = 2
+// CHECK-SAME: element_type = memref<32xi32, 1>
 
 // Per-consumer aliases from broadcast Step 2.
 // CHECK: conduit.create @bcast_c0
+// CHECK-SAME: element_type = memref<32xi32, 1>
 // CHECK: conduit.create @bcast_c1
+// CHECK-SAME: element_type = memref<32xi32, 1>
 // Scatter op (Sprint 4: distribute renamed to scatter, srcs array→src single).
 // CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0, @bcast_c1]
 // CHECK-SAME: memtile = "tile(0,1)"

@@ -109,7 +109,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     // Link dst conduits skip shared-memory detection: the link relay changes
     // data routing, so the relay's adjacent producer tile is not a direct
     // shared-memory provider. These conduits take the normal DMA path.
-    if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
+    if (!info.forceDMA && info.consumerTileCoords.size() == 1 &&
         info.shimConsumerTileCoords.empty() &&
         !state.linkSrcNamesEarly.count(name) &&
         !state.linkJoinSrcNames.count(name) &&
@@ -125,7 +125,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        if (rightShared || leftShared) {
+        bool explicitSharedMem = (info.routingMode == "shared_memory");
+        if (explicitSharedMem || rightShared || leftShared) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
           AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
@@ -239,7 +240,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     }
     if (!info.shimConsumerTileCoords.empty())
       needsProdSide = true;
-    if (!needsProdSide && !info.viaDMA)
+    if (!needsProdSide && !info.forceDMA)
       continue;
 
     int64_t depth = info.depth > 0 ? info.depth : 1;
@@ -403,7 +404,7 @@ void allocPhase(ConduitToDMAState &state) {
                               : effDepth;
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
-        int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
+        int64_t bufSize = 1;
         bufTy =
             mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
@@ -419,7 +420,7 @@ void allocPhase(ConduitToDMAState &state) {
       mlir::Value prodTileVal = prodTile.getResult();
 
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
-      if (!info.disableSynchronization) {
+      if (!info.noLocks) {
         // bd_repeat > 1 scales prod lock init: each buffer is DMA'd N times.
         int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
         int64_t prodInit = prodDepth * repeatN;
@@ -440,11 +441,16 @@ void allocPhase(ConduitToDMAState &state) {
     //
     // If producer and single consumer are adjacent tiles, buffers and locks
     // go on the producer (or alloc_tile delegate) — no DMA needed.
-    // Skip when via_DMA=true: force DMA path even for adjacent tiles.
+    // Skip when forceDMA: force DMA path even for adjacent tiles.
     // Skip link dst conduits: the link relay changes data routing, so the
     // relay's adjacent producer is not a direct shared-memory provider.
+    //
+    // Shared memory is triggered by either:
+    //   (a) routing_mode == "shared_memory" (set explicitly by
+    //       --conduit-infer-modes R3a), or
+    //   (b) routing_mode absent/other AND tiles are adjacent.
     // -------------------------------------------------------------------
-    if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
+    if (!info.forceDMA && info.consumerTileCoords.size() == 1 &&
         info.shimConsumerTileCoords.empty() &&
         !state.linkSrcNamesEarly.count(name) &&
         !state.linkJoinSrcNames.count(name) &&
@@ -460,7 +466,8 @@ void allocPhase(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        if (rightShared || leftShared) {
+        bool explicitSharedMem = (info.routingMode == "shared_memory");
+        if (explicitSharedMem || rightShared || leftShared) {
           info.sharedMemory = true;
 
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
@@ -477,7 +484,7 @@ void allocPhase(ConduitToDMAState &state) {
             int64_t nBufs = info.nConsumerBuffers();
             mlir::Type bufTy = info.elemType;
             if (!bufTy) {
-              int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
+              int64_t bufSize = 1;
               bufTy = mlir::MemRefType::get({bufSize},
                                             mlir::IntegerType::get(ctx, 32));
             }
@@ -504,7 +511,7 @@ void allocPhase(ConduitToDMAState &state) {
             // Allocate lock(s) on the allocation tile (skip if
             // disable_synchronization).
             AIE::LockOp sharedProdLock, sharedConsLock;
-            if (!info.disableSynchronization) {
+            if (!info.noLocks) {
               int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
               int64_t prodInit = nBufs * repeatN;
               auto locks =
@@ -564,7 +571,7 @@ void allocPhase(ConduitToDMAState &state) {
                               : effDepth;
       mlir::Type bufTy = info.elemType;
       if (!bufTy) {
-        int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
+        int64_t bufSize = 1;
         bufTy =
             mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
       }
@@ -580,7 +587,7 @@ void allocPhase(ConduitToDMAState &state) {
       mlir::Value prodTileVal = prodTile.getResult();
 
       info.buffers = state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
-      if (!info.disableSynchronization) {
+      if (!info.noLocks) {
         int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
         int64_t prodInit = prodDepth * repeatN;
         auto locks =
@@ -604,7 +611,7 @@ void allocPhase(ConduitToDMAState &state) {
     int64_t nBufs = info.nConsumerBuffers();
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
-      int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
+      int64_t bufSize = 1;
       bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
     }
 
@@ -687,7 +694,7 @@ void allocPhase(ConduitToDMAState &state) {
                     state.allocateBuffers(pTileVal, name, bufTy, prodDepth);
 
                 AIE::LockOp pProdLock, pConsLock;
-                if (!info.disableSynchronization) {
+                if (!info.noLocks) {
                   auto pLocks =
                       state.allocateLockPair(pTileVal, name, prodDepth);
                   pProdLock = pLocks.prodLock;
@@ -720,7 +727,7 @@ void allocPhase(ConduitToDMAState &state) {
       // slot, but the bd_repeat scaling belongs only on the producer-side
       // lock (allocated in Phase 3d below).
       AIE::LockOp thisProdLock, thisConsLock;
-      if (!info.disableSynchronization) {
+      if (!info.noLocks) {
         int64_t prodInit = nBufs;
         auto consLocks =
             state.allocateLockPair(consTileVal, consPrefix, nBufs, prodInit);
@@ -799,7 +806,7 @@ void allocPhase(ConduitToDMAState &state) {
     if (!info.shimConsumerTileCoords.empty())
       needsProdSide = true;
     // via_DMA forces DMA even for adjacent tiles.
-    if (!needsProdSide && !info.viaDMA)
+    if (!needsProdSide && !info.forceDMA)
       continue;
 
     int64_t depth = info.depth > 0 ? info.depth : 1;
@@ -809,7 +816,7 @@ void allocPhase(ConduitToDMAState &state) {
                             : effDepth;
     mlir::Type bufTy = info.elemType;
     if (!bufTy) {
-      int64_t bufSize = info.slotElems > 0 ? info.slotElems / depth : 1;
+      int64_t bufSize = 1;
       bufTy = mlir::MemRefType::get({bufSize}, mlir::IntegerType::get(ctx, 32));
     }
 
@@ -825,7 +832,7 @@ void allocPhase(ConduitToDMAState &state) {
         state.allocateBuffers(prodTileVal, name, bufTy, prodDepth);
 
     AIE::LockOp prodLockProd, prodLockCons;
-    if (!info.disableSynchronization) {
+    if (!info.noLocks) {
       int64_t repeatN = info.bdRepeat > 1 ? info.bdRepeat : 1;
       int64_t prodInit = prodDepth * repeatN;
       auto prodLocks =

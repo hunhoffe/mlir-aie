@@ -13,7 +13,7 @@
 //   chan_a → MM2S 0, chan_b → MM2S 1 (two dma_start ops on tile[0,2]).
 //
 // With --conduit-fuse-channels:
-//   The pass annotates both conduit.create ops with fused_dma_channel_group = "group0".
+//   The pass annotates both conduit.create ops with dma_channel_group = "group0".
 //   Pass C detects the shared group and assigns both to MM2S 0.
 //   Only ONE dma_start(MM2S, 0) is emitted.
 //   The BD rings are linked: chan_a's last BD → chan_b's first BD → chan_a's first BD.
@@ -110,11 +110,9 @@ module @fuse_channels_test {
     // chan_a: producer=[0,2], consumer=[0,4]  (non-adjacent: 2 rows apart)
     // chan_b: producer=[0,2], consumer=[0,5]  (non-adjacent: 3 rows apart)
     // Both use depth=1, 8 i32 elements (slot_elems =8).
-    conduit.create @chan_a {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @chan_a {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
-    conduit.create @chan_b {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @chan_b {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     // Producer core: produce chan_a then chan_b — strictly sequential.

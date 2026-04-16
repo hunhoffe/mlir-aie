@@ -12,7 +12,7 @@
 
 // release_async token escapes via return.
 aie.device(npu1) {
-conduit.create @ch_rel {slot_elems = 1 : i64, depth = 0 : i64}
+conduit.create @ch_rel {depth = 0 : i64, element_type = memref<4xi32>}
 func.func @release_async_escape_return() -> !conduit.window.token {
   // expected-error @+1 {{'conduit.release_async' op M10: token escapes function scope via return}}
   %tok = conduit.release_async {name = @ch_rel, count = 1 : i64,
@@ -26,7 +26,7 @@ func.func @release_async_escape_return() -> !conduit.window.token {
 
 // release_async token escapes via call argument.
 aie.device(npu1) {
-conduit.create @ch_rel2 {slot_elems = 1 : i64, depth = 0 : i64}
+conduit.create @ch_rel2 {depth = 0 : i64, element_type = memref<4xi32>}
 func.func private @downstream(%tok : !conduit.window.token)
 func.func @release_async_escape_call() {
   // expected-error @+1 {{'conduit.release_async' op M10: token escapes function scope via call argument}}

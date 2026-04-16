@@ -4,11 +4,9 @@
 // token's channel name.
 
 aie.device(npu1) {
-conduit.create @foo {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @foo {                element_type = memref<8xi32>,
                 depth = 1 : i64}
-conduit.create @bar {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @bar {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @bad_wait_window_name_mismatch() {
   // acquire_async for @foo produces a token.

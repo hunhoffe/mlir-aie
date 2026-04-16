@@ -27,8 +27,7 @@
 //   WaitAll::verify() / WaitAllAsync::verify() — M8c: operands must be token
 //   types ScatterOp::verify() — DMA budget, memtile format GatherOp::verify() —
 //   DMA budget, memtile format TransposeOp::verify() — DMA budget, offsets,
-//   packet ID budget, memtile format RegisterBuffersOp::verify() — provenance
-//   (aie.buffer / aie.external_buffer)
+//   packet ID budget, memtile format
 //
 //===----------------------------------------------------------------------===//
 
@@ -191,9 +190,9 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
 //     channel: P=[3] (sum=3,q=1), C=[1,2] (sum=3,r=2) — sum(P)*r=6 ≠
 //     sum(C)*q=3, so no integer firing vector exists.
 ::mlir::LogicalResult Create::verify() {
-  // Addition 1 — depth < 0 rejection.
+  // depth < 0 rejection.
   // depth=0 is the sentinel for "unresolved" (set by Pass A/B, resolved by
-  // --conduit-depth-promote).  Positive values are explicit depths.
+  // --conduit-depth-promote). Positive values are explicit depths.
   // Negative values are always invalid.
   if (auto d = getDepth()) {
     if (static_cast<int64_t>(*d) < 0)
@@ -202,96 +201,23 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
              << static_cast<int64_t>(*d);
   }
 
-  // Addition 3 — sync_mode + disable_synchronization conflict.
-  // sync_mode specifies an active synchronization protocol;
-  // disable_synchronization suppresses all lock emission.  The two are mutually
-  // exclusive.
-  if (getSyncMode().has_value() && getDisableSynchronization().value_or(false))
-    return emitOpError(
-        "sync_mode and disable_synchronization=true are mutually exclusive");
-
-  if (auto elemTypeOpt = getElementType()) {
-    mlir::Type ty = *elemTypeOpt;
-    // Addition 2 — element_type must be MemRefType.
-    if (!mlir::isa<mlir::MemRefType>(ty))
-      return emitOpError("element_type must be a MemRefType when present, got ")
-             << ty;
-    if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(ty)) {
-      for (int64_t dim : shaped.getShape()) {
-        if (mlir::ShapedType::isDynamic(dim)) {
-          emitWarning("conduit.create: element_type has dynamic dimensions; "
-                      "capacity is approximate");
-          break;
-        }
+  // element_type must be MemRefType (required attr, enforced by ODS type,
+  // but verify the inner type for clarity).
+  mlir::Type ty = getElementType();
+  if (!mlir::isa<mlir::MemRefType>(ty))
+    return emitOpError("element_type must be a MemRefType, got ") << ty;
+  if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(ty)) {
+    for (int64_t dim : shaped.getShape()) {
+      if (mlir::ShapedType::isDynamic(dim)) {
+        emitWarning("conduit.create: element_type has dynamic dimensions; "
+                    "buffer capacity is approximate");
+        break;
       }
     }
   }
-  // M5: routing_mode is now an ODS enum (RoutingModeAttr) — invalid values are
-  // rejected by the parser before the verifier runs. No explicit check needed.
 
-  // B-5: producer_dimensions / consumer_dimensions type checking is now
-  // enforced by ODS (BDDimLayoutArrayAttr / BDDimLayoutArrayArrayAttr
-  // constraints in Conduit.td). Invalid types are rejected at parse time.
-
-  // plio verifier: plio=true requires a shim-row (row == 0) endpoint — either
-  // the producer tile or at least one consumer tile must be on the shim row.
-  //
-  // Inside a DeviceOp (enforced by HasParent<DeviceOp>), the producer tile
-  // is inferred by walking aie.core ops for Acquire(Port::Produce) or by
-  // checking aie.shim_dma_allocation ops.  Falls back to producer_tile attr
-  // for cascade channels.
-  //
-  // Shim consumers inside a DeviceOp are identified via
-  // aie.shim_dma_allocation ops (set by Pass A) — the consumer-tiles check
-  // is skipped when inside a DeviceOp (trust Pass A correctness).
-  if (auto plioAttr = getPlio()) {
-    if (*plioAttr) {
-      bool producerIsShim = false;
-
-      // Try to infer producer tile from the enclosing DeviceOp.
-      auto deviceOp =
-          getOperation()->getParentOfType<xilinx::AIE::DeviceOp>();
-      if (deviceOp) {
-        llvm::StringRef chanName = getName();
-        deviceOp->walk([&](AIE::CoreOp coreOp) {
-          if (producerIsShim)
-            return;
-          mlir::Value tileVal = coreOp.getTile();
-          if (!tileVal)
-            return;
-          coreOp.walk([&](Acquire acqOp) {
-            if (acqOp.getPort() == Port::Produce &&
-                acqOp.getName() == chanName) {
-              if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
-                producerIsShim = (tileOp.getRow() == 0);
-            }
-          });
-        });
-        // Also check shim_dma_allocation MM2S for shim producer.
-        if (!producerIsShim) {
-          deviceOp->walk([&](AIE::ShimDMAAllocationOp shimOp) {
-            if (producerIsShim)
-              return;
-            if (shimOp.getChannelDir() != AIE::DMAChannelDir::MM2S)
-              return;
-            // Match via conduit_channel attr or sym_name.
-            if (auto ccAttr = shimOp->getAttrOfType<mlir::FlatSymbolRefAttr>(
-                    "conduit_channel")) {
-              if (ccAttr.getValue() == chanName)
-                producerIsShim = true;
-            } else if (shimOp.getSymName() == chanName) {
-              producerIsShim = true;
-            }
-          });
-        }
-      }
-      if (!producerIsShim) {
-        // Inside a DeviceOp: shim consumers may exist via
-        // aie.shim_dma_allocation — skip the check; outside DeviceOp
-        // (dead code after HasParent enforcement), also skip.
-      }
-    }
-  }
+  // routing_mode and sync_mode are ODS enums — invalid values rejected at
+  // parse time. No explicit string validation needed.
 
   // M6: CSDF balance check (necessary condition).
   // producer_rates and consumer_rates must appear together.  When both are
@@ -356,7 +282,25 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
     // (peakOccupancy > capacity) is a hard error, because no interleaving can
     // hide that constraint.
     {
-      int64_t slot_elems = getSlotElems();
+      // Compute buffer capacity from depth * product(element_type.shape).
+      // slot_elems is no longer stored as an attribute.
+      // Skip M7 when depth = 0 (sentinel for pre-depth-promote pass); the
+      // capacity check requires a resolved depth.
+      int64_t slot_elems = 0;
+      bool hasResolvedDepth = false;
+      if (auto d = getDepth()) {
+        if (*d > 0) {
+          hasResolvedDepth = true;
+          if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(getElementType())) {
+            slot_elems = static_cast<int64_t>(*d);
+            for (int64_t dim : shaped.getShape()) {
+              if (mlir::ShapedType::isDynamic(dim)) { slot_elems = 0; break; }
+              slot_elems *= dim;
+            }
+          }
+        }
+      }
+      if (hasResolvedDepth) {
       // Compute gcd(plen, clen) via Euclid's algorithm.
       int64_t a = plen, b = clen;
       while (b) {
@@ -412,21 +356,13 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
                    << "hyper-period=" << hyperPeriod << " steps)";
         }
       }
+      } // end if (hasResolvedDepth)
     }
   }
 
-  // M7 extension: window_size must not exceed depth.
-  // Enforces that the buffer pool is large enough for the sliding window.
-  if (auto ws = getWindowSize()) {
-    if (auto d = getDepth()) {
-      int64_t depth = static_cast<int64_t>(*d);
-      if (depth > 0 && static_cast<int64_t>(*ws) > depth) {
-        return emitOpError("window_size (")
-               << *ws << ") exceeds depth (" << depth
-               << "); buffer pool too small for sliding window";
-      }
-    }
-  }
+  // window_size was deleted from conduit.create in Sprint 6 (it was dead).
+  // Sliding-window capacity is now checked by the pairing pass using
+  // acquire count vs. depth directly.
 
   return ::mlir::success();
 }
@@ -721,11 +657,13 @@ static ::mlir::LogicalResult checkTokenOperandTypes(mlir::Operation *op,
 }
 
 //===----------------------------------------------------------------------===//
-// parseTileCoordForVerifier — helper for relay op memtile format validation
+// Relay op memtile verifier helper
+//
+// memtile is a StrAttr "tile(col,row)". Validated here at verify time.
+// TODO (post-Sprint 6): migrate to FlatSymbolRefAttr once aie.tile ops have
+// sym_names, then this helper can be replaced by MLIR symbol resolution.
 //===----------------------------------------------------------------------===//
 
-/// Parse a tile coordinate string of the form "tile(col,row)" and return
-/// {col, row}. Returns {-1, -1} on any parse failure.
 static std::pair<int64_t, int64_t>
 parseTileCoordForVerifier(llvm::StringRef s) {
   if (!s.starts_with("tile(") || !s.ends_with(")"))
@@ -739,31 +677,30 @@ parseTileCoordForVerifier(llvm::StringRef s) {
   return {col, row};
 }
 
+static ::mlir::LogicalResult
+verifyMemtileStr(mlir::Operation *op, llvm::StringRef memtile) {
+  if (parseTileCoordForVerifier(memtile).first == -1)
+    return op->emitOpError(
+               "memtile attribute must be of the form 'tile(col,row)', got '")
+           << memtile << "'";
+  return ::mlir::success();
+}
+
 //===----------------------------------------------------------------------===//
 // ScatterOp
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult ScatterOp::verify() {
-  // ScatterOp has a singular $src (FlatSymbolRefAttr) — no size-1 check needed.
   auto dsts = getDsts();
-
-  // dsts must contain at least 1 entry.
   if (dsts.empty())
     return emitOpError("scatter requires at least 1 dst, got 0");
-
-  // MemTile DMA budget: 1 S2MM (source) + N MM2S (destinations) <= 12
-  // (MemTile has 6 MM2S + 6 S2MM channels; using 1 S2MM leaves 11 MM2S max).
+  // MemTile DMA budget: 1 S2MM + N MM2S <= 12.
   if (1 + dsts.size() > 12)
     return emitOpError("scatter DMA budget exceeded: 1 src + ")
            << dsts.size() << " dsts = " << (1 + dsts.size())
            << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
-
-  // memtile attribute must be of the form "tile(col,row)".
-  if (parseTileCoordForVerifier(getMemtile()).first == -1)
-    return emitOpError(
-               "memtile attribute must be of the form 'tile(col,row)', got '")
-           << getMemtile() << "'";
-
+  if (failed(verifyMemtileStr(getOperation(), getMemtile())))
+    return ::mlir::failure();
   return ::mlir::success();
 }
 
@@ -773,24 +710,15 @@ parseTileCoordForVerifier(llvm::StringRef s) {
 
 ::mlir::LogicalResult GatherOp::verify() {
   auto srcs = getSrcs();
-
-  // srcs must contain at least 1 entry.
   if (srcs.empty())
     return emitOpError("gather requires at least 1 src, got 0");
-
-  // GatherOp has a singular $dst (FlatSymbolRefAttr) — no size-1 check needed.
-  // MemTile DMA budget: N S2MM (sources) + 1 MM2S (destination) <= 12.
+  // MemTile DMA budget: N S2MM + 1 MM2S <= 12.
   if (srcs.size() + 1 > 12)
     return emitOpError("gather DMA budget exceeded: ")
            << srcs.size() << " srcs + 1 dst = " << (srcs.size() + 1)
            << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
-
-  // memtile attribute must be of the form "tile(col,row)".
-  if (parseTileCoordForVerifier(getMemtile()).first == -1)
-    return emitOpError(
-               "memtile attribute must be of the form 'tile(col,row)', got '")
-           << getMemtile() << "'";
-
+  if (failed(verifyMemtileStr(getOperation(), getMemtile())))
+    return ::mlir::failure();
   return ::mlir::success();
 }
 
@@ -802,56 +730,31 @@ parseTileCoordForVerifier(llvm::StringRef s) {
   auto srcs = getSrcs();
   auto dsts = getDsts();
   auto offsets = getOffsets();
-
   if (srcs.empty())
     return emitOpError("transpose requires at least 1 src, got 0");
   if (dsts.empty())
     return emitOpError("transpose requires at least 1 dst, got 0");
-
-  // MemTile DMA budget: N S2MM (sources) + M MM2S (destinations) <= 12.
+  // MemTile DMA budget: N S2MM + M MM2S <= 12.
   if (srcs.size() + dsts.size() > 12)
     return emitOpError("transpose DMA budget exceeded: ")
            << srcs.size() << " srcs + " << dsts.size()
            << " dsts = " << (srcs.size() + dsts.size())
            << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
-
-  // offsets.size() must equal srcs.size() * dsts.size().
+  // offsets must have exactly srcs.size() * dsts.size() entries.
   size_t expectedOffsets = srcs.size() * dsts.size();
   if (offsets.size() != expectedOffsets)
     return emitOpError("offsets size must equal srcs.size() * dsts.size() = ")
            << expectedOffsets << ", got " << offsets.size();
-
   // Packet ID budget: N*M <= 32.
   if (expectedOffsets > 32)
-    return emitOpError("transpose packet ID budget exceeded: srcs.size() * "
-                       "dsts.size() = ")
+    return emitOpError("transpose packet ID budget exceeded: ")
            << srcs.size() << " * " << dsts.size() << " = " << expectedOffsets
            << ", maximum is 32 (AIE2 packet ID space)";
-
-  // memtile attribute must be of the form "tile(col,row)".
-  if (parseTileCoordForVerifier(getMemtile()).first == -1)
-    return emitOpError(
-               "memtile attribute must be of the form 'tile(col,row)', got '")
-           << getMemtile() << "'";
-
+  if (failed(verifyMemtileStr(getOperation(), getMemtile())))
+    return ::mlir::failure();
   return ::mlir::success();
 }
 
-//===----------------------------------------------------------------------===//
-// RegisterBuffersOp
-//===----------------------------------------------------------------------===//
-
-::mlir::LogicalResult RegisterBuffersOp::verify() {
-  for (Value buf : getBuffers()) {
-    Operation *defOp = buf.getDefiningOp();
-    if (!defOp || (!mlir::isa<AIE::BufferOp>(defOp) &&
-                   !mlir::isa<AIE::ExternalBufferOp>(defOp)))
-      return emitOpError("buffer operand must be defined by aie.buffer or "
-                         "aie.external_buffer, got ")
-             << (defOp ? defOp->getName().getStringRef() : "block argument");
-  }
-  return ::mlir::success();
-}
 
 //===----------------------------------------------------------------------===//
 // Conduit ops — generated op definitions

@@ -37,8 +37,8 @@
 
 module {
   aie.device(npu1) {
-  conduit.create @chA {slot_elems = 64 : i64, depth = 0 : i64}
-  conduit.create @chB {slot_elems = 64 : i64, depth = 0 : i64}
+  conduit.create @chA {depth = 0 : i64, element_type = memref<64xi32>}
+  conduit.create @chB {depth = 0 : i64, element_type = memref<64xi32>}
 
   func.func @dep_cycle() {
     %true = arith.constant true

@@ -1,6 +1,6 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: disable_synchronization=true on an objectfifo.link SOURCE
+// Regression test:  on an objectfifo.link SOURCE
 // (the distribute-source side of a 1→N link).
 //
 // When the source conduit has disable_synchronization, the per-destination
@@ -14,7 +14,7 @@
 //
 // Topology:
 //   shim(0,0) → link_src(MemTile, 0,1) → {tile_a(0,2), tile_b(0,3)}
-//   link_src has disable_synchronization = true
+//   link_src has 
 //   link_dst_a and link_dst_b are regular (synchronized) fifos
 //
 // Expected:
@@ -62,9 +62,9 @@ module @disable_sync_distribute_src {
     %tile_a = aie.tile(0, 2)
     %tile_b = aie.tile(0, 3)
 
-    // Source: shim → MemTile, disable_synchronization=true on the source.
+    // Source: shim → MemTile on the source.
     aie.objectfifo @link_src (%shim, {%mem}, 1 : i32)
-        { disable_synchronization = true }
+        {disable_synchronization = true}
         : !aie.objectfifo<memref<32xi32>>
 
     // Destinations: MemTile → compute tiles (regular, synchronized).

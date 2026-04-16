@@ -35,13 +35,11 @@ void collectPhase(ConduitToDMAState &state) {
 
   module.walk([&](Create op) {
     ConduitInfo info;
-    info.slotElems = op.getSlotElems();
 
     if (auto depthOpt = op.getDepth())
       info.depth = static_cast<int64_t>(*depthOpt);
 
-    if (auto etOpt = op.getElementType())
-      info.elemType = *etOpt;
+    info.elemType = op.getElementType();
 
     // Tile coordinates are resolved by inferAllTiles() below from IR
     // structure (aie.core, aie.shim_dma_allocation, cascade ops, etc.).
@@ -58,9 +56,9 @@ void collectPhase(ConduitToDMAState &state) {
     if (auto aspAttr = op->getAttrOfType<mlir::IntegerAttr>("aie_stream_port"))
       info.aieStreamPort = static_cast<int32_t>(aspAttr.getInt());
 
-    // Fused DMA channel group label.
+    // DMA channel group label (set by --conduit-fuse-channels).
     if (auto fuseAttr =
-            op->getAttrOfType<mlir::StringAttr>("fused_dma_channel_group")) {
+            op->getAttrOfType<mlir::StringAttr>("dma_channel_group")) {
       info.fuseGroup = fuseAttr.getValue().str();
 
       // Reject fuse_mode="runtime" — static BD chain lowering is incorrect
@@ -72,7 +70,7 @@ void collectPhase(ConduitToDMAState &state) {
               "conduit-to-dma: fuse_mode=\"runtime\" is not yet supported "
               "(control-packet BD reprogramming path unimplemented); "
               "conduit ops inside scf.if branches cannot be fused safely "
-              "with static BD chains — remove the fused_dma_channel_group "
+              "with static BD chains — remove the dma_channel_group "
               "annotation or restructure the program to avoid conditional "
               "fusion");
           state.passFailed = true;
@@ -82,15 +80,15 @@ void collectPhase(ConduitToDMAState &state) {
     }
 
     // New feature attributes.
-    if (auto attr = op.getDisableSynchronization())
-      if (*attr)
-        info.disableSynchronization = true;
-    if (auto attr = op.getViaDMA())
-      if (*attr)
-        info.viaDMA = true;
-    if (auto plioAttr = op.getPlio())
-      if (*plioAttr)
-        info.plio = true;
+    if (auto sm = op.getSyncMode())
+      info.noLocks = (*sm == SyncMode::None);
+    // forceDMA: routing_mode == Circuit means "pin circuit-switched DMA, skip
+    // shared-mem". Absent routing_mode or other values do not force DMA.
+    if (auto rm = op.getRoutingMode())
+      info.forceDMA = (*rm == RoutingMode::Circuit);
+    // plio was removed from conduit.create (now on aie.shim_dma_allocation
+    // only); plio inference from shim_dma_allocation happens in Pass C route
+    // phase. No plio read here.
     if (auto attr = op.getDmaRepeat())
       info.dmaRepeat = static_cast<int64_t>(*attr);
     if (auto attr = op.getBdRepeat())
@@ -98,16 +96,9 @@ void collectPhase(ConduitToDMAState &state) {
     // Note: time_multiplex_count has been removed from conduit.create.
     // Pass C infers BD chain length from putCount (Phase 1 put_memref_async
     // walk).
-    if (auto attr = op.getProducerDimensions()) {
-      if (auto typed = mlir::dyn_cast<AIE::BDDimLayoutArrayAttr>(*attr))
-        info.producerDimensions = typed;
-    }
-    if (auto attr = op.getConsumerDimensions()) {
-      if (auto typed = mlir::dyn_cast<AIE::BDDimLayoutArrayArrayAttr>(*attr)) {
-        for (auto dims : typed.getValue())
-          info.consumerDimensions.push_back(dims);
-      }
-    }
+    // Note: producer_dimensions/consumer_dimensions were removed from
+    // conduit.create (moved to put_memref/get_memref ops). Pass C reads
+    // them from those ops when needed.
 
     // Cascade depth assertion: cascade conduits must have depth = 1.
     // The hardware cascade stream is a blocking register (rendezvous channel),
@@ -196,25 +187,6 @@ void collectPhase(ConduitToDMAState &state) {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Phase 1.5: Collect pre-registered buffers from conduit.register_buffers.
-  //
-  // --conduit-materialize-buffers (or hand-authored IR) may have emitted
-  // conduit.register_buffers ops before --conduit-to-dma runs.  Collect
-  // the aie.buffer operands now so that allocPhase can skip allocation
-  // for any channel whose buffers are already in conduitMap.
-  // -----------------------------------------------------------------------
-  module.walk([&](RegisterBuffersOp rb) {
-    std::string name = rb.getName().str();
-    ConduitInfo *cinfo = state.lookupConduit(name);
-    if (!cinfo)
-      return;
-    for (mlir::Value bufVal : rb.getBuffers()) {
-      if (auto bufOp = bufVal.getDefiningOp<AIE::BufferOp>())
-        cinfo->buffers.push_back(bufOp);
-    }
-  });
-
   // Hard error on depth = 0 after collection: caller must have run
   // --conduit-depth-promote before --conduit-to-dma.
   for (auto &[name, info] : state.conduitMap) {
@@ -298,9 +270,9 @@ void collectPhase(ConduitToDMAState &state) {
   });
 
   // Collect numElems from put/get_memref_async ops.
-  // For Tier 3 channels (shim↔compute via DMA), slotElems encodes the slot
-  // count (typically 1), but BD length must be the per-transfer element count.
-  // Take the maximum num_elems seen across all puts and gets for each channel.
+  // For Tier 3 channels (shim↔compute via DMA), BD length must be the
+  // per-transfer element count. Take the maximum num_elems seen across all
+  // puts and gets for each channel.
   module.walk([&](PutMemrefAsync op) {
     llvm::StringRef name = op.getName();
     auto it = state.conduitMap.find(name.str());
@@ -427,27 +399,6 @@ void collectPhase(ConduitToDMAState &state) {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Phase 1.5b: Collect external buffers from conduit.register_buffers.
-  //
-  // Pass A (Sprint 3+) emits conduit.register_buffers for external buffers
-  // (replacing the old conduit.register_external_buffers).  The walk at
-  // Phase 1.5 above handles internal buffers (aie.buffer); this walk
-  // handles external buffers (aie.external_buffer) from the same op type.
-  // -----------------------------------------------------------------------
-  module.walk([&](RegisterBuffersOp regOp) {
-    llvm::StringRef conduitName = regOp.getName();
-    ConduitInfo *cinfo = state.lookupConduit(conduitName);
-    if (!cinfo)
-      return;
-    // Record external buffer SSA values.
-    // RegisterBuffersOp unifies internal and external buffers; distinguish
-    // by checking the defining op type.
-    for (mlir::Value buf : regOp.getBuffers()) {
-      if (buf.getDefiningOp<AIE::ExternalBufferOp>())
-        cinfo->externalBuffers.push_back(buf);
-    }
-  });
 }
 
 } // namespace xilinx::conduit

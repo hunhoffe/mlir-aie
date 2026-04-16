@@ -9,8 +9,7 @@
 
 aie.device(npu2) {
   conduit.create @sliding_window {
-    slot_elems = 64 : i64,
-    depth = 4 : i64,
+        depth = 4 : i64,
     element_type = memref<32xi32>
   }
   %tile = aie.tile(0, 2)

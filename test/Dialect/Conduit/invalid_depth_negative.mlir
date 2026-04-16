@@ -8,5 +8,5 @@
 
 aie.device(npu1) {
 // expected-error@+1 {{'conduit.create' op depth must be >= 0 (0 = unresolved sentinel, >0 = explicit depth); got -1}}
-conduit.create @bad_depth {slot_elems = 10 : i64, depth = -1 : i64}
+conduit.create @bad_depth {depth = -1 : i64, element_type = memref<4xi32>}
 }

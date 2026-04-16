@@ -32,7 +32,7 @@ module @passC_no_index_switch_regression {
     %tile = aie.tile(0, 2)
 
     // depth=4 channel: triggers rotation counter + buffer selection
-    conduit.create @fifo {slot_elems = 128 : i64, depth = 4 : i64,
+    conduit.create @fifo {depth = 4 : i64,
                     element_type = memref<32xi32>
                     }
 

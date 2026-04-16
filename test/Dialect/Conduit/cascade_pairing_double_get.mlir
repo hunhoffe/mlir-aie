@@ -18,8 +18,8 @@ module {
     %tile13 = aie.tile(1, 3)
     %tile23 = aie.tile(2, 3)
 
-    conduit.create @cas {slot_elems = 1 : i64,
-                    depth = 1 : i64,
+    conduit.create @cas {                    depth = 1 : i64,
+                    element_type = memref<64xi32>,
                     routing_mode = #conduit.routing_mode<cascade>}
 
     // Producer core.

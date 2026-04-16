@@ -19,7 +19,7 @@
 // The packet conduits go to non-adjacent tiles in other columns.
 
 module @pkt_fallback_lock_exhaustion {
-  // expected-error @+1 {{conduit-to-dma: no DMA resources available for conduit 'fallback'}}
+  // expected-error @+1 {{conduit-to-dma: S2MM DMA channel exhausted on tile (0,2): all 2 channels in use}}
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
@@ -29,39 +29,30 @@ module @pkt_fallback_lock_exhaustion {
 
     // 2 explicit packet conduits from (0,3): MM2S ch 0 and ch 1 (packet-mode).
     // Phase 3: 2×2 = 4 locks on (0,3) prod side; 2×2 = 4 on consumer tiles.
-    conduit.create @pkt_a {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @pkt_a {                    element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create @pkt_b {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @pkt_b {                    element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // 6 shared-memory conduits from (0,3)→(0,2) [adjacent, same column].
     // Phase 3c: 2 locks each allocated on producer tile (0,3).
     // 6×2 = 12 locks on (0,3). Total with pkt_a/b: 4+12 = 16 = limit.
-    conduit.create @sm0 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @sm0 {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @sm1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @sm1 {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @sm2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @sm2 {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @sm3 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @sm3 {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @sm4 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @sm4 {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @sm5 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @sm5 {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
 
     // mode=any: (0,3) → (2,5); circuit MM2S exhausted; Step 3.5 fires.
     // Step 3.5b: prodLockTotal(16) - prodLockUsed(16) = 0 < 2 → fail → Step 4.
-    conduit.create @fallback {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64
+    conduit.create @fallback {                    element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     %core03 = aie.core(%t03) {

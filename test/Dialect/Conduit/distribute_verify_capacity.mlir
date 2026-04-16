@@ -19,18 +19,15 @@
 // dst2: P=[1,1,1], C=[1,1,1], cap=6 → per-edge OK ✓ (sum=3, period=3: 3*3=9=3*3)
 
 aie.device(npu1) {
-conduit.create @ov_src {slot_elems = 3 : i64,
-                element_type = memref<3xi32>,
+conduit.create @ov_src {                element_type = memref<3xi32>,
                 depth = 3 : i64,
                 producer_rates = array<i64: 3>,
                 consumer_rates = array<i64: 3>}
-conduit.create @ov_d1 {slot_elems = 6 : i64,
-                element_type = memref<6xi32>,
+conduit.create @ov_d1 {                element_type = memref<6xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 3>,
                 consumer_rates = array<i64: 3>}
-conduit.create @ov_d2 {slot_elems = 6 : i64,
-                element_type = memref<6xi32>,
+conduit.create @ov_d2 {                element_type = memref<6xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 1, 1, 1>,
                 consumer_rates = array<i64: 1, 1, 1>}
@@ -50,23 +47,19 @@ func.func @distribute_slow_consumer_overflow() {
 // dst3: P=[1,1,1,1], C=[1,1,1,1], cap=8 → per-edge OK ✓ (sum=4, period=4: 4*4=16=4*4)
 
 aie.device(npu1) {
-conduit.create @t3_src {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @t3_src {                element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 4>,
                 consumer_rates = array<i64: 4>}
-conduit.create @t3_d1 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @t3_d1 {                element_type = memref<8xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 4>,
                 consumer_rates = array<i64: 4>}
-conduit.create @t3_d2 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @t3_d2 {                element_type = memref<8xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 2, 2>,
                 consumer_rates = array<i64: 2, 2>}
-conduit.create @t3_d3 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @t3_d3 {                element_type = memref<8xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 1, 1, 1, 1>,
                 consumer_rates = array<i64: 1, 1, 1, 1>}

@@ -24,7 +24,7 @@
 // This pass validates that no tile exceeds its DMA channel slot_elems.  It runs
 // AFTER Pass A or Pass B (which populate conduit.create attributes) and can
 // run either before or after --conduit-fuse-channels.  When fusion annotations
-// are present (fused_dma_channel_group attribute), the pass accounts for them:
+// are present (dma_channel_group attribute), the pass accounts for them:
 // conduits sharing a fusion group count as one channel, not N.
 //
 // The pass queries the target model for each tile's channel limits using
@@ -227,7 +227,7 @@ struct ConduitCheckChannelsPass
     // Per-tile channel usage tracking.
     //
     // Each entry in the StringSet is a "channel ID":
-    //   - If the conduit has a fused_dma_channel_group attribute, the channel
+    //   - If the conduit has a dma_channel_group attribute, the channel
     //   ID
     //     is the group label (conduits sharing a group share one channel).
     //   - Otherwise, the channel ID is the conduit name (each conduit gets its
@@ -249,7 +249,7 @@ struct ConduitCheckChannelsPass
       // Conduits in the same group share one hardware channel.
       std::string channelId = name;
       if (auto groupAttr = createOp->getAttrOfType<mlir::StringAttr>(
-              "fused_dma_channel_group"))
+              "dma_channel_group"))
         channelId = groupAttr.getValue().str();
 
       auto tileIt = inferredMap.find(name);

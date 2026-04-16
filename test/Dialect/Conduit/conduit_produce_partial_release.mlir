@@ -23,7 +23,7 @@ module @conduit_produce_partial_release {
     %shim = aie.tile(0, 0)
 
     // depth=2, acquire=3 → nProducerBuffers() = max(2, 3+1) = 4 buffers
-    conduit.create @sliding_out {slot_elems = 64 : i64, depth = 2 : i64,
+    conduit.create @sliding_out {depth = 2 : i64,
                     element_type = memref<32xi32>,
                     shim_consumer_tiles = array<i64: 0, 0>}
 

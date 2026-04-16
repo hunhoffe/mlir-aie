@@ -305,7 +305,7 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
   // -------------------------------------------------------------------------
   // Source 7: Fused MemTile standalone producer inference.
   //
-  // For conduit.create ops that have a fused_dma_channel_group attr but still
+  // For conduit.create ops that have a dma_channel_group attr but still
   // have no inferred producerTile after Sources 1–6, infer the producer from
   // MemTile aie.tile declarations.  This handles the case where a MemTile is
   // the standalone producer (no scatter/gather relay op, no aie.core with
@@ -329,11 +329,11 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
       std::string name = createOp.getName().str();
       auto &entry = result[name];
 
-      // Only act on channels with fused_dma_channel_group and no producer yet.
+      // Only act on channels with dma_channel_group and no producer yet.
       if (entry.producerTile)
         return;
       if (!createOp->getAttrOfType<mlir::StringAttr>(
-              "fused_dma_channel_group"))
+              "dma_channel_group"))
         return;
 
       // Filter out MemTiles already used as consumer or relay for this channel.

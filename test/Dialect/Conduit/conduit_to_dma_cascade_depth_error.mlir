@@ -16,8 +16,7 @@ module {
     %tile13 = aie.tile(1, 3)
 
     // expected-error @+1 {{cascade conduit must have depth = 1; hardware has no FIFO on the cascade stream}}
-    conduit.create @cas {slot_elems = 2 : i64,
-                    element_type = memref<1xvector<16xi32>>,
+    conduit.create @cas {                    element_type = memref<1xvector<16xi32>>,
                     depth = 2 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 

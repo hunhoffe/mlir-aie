@@ -56,7 +56,7 @@ module @conduit_partial_release_depth4 {
     // depth=4: user-specified ring depth. With acquire=3/release=1,
     // max(depth, maxAcquire+1) = max(4, 4) = 4 (no extra buffers needed).
     // slot_elems = 128 = 32 elements * depth(4); perBufLen = 128/4 = 32.
-    conduit.create @fifo {slot_elems = 128 : i64, depth = 4 : i64,
+    conduit.create @fifo {depth = 4 : i64,
                     element_type = memref<32xi32>
                     }
 

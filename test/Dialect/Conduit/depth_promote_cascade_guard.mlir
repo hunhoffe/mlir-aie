@@ -17,7 +17,7 @@
 //   - No promotion remark (cascade skip is silent)
 
 // The conduit.create line should contain routing_mode = #conduit.routing_mode<cascade> and depth = 1
-// CHECK: conduit.create @cas {{{.*}}depth = 1 : i64,{{.*}}routing_mode = #conduit.routing_mode<cascade>{{.*}}slot_elems = 1 : i64
+// CHECK: conduit.create @cas {{{.*}}depth = 1 : i64,{{.*}}routing_mode = #conduit.routing_mode<cascade>{{.*}}
 // Depth must NOT be promoted to 2.
 // CHECK-NOT: depth = 2
 
@@ -26,8 +26,7 @@ module {
     %tile03 = aie.tile(0, 3)
     %tile13 = aie.tile(1, 3)
 
-    conduit.create @cas {slot_elems = 1 : i64,
-                    element_type = memref<1xvector<16xi32>>,
+    conduit.create @cas {                    element_type = memref<1xvector<16xi32>>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 

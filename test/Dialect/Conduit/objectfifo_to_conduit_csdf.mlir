@@ -16,7 +16,6 @@
 // --- conduit.create ---
 // CHECK:     conduit.create @fifo
 // CHECK-SAME:   depth = 4 : i64
-// CHECK-SAME:   slot_elems = 4 : i64
 
 // --- Producer core: three acquire(Produce,1) / release(Produce,1) pairs ---
 // CHECK:     aie.core(%{{.*}}) {

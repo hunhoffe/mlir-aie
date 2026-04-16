@@ -15,9 +15,9 @@ module @s2mm_overflow {
     %t22 = aie.tile(2, 2)
 
     // Three non-adjacent producers all targeting tile(2,2).
-    conduit.create @a {slot_elems = 32 : i64, element_type = memref<16xi32>, depth = 2 : i64}
-    conduit.create @b {slot_elems = 32 : i64, element_type = memref<16xi32>, depth = 2 : i64}
-    conduit.create @c {slot_elems = 32 : i64, element_type = memref<16xi32>, depth = 2 : i64}
+    conduit.create @a {element_type = memref<16xi32>, depth = 2 : i64}
+    conduit.create @b {element_type = memref<16xi32>, depth = 2 : i64}
+    conduit.create @c {element_type = memref<16xi32>, depth = 2 : i64}
 
     // Producer cores — structural info for tile inference.
     %core_0_2 = aie.core(%t02) {

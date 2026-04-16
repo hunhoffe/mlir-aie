@@ -141,10 +141,9 @@ struct ConduitInfo {
   // Shim consumer tiles (row==0): DMA endpoints, no local memory.
   llvm::SmallVector<std::pair<int64_t, int64_t>> shimConsumerTileCoords;
   int64_t depth = 1;
-  int64_t slotElems = 0;
   // Element count per DMA transfer, from put/get_memref_async {num_elems=N}.
   // Populated by Phase 1 collect; used by Phase 5.5 BD chain for Tier 3
-  // channels where slotElems encodes slot count (not element count).
+  // channels to determine BD length from the async transfer descriptor.
   int64_t numElems = 0;
   mlir::Type elemType; // actual element memref type (may be null)
   // Cyclostatic (CSDF) access pattern from conduit.create access_pattern attr.
@@ -260,10 +259,12 @@ struct ConduitInfo {
 
   // --- New feature flags (populated by Phase 1 from conduit.create attrs) ---
 
-  // disable_synchronization: suppress all lock allocation and use_lock ops.
-  bool disableSynchronization = false;
-  // via_DMA: force DMA routing even for adjacent tiles (skip shared-mem path).
-  bool viaDMA = false;
+  // noLocks: suppress all lock allocation and use_lock ops.
+  // Set when sync_mode == None on conduit.create.
+  bool noLocks = false;
+  // forceDMA: force DMA routing even for adjacent tiles (skip shared-mem path).
+  // Set when routing_mode == Circuit explicitly.
+  bool forceDMA = false;
   // plio: when true, the shim endpoint uses Platform I/O instead of DMA.
   // Flows use WireBundle::PLIO and shim_dma_allocation carries {plio = true}.
   bool plio = false;

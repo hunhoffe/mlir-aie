@@ -24,23 +24,19 @@
 // dst1, dst2, dst3: P=[1], C=[1] → 1*1 == 1*1 ✓
 
 aie.device(npu1) {
-conduit.create @dist_src_ok {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @dist_src_ok {                element_type = memref<4xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}
-conduit.create @dist_d1_ok {slot_elems = 2 : i64,
-                element_type = memref<2xi32>,
+conduit.create @dist_d1_ok {                element_type = memref<2xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
-conduit.create @dist_d2_ok {slot_elems = 2 : i64,
-                element_type = memref<2xi32>,
+conduit.create @dist_d2_ok {                element_type = memref<2xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
-conduit.create @dist_d3_ok {slot_elems = 2 : i64,
-                element_type = memref<2xi32>,
+conduit.create @dist_d3_ok {                element_type = memref<2xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
@@ -60,24 +56,20 @@ func.func @distribute_all_pass() {
 //   Error fires on conduit.create for dst2 (Create::verify M6 runs first).
 
 aie.device(npu1) {
-conduit.create @dist2_src {slot_elems = 4 : i64,
-                element_type = memref<i32>,
-                depth = 1 : i64,
+conduit.create @dist2_src {                element_type = memref<i32>,
+                depth = 2 : i64,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}
-conduit.create @dist2_d1 {slot_elems = 2 : i64,
-                element_type = memref<i32>,
+conduit.create @dist2_d1 {                element_type = memref<i32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=3}}
-conduit.create @dist2_d2_bad {slot_elems = 3 : i64,
-                element_type = memref<i32>,
+conduit.create @dist2_d2_bad {                element_type = memref<i32>,
                 depth = 3 : i64,
                 producer_rates = array<i64: 3>,
                 consumer_rates = array<i64: 1, 2>}
-conduit.create @dist2_d3 {slot_elems = 2 : i64,
-                element_type = memref<i32>,
+conduit.create @dist2_d3 {                element_type = memref<i32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
@@ -99,19 +91,16 @@ func.func @distribute_dst2_imbalanced() {
 //   peak=3 > slot_elems =2 → M7 error fires on conduit.create dst1.
 
 aie.device(npu1) {
-conduit.create @dist3_src {slot_elems = 4 : i64,
-                element_type = memref<i32>,
-                depth = 1 : i64,
+conduit.create @dist3_src {                element_type = memref<i32>,
+                depth = 2 : i64,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}
 // expected-error@+1 {{M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2}}
-conduit.create @dist3_d1_small {slot_elems = 2 : i64,
-                element_type = memref<i32>,
+conduit.create @dist3_d1_small {                element_type = memref<i32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 3, 1>,
                 consumer_rates = array<i64: 2>}
-conduit.create @dist3_d2 {slot_elems = 2 : i64,
-                element_type = memref<i32>,
+conduit.create @dist3_d2 {                element_type = memref<i32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}

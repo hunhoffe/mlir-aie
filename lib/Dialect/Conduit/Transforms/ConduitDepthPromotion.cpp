@@ -321,7 +321,6 @@ struct ConduitDepthPromotePass
 
       auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
       int64_t depth = depthAttr ? depthAttr.getInt() : 1;
-      auto capAttr = op->getAttrOfType<mlir::IntegerAttr>("slot_elems");
       auto elemTypeAttr = op->getAttrOfType<mlir::TypeAttr>("element_type");
 
       // Get consumer tile coords: prefer inference, fallback to attribute
@@ -341,7 +340,7 @@ struct ConduitDepthPromotePass
         int64_t key = tileKey(col, row);
         tileLockCount[key] += 2; // prod + cons lock pair
         tileBDCount[key] += depth;
-        if (capAttr && elemTypeAttr) {
+        if (elemTypeAttr) {
           int64_t perSlotBytes =
               estimateSingleSlotBytes(elemTypeAttr.getValue());
           tileMemUsed[key] += perSlotBytes * depth;
@@ -535,11 +534,11 @@ struct ConduitDepthPromotePass
       }
 
       // Criterion 6: memory budget.
-      auto capAttr = createOp->getAttrOfType<mlir::IntegerAttr>("slot_elems");
+      // slot_elems is no longer an attribute; derive from element_type instead.
       auto elemTypeAttr =
           createOp->getAttrOfType<mlir::TypeAttr>("element_type");
       bool memOverBudget = false;
-      if (!consCoords.empty() && capAttr && elemTypeAttr) {
+      if (!consCoords.empty() && elemTypeAttr) {
         int64_t bufBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
         for (auto [col, row] : consCoords) {
           int64_t key = tileKey(col, row);
@@ -593,18 +592,14 @@ struct ConduitDepthPromotePass
       // All checks passed — promote to targetDepth.
       createOp->setAttr("depth", builder.getI64IntegerAttr(targetDepth));
 
-      // Scale capacity proportionally (slot_elems = depth * elemCount).
-      if (capAttr) {
-        createOp->setAttr("slot_elems", builder.getI64IntegerAttr(
-                                            capAttr.getInt() * targetDepth));
-      }
+      // slot_elems is no longer an attribute — no update needed.
 
       // Update per-tile resource counters.
       for (auto [col, row] : consCoords) {
         int64_t key = tileKey(col, row);
         tileLockCount[key] += 1;
         tileBDCount[key] += (targetDepth - 1);
-        if (capAttr && elemTypeAttr) {
+        if (elemTypeAttr) {
           int64_t perSlotBytes =
               estimateSingleSlotBytes(elemTypeAttr.getValue());
           tileMemUsed[key] += perSlotBytes * targetDepth;

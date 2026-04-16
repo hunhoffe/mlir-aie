@@ -3,8 +3,7 @@
 // Negative test for conduit.subview_access result type mismatch.
 
 aie.device(npu1) {
-conduit.create @typed_fifo {slot_elems = 10 : i64,
-                element_type = memref<10xi32>,
+conduit.create @typed_fifo {                element_type = memref<10xi32>,
                 depth = 1 : i64}
 func.func @subview_type_mismatch() {
   %win = conduit.acquire {name = @typed_fifo, count = 1 : i64,

@@ -14,22 +14,20 @@
 
 // -----
 
-// Test 1: R3a — adjacent tiles → "circuit" (shared-memory path).
+// Test 1: R3a — adjacent tiles → "shared_memory".
 //
 // tile(0,2) and tile(0,3) are vertically adjacent on npu1.
 // isLegalMemAffinity(0,2,0,3) is true.
-// Even though no DMA channel assignment happens here, the mode is "circuit"
-// because Pass C Phase 3c will use shared memory.
+// The pass emits routing_mode = shared_memory for adjacent tiles.
 
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create @adj
-// CHECK-SAME: #conduit.routing_mode<circuit>
+// CHECK-SAME: #conduit.routing_mode<shared_memory>
 module @test_adjacent_shared_mem {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
-    conduit.create @adj {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @adj {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
     %core02 = aie.core(%t02) {
       %w = conduit.acquire {name = @adj, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
@@ -59,8 +57,7 @@ module @test_non_adjacent_circuit {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t14 = aie.tile(1, 4)
-    conduit.create @non_adj {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @non_adj {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
     %core02 = aie.core(%t02) {
       %w = conduit.acquire {name = @non_adj, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
@@ -95,16 +92,13 @@ module @test_already_resolved {
     %t03 = aie.tile(0, 3)
     %t04 = aie.tile(0, 4)
     %t14 = aie.tile(1, 4)
-    conduit.create @already_circuit {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @already_circuit {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @already_packet {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @already_packet {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create @to_infer {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @to_infer {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
     // Structural tile info for @to_infer (producer 0,2 → consumer 1,4).
     // already_circuit and already_packet are skipped by the pass.
@@ -138,11 +132,10 @@ module @test_cascade_unchanged {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
     %t14 = aie.tile(1, 4)
-    conduit.create @cas {slot_elems = 1 : i64,
-                    depth = 1 : i64,
+    conduit.create @cas {                    depth = 1 : i64,
+                    element_type = memref<16xi32>,
                     routing_mode = #conduit.routing_mode<cascade>}
-    conduit.create @dma_any {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @dma_any {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
     // Structural tile info for @dma_any (producer 0,2 → consumer 1,4).
     %core02 = aie.core(%t02) {
@@ -181,17 +174,14 @@ module @test_packet_fallback {
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
     // Two circuit conduits consuming both MM2S channels on tile(0,2).
-    conduit.create @c1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @c2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
     // Third conduit: circuit exhausted → packet fallback.
-    conduit.create @c3_any {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c3_any {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
     // Structural tile info: tile(0,2) produces all three conduits.
     %core02 = aie.core(%t02) {
@@ -238,11 +228,9 @@ module @test_two_any_both_circuit {
     %t02 = aie.tile(0, 2)
     %t13 = aie.tile(1, 3)
     %t14 = aie.tile(1, 4)
-    conduit.create @a1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @a1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @a2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @a2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
     %core02 = aie.core(%t02) {
       %w1 = conduit.acquire {name = @a1, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
@@ -266,30 +254,55 @@ module @test_two_any_both_circuit {
 
 // -----
 
-// Test 7: via_DMA=true overrides R3a — adjacent tiles still use DMA channel.
+// Test 7a: Adjacent tiles without explicit routing_mode → R3a assigns shared_memory.
 //
-// tile(0,2) and tile(0,3) are adjacent, but via_DMA=true forces DMA path.
-// R3a is skipped; R3b assigns a circuit DMA channel.
+// tile(0,2) and tile(0,3) are adjacent; no routing_mode hint given.
+// R3a detects adjacency and emits routing_mode = shared_memory.
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: conduit.create @forced_dma
-// CHECK-SAME: #conduit.routing_mode<circuit>
-module @test_via_dma_override {
+// CHECK: conduit.create @adj_no_hint
+// CHECK-SAME: #conduit.routing_mode<shared_memory>
+module @test_adjacent_shared_memory {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)
-    conduit.create @forced_dma {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
-                    depth = 1 : i64,
-                    viaDMA = true
-                    }
+    conduit.create @adj_no_hint {element_type = memref<4xi32>, depth = 1 : i64}
     %core02 = aie.core(%t02) {
-      %w = conduit.acquire {name = @forced_dma, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      %w = conduit.acquire {name = @adj_no_hint, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
       conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
       aie.end
     }
     %core03 = aie.core(%t03) {
-      %w = conduit.acquire {name = @forced_dma, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      %w = conduit.acquire {name = @adj_no_hint, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+  }
+}
+
+// -----
+
+// Test 7b: Adjacent tiles with explicit routing_mode = circuit → stays circuit (DMA forced).
+//
+// tile(0,2) and tile(0,3) are adjacent, but routing_mode = circuit explicitly
+// forces DMA routing. infer-modes does not override explicit routing_mode.
+
+// CHECK-LABEL: aie.device(npu1)
+// CHECK: conduit.create @adj_force_dma
+// CHECK-SAME: #conduit.routing_mode<circuit>
+module @test_adjacent_force_circuit {
+  aie.device(npu1) {
+    %t02 = aie.tile(0, 2)
+    %t03 = aie.tile(0, 3)
+    conduit.create @adj_force_dma {element_type = memref<4xi32>, depth = 1 : i64,
+                                   routing_mode = #conduit.routing_mode<circuit>}
+    %core02 = aie.core(%t02) {
+      %w = conduit.acquire {name = @adj_force_dma, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      conduit.release %w {count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
+    %core03 = aie.core(%t03) {
+      %w = conduit.acquire {name = @adj_force_dma, count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
       conduit.release %w {count = 1 : i64, port = #conduit.port<Consume>} : !conduit.window<memref<4xi32>>
       aie.end
     }
@@ -313,8 +326,7 @@ module @test_multicast_uniform {
     %t13 = aie.tile(1, 3)
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
-    conduit.create @bcast {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @bcast {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
     %core02 = aie.core(%t02) {
       %w = conduit.acquire {name = @bcast, count = 1 : i64, port = #conduit.port<Produce>} : !conduit.window<memref<4xi32>>
@@ -356,8 +368,7 @@ module @test_multicast_uniform_dims {
     %t13 = aie.tile(1, 3)
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
-    conduit.create @bcast_dims_uniform {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @bcast_dims_uniform {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     consumer_dimensions = #aie<bd_dim_layout_array_array[[<size = 1, stride = 2>], [<size = 1, stride = 2>], [<size = 1, stride = 2>]]>
                     }
@@ -387,23 +398,21 @@ module @test_multicast_uniform_dims {
 // -----
 
 // Test 10: R3a.5 — multi-consumer, consumer_dimensions present and
-// NON-uniform → falls through to R3b (circuit DMA available).
+// NON-uniform → packet (each consumer gets different access pattern).
 //
 // Same topology as Test 8 but consumer_dimensions sub-arrays differ.
-// uniform = false → R3a.5 does NOT fire → R3b assigns circuit
-// (tile(0,2) has 2 MM2S channels, none consumed).
+// uniform = false → multi-consumer with different dims → packet.
 
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: conduit.create @bcast_dims_nonuniform
-// CHECK-SAME: routing_mode = #conduit.routing_mode<circuit>
+// CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
 module @test_multicast_nonuniform_dims {
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t13 = aie.tile(1, 3)
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
-    conduit.create @bcast_dims_nonuniform {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @bcast_dims_nonuniform {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     consumer_dimensions = #aie<bd_dim_layout_array_array[[<size = 1, stride = 2>], [<size = 3, stride = 4>], [<size = 1, stride = 2>]]>
                     }

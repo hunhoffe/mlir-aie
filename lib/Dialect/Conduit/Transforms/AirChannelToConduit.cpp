@@ -35,7 +35,7 @@
 //
 // 1. air.channel declaration (Symbol op, no operands):
 //      air.channel @name [1, 1]
-//    → conduit.create {name="name", slot_elems = 1, depth=1}
+//    → conduit.create {name="name", depth=1}
 //      The element_type is left unset (unknown until a put/get is seen).
 //      A second pass fills element_type from the memref operand of the
 //      first put/get that references this channel.
@@ -456,6 +456,11 @@ struct AirChannelToConduitPass
       // element_type)
       llvm::StringMap<mlir::Operation *> channelCreateOps;
 
+      // Map: broadcast alias name → source channel name.
+      // Used to propagate element_type from source to per-consumer aliases
+      // after Phase 2b, since put/get ops reference only the source name.
+      llvm::StringMap<std::string> aliasToSourceChannel;
+
       // Collect channel decl ops for deferred erasure.
       llvm::SmallVector<mlir::Operation *> channelDeclsToErase;
 
@@ -491,9 +496,9 @@ struct AirChannelToConduitPass
       // Broadcast guard for Phase 6 infer-rates: track which channel names were
       // detected as broadcast channels (broadcast_shape attribute present and
       // product > 1).  Phase 6 skips rate annotation for these channels because
-      // their conduit.create slot_elems = product(broadcast_shape) represents
-      // fan-out count, not buffer slots.  M7 would misinterpret the inflated
-      // capacity as buffer capacity and produce wrong CSDF occupancy checks.
+      // their broadcast capacity = product(broadcast_shape) represents fan-out
+      // count, not buffer slots.  M7 would misinterpret the inflated capacity
+      // as buffer capacity and produce wrong CSDF occupancy checks.
       llvm::StringSet<> broadcastChannelNames;
 
       // Walk and collect all ops of interest.
@@ -611,7 +616,7 @@ struct AirChannelToConduitPass
         // 5b: Propagate broadcast_shape → conduit capacity.
         //
         // broadcast_shape = [d0, d1, ...] describes the fan-out topology:
-        //   slot_elems = product(broadcast_shape)  (total number of consumers)
+        //   broadcast capacity = product(broadcast_shape) (total number of consumers)
         //
         // Step 2 (broadcast topology):
         //   If consumer tile coordinates are available (i.e., air.channel.get
@@ -642,7 +647,7 @@ struct AirChannelToConduitPass
               op->emitRemark()
                   << "air-channel-to-conduit: channel @" << name
                   << " broadcast_shape=" << bsAttr
-                  << " → conduit slot_elems = " << broadcastCapacity
+                  << " → broadcast capacity = " << broadcastCapacity
                   << "; found " << tileIt->second.size()
                   << " consumer tiles from aie.core enclosure; "
                      "emitting conduit.link{mode=\"distribute\"}.";
@@ -652,7 +657,7 @@ struct AirChannelToConduitPass
               op->emitRemark()
                   << "air-channel-to-conduit: channel @" << name
                   << " broadcast_shape=" << bsAttr
-                  << " → conduit slot_elems = " << broadcastCapacity
+                  << " → broadcast capacity = " << broadcastCapacity
                   << "; consumer tile coordinates not available (requires "
                      "tile-placement pre-pass). conduit.create emitted with "
                      "correct capacity; consumer_tiles left empty.";
@@ -678,7 +683,7 @@ struct AirChannelToConduitPass
                 op->emitRemark()
                     << "air-channel-to-conduit: channel @" << name
                     << " broadcast_shape=" << bsAttr
-                    << " → conduit slot_elems = " << broadcastCapacity
+                    << " → broadcast capacity = " << broadcastCapacity
                     << "; found " << tileIt->second.size()
                     << " consumer tiles from aie.core enclosure; "
                        "emitting conduit.link{mode=\"distribute\"}.";
@@ -686,7 +691,7 @@ struct AirChannelToConduitPass
                 op->emitRemark()
                     << "air-channel-to-conduit: channel @" << name
                     << " broadcast_shape=" << bsAttr
-                    << " → conduit slot_elems = " << broadcastCapacity
+                    << " → broadcast capacity = " << broadcastCapacity
                     << "; consumer tile coordinates not available (requires "
                        "tile-placement pre-pass). conduit.create emitted with "
                        "correct capacity; consumer_tiles left empty.";
@@ -706,26 +711,24 @@ struct AirChannelToConduitPass
           }
         }
 
+        // Propagate fusion_group hint from air.channel declaration if present.
+        mlir::StringAttr fusionGroupAttr{};
+        if (auto fg = op->getAttrOfType<mlir::StringAttr>("fusion_group"))
+          fusionGroupAttr = fg;
+
         // Emit conduit.create for the source (producer) side.
         // element_type will be patched after put/get scan below.
         mlir::Operation *createOp = builder.create<Create>(
             loc, mlir::StringAttr::get(ctx, name),
-            mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
-                                   broadcastCapacity),
-            /*sync_mode=*/SyncModeAttr{},
-            /*window_size=*/mlir::IntegerAttr{},
             /*element_type=*/mlir::TypeAttr{},
             mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 0),
             /*routing_mode=*/routingMode,
+            /*sync_mode=*/SyncModeAttr{},
             /*producer_rates=*/mlir::DenseI64ArrayAttr{},
             /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
+            /*fusion_group=*/fusionGroupAttr,
             /*bd_repeat=*/mlir::IntegerAttr{},
-            /*disable_synchronization=*/mlir::BoolAttr{},
-            /*viaDMA=*/mlir::BoolAttr{},
-            /*plio=*/mlir::BoolAttr{},
-            /*dma_repeat=*/mlir::IntegerAttr{},
-            /*producer_dimensions=*/mlir::Attribute{},
-            /*consumer_dimensions=*/mlir::Attribute{});
+            /*dma_repeat=*/mlir::IntegerAttr{});
 
         channelCreateOps[name] = createOp;
 
@@ -770,30 +773,48 @@ struct AirChannelToConduitPass
             mlir::OpBuilder::InsertionGuard guard(builder);
             builder.setInsertionPointAfter(createOp);
 
+            // Pre-extract element_type from put/get ops for this channel so
+            // per-consumer conduit.create aliases are created with a valid
+            // element_type (required attribute since Sprint 6).
+            mlir::TypeAttr bcastElemType{};
+            for (mlir::Operation *pgOp : putGetToRewrite) {
+              if (getChanName(pgOp) != name)
+                continue;
+              auto pgSegs = getOperandSegments(pgOp);
+              if (pgSegs.size() >= 3) {
+                int32_t pgMemrefPos = pgSegs[0] + pgSegs[1];
+                if (pgMemrefPos <
+                    static_cast<int32_t>(pgOp->getNumOperands())) {
+                  mlir::Value memrefVal = pgOp->getOperand(pgMemrefPos);
+                  if (auto mt = mlir::dyn_cast<mlir::MemRefType>(
+                          memrefVal.getType())) {
+                    bcastElemType =
+                        mlir::TypeAttr::get(collapseToRank2(mt));
+                    break;
+                  }
+                }
+              }
+            }
+
             for (size_t i = 0; i < consumerCoords.size(); ++i) {
               std::string dstName = name + "_c" + std::to_string(i);
               dstNames.push_back(dstName);
 
-              // Per-consumer conduit.create with slot_elems = 1 (each consumer
-              // gets its own independent BD chain).
+              // Per-consumer conduit.create (each consumer gets its own
+              // independent BD chain).
               auto consCreate = builder.create<Create>(
                   loc, mlir::StringAttr::get(ctx, dstName),
-                  mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1),
-                  /*sync_mode=*/SyncModeAttr{},
-                  /*window_size=*/mlir::IntegerAttr{},
-                  /*element_type=*/mlir::TypeAttr{},
+                  /*element_type=*/bcastElemType,
                   mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 0),
                   /*routing_mode=*/routingMode,
+                  /*sync_mode=*/SyncModeAttr{},
                   /*producer_rates=*/mlir::DenseI64ArrayAttr{},
                   /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
+                  /*fusion_group=*/fusionGroupAttr,
                   /*bd_repeat=*/mlir::IntegerAttr{},
-                  /*disable_synchronization=*/mlir::BoolAttr{},
-                  /*viaDMA=*/mlir::BoolAttr{},
-                  /*plio=*/mlir::BoolAttr{},
-                  /*dma_repeat=*/mlir::IntegerAttr{},
-                  /*producer_dimensions=*/mlir::Attribute{},
-                  /*consumer_dimensions=*/mlir::Attribute{});
+                  /*dma_repeat=*/mlir::IntegerAttr{});
               channelCreateOps[dstName] = consCreate.getOperation();
+              aliasToSourceChannel[dstName] = name;
             }
 
             // Build dsts symbol ref array for conduit.scatter.
@@ -819,9 +840,7 @@ struct AirChannelToConduitPass
                                       mlir::FlatSymbolRefAttr::get(ctx, name),
                                       mlir::ArrayAttr::get(ctx, dstsAttrs),
                                       mlir::StringAttr::get(ctx, memtileStr),
-                                      /*offsets=*/mlir::DenseI64ArrayAttr{},
-                                      /*lock_id=*/nullptr,
-                                      /*sync_mode=*/SyncModeAttr{});
+                                      /*offsets=*/mlir::DenseI64ArrayAttr{});
           }
         }
       }
@@ -843,8 +862,8 @@ struct AirChannelToConduitPass
         if (!createTypedOp)
           continue;
 
-        // Only patch if element_type not yet set.
-        if (createTypedOp.getElementType().has_value())
+        // Only patch if element_type not yet set (null TypeAttr means unset).
+        if (createTypedOp.getElementTypeAttr())
           continue;
 
         // Get operand segment sizes to locate the memref operand.
@@ -862,20 +881,6 @@ struct AirChannelToConduitPass
               // so that Pass C sees a valid rank-2 buffer type.
               mlir::MemRefType collapsed = collapseToRank2(mt);
               createTypedOp.setElementTypeAttr(mlir::TypeAttr::get(collapsed));
-              // PassB-empty-sizes follow-up: patch slot_elems when the
-              // transfer uses the full buffer (no explicit sizes).
-              // slot_elems=1 is the Phase 2 sentinel for non-broadcast
-              // channels; update it to match the actual memref element
-              // count so M7 CSDF checks pass.
-              if (segs.size() >= 5) {
-                int32_t nsizes = segs[4];
-                if (nsizes == 0 && mt.hasStaticShape() &&
-                    createTypedOp.getSlotElems() == 1) {
-                  int64_t totalElems = mt.getNumElements();
-                  createTypedOp.setSlotElemsAttr(mlir::IntegerAttr::get(
-                      mlir::IntegerType::get(ctx, 64), totalElems));
-                }
-              }
             }
           }
         } else {
@@ -890,15 +895,39 @@ struct AirChannelToConduitPass
         }
       }
 
-      // Phase 2c: create shim aie.tile ops and conduit.register_buffers
-      // for channels with shim endpoints (producer or consumer at row 0).
+      // Phase 2b.5: propagate element_type from source channels to broadcast
+      // consumer aliases.  Per-consumer conduit.create ops are emitted with a
+      // null TypeAttr because the element_type is not yet known at emission
+      // time.  Phase 2b patches the source channel (referenced by put/get ops)
+      // but never patches the aliases (not referenced by any put/get).
+      for (auto &kv : aliasToSourceChannel) {
+        llvm::StringRef aliasName = kv.first();
+        const std::string &srcName = kv.second;
+
+        auto aliasIt = channelCreateOps.find(aliasName);
+        auto srcIt = channelCreateOps.find(srcName);
+        if (aliasIt == channelCreateOps.end() ||
+            srcIt == channelCreateOps.end())
+          continue;
+
+        auto aliasCreate = mlir::dyn_cast<Create>(aliasIt->second);
+        auto srcCreate = mlir::dyn_cast<Create>(srcIt->second);
+        if (!aliasCreate || !srcCreate)
+          continue;
+
+        // Only propagate if source has been patched and alias hasn't.
+        if (aliasCreate.getElementTypeAttr() || !srcCreate.getElementTypeAttr())
+          continue;
+
+        aliasCreate.setElementTypeAttr(srcCreate.getElementTypeAttr());
+      }
+
+      // Phase 2c: create shim aie.tile ops for channels with shim endpoints
+      // (producer or consumer at row 0).
       //
       // After --air-hierarchy-to-aie, shim tiles (row 0) are NOT created by
       // that pass — only compute tiles (row >= 2) and MemTiles (row 1) exist.
-      // Pass C needs shim tiles for shim DMA allocation, so we create them
-      // here. We also emit conduit.register_buffers to associate the
-      // aie.external_buffer SSA values with the channel, enabling Pass C to
-      // build shim DMA BD chains.
+      // Pass C needs shim tiles for shim DMA allocation, so we create them here.
       {
         AIE::DeviceOp deviceOp;
         if (auto d = mlir::dyn_cast<AIE::DeviceOp>(scopeOp))
@@ -937,31 +966,6 @@ struct AirChannelToConduitPass
             }
           }
 
-          // Emit conduit.register_buffers for shim channels.
-          for (auto &[name, bufs] : shimExtBufs) {
-            if (bufs.empty())
-              continue;
-
-            // Deduplicate external buffers (same channel may have multiple
-            // put/get ops referencing the same buffer).
-            llvm::SmallVector<mlir::Value> uniqueBufs;
-            llvm::DenseSet<mlir::Value> seen;
-            for (auto buf : bufs) {
-              if (seen.insert(buf).second)
-                uniqueBufs.push_back(buf);
-            }
-
-            // Insert after the conduit.create for this channel.
-            auto createIt = channelCreateOps.find(name);
-            if (createIt != channelCreateOps.end())
-              builder.setInsertionPointAfter(createIt->second);
-            else
-              builder.setInsertionPointToEnd(&deviceOp.getBodyRegion().front());
-
-            builder.create<RegisterBuffersOp>(
-                deviceOp.getLoc(), mlir::FlatSymbolRefAttr::get(ctx, name),
-                uniqueBufs);
-          }
         }
       }
 
@@ -1020,18 +1024,6 @@ struct AirChannelToConduitPass
               << " (reduces MemTile S2MM from " << names.size() << " to 1)";
         }
 
-        // Erase duplicate conduit.register_external_buffers ops.
-        if (!channelMergeMap.empty()) {
-          llvm::SmallVector<mlir::Operation *> toErase;
-          scopeOp->walk([&](RegisterBuffersOp regOp) {
-            auto nameAttr =
-                mlir::cast<mlir::FlatSymbolRefAttr>(regOp->getAttr("name"));
-            if (channelMergeMap.count(nameAttr.getValue()))
-              toErase.push_back(regOp);
-          });
-          for (auto *op : toErase)
-            op->erase();
-        }
       }
 
       // Phase 3: rewrite air.channel.put / air.channel.get → conduit
@@ -1367,7 +1359,8 @@ struct AirChannelToConduitPass
                                        numElems),
                 mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
                 mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
-                mlir::DenseI64ArrayAttr::get(ctx, strideVals), depTokens);
+                mlir::DenseI64ArrayAttr::get(ctx, strideVals), depTokens,
+                /*producer_dimensions=*/mlir::Attribute{});
           } else {
             newOp = builder.create<GetMemrefAsync>(
                 loc, conduitTokenTy,
@@ -1376,7 +1369,8 @@ struct AirChannelToConduitPass
                                        numElems),
                 mlir::DenseI64ArrayAttr::get(ctx, offsetVals),
                 mlir::DenseI64ArrayAttr::get(ctx, sizeVals),
-                mlir::DenseI64ArrayAttr::get(ctx, strideVals), depTokens);
+                mlir::DenseI64ArrayAttr::get(ctx, strideVals), depTokens,
+                /*consumer_dimensions=*/mlir::Attribute{});
           }
 
           // Replace all uses of the old async token result with the new token.
@@ -1548,7 +1542,7 @@ struct AirChannelToConduitPass
           if (name.empty())
             return;
           // Broadcast guard: skip rate annotation for broadcast channels.
-          // Their slot_elems = product(broadcast_shape) is a fan-out count, not
+          // Their capacity = product(broadcast_shape) is a fan-out count, not
           // buffer slots; M7 would misinterpret it.
           if (broadcastChannelNames.count(name))
             return;

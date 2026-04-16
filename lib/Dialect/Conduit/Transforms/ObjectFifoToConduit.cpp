@@ -25,11 +25,9 @@
 //    map (producer tile, consumer tiles, element type, depth).
 //
 // 2. For each aie.objectfifo:
-//      emits  conduit.create {name, slot_elems =depth*numElems,
-//                             producer_tile=[col,row],
-//                             consumer_tiles=[col0,row0,...],
-//                             element_type=<memref type>,
-//                             depth=<depth>}
+//      emits  conduit.create {name, element_type=<memref type>, depth=<depth>,
+//                             routing_mode=<circuit|cascade|stream|absent>,
+//                             sync_mode=<none|absent>}
 //      (typed attributes; no conduit.annotate ops are emitted)
 //
 // 3. For each aie.objectfifo.link:
@@ -56,8 +54,8 @@
 // Limitations (documented honestly)
 // ----------------------------------
 // - The memtile heuristic in link rewriting is approximate.
-// - slot_elems = depth * numElems uses 1 as numElems when the memref element
-//   count cannot be statically determined from the type.
+// - producer_dimensions/consumer_dimensions from the source objectfifo are
+//   propagated to the forceCircuit check but not emitted on conduit.create.
 // - The pass currently operates on the whole module; nested device ops are
 //   handled one level deep only.
 //
@@ -434,7 +432,6 @@ struct ObjectFifoToConduitPass
 
       auto &info = fifoInfoMap[op.getSymNameAttr()];
       std::string name = op.getSymName().str();
-      int64_t slot_elems = info.depth * info.numElems;
 
       // conduit.create with typed attributes — no conduit.annotate ops.
 
@@ -482,10 +479,10 @@ struct ObjectFifoToConduitPass
             static_cast<int64_t>(op.getRepeatCount().value()));
       }
 
-      // Propagate disable_synchronization.
-      mlir::BoolAttr disableSyncAttr;
+      // Propagate disable_synchronization → sync_mode = None.
+      SyncModeAttr disableSyncModeAttr;
       if (op.getDisableSynchronization())
-        disableSyncAttr = mlir::BoolAttr::get(ctx, true);
+        disableSyncModeAttr = SyncModeAttr::get(ctx, SyncMode::None);
 
       // Propagate dma_repeat (from objectfifo iter_count).
       mlir::IntegerAttr iterCountAttr;
@@ -524,23 +521,22 @@ struct ObjectFifoToConduitPass
           consDimsAttr = dims;
       }
 
-      // Propagate via_DMA.
-      // Auto-set via_DMA=true when:
+      // Propagate via_DMA → routing_mode = Circuit.
+      // Auto-set routing_mode=Circuit when:
       //   (a) dimensionsToStream or dimensionsFromStream are non-empty: the
       //       shared-memory path skips DMA BDs entirely, silently dropping N-D
-      //       transforms. Forcing DMA ensures BDDimLayout attributes are
-      //       applied at the hardware level.
+      //       transforms. Forcing DMA (circuit routing) ensures BDDimLayout
+      //       attributes are applied at the hardware level.
       //   (b) bd_repeat > 1: the BD chain is replayed N times by the DMA
       //       engine. Shared-memory has no BD replay mechanism — the hardware
       //       lock protocol would need the core to re-acquire N times, but with
       //       no consumer core body (the common bd_repeat pattern) no one
       //       drives the lock. Forcing DMA ensures the BD chain is emitted and
       //       the bd_repeat is applied via DMAStartOp.
-      mlir::BoolAttr viaDMAAttr;
       bool hasRepeat =
           op.getRepeatCount().has_value() && op.getRepeatCount().value() > 1;
-      if (op.getVia_DMA() || prodDimsAttr || consDimsAttr || hasRepeat)
-        viaDMAAttr = mlir::BoolAttr::get(ctx, true);
+      bool forceCircuit =
+          op.getVia_DMA() || prodDimsAttr || consDimsAttr || hasRepeat;
 
       // Propagate via_cascade → routing_mode = Cascade.
       // Cascade has no hardware FIFO; depth must be 1.
@@ -595,20 +591,22 @@ struct ObjectFifoToConduitPass
       if (streamPortIt != aieStreamFifoPort.end())
         routingModeAttr = RoutingModeAttr::get(ctx, RoutingMode::Stream);
 
+      // If no cascade/stream routing, apply circuit override when via_DMA or
+      // dims/repeat force DMA routing (replaces the old viaDMA bool attr).
+      if (!routingModeAttr && forceCircuit)
+        routingModeAttr = RoutingModeAttr::get(ctx, RoutingMode::Circuit);
+
       auto createOp = builder.create<Create>(
           loc, mlir::StringAttr::get(ctx, name),
-          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), slot_elems),
-          /*sync_mode=*/SyncModeAttr{},
-          /*window_size=*/mlir::IntegerAttr{},
           mlir::TypeAttr::get(info.elemType),
           mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), info.depth),
           routingModeAttr,
+          /*sync_mode=*/disableSyncModeAttr,
           /*producer_rates=*/inferredPRAttr,
-          /*consumer_rates=*/inferredCRAttr, repeatCountAttr, disableSyncAttr,
-          viaDMAAttr,
-          /*plio=*/op.getPlio() ? mlir::BoolAttr::get(ctx, true)
-                                : mlir::BoolAttr{},
-          iterCountAttr, prodDimsAttr, consDimsAttr);
+          /*consumer_rates=*/inferredCRAttr,
+          /*fusion_group=*/mlir::StringAttr{},
+          /*bd_repeat=*/repeatCountAttr,
+          /*dma_repeat=*/iterCountAttr);
 
       // Emit producer_tile / consumer_tiles as generic attrs so that
       // downstream passes (check, infer, fuse, Pass C) can determine tile
@@ -743,13 +741,11 @@ struct ObjectFifoToConduitPass
       if (isDistribute) {
         auto srcRef = mlir::cast<mlir::FlatSymbolRefAttr>(srcAttrs[0]);
         builder.create<ScatterOp>(loc, srcRef, dstsArr, memtileAttr,
-                                  offsetsAttr, /*lock_id=*/nullptr,
-                                  /*sync_mode=*/SyncModeAttr{});
+                                  offsetsAttr);
       } else {
         auto dstRef = mlir::cast<mlir::FlatSymbolRefAttr>(dstAttrs[0]);
-        builder.create<GatherOp>(loc, srcsArr, dstRef, memtileAttr, offsetsAttr,
-                                 /*lock_id=*/nullptr,
-                                 /*sync_mode=*/SyncModeAttr{});
+        builder.create<GatherOp>(loc, srcsArr, dstRef, memtileAttr,
+                                 offsetsAttr);
       }
 
       op.erase();
@@ -1388,34 +1384,15 @@ struct ObjectFifoToConduitPass
     for (auto op : releasesToErase)
       op.erase();
 
-    // Lower aie.objectfifo.register_external_buffers →
-    // conduit.register_buffers.
-    //
-    // ORDERING: must run BEFORE Phase 4.5's replaceAllSymbolUses() because
-    // that rewrite changes @fifo_name → @fifo_name_shim_alloc in all
-    // FlatSymbolRefAttr references (including the register_buffers
-    // op's name attribute).  We need the original name to match the
-    // conduit.create emitted in Phase 2.
-    //
-    // Collects ops first to avoid walk-while-erase.
+    // Erase aie.objectfifo.register_external_buffers ops.
+    // These ops have no conduit equivalent now that conduit.register_buffers
+    // is deleted. Collect first to avoid walk-while-erase.
     llvm::SmallVector<AIE::ObjectFifoRegisterExternalBuffersOp> extBufOps;
     module.walk([&](AIE::ObjectFifoRegisterExternalBuffersOp op) {
       extBufOps.push_back(op);
     });
-    for (auto extBufOp : extBufOps) {
-      builder.setInsertionPoint(extBufOp);
-
-      // Extract conduit name from the objectfifo symbol reference.
-      std::string name = extBufOp.getObjFifoName().str();
-
-      // Collect external buffer SSA values.
-      llvm::SmallVector<mlir::Value> extBufs(extBufOp.getExternalBuffers());
-
-      builder.create<RegisterBuffersOp>(
-          extBufOp.getLoc(), mlir::FlatSymbolRefAttr::get(ctx, name), extBufs);
-
+    for (auto extBufOp : extBufOps)
       extBufOp.erase();
-    }
 
     // Phase 4.5: preserve shim DMA symbols for runtime_sequence.
     //
@@ -1519,7 +1496,6 @@ struct ObjectFifoToConduitPass
           deviceOp.walk([&](PutMemrefAsync op) { revertIfRenamed(op); });
           deviceOp.walk([&](GetMemrefAsync op) { revertIfRenamed(op); });
           deviceOp.walk([&](WaitWindow op) { revertIfRenamed(op); });
-          deviceOp.walk([&](RegisterBuffersOp op) { revertIfRenamed(op); });
           // Also revert srcs/dsts arrays on distribute/join/forward ops.
           // replaceAllSymbolUses renames FlatSymbolRefAttr elements inside
           // SymbolRefArrayAttr arrays as well.
@@ -1629,20 +1605,14 @@ struct ObjectFifoToConduitPass
       builder.setInsertionPointAfter(srcCreateOp);
       builder.create<Create>(
           srcCreateOp.getLoc(), mlir::StringAttr::get(ctx, relayName),
-          srcCreateOp.getSlotElemsAttr(),
-          /*sync_mode=*/SyncModeAttr{},
-          /*window_size=*/mlir::IntegerAttr{},
           srcCreateOp.getElementTypeAttr(), srcCreateOp.getDepthAttr(),
           /*routing_mode=*/RoutingModeAttr{},
+          /*sync_mode=*/SyncModeAttr{},
           /*producer_rates=*/nullptr,
           /*consumer_rates=*/nullptr,
+          /*fusion_group=*/mlir::StringAttr{},
           /*bd_repeat=*/nullptr,
-          /*disable_synchronization=*/nullptr,
-          /*viaDMA=*/nullptr,
-          /*plio=*/nullptr,
-          /*dma_repeat=*/nullptr,
-          /*producer_dimensions=*/nullptr,
-          /*consumer_dimensions=*/nullptr);
+          /*dma_repeat=*/nullptr);
 
       // Step 3: Emit conduit.scatter { src=@fifo, dsts=[@fifo_relay] }.
       std::string memtileStr;
@@ -1656,9 +1626,7 @@ struct ObjectFifoToConduitPass
           ctx, {mlir::FlatSymbolRefAttr::get(ctx, relayName)});
       mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
       builder.create<ScatterOp>(srcCreateOp.getLoc(), srcRef, dstsArr,
-                                memtileAttr,
-                                /*offsets=*/nullptr, /*lock_id=*/nullptr,
-                                /*sync_mode=*/SyncModeAttr{});
+                                memtileAttr, /*offsets=*/nullptr);
 
       // Step 4: Rewrite consumer-side ops from @fifo to @fifo_relay.
       mlir::FlatSymbolRefAttr origNameRef =

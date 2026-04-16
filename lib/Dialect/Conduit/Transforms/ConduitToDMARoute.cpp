@@ -296,7 +296,7 @@ void routePhase(ConduitToDMAState &state) {
       // produces dead resources with wrong init values and wrong tile
       // placement.
       bool isDistributeLinkSrc = state.linkSrcNamesEarly.count(name) > 0;
-      if (isAIE2 && !info.disableSynchronization && !isDistributeLinkSrc) {
+      if (isAIE2 && !info.noLocks && !isDistributeLinkSrc) {
         {
           int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
           std::string symName = name + "_prod_lock_0";
@@ -322,7 +322,7 @@ void routePhase(ConduitToDMAState &state) {
       // For external-buffer conduits on AIE1: allocate a shim lock for the
       // aie.shim_dma BD chain (acquire before DMA, release after).
       if (!isAIE2 && !info.externalBuffers.empty() &&
-          !info.disableSynchronization) {
+          !info.noLocks) {
         int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
         std::string symName = name + "_lock_0";
         AIE::LockOp lk = builder.create<AIE::LockOp>(
@@ -421,7 +421,7 @@ void routePhase(ConduitToDMAState &state) {
       // shim S2MM DMA BDs; without them, the runtime has no locks
       // for flow control on the receive path.
       // Skip when disable_synchronization: oracle emits no locks for these.
-      if (isAIE2 && !info.disableSynchronization) {
+      if (isAIE2 && !info.noLocks) {
         {
           int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
           // Naming convention: <conduit>_<suffix>_<lock-role>_<idx>
@@ -545,7 +545,7 @@ void routePhase(ConduitToDMAState &state) {
   // -----------------------------------------------------------------------
   // Phase 4.5a: Emit aie.flow for non-adjacent conduits.
   //
-  // Fused channel groups: conduits with the same fused_dma_channel_group
+  // Fused channel groups: conduits with the same dma_channel_group
   // label share one hardware MM2S channel slot.
   //
   // Step 3.5 (mode=any fallback): When routing_mode="any" and all MM2S
@@ -583,7 +583,7 @@ void routePhase(ConduitToDMAState &state) {
 
     builder.setInsertionPoint(state.deviceBody->getTerminator());
 
-    // ---- Determine hardware MM2S channel slotElems for this tile. ----
+    // ---- Determine hardware MM2S channel count for this tile. ----
     // Used by the mode=any exhaustion check (Step 3.5).
     uint32_t maxMM2S = 2; // hardware default: 2 MM2S per compute tile
     if (state.targetModel)
@@ -728,17 +728,18 @@ void routePhase(ConduitToDMAState &state) {
       // (Phase 3c) — no DMA flow needed.  For broadcast (multi-consumer),
       // Phase 3c is skipped; all consumers use DMA, so flows are needed
       // for every consumer regardless of adjacency.
-      // Exception: via_DMA=true forces DMA even for adjacent tiles.
+      // Exception: forceDMA forces DMA even for adjacent tiles.
       // Also: when shim consumers exist, the producer needs DMA MM2S
       // regardless (to reach the shim tile via the switchbox network),
       // so the compute consumer flow must also be emitted.
-      if (!info.viaDMA && info.consumerTileCoords.size() == 1 &&
+      if (!info.forceDMA && info.consumerTileCoords.size() == 1 &&
           info.shimConsumerTileCoords.empty()) {
+        bool explicitSharedMem = (info.routingMode == "shared_memory");
         bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
                                                               consCol, consRow);
         bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
                                                              prodCol, prodRow);
-        if (rightAdj || leftAdj)
+        if (explicitSharedMem || rightAdj || leftAdj)
           continue;
       }
 

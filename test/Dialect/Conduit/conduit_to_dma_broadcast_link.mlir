@@ -36,8 +36,8 @@ module {
     %shim_0_0 = aie.tile(0, 0)
     %mem_tile_0_1 = aie.tile(0, 1)
 
-    conduit.create @src {slot_elems = 128 : i64, element_type = memref<64xi32>, depth = 2 : i64}
-    conduit.create @dst {slot_elems = 128 : i64, element_type = memref<64xi32>, depth = 2 : i64}
+    conduit.create @src {element_type = memref<64xi32>, depth = 2 : i64}
+    conduit.create @dst {element_type = memref<64xi32>, depth = 2 : i64}
 
     conduit.scatter{src = @src, dsts = [@dst] {memtile = "tile(0,1)"}}
 

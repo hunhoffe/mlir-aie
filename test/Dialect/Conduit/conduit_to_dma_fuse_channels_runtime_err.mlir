@@ -24,10 +24,9 @@ module @runtime_fuse_error {
     %tile_0_4 = aie.tile(0, 4)
 
     // expected-error @+1 {{conduit-to-dma: fuse_mode="runtime" is not yet supported}}
-    conduit.create @chan_a {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @chan_a {                    element_type = memref<8xi32>,
                     depth = 1 : i64,
                     fuse_mode = "runtime",
-                    fused_dma_channel_group = "group0"}
+                    dma_channel_group = "group0"}
   }
 }

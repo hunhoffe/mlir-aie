@@ -42,7 +42,7 @@ module @passC_crossblock_tail_release {
 
     // depth=4 to accommodate acquire=3 + 1 spare slot.
     // slot_elems = 4 * 32 = 128; perBufLen = 32.
-    conduit.create @fifo {slot_elems = 128 : i64, depth = 4 : i64,
+    conduit.create @fifo {depth = 4 : i64,
                     element_type = memref<32xi32>
                     }
 

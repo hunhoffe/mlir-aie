@@ -5,36 +5,31 @@ module {
 aie.device(npu1) {
 
 // CHECK: conduit.create @w1
-// CHECK-SAME: slot_elems = 8 : i64
-conduit.create @w1 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+// CHECK-SAME: element_type = memref<8xi32>
+conduit.create @w1 {                element_type = memref<8xi32>,
                 depth = 1 : i64}
-conduit.create @ch_a {slot_elems = 64 : i64, depth = 0 : i64}
-conduit.create @ch_b {slot_elems = 1 : i64, depth = 0 : i64}
-conduit.create @buf {slot_elems = 8 : i64, depth = 0 : i64}
-conduit.create @output {slot_elems = 1 : i64, depth = 0 : i64}
-conduit.create @input {slot_elems = 64 : i64, depth = 0 : i64}
-conduit.create @out {slot_elems = 2 : i64, depth = 0 : i64}
+conduit.create @ch_a {depth = 0 : i64, element_type = memref<64xi32>}
+conduit.create @ch_b {depth = 0 : i64, element_type = memref<64xi32>}
+conduit.create @buf {depth = 0 : i64, element_type = memref<8xi32>}
+conduit.create @output {depth = 0 : i64, element_type = memref<9xi32>}
+conduit.create @input {depth = 0 : i64, element_type = memref<9xi32>}
+conduit.create @out {depth = 0 : i64, element_type = memref<2xi32>}
 // CHECK: conduit.create @pkt_ch
 // CHECK-SAME: routing_mode = #conduit.routing_mode<packet>
-// CHECK-SAME: slot_elems = 10 : i64
-conduit.create @pkt_ch {slot_elems = 10 : i64,
-                element_type = memref<10xi32>,
+conduit.create @pkt_ch {                element_type = memref<10xi32>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<packet>}
 // CHECK: conduit.create @csdf_full
 // CHECK-SAME: consumer_rates = array<i64: 1, 2>
 // CHECK-SAME: producer_rates = array<i64: 1, 2>
-conduit.create @csdf_full {slot_elems = 6 : i64,
-                element_type = memref<i32>,
+conduit.create @csdf_full {                element_type = memref<i32>,
                 depth = 6 : i64,
                 producer_rates = array<i64: 1, 2>,
                 consumer_rates = array<i64: 1, 2>}
 // CHECK: conduit.create @csdf_diff_period
 // CHECK-SAME: consumer_rates = array<i64: 2>
 // CHECK-SAME: producer_rates = array<i64: 3, 1>
-conduit.create @csdf_diff_period {slot_elems = 4 : i64,
-                element_type = memref<i32>,
+conduit.create @csdf_diff_period {                element_type = memref<i32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 3, 1>,
                 consumer_rates = array<i64: 2>}
@@ -203,8 +198,8 @@ aie.device(npu2) {
   %t03 = aie.tile(0, 3)
   %t13 = aie.tile(1, 3)
   // CHECK: conduit.create @cas
-  conduit.create @cas {slot_elems = 1 : i64,
-                  depth = 1 : i64,
+  conduit.create @cas {                  depth = 1 : i64,
+                  element_type = memref<16xi32>,
                   routing_mode = #conduit.routing_mode<cascade>}
   aie.core(%t03) {
     %v = arith.constant dense<42> : vector<16xi32>

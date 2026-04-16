@@ -31,23 +31,19 @@
 // verifies each conduit in isolation.
 
 aie.device(npu1) {
-conduit.create @js_s1 {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @js_s1 {                element_type = memref<4xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}
-conduit.create @js_s2 {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @js_s2 {                element_type = memref<4xi32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 1, 1>,
                 consumer_rates = array<i64: 1, 1>}
-conduit.create @js_s3 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @js_s3 {                element_type = memref<8xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 4>,
                 consumer_rates = array<i64: 4>}
-conduit.create @js_dst {slot_elems = 16 : i64,
-                element_type = memref<16xi32>,
+conduit.create @js_dst {                element_type = memref<16xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 8>,
                 consumer_rates = array<i64: 8>}
@@ -66,13 +62,11 @@ func.func @join_three_sources_pass() {
 
 aie.device(npu1) {
 // expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=2}}
-conduit.create @ji_s1_bad {slot_elems = 4 : i64,
-                element_type = memref<i32>,
+conduit.create @ji_s1_bad {                element_type = memref<i32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 3>,
                 consumer_rates = array<i64: 1, 1>}
-conduit.create @ji_dst {slot_elems = 4 : i64,
-                element_type = memref<i32>,
+conduit.create @ji_dst {                element_type = memref<i32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}

@@ -87,7 +87,7 @@ module {
     %tile_0_2 = aie.tile(0, 2)
 
     // conduit.create without tile attrs (structural tile info below).
-    conduit.create @mychan {slot_elems = 1 : i64, depth = 1 : i64,
+    conduit.create @mychan {depth = 1 : i64,
                     element_type = memref<64xi32>}
 
     // Structural tile info: compute tile(0,2) consumes @mychan.

@@ -50,8 +50,7 @@ module @tile_inference_ir_walk {
     // producer_tile attr required until DEFERRED-13 provides a structural
     // shim back-reference (conduit_channel attr on aie.shim_dma_allocation
     // or a new conduit.shim_endpoint op).
-    conduit.create @fifo_shim_alloc {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @fifo_shim_alloc {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     // acquire{port=Consume} in core(0,2) → Pass C infers tile(0,2) as consumer.

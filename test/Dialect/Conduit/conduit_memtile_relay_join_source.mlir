@@ -53,13 +53,13 @@ module @memtile_relay_join_source {
     %tile_5_2 = aie.tile(5, 2)
 
     // Source A: compute tile(3,2) → local MemTile(3,1)
-    conduit.create @prod_a {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @prod_a {element_type = memref<64xi8>, depth = 2 : i64}
     // Relay: MemTile(3,1) → MemTile(5,1)
-    conduit.create @relay {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @relay {element_type = memref<64xi8>, depth = 2 : i64}
     // Source B: compute tile(5,2) → local MemTile(5,1)
-    conduit.create @prod_b {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @prod_b {element_type = memref<64xi8>, depth = 2 : i64}
     // Joined output: MemTile(5,1) → shim(5,0)
-    conduit.create @join_out {slot_elems = 256 : i64, element_type = memref<128xi8>, depth = 2 : i64}
+    conduit.create @join_out {element_type = memref<128xi8>, depth = 2 : i64}
 
     // Relay link at MemTile(3,1): forward prod_a → relay
     conduit.scatter{src = @prod_a, dsts = [@relay] {memtile = "tile(3,1)"}}

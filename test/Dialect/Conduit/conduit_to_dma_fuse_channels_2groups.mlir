@@ -65,22 +65,18 @@ module @fuse_2groups_test {
     %tile_1_4 = aie.tile(1, 4)
     %tile_1_5 = aie.tile(1, 5)
 
-    conduit.create @chan_a {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>, depth = 1 : i64,
+    conduit.create @chan_a {                    element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
-    conduit.create @chan_b {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>, depth = 1 : i64,
+                    dma_channel_group = "group0"}
+    conduit.create @chan_b {                    element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group1"}
-    conduit.create @chan_c {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>, depth = 1 : i64,
+                    dma_channel_group = "group1"}
+    conduit.create @chan_c {                    element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
-    conduit.create @chan_d {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>, depth = 1 : i64,
+                    dma_channel_group = "group0"}
+    conduit.create @chan_d {                    element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group1"}
+                    dma_channel_group = "group1"}
 
     // Minimal aie.core blocks for inferAllTiles() Source 1.
     aie.core(%tile_0_2) {

@@ -53,8 +53,7 @@
 // PAIR: 'conduit.create' op CSDF rate imbalance
 
 aie.device(npu1) {
-conduit.create @csdf_imbal {slot_elems = 5 : i64,
-                element_type = memref<i32>,
+conduit.create @csdf_imbal {                element_type = memref<i32>,
                 depth = 5 : i64,
                 producer_rates = array<i64: 2, 3>,
                 consumer_rates = array<i64: 1>}
@@ -77,8 +76,7 @@ func.func @case1_m6_csdf_rate_imbalance() {
 // CHECK: M7: CSDF buffer capacity insufficient: peak token occupancy over one hyper-period=3 exceeds slot_elems =2
 
 aie.device(npu1) {
-conduit.create @csdf_cap {slot_elems = 2 : i64,
-                element_type = memref<i32>,
+conduit.create @csdf_cap {                element_type = memref<i32>,
                 depth = 2 : i64,
                 producer_rates = array<i64: 3, 1>,
                 consumer_rates = array<i64: 2>}
@@ -98,10 +96,10 @@ func.func @case2_m7_capacity_insufficient() {
 // ============================================================================
 
 aie.device(npu1) {
-conduit.create @cas_c3_src {slot_elems = 1 : i64, depth = 1 : i64,
+conduit.create @cas_c3_src {depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>
                 }
-conduit.create @cas_c3_dst {slot_elems = 1 : i64, depth = 1 : i64
+conduit.create @cas_c3_dst {depth = 1 : i64
                 }
 func.func @case3_cascade_scatter_src() {
   conduit.scatter{src = @cas_c3_src, dsts = [@cas_c3_dst] {memtile = "tile(0,1)"}}
@@ -130,8 +128,7 @@ module @case4_cascade_depth_gt1 {
     %tile03 = aie.tile(0, 3)
     %tile13 = aie.tile(1, 3)
 
-    conduit.create @cas_d2 {slot_elems = 2 : i64,
-                    element_type = memref<1xvector<16xi32>>,
+    conduit.create @cas_d2 {                    element_type = memref<1xvector<16xi32>>,
                     depth = 2 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
@@ -251,8 +248,7 @@ module @case7_unmatched_put_cascade {
   aie.device(npu1) {
     %tile03 = aie.tile(0, 3)
 
-    conduit.create @cas_unmatched {slot_elems = 1 : i64,
-                    depth = 1 : i64,
+    conduit.create @cas_unmatched {                    depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
     aie.core(%tile03) {
@@ -281,8 +277,7 @@ module @case8_ambiguous_get_cascade {
     %tile13 = aie.tile(1, 3)
     %tile23 = aie.tile(2, 3)
 
-    conduit.create @cas_ambig {slot_elems = 1 : i64,
-                    depth = 1 : i64,
+    conduit.create @cas_ambig {                    depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 
     aie.core(%tile03) {
@@ -329,8 +324,7 @@ module @case8_ambiguous_get_cascade {
 // CHECK: 'conduit.acquire' op M8: cumulative release count (2) exceeds acquired count (1) -- double-release causes hardware lock-counter overflow
 
 aie.device(npu1) {
-conduit.create @dbl_rel {slot_elems = 1 : i64,
-                element_type = memref<1xi32>,
+conduit.create @dbl_rel {                element_type = memref<1xi32>,
                 depth = 1 : i64}
 func.func @case10_m8a_double_release() {
   %win = conduit.acquire {name = @dbl_rel, count = 1 : i64,

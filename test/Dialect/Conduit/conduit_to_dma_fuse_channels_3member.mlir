@@ -3,7 +3,7 @@
 // C5: Three-member fused chain ordering test.
 //
 // Three conduits (chan_a, chan_b, chan_c) all share producer tile [0,2].
-// All are pre-annotated with fused_dma_channel_group = "group0".
+// All are pre-annotated with dma_channel_group = "group0".
 // Pass C must emit exactly one dma_start(MM2S, 0) and chain all three
 // depth-1 BD rings into a single circular list:
 //
@@ -46,18 +46,15 @@ module @fuse_3member_test {
     %tile_0_5 = aie.tile(0, 5)
     %tile_1_4 = aie.tile(1, 4)
 
-    conduit.create @chan_a {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>, depth = 1 : i64,
+    conduit.create @chan_a {                    element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
-    conduit.create @chan_b {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>, depth = 1 : i64,
+                    dma_channel_group = "group0"}
+    conduit.create @chan_b {                    element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
-    conduit.create @chan_c {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>, depth = 1 : i64,
+                    dma_channel_group = "group0"}
+    conduit.create @chan_c {                    element_type = memref<8xi32>, depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
+                    dma_channel_group = "group0"}
 
     // Minimal aie.core blocks for inferAllTiles() Source 1.
     aie.core(%tile_0_2) {

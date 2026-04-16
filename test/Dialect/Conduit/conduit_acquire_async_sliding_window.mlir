@@ -81,8 +81,7 @@ module @async_sliding_window {
     %tile_0_2 = aie.tile(0, 2)
 
     // Conduit IR: depth=4 channel, shim → compute tile.
-    conduit.create @sw_fifo {slot_elems = 32 : i64,
-                    element_type = memref<32xi8>,
+    conduit.create @sw_fifo {                    element_type = memref<32xi8>,
                     depth = 4 : i64}
 
     %core_0_2 = aie.core(%tile_0_2) {

@@ -16,7 +16,7 @@
 //   Consumer A:       [0, 4]  (non-adjacent to row 1 — uses DMA path)
 //   Consumer B:       [0, 5]  (non-adjacent to row 1 — uses DMA path)
 //
-// Pre-annotated: fused_dma_channel_group = "group0", fuse_mode = "static".
+// Pre-annotated: dma_channel_group = "group0", fuse_mode = "static".
 // This simulates the output of --conduit-fuse-channels for a MemTile producer.
 
 // CHECK-LABEL: module @fuse_channels_memtile_test
@@ -66,17 +66,15 @@ module @fuse_channels_memtile_test {
     // Two conduits sharing MemTile producer [0,1].
     // mt_a: producer=[0,1] (MemTile row=1), consumer=[0,4]
     // mt_b: producer=[0,1] (MemTile row=1), consumer=[0,5]
-    // Pre-annotated with fused_dma_channel_group = "group0", fuse_mode = "static".
-    conduit.create @mt_a {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    // Pre-annotated with dma_channel_group = "group0", fuse_mode = "static".
+    conduit.create @mt_a {                    element_type = memref<8xi32>,
                     depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
-    conduit.create @mt_b {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+                    dma_channel_group = "group0"}
+    conduit.create @mt_b {                    element_type = memref<8xi32>,
                     depth = 1 : i64,
                     fuse_mode = "static",
-                    fused_dma_channel_group = "group0"}
+                    dma_channel_group = "group0"}
 
     // Consumer core for mt_a.
     %core_0_4 = aie.core(%tile_0_4) {

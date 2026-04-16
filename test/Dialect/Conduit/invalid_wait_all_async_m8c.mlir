@@ -6,7 +6,7 @@
 
 // wait_all_async with an i32 non-token input must be rejected.
 aie.device(npu1) {
-conduit.create @ch_wa {slot_elems = 64 : i64, depth = 0 : i64}
+conduit.create @ch_wa {depth = 0 : i64, element_type = memref<64xi32>}
 func.func @wait_all_async_non_token(%bad : i32) {
   %tok = conduit.put_memref_async {name = @ch_wa, num_elems = 64 : i64,
              offsets = array<i64: 0>, sizes = array<i64: 64>,
@@ -23,7 +23,7 @@ func.func @wait_all_async_non_token(%bad : i32) {
 
 // wait_all_async result (dma.token) escapes via call — M10 via wait_all_async.
 aie.device(npu1) {
-conduit.create @ch_wa2 {slot_elems = 64 : i64, depth = 0 : i64}
+conduit.create @ch_wa2 {depth = 0 : i64, element_type = memref<64xi32>}
 func.func private @consumer(%tok : !conduit.dma.token)
 func.func @wait_all_async_escape_call() {
   %tok = conduit.put_memref_async {name = @ch_wa2, num_elems = 64 : i64,

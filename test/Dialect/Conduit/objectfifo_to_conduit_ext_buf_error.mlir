@@ -1,7 +1,8 @@
 // RUN: aie-opt --objectfifo-to-conduit %s | FileCheck %s
 //
-// Test: Pass A lowers aie.objectfifo.register_external_buffers into
-// conduit.register_buffers with the correct external buffer SSA operands.
+// Test: Pass A erases aie.objectfifo.register_external_buffers ops.
+// conduit.register_buffers has been removed; Pass A simply erases the
+// objectfifo external buffer registration op.
 
 module {
   aie.device(xcvc1902) {
@@ -11,7 +12,8 @@ module {
     aie.objectfifo @ext_fifo(%tile70, {%tile71}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
 
     %ext_buf = aie.external_buffer {sym_name = "ext_buffer_in"} : memref<64xi32>
-    // CHECK: conduit.register_buffers{name = @ext_fifo, buffers = [{{%.*}}]} : memref<64xi32>
+    // CHECK-NOT: conduit.register_buffers
+    // CHECK-NOT: aie.objectfifo.register_external_buffers
     aie.objectfifo.register_external_buffers @ext_fifo(%tile70, {%ext_buf}) : (memref<64xi32>)
 
     %core71 = aie.core(%tile71) {

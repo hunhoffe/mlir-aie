@@ -52,8 +52,7 @@ module @release_async_lowering {
 
     // conduit.create: shim (row=0) is the producer, tile_0_2 is the consumer.
     // Pass C allocates aie.buffer + aie.lock on the consumer tile (tile_0_2).
-    conduit.create @fifo_rel {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @fifo_rel {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     %core_0_2 = aie.core(%tile_0_2) {

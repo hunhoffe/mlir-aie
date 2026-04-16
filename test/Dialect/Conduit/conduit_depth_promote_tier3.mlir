@@ -16,31 +16,28 @@
 //       PROMOTED from depth=1,slot_elems =32 to depth=2,slot_elems =64
 
 // (a) tier3_loop: promoted — capacity doubles 128→256, depth 1→2
-// CHECK-DAG: conduit.create @tier3_loop {{{.*}}depth = 2 : i64, {{.*}}slot_elems = 256 : i64
+// CHECK-DAG: conduit.create @tier3_loop {{{.*}}depth = 2 : i64, {{.*}}
 // (b) tier3_no_loop: NOT promoted — capacity stays 128, depth stays 1
-// CHECK-DAG: conduit.create @tier3_no_loop {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 128 : i64
+// CHECK-DAG: conduit.create @tier3_no_loop {{{.*}}depth = 1 : i64, {{.*}}
 // (c) tier2_loop: promoted (regression check) — capacity doubles 32→64, depth 1→2
-// CHECK-DAG: conduit.create @tier2_loop {{{.*}}depth = 2 : i64, {{.*}}slot_elems = 64 : i64
+// CHECK-DAG: conduit.create @tier2_loop {{{.*}}depth = 2 : i64, {{.*}}
 // expected-remark @+1 {{conduit-depth-promote: promoted 2 conduit(s)}}
 module {
 aie.device(npu1) {
 
 // (a) Tier 3 eligible: depth-1 with put/get_memref_async inside loop + compute.
 // expected-remark @+1 {{conduit-depth-promote: promoted 'tier3_loop' from depth-1 to depth-2}}
-conduit.create @tier3_loop {slot_elems = 128 : i64,
-                element_type = memref<32xi32>,
+conduit.create @tier3_loop {                element_type = memref<32xi32>,
                 depth = 1 : i64}
 
 // (b) Tier 3 no loop: depth-1 but not inside a loop — should NOT be promoted.
 // expected-remark @+1 {{conduit-depth-promote: skipping 'tier3_no_loop' -- no loop context}}
-conduit.create @tier3_no_loop {slot_elems = 128 : i64,
-                element_type = memref<32xi32>,
+conduit.create @tier3_no_loop {                element_type = memref<32xi32>,
                 depth = 1 : i64}
 
 // (c) Tier 2 regression: standard acquire/release inside loop — must still promote.
 // expected-remark @+1 {{conduit-depth-promote: promoted 'tier2_loop' from depth-1 to depth-2}}
-conduit.create @tier2_loop {slot_elems = 32 : i64,
-                element_type = memref<8xi32>,
+conduit.create @tier2_loop {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 
 func.func @tier3_eligible(%buf: memref<32xi32>) {

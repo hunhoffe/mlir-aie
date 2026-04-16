@@ -13,14 +13,13 @@
 // The conduit should be promoted from depth-1 to depth-2.
 // (Rates are balanced per M6; eta > 1.0 forces over-provisioned depth.)
 
-// CHECK: conduit.create @csdf_ch {{{.*}}depth = 2 : i64, {{.*}}slot_elems = 16 : i64
+// CHECK: conduit.create @csdf_ch {{{.*}}depth = 2 : i64, {{.*}}
 // expected-remark @+1 {{conduit-depth-promote: promoted 1 conduit(s)}}
 module {
 aie.device(npu1) {
 
 // expected-remark @+1 {{conduit-depth-promote: promoted 'csdf_ch' from depth-1 to depth-2}}
-conduit.create @csdf_ch {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @csdf_ch {                element_type = memref<8xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}

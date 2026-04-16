@@ -10,7 +10,7 @@
 //   Two conduits on the same producer tile can share one hardware DMA channel
 //   when their buffer-window ops are sequentially non-overlapping in a common
 //   basic block.  The pass annotates eligible conduit.create ops with:
-//       fuse_mode = "static"  fused_dma_channel_group = "groupN"
+//       fuse_mode = "static"  dma_channel_group = "groupN"
 //   where N is the hardware channel group.
 //
 //   Interval non-overlap condition (single block):
@@ -44,15 +44,13 @@
 // (a) Two conduits on same tile — A's ops precede B's — same group annotated.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @chan_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK:       conduit.create @chan_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @chan_a {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @chan_b {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_sequential
 aie.device(npu1) {
-conduit.create @chan_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @chan_a {                element_type = memref<8xi32>,
                 depth = 1 : i64}
-conduit.create @chan_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @chan_b {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @fuse_sequential() {
   // Both conduits on tile [0, 2].
@@ -79,17 +77,15 @@ func.func @fuse_sequential() {
 //===----------------------------------------------------------------------===//
 
 // CHECK:       conduit.create @chan_a {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK:       conduit.create @chan_b {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @no_fuse_interleaved
 
 aie.device(npu1) {
-conduit.create @chan_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @chan_a {                element_type = memref<8xi32>,
                 depth = 1 : i64}
-conduit.create @chan_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @chan_b {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @no_fuse_interleaved() {
   // Interleaved: acquire A, acquire B, release A, release B.
@@ -124,17 +120,14 @@ func.func @no_fuse_interleaved() {
 //     All three share group 0: one hardware channel suffices.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @c1 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
-// CHECK-NEXT:  conduit.create @c2 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
-// CHECK-NEXT:  conduit.create @c3 {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @c1 {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
+// CHECK-NEXT:  conduit.create @c2 {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
+// CHECK-NEXT:  conduit.create @c3 {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_three_sequential
 aie.device(npu1) {
-conduit.create @c1 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @c2 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @c3 {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @c1 {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @c2 {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @c3 {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_three_sequential() {
   %w1 = conduit.acquire {name = @c1, count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
@@ -162,19 +155,17 @@ func.func @fuse_three_sequential() {
 //===----------------------------------------------------------------------===//
 
 // CHECK:       conduit.create @tile0_chan {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK:       conduit.create @tile1_chan {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @no_fuse_different_tiles
 
 aie.device(npu1) {
 // tile [0,2] and tile [1,2] are different — no grouping.
 %tile_0_2_d = aie.tile(0, 2)
 %tile_1_2_d = aie.tile(1, 2)
-conduit.create @tile0_chan {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @tile1_chan {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @tile0_chan {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @tile1_chan {                element_type = memref<8xi32>, depth = 1 : i64}
 // Conduit ops in separate aie.core blocks for different tiles.
 aie.core(%tile_0_2_d) {
   %wa = conduit.acquire {name = @tile0_chan, count = 1 : i64, port = #conduit.port<Consume>}
@@ -202,18 +193,16 @@ func.func @no_fuse_different_tiles() {
 //===----------------------------------------------------------------------===//
 
 // CHECK:       conduit.create @shim_a {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK:       conduit.create @shim_b {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @no_fuse_shim
 
 aie.device(npu1) {
 // Both conduits on shim tile [0,0] (row=0 → excluded).
 %shim_0_0 = aie.tile(0, 0)
-conduit.create @shim_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @shim_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @shim_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @shim_b {                element_type = memref<8xi32>, depth = 1 : i64}
 // Shim DMA allocations tell inferAllTiles these are shim-tile conduits.
 aie.shim_dma_allocation @shim_a_shim_alloc(%shim_0_0, MM2S, 0)
 aie.shim_dma_allocation @shim_b_shim_alloc(%shim_0_0, MM2S, 1)
@@ -227,19 +216,17 @@ func.func @no_fuse_shim() {
 //===----------------------------------------------------------------------===//
 // (f) Idempotency: the global RUN line runs the pass twice.  This case
 //     verifies that the second run produces the same annotation as the first.
-//     The fused_dma_channel_group attribute is set via setAttr which silently
+//     The dma_channel_group attribute is set via setAttr which silently
 //     overwrites; a second run re-derives the same group from the same
 //     intervals and writes the same value.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @id_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"
-// CHECK:       conduit.create @id_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group{{[0-9]+}}"
+// CHECK:       conduit.create @id_a {{{.*}}dma_channel_group = "group{{[0-9]+}}"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @id_b {{{.*}}dma_channel_group = "group{{[0-9]+}}"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @idempotent
 aie.device(npu1) {
-conduit.create @id_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @id_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @id_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @id_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @idempotent() {
   %wa = conduit.acquire {name = @id_a, count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
@@ -264,14 +251,12 @@ func.func @idempotent() {
 //     name.  This tests the getWindowChannelName(WaitWindow) code path.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @async_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
-// CHECK:       conduit.create @async_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @async_a {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @async_b {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_async_path
 aie.device(npu1) {
-conduit.create @async_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @async_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @async_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @async_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_async_path() {
   // Async acquire path for async_a — non-overlapping with async_b below.
   %tok_a = conduit.acquire_async {name = @async_a, count = 1 : i64,
@@ -303,14 +288,12 @@ func.func @fuse_async_path() {
 //     Two conduits with non-overlapping put_memref sequences are fuseable.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @dma_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
-// CHECK:       conduit.create @dma_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK:       conduit.create @dma_a {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @dma_b {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_tier3_put_memref
 aie.device(npu1) {
-conduit.create @dma_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @dma_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @dma_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @dma_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_tier3_put_memref() {
   // dma_a DMA transfer completes before dma_b starts — non-overlapping.
   conduit.put_memref {name = @dma_a, num_elems = 8 : i64,
@@ -334,18 +317,16 @@ func.func @fuse_tier3_put_memref() {
 //===----------------------------------------------------------------------===//
 
 // CHECK:       conduit.create @unused_a {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK:       conduit.create @unused_b {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @no_annotate_no_ops
 
 aie.device(npu1) {
 // Two conduits on the same tile, but neither has any acquire/release ops.
 // No intervals are found → no blockConduits entries → no annotation.
-conduit.create @unused_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @unused_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @unused_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @unused_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @no_annotate_no_ops() {
   return
 }
@@ -370,20 +351,16 @@ func.func @no_annotate_no_ops() {
 //     would otherwise fail; one channel now covers all four transfers.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @p {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK:       conduit.create @q {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK:       conduit.create @r {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK:       conduit.create @s {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK:       conduit.create @p {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @q {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @r {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @s {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_four_sequential
 aie.device(npu1) {
-conduit.create @p {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @q {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @r {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @s {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @p {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @q {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @r {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @s {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_four_sequential() {
   %wp = conduit.acquire {name = @p, count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
@@ -417,13 +394,12 @@ func.func @fuse_four_sequential() {
 //===----------------------------------------------------------------------===//
 
 // CHECK:       conduit.create @solo {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @no_annotate_singleton
 
 aie.device(npu1) {
 // Only one conduit on tile [7, 2] — no peer to fuse with.
-conduit.create @solo {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @solo {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @no_annotate_singleton() {
   %w = conduit.acquire {name = @solo, count = 1 : i64, port = #conduit.port<Consume>}
           : !conduit.window<memref<8xi32>>
@@ -461,20 +437,16 @@ func.func @no_annotate_singleton() {
 //     4 conduits → 2 hardware channels.  DMA exhaustion avoided.
 //===----------------------------------------------------------------------===//
 
-// CHECK:       conduit.create @a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK:       conduit.create @b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"
-// CHECK:       conduit.create @c {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK:       conduit.create @d {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group1"
+// CHECK:       conduit.create @a {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @b {{{.*}}dma_channel_group = "group1"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @c {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK:       conduit.create @d {{{.*}}dma_channel_group = "group1"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @two_interleaved_pairs
 aie.device(npu1) {
-conduit.create @a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @d {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @b {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @c {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @d {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @two_interleaved_pairs() {
   // Pair 1: a and b windows overlap — cannot share a channel with each other.
   %wa = conduit.acquire {name = @a, count = 1 : i64, port = #conduit.port<Consume>}
@@ -527,19 +499,16 @@ func.func @two_interleaved_pairs() {
 //===----------------------------------------------------------------------===//
 
 // a and c fused; b has no partner so its group is a singleton → not annotated.
-// CHECK:       conduit.create @a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// The b create must not have fused_dma_channel_group.  Use CHECK-NOT to verify absence.
+// CHECK:       conduit.create @a {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// The b create must not have dma_channel_group.  Use CHECK-NOT to verify absence.
 // CHECK:       conduit.create @b {
-// CHECK-NOT:   fused_dma_channel_group
-// CHECK:       conduit.create @c {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK-NOT:   dma_channel_group
+// CHECK:       conduit.create @c {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @partial_clique
 aie.device(npu1) {
-conduit.create @a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @b {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @c {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @partial_clique() {
   // a∩b overlap (a not yet released when b is acquired).
   %wa = conduit.acquire {name = @a, count = 1 : i64, port = #conduit.port<Consume>}
@@ -587,20 +556,17 @@ func.func @partial_clique() {
 //===----------------------------------------------------------------------===//
 
 // CHECK:       conduit.create @a {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK:       conduit.create @b {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK:       conduit.create @c {
-// CHECK-NOT:   fused_dma_channel_group
+// CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @full_clique
 
 aie.device(npu1) {
-conduit.create @a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @b {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @c {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @full_clique() {
   // All three acquired before any released — all intervals mutually overlap.
   %wa = conduit.acquire {name = @a, count = 1 : i64, port = #conduit.port<Consume>}
@@ -632,14 +598,12 @@ func.func @full_clique() {
 //     must arbitrate channel sharing.
 //===----------------------------------------------------------------------===//
 
-// CHECK: conduit.create @if_a {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"
-// CHECK: conduit.create @if_b {{{.*}}fuse_mode = "runtime"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @if_a {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "runtime"
+// CHECK: conduit.create @if_b {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "runtime"
 // CHECK-LABEL: func.func @fuse_runtime_mode
 aie.device(npu1) {
-conduit.create @if_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @if_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @if_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @if_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_runtime_mode(%cond: i1) {
   scf.if %cond {
     %wa = conduit.acquire {name = @if_a, count = 1 : i64, port = #conduit.port<Consume>}
@@ -666,14 +630,12 @@ func.func @fuse_runtime_mode(%cond: i1) {
 //     Both conduits are non-overlapping → annotated fuse_mode = "static".
 //===----------------------------------------------------------------------===//
 
-// CHECK: conduit.create @get_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK: conduit.create @get_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @get_a {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK: conduit.create @get_b {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_get_memref
 aie.device(npu1) {
-conduit.create @get_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @get_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @get_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @get_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_get_memref() {
   conduit.get_memref {name = @get_a, num_elems = 8 : i64,
                       offsets = array<i64: 0>, sizes = array<i64: 8>,
@@ -696,14 +658,12 @@ func.func @fuse_get_memref() {
 //     Both are annotated fuse_mode = "static", same group.
 //===----------------------------------------------------------------------===//
 
-// CHECK: conduit.create @rel_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK: conduit.create @rel_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @rel_a {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK: conduit.create @rel_b {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_release_async
 aie.device(npu1) {
-conduit.create @rel_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @rel_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @rel_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @rel_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_release_async() {
   // release_async marks the end of rel_a's interval.
   %tok_a = conduit.release_async {name = @rel_a, count = 1 : i64, port = #conduit.port<Produce>}
@@ -728,15 +688,13 @@ func.func @fuse_release_async() {
 //     Sequential ops → both annotated fuse_mode = "static", same group.
 //===----------------------------------------------------------------------===//
 
-// CHECK: conduit.create @mt_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
-// CHECK: conduit.create @mt_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group = "group0"
+// CHECK: conduit.create @mt_a {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
+// CHECK: conduit.create @mt_b {{{.*}}dma_channel_group = "group0"{{.*}}fuse_mode = "static"
 // CHECK-LABEL: func.func @fuse_memtile_producer
 aie.device(npu1) {
 // MemTile tiles (row=1) are NOT excluded from fusion analysis.
-conduit.create @mt_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @mt_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @mt_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @mt_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @fuse_memtile_producer() {
   %wa = conduit.acquire {name = @mt_a, count = 1 : i64, port = #conduit.port<Consume>}
            : !conduit.window<memref<8xi32>>
@@ -767,17 +725,15 @@ func.func @fuse_memtile_producer() {
 //     fuse_mode = "runtime" must NOT appear.
 //===----------------------------------------------------------------------===//
 
-// CHECK: conduit.create @cross_a {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
-// CHECK: conduit.create @cross_b {{{.*}}fuse_mode = "static"{{.*}}fused_dma_channel_group
+// CHECK: conduit.create @cross_a {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
+// CHECK: conduit.create @cross_b {{{.*}}dma_channel_group{{.*}}fuse_mode = "static"
 // Both conduits in same group regardless of which block wins.
 // CHECK-NOT: fuse_mode = "runtime"
 // CHECK-LABEL: func.func @cross_block_stable
 
 aie.device(npu1) {
-conduit.create @cross_a {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
-conduit.create @cross_b {slot_elems = 8 : i64,
-                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @cross_a {                element_type = memref<8xi32>, depth = 1 : i64}
+conduit.create @cross_b {                element_type = memref<8xi32>, depth = 1 : i64}
 func.func @cross_block_stable() {
   // Outer block: cross_a then cross_b (non-overlapping).
   %wa = conduit.acquire {name = @cross_a, count = 1 : i64, port = #conduit.port<Consume>}

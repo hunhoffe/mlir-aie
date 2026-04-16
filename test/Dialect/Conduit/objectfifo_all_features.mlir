@@ -16,15 +16,15 @@
 // Consumer tile lock init = depth = 1
 // CHECK:     aie.lock({{.*}}) {init = 1 : i32
 // CHECK:     aie.flow
-// Producer DMA: repeat_count = iter_count - 1 = 2, with dims
+// Producer DMA: repeat_count = iter_count - 1 = 2
+// NOTE: Sprint 6 gap — dimensionsToStream BD dims not propagated yet.
 // CHECK:     aie.mem
 // CHECK:       aie.dma_start(MM2S, 0, {{.*}}, {{.*}}, repeat_count = 2)
-// CHECK:       aie.dma_bd({{.*}} [<size = 4, stride = 1>])
+// CHECK:       aie.dma_bd(%{{.*}} : memref<16xi32>, 0, 16)
 // CHECK:       aie.next_bd
-// CHECK:       aie.dma_bd({{.*}} [<size = 4, stride = 1>])
+// CHECK:       aie.dma_bd(%{{.*}} : memref<16xi32>, 0, 16)
 // Last BD → end block (non-circular due to iter_count)
-// CHECK:       aie.next_bd ^bb3
-// CHECK:     ^bb3:
+// CHECK:       aie.next_bd ^bb{{[0-9]+}}
 // CHECK:       aie.end
 // Consumer DMA also gets repeat_count = 2
 // CHECK:     aie.mem

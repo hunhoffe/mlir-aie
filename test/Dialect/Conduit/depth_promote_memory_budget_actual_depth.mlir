@@ -23,10 +23,10 @@
 //                      leaving 16KB "free", erroneously allowing promotion).
 //
 // With the fix, "light_fifo" stays at depth=1, slot_elems=128 (32 i32 x 4 bytes = 128B).
-// CHECK-DAG: conduit.create @light_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 128 : i64
+// CHECK-DAG: conduit.create @light_fifo {{{.*}}depth = 1 : i64, {{.*}}
 //
 // "heavy_conduit" always stays at depth=4 (depth>1 conduits are never candidates).
-// CHECK-DAG: conduit.create @heavy_conduit {{{.*}}depth = 4 : i64, {{.*}}slot_elems = 65536 : i64
+// CHECK-DAG: conduit.create @heavy_conduit {{{.*}}depth = 4 : i64, {{.*}}
 // expected-remark @+1 {{conduit-depth-promote: promoted 0 conduit(s)}}
 module {
 aie.device(npu1) {
@@ -40,16 +40,14 @@ aie.device(npu1) {
 // slot_elems = 4 * 2048 * 4 = 32768.  Wait, slot_elems = numElements * sizeof
 // = 2048 * 4 = 8192?  Actually slot_elems = 2048 * 32 / 8 = ... let me just
 // use the original value.
-conduit.create @heavy_conduit {slot_elems = 65536 : i64,
-                element_type = memref<2048xi32>,
+conduit.create @heavy_conduit {                element_type = memref<2048xi32>,
                 depth = 4 : i64}
 
 // A depth-1 candidate on the same tile (0,2).
 // With the fix, the pre-population correctly charges 4x8KB=32KB for heavy_conduit,
 // leaving 0 bytes free → light_fifo must NOT be promoted.
 // expected-remark @+1 {{conduit-depth-promote: skipping 'light_fifo' -- memory budget}}
-conduit.create @light_fifo {slot_elems = 128 : i64,
-                element_type = memref<32xi32>,
+conduit.create @light_fifo {                element_type = memref<32xi32>,
                 depth = 1 : i64}
 
 // Structural tile info: tile(0,2) consumes both conduits.

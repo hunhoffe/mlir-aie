@@ -49,7 +49,7 @@
 //      greedy linear-scan coloring to assign fuseable conduits to the same
 //      group.
 //   4. Annotates each conduit.create in a group of size >= 2 with:
-//        fused_dma_channel_group = "groupN"
+//        dma_channel_group = "groupN"
 //      where N is globally unique across tiles (so Pass C can distinguish
 //      groups on different tiles that happen to share an index).
 //   5. Singleton groups (no fuseable partner found) are not annotated.
@@ -393,7 +393,7 @@ struct ConduitFuseChannelsPass
 
         std::string label = "group" + std::to_string(gid);
         mlir::MLIRContext *ctx = module.getContext();
-        ci.createOp->setAttr("fused_dma_channel_group",
+        ci.createOp->setAttr("dma_channel_group",
                              mlir::StringAttr::get(ctx, label));
         // fuse_mode = "static"  → Pass C emits static BD chain (NextBDOp
         // linking) fuse_mode = "runtime" → Pass C must use control-packet path

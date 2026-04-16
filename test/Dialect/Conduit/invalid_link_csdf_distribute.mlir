@@ -28,16 +28,13 @@
 // checkDistributeComposedConsume: allDstsHaveRates=false → return success().
 
 aie.device(npu1) {
-conduit.create @src_skip {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @src_skip {                element_type = memref<4xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
-conduit.create @dst0_skip {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @dst0_skip {                element_type = memref<4xi32>,
                 depth = 1 : i64}
-conduit.create @dst1_skip {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @dst1_skip {                element_type = memref<4xi32>,
                 depth = 1 : i64}
 func.func @distribute_unannotated_skip() {
   // No error: dst conduits lack rate annotations → skip Level 2.
@@ -53,18 +50,15 @@ func.func @distribute_unannotated_skip() {
 // src P=[1], slot_elems =4: H=1: cumProd=1, composed=1, occ=0 ≤ 4 → PASS.
 
 aie.device(npu1) {
-conduit.create @src_sym {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @src_sym {                element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
-conduit.create @dst0_sym {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @dst0_sym {                element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
-conduit.create @dst1_sym {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @dst1_sym {                element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
@@ -81,13 +75,11 @@ func.func @distribute_symmetric_pass() {
 // checkDistributeComposedConsume returns success immediately for N < 2.
 
 aie.device(npu1) {
-conduit.create @src_one {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @src_one {                element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
-conduit.create @dst0_one {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @dst0_one {                element_type = memref<4xi32>,
                 depth = 4 : i64,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}

@@ -32,7 +32,7 @@ module {
 
     // Cascade conduit: producer is tile(0,3), consumer is tile(1,3).
     // No buffers, no locks, no DMA — just a cascade_flow connection.
-    conduit.create @cas {slot_elems = 1 : i64,
+    conduit.create @cas {                    element_type = memref<16xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<cascade>}
 

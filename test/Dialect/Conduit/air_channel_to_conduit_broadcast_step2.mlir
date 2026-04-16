@@ -23,14 +23,16 @@
 
 // CHECK-LABEL: module
 
-// Source conduit.create with slot_elems =2.
+// Source conduit.create with element_type.
 // CHECK: conduit.create @bcast
-// CHECK-SAME: slot_elems = 2
+// CHECK-SAME: element_type = memref<16xi32>
 
 // Consumer alias for tile (2,2).
 // CHECK: conduit.create @bcast_c0
+// CHECK-SAME: element_type = memref<16xi32>
 // Consumer alias for tile (3,2).
 // CHECK: conduit.create @bcast_c1
+// CHECK-SAME: element_type = memref<16xi32>
 // Scatter op (Sprint 4: distribute renamed to scatter, srcs array→src single).
 // CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0, @bcast_c1]
 // CHECK-SAME: memtile = "tile(2,1)"

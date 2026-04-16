@@ -58,11 +58,11 @@ module @link_join_offsets {
     %tile33 = aie.tile(3, 3)
 
     // Three source conduits: compute tiles → MemTile
-    conduit.create @link1 {slot_elems = 32 : i64, element_type = memref<4x4xi32>, depth = 2 : i64}
-    conduit.create @link2 {slot_elems = 40 : i64, element_type = memref<20xi32>, depth = 2 : i64}
-    conduit.create @link3 {slot_elems = 24 : i64, element_type = memref<12xi32>, depth = 2 : i64}
+    conduit.create @link1 {element_type = memref<4x4xi32>, depth = 2 : i64}
+    conduit.create @link2 {element_type = memref<20xi32>, depth = 2 : i64}
+    conduit.create @link3 {element_type = memref<12xi32>, depth = 2 : i64}
     // Join destination: MemTile → shim
-    conduit.create @link4 {slot_elems = 96 : i64, element_type = memref<48xi32>, depth = 2 : i64}
+    conduit.create @link4 {element_type = memref<48xi32>, depth = 2 : i64}
 
     // Join link: 3 sources → 1 destination with byte offsets at MemTile(2,1)
     conduit.gather{srcs = [@link1, @link2, @link3], dst = @link4 {memtile = "tile(2,1)", offsets = array<i64: 0, 16, 36>}}

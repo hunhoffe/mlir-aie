@@ -18,8 +18,8 @@ module {
   aie.device(npu2) {
     %tile03 = aie.tile(0, 3)
 
-    conduit.create @cas {slot_elems = 1 : i64,
-                    depth = 1 : i64,
+    conduit.create @cas {                    depth = 1 : i64,
+                    element_type = memref<64xi32>,
                     routing_mode = #conduit.routing_mode<cascade>}
 
     // Producer core: aie.put_cascade with NO matching aie.get_cascade anywhere

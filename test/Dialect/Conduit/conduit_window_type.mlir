@@ -19,11 +19,11 @@
 
 aie.device(npu1) {
 
-conduit.create @input {slot_elems = 10 : i64, depth = 0 : i64}
-conduit.create @weights {slot_elems = 4 : i64, depth = 0 : i64}
-conduit.create @async_input {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @in {slot_elems = 9 : i64, depth = 0 : i64}
-conduit.create @out {slot_elems = 1 : i64, depth = 0 : i64}
+conduit.create @input {depth = 0 : i64, element_type = memref<10xi32>}
+conduit.create @weights {depth = 0 : i64, element_type = memref<8xi32>}
+conduit.create @async_input {depth = 0 : i64, element_type = memref<10xi32>}
+conduit.create @in {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @out {depth = 0 : i64, element_type = memref<4xi32>}
 
 // CHECK-LABEL: func.func @blocking_acquire_roundtrip
 func.func @blocking_acquire_roundtrip() {

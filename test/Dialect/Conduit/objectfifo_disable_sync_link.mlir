@@ -1,8 +1,8 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// Tests disable_synchronization=true on an objectfifo.link destination:
+// Tests  on an objectfifo.link destination:
 // no aie.lock should appear for link3 (the join destination with
-// disable_synchronization=true). link1 and link2 are regular fifos and
+// ). link1 and link2 are regular fifos and
 // must retain their locks and use_lock ops.
 
 // CHECK-LABEL: module @disable_sync
@@ -11,7 +11,7 @@
 // CHECK-DAG:   aie.lock({{.*}}) {init = 0 : i32, sym_name = "link2_cons_lock_0"}
 // CHECK-DAG:   aie.lock({{.*}}) {init = 1 : i32, sym_name = "link1_prod_lock_0"}
 // CHECK-DAG:   aie.lock({{.*}}) {init = 0 : i32, sym_name = "link1_cons_lock_0"}
-// No locks for link3 (disable_synchronization=true): no join MemTile locks.
+// No locks for link3 (): no join MemTile locks.
 // CHECK-NOT: link3_prod_lock
 // CHECK-NOT: link3_cons_lock
 // Flows: compute→MemTile×2, MemTile→shim
@@ -41,7 +41,7 @@ module @disable_sync {
 
     aie.objectfifo @link1 (%tile22, {%tile21}, 1 : i32) : !aie.objectfifo<memref<4x4xi32>>
     aie.objectfifo @link2 (%tile23, {%tile21}, 1 : i32) : !aie.objectfifo<memref<20xi32>>
-    aie.objectfifo @link3 (%tile21, {%tile20}, 1 : i32) { disable_synchronization = true } : !aie.objectfifo<memref<36xi32>>
+    aie.objectfifo @link3 (%tile21, {%tile20}, 1 : i32) {disable_synchronization = true} : !aie.objectfifo<memref<36xi32>>
 
     aie.objectfifo.link [@link1, @link2] -> [@link3] ([0, 16][])
 

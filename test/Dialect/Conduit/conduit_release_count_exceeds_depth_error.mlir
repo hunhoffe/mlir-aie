@@ -21,8 +21,7 @@ module @release_count_exceeds_depth {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    conduit.create @fifo {slot_elems = 16 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @fifo {                    element_type = memref<8xi32>,
                     depth = 2 : i64}
 
     aie.shim_dma_allocation @fifo_shim_alloc(%tile_0_0, MM2S, 0)

@@ -71,8 +71,7 @@ module @release_async_producer_block2 {
     // Producer tile(0,2) → consumer tile(0,4), depth=2.
     // Pass C allocates 2 producer buffers + prod/cons locks on tile_0_2,
     // plus the producer rotation counter memref<1xi32>.
-    conduit.create @fifo_async {slot_elems = 16 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @fifo_async {                    element_type = memref<8xi32>,
                     depth = 2 : i64}
 
     %core_0_2 = aie.core(%tile_0_2) {

@@ -11,8 +11,7 @@
 //
 // --conduit-materialize-buffers: for each conduit.create whose consumer tile
 // can be inferred from conduit.acquire{port=Consume} inside aie.core bodies,
-// emit aie.buffer × max(depth, window_size+1) on the consumer tile and a
-// conduit.register_buffers op linking them to the channel.
+// emit aie.buffer × depth on the consumer tile.
 //
 // This decouples buffer allocation from Pass C so that --conduit-place-buffers
 // can set mem_bank attributes before --conduit-to-dma runs.
@@ -70,25 +69,13 @@ struct ConduitMaterializeBuffersPass
       });
 
       // ----------------------------------------------------------------
-      // Step 2: Collect channels that already have register_buffers.
-      // ----------------------------------------------------------------
-      llvm::StringMap<bool> alreadyRegistered;
-      device.walk([&](RegisterBuffersOp rb) {
-        alreadyRegistered[rb.getName()] = true;
-      });
-
-      // ----------------------------------------------------------------
-      // Step 3: For each conduit.create, emit buffers + register_buffers.
+      // Step 2: For each conduit.create, emit aie.buffer ops.
       // ----------------------------------------------------------------
       llvm::SmallVector<Create> creates;
       device.walk([&](Create createOp) { creates.push_back(createOp); });
 
       for (Create createOp : creates) {
         std::string name = createOp.getName().str();
-
-        // Skip if buffers already registered by the user.
-        if (alreadyRegistered.count(name))
-          continue;
 
         // Skip if depth absent or = 0 — run --conduit-depth-promote first.
         if (!createOp.getDepth() || *createOp.getDepth() <= 0)
@@ -100,17 +87,14 @@ struct ConduitMaterializeBuffersPass
         if (consIt == channelToConsumerTiles.end())
           continue;
 
-        // Skip if element_type is absent — cannot determine buffer type.
-        if (!createOp.getElementType())
-          continue;
-        mlir::Type elemType = *createOp.getElementType();
+        // element_type is required — always present.
+        mlir::Type elemType = createOp.getElementType();
         auto bufTy = mlir::dyn_cast<mlir::MemRefType>(elemType);
         if (!bufTy)
           continue;
 
-        // Buffer count: max(depth, window_size + 1).
-        int64_t windowSize = createOp.getWindowSize().value_or(0);
-        int64_t bufCount = std::max(depth, windowSize + 1);
+        // Buffer count equals depth (window_size removed from conduit.create).
+        int64_t bufCount = depth;
 
         mlir::Location loc = createOp.getLoc();
 
@@ -120,21 +104,14 @@ struct ConduitMaterializeBuffersPass
           // appear at device scope (not inside any core or mem region).
           builder.setInsertionPoint(device.getBody()->getTerminator());
 
-          llvm::SmallVector<mlir::Value> bufs;
           for (int64_t i = 0; i < bufCount; ++i) {
             std::string symName = name + "_cons_buff_" + std::to_string(i);
-            auto buf = builder.create<AIE::BufferOp>(
+            builder.create<AIE::BufferOp>(
                 loc, bufTy, tileVal, mlir::StringAttr::get(ctx, symName),
                 /*address=*/mlir::IntegerAttr{},
                 /*initial_value=*/mlir::ElementsAttr{},
                 /*mem_bank=*/mlir::IntegerAttr{});
-            bufs.push_back(buf.getResult());
           }
-
-          // Emit conduit.register_buffers linking the channel to its buffers.
-          builder.create<RegisterBuffersOp>(
-              loc, mlir::FlatSymbolRefAttr::get(ctx, name),
-              mlir::ValueRange(bufs));
         }
       }
     });

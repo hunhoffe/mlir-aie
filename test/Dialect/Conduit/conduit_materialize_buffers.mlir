@@ -2,12 +2,12 @@
 // RUN:   | FileCheck %s --check-prefix=MAT
 // RUN: aie-opt --conduit-materialize-buffers --conduit-place-buffers %s \
 // RUN:   | FileCheck %s --check-prefix=PLACE
-// RUN: aie-opt --conduit-materialize-buffers --conduit-to-dma %s \
+// RUN: aie-opt --conduit-to-dma %s \
 // RUN:   | FileCheck %s --check-prefix=DMA
 //
-// Phase 5b: --conduit-materialize-buffers emits aie.buffer ops and
-// conduit.register_buffers for channels whose consumer tile is inferred from
-// conduit.acquire{port=Consume} inside aie.core.
+// Phase 5b: --conduit-materialize-buffers emits aie.buffer ops for channels
+// whose consumer tile is inferred from conduit.acquire{port=Consume} inside
+// aie.core.
 //
 // --conduit-place-buffers then assigns mem_bank = i % 4.
 //
@@ -22,7 +22,7 @@
 // MAT:     %[[BUFF0:.*]] = aie.buffer(%{{.*}}tile_0_2)
 // MAT-SAME:   sym_name = "fifo_shim_alloc_cons_buff_0"
 // MAT-NOT:   mem_bank
-// MAT:     conduit.register_buffers{name = @fifo_shim_alloc, buffers = [%[[BUFF0]]]}
+// MAT-NOT: conduit.register_buffers
 
 // --- After --conduit-place-buffers (adds mem_bank = 0 for slot 0) ---
 // PLACE-LABEL: module @materialize_buffers
@@ -47,8 +47,7 @@ module @materialize_buffers {
 
     // depth = 1: explicit single-buffer depth.
     // No consumer_tiles attr: consumer tile inferred from acquire{Consume} walk.
-    conduit.create @fifo_shim_alloc {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @fifo_shim_alloc {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     %core_0_2 = aie.core(%tile_0_2) {

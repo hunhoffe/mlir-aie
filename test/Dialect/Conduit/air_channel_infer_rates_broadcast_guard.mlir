@@ -22,12 +22,10 @@
 // CHECK-SAME: consumer_rates = array<i64: 64>
 // CHECK-SAME: producer_rates = array<i64: 64>
 
-// Broadcast: slot_elems =4 (fan-out), NO producer_rates or consumer_rates.
-// After matching the bcast_chan create line, CHECK-NOT asserts producer_rates
-// does not appear on any remaining line (nothing follows bcast_chan in the
-// module-level IR).
+// Broadcast channel: rates NOT annotated (broadcast is multi-consumer,
+// slot_elems was a fan-out count; in Sprint 6 that attr is gone).
+// After matching bcast_chan create, verify NO producer_rates or consumer_rates.
 // CHECK: conduit.create @bcast_chan
-// CHECK-SAME: slot_elems = 4
 // CHECK-NOT: producer_rates
 // CHECK-NOT: consumer_rates
 

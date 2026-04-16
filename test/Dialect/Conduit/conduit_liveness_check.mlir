@@ -25,8 +25,7 @@
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @c {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @ok_sync_release() {
   %win = conduit.acquire {name = @c, count = 1 : i64, port = #conduit.port<Consume>}
@@ -44,8 +43,7 @@ func.func @ok_sync_release() {
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @c {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @ok_async_acquire() {
   %tok = conduit.acquire_async {name = @c, count = 1 : i64,
@@ -66,8 +64,7 @@ func.func @ok_async_acquire() {
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @c {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 func.func @ok_release_async() {
   %win = conduit.acquire {name = @c, count = 1 : i64, port = #conduit.port<Consume>}
@@ -89,8 +86,7 @@ func.func @ok_release_async() {
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 24 : i64,
-                element_type = memref<24xi32>,
+conduit.create @c {                element_type = memref<24xi32>,
                 depth = 3 : i64}
 func.func @ok_partial_release() {
   %win = conduit.acquire {name = @c, count = 3 : i64, port = #conduit.port<Consume>}
@@ -108,8 +104,7 @@ func.func @ok_partial_release() {
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @c {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_no_release'}}
 func.func @fail_no_release() {
@@ -127,8 +122,7 @@ func.func @fail_no_release() {
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @c {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_wait_window_no_release'}}
 func.func @fail_wait_window_no_release() {
@@ -149,8 +143,7 @@ func.func @fail_wait_window_no_release() {
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @c {                element_type = memref<8xi32>,
                 depth = 2 : i64}
 // expected-note@+1 {{in function '@fail_second_acquire_leaked'}}
 func.func @fail_second_acquire_leaked() {
@@ -175,8 +168,7 @@ func.func @fail_second_acquire_leaked() {
 //===----------------------------------------------------------------------===//
 
 aie.device(npu1) {
-conduit.create @c {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @c {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-note@+1 {{in function '@fail_wrong_channel_release_async'}}
 func.func @fail_wrong_channel_release_async() {

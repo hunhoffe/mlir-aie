@@ -26,11 +26,9 @@
 // Unannotated conduits are silently skipped.
 
 aie.device(npu1) {
-conduit.create @j_src_norates {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @j_src_norates {                element_type = memref<4xi32>,
                 depth = 1 : i64}
-conduit.create @j_dst_norates {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @j_dst_norates {                element_type = memref<4xi32>,
                 depth = 1 : i64}
 func.func @join_unannotated_srcs_pass() {
   // No expected-error: unannotated → skip path → PASS.
@@ -49,13 +47,11 @@ func.func @join_unannotated_srcs_pass() {
 // GatherOp::verify M6-join: both pass → no error.
 
 aie.device(npu1) {
-conduit.create @j2_src {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @j2_src {                element_type = memref<4xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}
-conduit.create @j2_dst {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @j2_dst {                element_type = memref<4xi32>,
                 depth = 1 : i64,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}

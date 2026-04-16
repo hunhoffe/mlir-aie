@@ -17,13 +17,11 @@
 module {
   aie.device(npu1) {
     conduit.create @my_channel {
-      slot_elems = 128 : i64,
-      depth = 2 : i64,
+            depth = 2 : i64,
       element_type = memref<32xi32>
     }
     conduit.create @another_chan {
-      slot_elems = 64 : i64,
-      depth = 1 : i64,
+            depth = 1 : i64,
       element_type = memref<16xi32>
     }
   }

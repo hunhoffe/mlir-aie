@@ -52,8 +52,7 @@ module @multi_consumer_shim {
 
     // One conduit: compute producer → both compute and shim consumers.
     conduit.create @chan {depth = 1 : i64,
-                    slot_elems = 16 : i64,
-                    element_type = memref<16xi32>,
+                                        element_type = memref<16xi32>,
                     shim_consumer_tiles = array<i64: 0, 0>,
                                         routing_mode = #conduit.routing_mode<circuit>}
 

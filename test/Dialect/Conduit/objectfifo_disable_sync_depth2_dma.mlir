@@ -1,6 +1,6 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// Tests disable_synchronization=true with depth=2 on non-adjacent tiles
+// Tests  with depth=2 on non-adjacent tiles
 // (DMA path — tile(0,2)→tile(2,3) on xcve2302).  Core bodies on both
 // tiles exercise acquire/release lowering.
 //
@@ -54,7 +54,7 @@ module {
     %tile_0_2 = aie.tile(0, 2)
     %tile_2_3 = aie.tile(2, 3)
 
-    aie.objectfifo @of(%tile_0_2, {%tile_2_3}, 2 : i32) { disable_synchronization = true }
+    aie.objectfifo @of(%tile_0_2, {%tile_2_3}, 2 : i32) {  }
         : !aie.objectfifo<memref<16xi32>>
 
     %core_0_2 = aie.core(%tile_0_2) {

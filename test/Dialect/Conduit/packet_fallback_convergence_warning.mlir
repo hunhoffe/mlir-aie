@@ -21,23 +21,19 @@ module @pkt_fallback_convergence_warning {
     %t33 = aie.tile(3, 3)
 
     // pkt_a and pkt_b: explicit packet, filling MM2S ch 0 and ch 1.
-    conduit.create @pkt_a {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @pkt_a {                    element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create @pkt_b {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @pkt_b {                    element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // fallback1: circuit exhausted; Step 3.5c finds ch 0; no prior (ch0→(2,3)).
     // Records occupancy. No warning.
-    conduit.create @fallback1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64
+    conduit.create @fallback1 {                    element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     // fallback2: Step 3.5d finds (ch0 → (2,3)) already recorded → hazard.
     // Warning emitted on aie.device op (annotation above).
-    conduit.create @fallback2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64
+    conduit.create @fallback2 {                    element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     %core03 = aie.core(%t03) {

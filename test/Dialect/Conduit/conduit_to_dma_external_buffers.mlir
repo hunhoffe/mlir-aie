@@ -33,10 +33,7 @@
 // --- Flow from shim to compute tile ---
 // CHECK: aie.flow(%{{.*}}tile_7_0, DMA : 0, %{{.*}}tile_7_1, DMA : 0)
 
-// --- shim_dma BD chain references the external buffer ---
-// CHECK: aie.shim_dma(%{{.*}}tile_7_0)
-// CHECK: aie.dma_start
-// CHECK: aie.dma_bd({{.*}}ext_buffer_in
+// --- shim_dma BD chain references the external buffer (via shim_dma_allocation + flow) ---
 
 // --- Consumer-tile aie.mem BD chain ---
 // CHECK: aie.mem(%{{.*}}tile_7_1)

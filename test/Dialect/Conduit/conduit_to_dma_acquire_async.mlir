@@ -75,8 +75,7 @@ module @async_window_path {
 
     // Hand-written Conduit IR that the async path would produce.
     // conduit.create declares the channel metadata for Pass C.
-    conduit.create @fifo_async {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @fifo_async {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     // Shim producer allocation: inferAllTiles() matches via _shim_alloc suffix.

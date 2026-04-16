@@ -27,12 +27,12 @@
 
 module {
   aie.device(npu1) {
-  conduit.create @chA {slot_elems = 64 : i64, depth = 0 : i64}
-  conduit.create @chB {slot_elems = 64 : i64, depth = 0 : i64}
-  conduit.create @chX {slot_elems = 32 : i64, depth = 0 : i64}
-  conduit.create @chY {slot_elems = 32 : i64, depth = 0 : i64}
-  conduit.create @chP {slot_elems = 16 : i64, depth = 0 : i64}
-  conduit.create @chQ {slot_elems = 16 : i64, depth = 0 : i64}
+  conduit.create @chA {depth = 0 : i64, element_type = memref<64xi32>}
+  conduit.create @chB {depth = 0 : i64, element_type = memref<64xi32>}
+  conduit.create @chX {depth = 0 : i64, element_type = memref<32xi32>}
+  conduit.create @chY {depth = 0 : i64, element_type = memref<32xi32>}
+  conduit.create @chP {depth = 0 : i64, element_type = memref<16xi32>}
+  conduit.create @chQ {depth = 0 : i64, element_type = memref<16xi32>}
 
   // Case 1: linear chain A → B → wait_all_async
   func.func @linear_chain(%bufA : memref<64xi32>, %bufB : memref<64xi32>) {

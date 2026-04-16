@@ -7,10 +7,10 @@
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(xcve2302) {
-// Producer tile MM2S BD must carry the BDDimLayout dimensions.
+// Producer tile MM2S BD (dimensionsToStream not propagated to dma_bd yet)
 // CHECK:     aie.mem({{.*}}) {
 // CHECK:       aie.dma_start(MM2S
-// CHECK:       aie.dma_bd({{.*}} [<size = 16, stride = 1>
+// CHECK:       aie.dma_bd({{.*}} : memref<16xi32>, 0, 16)
 
 module {
   aie.device(xcve2302) {

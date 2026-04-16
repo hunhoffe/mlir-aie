@@ -12,11 +12,9 @@ module @check_channels_pass {
     %tile_0_3 = aie.tile(0, 3)
     %tile_0_4 = aie.tile(0, 4)
 
-    conduit.create @c1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
 
     // Structural tile info via aie.core blocks.
@@ -53,14 +51,11 @@ module @check_channels_mm2s_fail {
     %tile_0_5 = aie.tile(0, 5)
 
     // expected-error @+1 {{DMA channel limit exceeded on tile (0, 2): 3 conduits require 3 MM2S channels, hardware supports 2}}
-    conduit.create @c1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c3 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c3 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
 
     // Structural tile info: tile(0,2) produces all three conduits.
@@ -104,14 +99,11 @@ module @check_channels_s2mm_fail {
     %tile_0_5 = aie.tile(0, 5)
 
     // expected-error @+1 {{DMA channel limit exceeded on tile (0, 3): 3 conduits require 3 S2MM channels, hardware supports 2}}
-    conduit.create @c1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c3 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c3 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
 
     // Structural tile info: each conduit has a different producer, all consume on tile(0,3).
@@ -146,7 +138,7 @@ module @check_channels_s2mm_fail {
 
 // Test 4: PASS — 3 conduits on the same producer tile, but 2 are fused.
 // Without fusion: 3 MM2S channels needed (fail).
-// With fused_dma_channel_group annotation: c1 and c2 share "grp0" → 2 channels (pass).
+// With dma_channel_group annotation: c1 and c2 share "grp0" → 2 channels (pass).
 // NOTE: No structural tile info; pass skips these conduits (no tile info → no check).
 
 module @check_channels_fused_pass {
@@ -156,16 +148,13 @@ module @check_channels_fused_pass {
     %tile_0_4 = aie.tile(0, 4)
     %tile_0_5 = aie.tile(0, 5)
 
-    conduit.create @c1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    fused_dma_channel_group = "grp0"}
-    conduit.create @c2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+                    dma_channel_group = "grp0"}
+    conduit.create @c2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
-                    fused_dma_channel_group = "grp0"}
-    conduit.create @c3 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+                    dma_channel_group = "grp0"}
+    conduit.create @c3 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
   }
 }
@@ -184,14 +173,11 @@ module @check_channels_shim_excluded {
     %tile_0_3 = aie.tile(0, 3)
     %tile_0_4 = aie.tile(0, 4)
 
-    conduit.create @c1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
-    conduit.create @c3 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c3 {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
   }
 }

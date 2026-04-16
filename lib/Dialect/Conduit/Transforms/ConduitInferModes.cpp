@@ -17,9 +17,9 @@
 //   R2. If routing_mode is "cascade": skip (hardware-fixed, no inference).
 //   R3a. If producer and single consumer are adjacent tiles
 //   (isLegalMemAffinity)
-//        and via_DMA is not set: resolve to "circuit".  Pass C Phase 3c will
-//        use shared memory — no DMA flow is needed.  The "circuit" label is
-//        correct since that path uses no DMA channels.
+//        and forceDMA is not set: resolve to "shared_memory".  Pass C Phase 3c
+//        detects routing_mode == SharedMemory and uses shared memory — no DMA
+//        flow or channel allocation is needed.
 //   R3b. If a circuit-mode MM2S DMA channel is available on the producer tile:
 //        resolve to "circuit".
 //   Step 3.5. If circuit DMA is exhausted: resolve to "packet" (DMA channel
@@ -162,9 +162,9 @@ struct ConduitInferModesPass
       if (consCoords.size() == 1) {
         int64_t consCol = consCoords[0].first;
         int64_t consRow = consCoords[0].second;
-        auto viaDMAAttr = op->getAttrOfType<mlir::BoolAttr>("viaDMA");
-        bool viaDMA = viaDMAAttr && viaDMAAttr.getValue();
-        if (!viaDMA) {
+        auto forceDMAAttr = op->getAttrOfType<mlir::BoolAttr>("forceDMA");
+        bool forceDMA = forceDMAAttr && forceDMAAttr.getValue();
+        if (!forceDMA) {
           bool adj = targetModel.isLegalMemAffinity(prodCol, prodRow, consCol,
                                                     consRow) ||
                      targetModel.isLegalMemAffinity(consCol, consRow, prodCol,
@@ -224,18 +224,18 @@ struct ConduitInferModesPass
         }
       }
 
-      auto viaDMAAttr = op->getAttrOfType<mlir::BoolAttr>("viaDMA");
-      bool viaDMA = viaDMAAttr && viaDMAAttr.getValue();
+      auto forceDMAAttr = op->getAttrOfType<mlir::BoolAttr>("forceDMA");
+      bool forceDMA = forceDMAAttr && forceDMAAttr.getValue();
 
       // -----------------------------------------------------------------------
       // R3a: Shared memory check.
       //
       // If there is exactly one consumer tile, it is adjacent to the producer
-      // (isLegalMemAffinity in either direction), and via_DMA is not set,
-      // then Pass C will use shared memory.  Assign Circuit — Pass C Phase 3c
-      // handles the shared-memory path without consuming a DMA channel.
+      // (isLegalMemAffinity in either direction), and forceDMA is not set,
+      // resolve to SharedMemory explicitly.  Pass C Phase 3c recognizes
+      // routing_mode == SharedMemory and skips DMA channel allocation.
       // -----------------------------------------------------------------------
-      if (!viaDMA && consCoords.size() == 1) {
+      if (!forceDMA && consCoords.size() == 1) {
         int64_t consCol = consCoords[0].first;
         int64_t consRow = consCoords[0].second;
         bool adj =
@@ -244,7 +244,7 @@ struct ConduitInferModesPass
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         if (adj) {
           op.setRoutingModeAttr(
-              RoutingModeAttr::get(module.getContext(), RoutingMode::Circuit));
+              RoutingModeAttr::get(module.getContext(), RoutingMode::SharedMemory));
           continue;
         }
       }
@@ -258,18 +258,9 @@ struct ConduitInferModesPass
       // regardless of N consumers (the switchbox broadcasts).
       // -----------------------------------------------------------------------
       if (consCoords.size() > 1) {
+        // consumer_dimensions moved to get_memref ops; treat all multicasts as
+        // uniform for routing_mode inference purposes.
         bool uniform = true;
-        if (auto cdRaw = op.getConsumerDimensions()) {
-          if (auto cdAttr = mlir::dyn_cast<xilinx::AIE::BDDimLayoutArrayArrayAttr>(*cdRaw)) {
-            auto vals = cdAttr.getValue();
-            for (size_t i = 1; i < vals.size(); ++i) {
-              if (vals[i] != vals[0]) {
-                uniform = false;
-                break;
-              }
-            }
-          }
-        }
         if (uniform) {
           if (pktBudget >= 1) {
             pktBudget -= 1;

@@ -28,28 +28,23 @@ module @pkt_fallback_mixed_modes {
     %t35 = aie.tile(3, 5)
 
     // circuit_a and circuit_b from (0,3): consume both MM2S channels as circuit.
-    conduit.create @circuit_a {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @circuit_a {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @circuit_b {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @circuit_b {                    element_type = memref<4xi32>, depth = 1 : i64,
                                         routing_mode = #conduit.routing_mode<circuit>}
 
     // circuit_overflow: mode=any from (0,3); both circuit-mode channels taken;
     // Step 3.5c fails (no packet-mode channel, no free channel) → Step 4 error.
-    conduit.create @circuit_overflow {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64
+    conduit.create @circuit_overflow {                    element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     // packet_d from (1,3): explicit packet, designates ch 1 as packet-mode.
-    conduit.create @packet_d {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @packet_d {                    element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // anymode_e from (1,3): circuit ch 0 is free → mode=any takes it as circuit.
     // (not a fallback — ch 0 is free, so circuit DMA is used directly)
-    conduit.create @anymode_e {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64
+    conduit.create @anymode_e {                    element_type = memref<4xi32>, depth = 1 : i64
                     }
 
     %core03 = aie.core(%t03) {

@@ -48,8 +48,7 @@ module @packet_routing_mode {
 
     // Conduit channel with routing_mode = #conduit.routing_mode<packet>.
     // Pass C Phase 4 should emit aie.packet_flow instead of aie.flow.
-    conduit.create @pkt_fifo {slot_elems = 10 : i64,
-                    element_type = memref<10xi32>,
+    conduit.create @pkt_fifo {                    element_type = memref<10xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 

@@ -37,10 +37,10 @@ module @memsame_column_relay {
     %tile_2_3 = aie.tile(2, 3)
 
     // Ingress: shim → MemTile
-    conduit.create @relay_in {slot_elems = 1024 : i64, element_type = memref<512xi8>, depth = 2 : i64}
+    conduit.create @relay_in {element_type = memref<512xi8>, depth = 2 : i64}
     // Egress: MemTile → compute tiles
-    conduit.create @relay_dst0 {slot_elems = 512 : i64, element_type = memref<256xi8>, depth = 2 : i64}
-    conduit.create @relay_dst1 {slot_elems = 512 : i64, element_type = memref<256xi8>, depth = 2 : i64}
+    conduit.create @relay_dst0 {element_type = memref<256xi8>, depth = 2 : i64}
+    conduit.create @relay_dst1 {element_type = memref<256xi8>, depth = 2 : i64}
 
     // Distribute link: split 512B buffer into two 256B slices at MemTile(2,1)
     conduit.scatter{src = @relay_in, dsts = [@relay_dst0, @relay_dst1] {memtile = "tile(2,1)", offsets = array<i64: 0, 256>}}

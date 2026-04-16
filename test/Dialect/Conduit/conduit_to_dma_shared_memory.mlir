@@ -77,8 +77,7 @@ module @shared_memory_adjacent_tiles {
 
     // depth=1, single consumer, no DMA dimensions.
     // Pass C detects shared memory and skips DMA setup.
-    conduit.create @shared_fifo {slot_elems = 16 : i64,
-                    element_type = memref<16xi32>,
+    conduit.create @shared_fifo {                    element_type = memref<16xi32>,
                     depth = 1 : i64}
 
     // Producer core on tile(2,2) — structural info for tile inference.

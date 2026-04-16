@@ -17,7 +17,7 @@ module @passC_delta_fresh_acquire {
     %shim = aie.tile(0, 0)
     %tile = aie.tile(0, 2)
 
-    conduit.create @fifo {slot_elems = 512 : i64, depth = 4 : i64,
+    conduit.create @fifo {depth = 4 : i64,
                     element_type = memref<128xi32>
                     }
 

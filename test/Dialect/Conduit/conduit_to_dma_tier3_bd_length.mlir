@@ -43,8 +43,7 @@ module @tier3_bd_length {
     // Consumer tile inferred from get_memref_async inside aie.core below.
     // Producer tile declared via producer_tile attr (shim side, no alloc op
     // needed — this test only checks BD length, not shim DMA chain emission).
-    conduit.create @t3_bd {slot_elems = 1 : i64,
-                    element_type = memref<128xi32>,
+    conduit.create @t3_bd {                    element_type = memref<128xi32>,
                     depth = 1 : i64}
 
     %core_0_2 = aie.core(%tile_0_2) {

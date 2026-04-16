@@ -764,28 +764,24 @@ def ConduitCheckLoopBalance : Pass<"conduit-check-loop-balance", "::mlir::Module
 }
 
 //===----------------------------------------------------------------------===//
-// --conduit-materialize-buffers — emit aie.buffer + conduit.register_buffers
+// --conduit-materialize-buffers — emit aie.buffer ops per channel
 //===----------------------------------------------------------------------===//
 
 def ConduitMaterializeBuffers
     : Pass<"conduit-materialize-buffers", "::mlir::ModuleOp"> {
-  let summary = "Emit aie.buffer ops and conduit.register_buffers for each "
-                "Conduit channel";
+  let summary = "Emit aie.buffer ops for each Conduit channel";
   let description = [{
     Runs after --conduit-depth-promote.  For each conduit.create whose consumer
     tile can be inferred from conduit.acquire{port=Consume} ops inside aie.core
     bodies:
 
-      1. Computes buffer count = max(depth, window_size + 1).
-      2. Emits `aie.buffer × buffer_count` on the consumer tile.
-      3. Emits `conduit.register_buffers {name = @chan, buffers = [...]}`.
+      1. Computes buffer count = depth.
+      2. Emits `aie.buffer × buffer_count` on the consumer tile, named
+         `<chan>_cons_buff_<N>`.
 
     Enables --conduit-place-buffers to set mem_bank before Pass C runs, which
-    is impossible in Pass C's single-pass buffer allocation.  Also allows
-    expert users to supply hand-allocated buffers via conduit.register_buffers
-    before running --conduit-to-dma.
+    is impossible in Pass C's single-pass buffer allocation.
 
-    Channels that already have a conduit.register_buffers op are skipped.
     Channels with no compute consumer (shim-only or DDR) are skipped.
     Channels with depth = 0 are skipped (run --conduit-depth-promote first).
 
@@ -812,7 +808,8 @@ def ConduitPlaceBuffers
                 "bank staggering";
   let description = [{
     Runs between --conduit-materialize-buffers and --aie-assign-buffer-addresses.
-    For each set of buffers registered via conduit.register_buffers, assigns:
+    For each group of aie.buffer ops emitted by --conduit-materialize-buffers
+    (named `<chan>_cons_buff_<N>`), assigns:
 
       buf[i].mem_bank = i % numBanks
 

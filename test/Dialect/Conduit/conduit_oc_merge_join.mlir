@@ -42,12 +42,12 @@ module @oc_merge_join {
     %tile_3_2 = aie.tile(3, 2)
 
     // 4 source conduits: compute tiles → MemTile
-    conduit.create @oc_src0 {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
-    conduit.create @oc_src1 {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
-    conduit.create @oc_src2 {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
-    conduit.create @oc_src3 {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @oc_src0 {element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @oc_src1 {element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @oc_src2 {element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @oc_src3 {element_type = memref<64xi8>, depth = 2 : i64}
     // Join destination: MemTile → shim
-    conduit.create @oc_dst {slot_elems = 512 : i64, element_type = memref<256xi8>, depth = 2 : i64}
+    conduit.create @oc_dst {element_type = memref<256xi8>, depth = 2 : i64}
 
     // Join link: 4 sources at byte offsets 0, 64, 128, 192 at MemTile(0,1)
     conduit.gather{srcs = [@oc_src0, @oc_src1, @oc_src2, @oc_src3], dst = @oc_dst {memtile = "tile(0,1)", offsets = array<i64: 0, 64, 128, 192>}}

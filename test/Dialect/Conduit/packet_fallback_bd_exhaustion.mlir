@@ -28,23 +28,19 @@ module @pkt_fallback_bd_exhaustion {
     %t15 = aie.tile(1, 5)
 
     // Two packet conduits fill both MM2S channels as packet-mode.
-    conduit.create @pkt_a {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @pkt_a {                    element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create @pkt_b {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 1 : i64,
+    conduit.create @pkt_b {                    element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
 
     // First mode=any fallback: depth=14 consumes 14 BD slots on (0,3).
     // tileBDUsed[(0,3)] = 14 after this.
-    conduit.create @fallback1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 14 : i64
+    conduit.create @fallback1 {                    element_type = memref<4xi32>, depth = 14 : i64
                     }
 
     // Second mode=any fallback: depth=3 requires 3 BDs, but only 2 remain.
     // Step 3.5b: prodBDTotal(16) - prodBDUsed(14) = 2 < depth(3) → failure.
-    conduit.create @fallback2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>, depth = 3 : i64
+    conduit.create @fallback2 {                    element_type = memref<4xi32>, depth = 3 : i64
                     }
 
     %core03 = aie.core(%t03) {

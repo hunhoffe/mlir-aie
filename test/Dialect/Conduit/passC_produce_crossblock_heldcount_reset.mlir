@@ -41,7 +41,7 @@ module @passC_produce_crossblock_heldcount_reset {
     %tile = aie.tile(0, 2)
 
     // @outChan: compute tile produces → shim consumes.
-    conduit.create @outChan {slot_elems = 64 : i64, depth = 2 : i64,
+    conduit.create @outChan {depth = 2 : i64,
                     element_type = memref<32xi32>,
                     shim_consumer_tiles = array<i64: 0, 0>}
 

@@ -204,7 +204,7 @@ void linkPhase(ConduitToDMAState &state) {
 
       // If relay locks are missing (e.g., shim→relay path where Phase 3 doesn't
       // allocate consumer-side locks on the relay tile), allocate them now.
-      if (!relayProdLock && !coreRelaySrc.disableSynchronization) {
+      if (!relayProdLock && !coreRelaySrc.noLocks) {
         builder.setInsertionPoint(state.deviceBody->getTerminator());
         {
           int lockIdx = state.lockIdCounter[relayTileVal]++;
@@ -226,8 +226,13 @@ void linkPhase(ConduitToDMAState &state) {
         }
       }
 
-      int64_t relayPerBufLen =
-          coreRelaySrc.slotElems > 0 ? coreRelaySrc.slotElems / relayDepth : 1;
+      int64_t relayPerBufLen = 1;
+      if (coreRelaySrc.numElems > 0) {
+        relayPerBufLen = coreRelaySrc.numElems;
+      } else if (coreRelaySrc.elemType) {
+        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(coreRelaySrc.elemType))
+          relayPerBufLen = mref.getNumElements();
+      }
 
       // Retrieve the S2MM channel pre-assigned by Phase 4a.
       int32_t relaySrcS2MMCh = -1;
@@ -436,8 +441,16 @@ void linkPhase(ConduitToDMAState &state) {
                          : srcInfo.buffers;
 
     int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
-    int64_t perBufLen =
-        srcInfo.slotElems > 0 ? srcInfo.slotElems / linkDepth : 1;
+    // perBufLen: number of elements per physical buffer for this source conduit.
+    // Prefer numElems (from put_memref_async descriptors), then derive from
+    // elemType (e.g. memref<48xi32> → 48), otherwise fall back to 1.
+    int64_t perBufLen = 1;
+    if (srcInfo.numElems > 0) {
+      perBufLen = srcInfo.numElems;
+    } else if (srcInfo.elemType) {
+      if (auto mref = mlir::dyn_cast<mlir::MemRefType>(srcInfo.elemType))
+        perBufLen = mref.getNumElements();
+    }
 
     // Per-destination independent lock pairs on the MemTile
     // (distribute/forward).
@@ -465,7 +478,7 @@ void linkPhase(ConduitToDMAState &state) {
     // emits no locks and no use_lock for synchronization-disabled conduits on
     // the MemTile side. The BD chains are still emitted (lock values remain
     // null and emitBDBlock skips the use_lock emission).
-    if (isDistribute && numDsts > 0 && !srcInfo.disableSynchronization) {
+    if (isDistribute && numDsts > 0 && !srcInfo.noLocks) {
       builder.setInsertionPoint(lockInsertionPoint);
       for (unsigned sliceIdx = 0; sliceIdx < numDsts; ++sliceIdx) {
         // Scale per-slice lock init by the destination fifo's bd_repeat.
@@ -540,8 +553,12 @@ void linkPhase(ConduitToDMAState &state) {
             << jDstName << "' not found — BD lengths defaulting to 1";
       } else {
         int64_t jDstDepth = jDstInfo->depth > 0 ? jDstInfo->depth : 1;
-        joinDstPerBufForLen =
-            jDstInfo->slotElems > 0 ? jDstInfo->slotElems / jDstDepth : 1;
+        if (jDstInfo->numElems > 0) {
+          joinDstPerBufForLen = jDstInfo->numElems;
+        } else if (jDstInfo->elemType) {
+          if (auto mref = mlir::dyn_cast<mlir::MemRefType>(jDstInfo->elemType))
+            joinDstPerBufForLen = mref.getNumElements();
+        }
 
         mlir::Type intBufTy = jDstInfo->elemType;
         if (!intBufTy)
@@ -569,7 +586,7 @@ void linkPhase(ConduitToDMAState &state) {
         // joinSrcConsLocks[i]; the MM2S chain acquires cons and releases prod.
         // Skipped when the join destination has disable_synchronization: oracle
         // emits no locks on the MemTile for synchronization-disabled fifos.
-        if (!jDstInfo->disableSynchronization) {
+        if (!jDstInfo->noLocks) {
           for (unsigned srcIdx = 0; srcIdx < numJoinSrcs; ++srcIdx) {
             if (isAIE2) {
               {
@@ -1348,7 +1365,7 @@ void linkPhase(ConduitToDMAState &state) {
     auto &prodBufs = bufIt->second;
 
     AIE::LockOp pProdLock, pConsLock;
-    if (!info.disableSynchronization) {
+    if (!info.noLocks) {
       auto lockIt = info.consumerTileLocks.find(prodTileVal);
       if (lockIt == info.consumerTileLocks.end())
         continue; // no locks allocated — cannot emit BD chain
@@ -1356,10 +1373,13 @@ void linkPhase(ConduitToDMAState &state) {
       pConsLock = lockIt->second.second;
     }
 
-    int64_t depth = info.depth > 0 ? info.depth : 1;
-    int64_t perBufLen = info.numElems > 0
-                            ? info.numElems
-                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
+    int64_t perBufLen = 1;
+    if (info.numElems > 0) {
+      perBufLen = info.numElems;
+    } else if (info.elemType) {
+      if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
+        perBufLen = mref.getNumElements();
+    }
     int64_t nBufs = static_cast<int64_t>(prodBufs.size());
 
     // Acquire the MM2S channel index (channel 0 unless pre-used).
@@ -1474,7 +1494,7 @@ void linkPhase(ConduitToDMAState &state) {
     // lock check. Still skip if buffers are empty (no allocation happened).
     if (info.buffers.empty())
       continue;
-    if (!info.disableSynchronization && (!info.prodLock || !info.consLock))
+    if (!info.noLocks && (!info.prodLock || !info.consLock))
       continue;
 
     // Handle link source conduits: emit aie.mem MM2S on producer compute tile.
@@ -1496,10 +1516,13 @@ void linkPhase(ConduitToDMAState &state) {
       if (!prodTile)
         continue;
 
-      int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen =
-          info.numElems > 0 ? info.numElems
-                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
+      int64_t perBufLen = 1;
+      if (info.numElems > 0) {
+        perBufLen = info.numElems;
+      } else if (info.elemType) {
+        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
+          perBufLen = mref.getNumElements();
+      }
       mlir::Value prodTileVal = prodTile.getResult();
 
       // Check for an existing aie.mem for this tile (e.g. created by Phase 5.5
@@ -1650,7 +1673,13 @@ void linkPhase(ConduitToDMAState &state) {
               !bufIt->second.empty()) {
             llvm::SmallVector<AIE::BufferOp> &prodBuffers = bufIt->second;
             int64_t depth = info.depth > 0 ? info.depth : 1;
-            int64_t perBufLen = info.slotElems > 0 ? info.slotElems / depth : 1;
+            int64_t perBufLen = 1;
+            if (info.numElems > 0) {
+              perBufLen = info.numElems;
+            } else if (info.elemType) {
+              if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
+                perBufLen = mref.getNumElements();
+            }
 
             // Look up packet flow ID for packet-mode channels.
             // When set, each MM2S BD emits aie.dma_bd_packet so the switchbox
@@ -1678,7 +1707,7 @@ void linkPhase(ConduitToDMAState &state) {
 
             // For disable_synchronization conduits, locks are null by design
             // but we still emit BD chains (without lock ops via emitBDBlock).
-            if (mm2sAcqLock || info.disableSynchronization) {
+            if (mm2sAcqLock || info.noLocks) {
               bool prodIsMemTile = targetModel.isMemTile(prodCol, prodRow);
 
               int32_t mm2sChannel = 0;
@@ -1904,10 +1933,13 @@ void linkPhase(ConduitToDMAState &state) {
       if (prodRow < 2)
         continue;
 
-      int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen =
-          info.numElems > 0 ? info.numElems
-                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
+      int64_t perBufLen = 1;
+      if (info.numElems > 0) {
+        perBufLen = info.numElems;
+      } else if (info.elemType) {
+        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
+          perBufLen = mref.getNumElements();
+      }
 
       mlir::Value prodTileVal = dmaHostTile.getResult();
 
@@ -2107,10 +2139,13 @@ void linkPhase(ConduitToDMAState &state) {
       if (info.consumerTileCoords.empty())
         continue;
 
-      int64_t depth = info.depth > 0 ? info.depth : 1;
-      int64_t perBufLen =
-          info.numElems > 0 ? info.numElems
-                            : (info.slotElems > 0 ? info.slotElems / depth : 1);
+      int64_t perBufLen = 1;
+      if (info.numElems > 0) {
+        perBufLen = info.numElems;
+      } else if (info.elemType) {
+        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
+          perBufLen = mref.getNumElements();
+      }
       // nConsumerBuffers() >= depth; extra slots support sliding-window
       // patterns.
       int64_t nBufs = info.nConsumerBuffers();
@@ -2149,7 +2184,7 @@ void linkPhase(ConduitToDMAState &state) {
 
         // For disable_synchronization, locks are null by design — still emit
         // BDs.
-        if ((!tileProdLock || !tileConsLock) && !info.disableSynchronization)
+        if ((!tileProdLock || !tileConsLock) && !info.noLocks)
           continue;
         if (tileBuffers->empty())
           continue;

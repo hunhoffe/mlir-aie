@@ -58,22 +58,19 @@ module @memtile_to_memtile_relay {
 
     // Stage 1: compute(0,2) → MemTile(0,1), depth=2
     conduit.create @src {
-      slot_elems = 4 : i64,
-      element_type = memref<4xi32>,
+            element_type = memref<4xi32>,
       depth = 2 : i64
     }
 
     // Stage 2: MemTile(0,1) → MemTile(1,1), depth=2
     conduit.create @mid {
-      slot_elems = 4 : i64,
-      element_type = memref<4xi32>,
+            element_type = memref<4xi32>,
       depth = 2 : i64
     }
 
     // Stage 3: MemTile(1,1) → compute(1,2), depth=2
     conduit.create @dst {
-      slot_elems = 4 : i64,
-      element_type = memref<4xi32>,
+            element_type = memref<4xi32>,
       depth = 2 : i64
     }
 

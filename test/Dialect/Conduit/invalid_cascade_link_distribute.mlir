@@ -16,15 +16,12 @@
 // scatter with cascade-mode source conduit — parses without verifier error.
 // The cascade channel rejection fires in --conduit-to-dma, not here.
 aie.device(npu1) {
-conduit.create @casc_src {slot_elems = 1 : i64,
-                element_type = memref<4xi32>,
+conduit.create @casc_src {                element_type = memref<4xi32>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
-conduit.create @out0 {slot_elems = 1 : i64,
-                element_type = memref<4xi32>,
+conduit.create @out0 {                element_type = memref<4xi32>,
                 depth = 1 : i64}
-conduit.create @out1 {slot_elems = 1 : i64,
-                element_type = memref<4xi32>,
+conduit.create @out1 {                element_type = memref<4xi32>,
                 depth = 1 : i64}
 func.func @scatter_with_cascade_src() {
   conduit.scatter{src = @casc_src, dsts = [@out0, @out1] {memtile = "tile(0,1)"}}
@@ -36,14 +33,11 @@ func.func @scatter_with_cascade_src() {
 
 // gather with cascade-mode destination conduit — parses without verifier error.
 aie.device(npu1) {
-conduit.create @in0 {slot_elems = 1 : i64,
-                element_type = memref<4xi32>,
+conduit.create @in0 {                element_type = memref<4xi32>,
                 depth = 1 : i64}
-conduit.create @in1 {slot_elems = 1 : i64,
-                element_type = memref<4xi32>,
+conduit.create @in1 {                element_type = memref<4xi32>,
                 depth = 1 : i64}
-conduit.create @casc_dst {slot_elems = 1 : i64,
-                element_type = memref<4xi32>,
+conduit.create @casc_dst {                element_type = memref<4xi32>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
 func.func @gather_with_cascade_dst() {

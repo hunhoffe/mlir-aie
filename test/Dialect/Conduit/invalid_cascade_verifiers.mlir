@@ -20,10 +20,12 @@
 // Cascade incompatibility is detected by Pass C, not by ScatterOp::verify().
 
 aie.device(npu1) {
-conduit.create @src {slot_elems = 1 : i64, depth = 1 : i64,
+conduit.create @src {depth = 1 : i64,
+                element_type = memref<64xi32>,
                 routing_mode = #conduit.routing_mode<cascade>
                 }
-conduit.create @dst {slot_elems = 1 : i64, depth = 1 : i64
+conduit.create @dst {depth = 1 : i64,
+                element_type = memref<64xi32>
                 }
 func.func @scatter_cascade_src_parse_ok() {
   conduit.scatter{src = @src, dsts = [@dst] {memtile = "tile(0,1)"}}

@@ -651,15 +651,6 @@ void lowerPhase(ConduitToDMAState &state) {
       op.erase();
   }
 
-  // Erase conduit.register_buffers ops (Sprint 1 Tier 2.5 op; buffers
-  // recorded into ConduitInfo in Phase 1.5 and BD chains built in Phase 5.5).
-  {
-    llvm::SmallVector<RegisterBuffersOp> toErase;
-    module.walk([&](RegisterBuffersOp op) { toErase.push_back(op); });
-    for (auto op : llvm::reverse(toErase))
-      op.erase();
-  }
-
   // Collect-then-erase Create ops.
   // Note: conduit.wait was removed from the dialect (absorbed into wait_all).
   {

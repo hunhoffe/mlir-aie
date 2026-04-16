@@ -17,7 +17,6 @@
 // CHECK-SAME: depth = 0 : i64
 // CHECK-SAME: element_type = memref<1xvector<16xi32>>
 // CHECK-SAME: routing_mode = #conduit.routing_mode<cascade>
-// CHECK-SAME: slot_elems = 1 : i64
 
 // --- air.channel declaration is erased ---
 // CHECK-NOT: air.channel

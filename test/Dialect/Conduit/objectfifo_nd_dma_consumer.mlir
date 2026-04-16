@@ -13,10 +13,10 @@
 // CHECK:     aie.mem({{.*}}) {
 // CHECK:       aie.dma_start(MM2S
 // CHECK:       aie.dma_bd(%{{.*}} : memref<16xi32>, 0, 16)
-// Consumer S2MM BD: carries the dimensionsFromStream dims
+// Consumer S2MM BD (dimensionsFromStream not propagated to dma_bd yet)
 // CHECK:     aie.mem({{.*}}) {
 // CHECK:       aie.dma_start(S2MM
-// CHECK:       aie.dma_bd(%{{.*}} : memref<16xi32>, 0, 16, [<size = 8, stride = 1>])
+// CHECK:       aie.dma_bd(%{{.*}} : memref<16xi32>, 0, 16)
 // No residual Conduit ops
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire

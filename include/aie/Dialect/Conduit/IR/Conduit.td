@@ -301,10 +301,12 @@ def Conduit_PortAttr : EnumAttr<Conduit_Dialect, Conduit_Port, "port"> {
 // ---------------------------------------------------------------------------
 
 def Conduit_RoutingMode : I32EnumAttr<"RoutingMode", "Conduit routing mode", [
-  I32EnumAttrCase<"Circuit",  0, "circuit">,
-  I32EnumAttrCase<"Packet",   1, "packet">,
-  I32EnumAttrCase<"Cascade",  2, "cascade">,
-  I32EnumAttrCase<"Stream",   3, "stream">
+  I32EnumAttrCase<"Circuit",      0, "circuit">,
+  I32EnumAttrCase<"Packet",       1, "packet">,
+  I32EnumAttrCase<"Cascade",      2, "cascade">,
+  I32EnumAttrCase<"Stream",       3, "stream">,
+  I32EnumAttrCase<"SharedMemory", 4, "shared_memory">,
+  I32EnumAttrCase<"DMA",          5, "dma">
 ]> {
   let cppNamespace = "::xilinx::conduit";
   let genSpecializedAttr = 0;
@@ -322,7 +324,8 @@ def Conduit_RoutingModeAttr : EnumAttr<Conduit_Dialect, Conduit_RoutingMode, "ro
 
 def Conduit_SyncMode : I32EnumAttr<"SyncMode", "Conduit synchronization mode", [
   I32EnumAttrCase<"Barrier",     0, "barrier">,
-  I32EnumAttrCase<"Independent", 1, "independent">
+  I32EnumAttrCase<"Independent", 1, "independent">,
+  I32EnumAttrCase<"None",        2, "none">
 ]> {
   let cppNamespace = "::xilinx::conduit";
   let genSpecializedAttr = 0;
@@ -374,106 +377,79 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
     - Tier 3: not directly enforced; channel slot_elems is implicitly the
               memref allocation size on the consumer tile
 
-    Typed lowering attributes (emitted by Pass A, consumed by Pass C).
-    These replace the old conduit.annotate string-keyed approach:
-    - element_type    : TypeAttr — actual element memref type (e.g. memref<10xi32>)
-                        Pass C uses this for aie.buffer allocation; never defaults to i32.
-    - depth           : I64Attr — double-buffering depth
-    - routing_mode    : optional StringAttr "circuit" (default) or "packet".
-                        When "packet", Pass C emits aie.packet_flow instead of
-                        aie.flow for the circuit-switched routing of this conduit.
-                        Packet-switched flows carry a packet ID and allow
-                        hardware-level switching based on packet headers.
-    - producer_rates  : optional DenseI64Array — CSDF producer token-count per
-                        phase.  P = (p0, p1, ..., p_{q-1}), phase period q=len(P).
-                        When present, consumer_rates must also be present and the
-                        Lee-Messerschmitt CSDF balance equation must hold:
-                          sum(P) * len(C) == sum(C) * len(P)
-                        This is a NECESSARY condition for a periodic schedule
-                        (it guarantees equal average production and consumption
-                        rates).  The SUFFICIENT condition (deadlock freedom: buffer
-                        never underflows or overflows during one hyper-period) is
-                        also statically computable from these rates + the slot_elems
-                        and depth attributes via hyper-period simulation — see TODO
-                        M7 in the work queue.
-    - consumer_rates  : optional DenseI64Array — CSDF consumer token-count per
-                        phase.  C = (c0, c1, ..., c_{r-1}), phase period r=len(C).
-                        When present, producer_rates must also be present.  The
-                        verifier enforces the CSDF balance equation:
-                          sum(producer_rates) * len(consumer_rates)
-                            == sum(consumer_rates) * len(producer_rates)
-                        Note: the weaker condition sum(P)==sum(C) only handles
-                        equal-period actors (q==r) and is NOT sufficient in general.
+    Attributes:
+    - element_type    : TypeAttr (required) — element memref type (e.g. memref<10xi32>).
+                        Buffer capacity = depth * product(element_type.shape).
+                        Pass C uses this for aie.buffer allocation.
+    - depth           : I64Attr (optional) — buffer slot count. 0 = unresolved sentinel
+                        (set by Pass A/B, resolved by --conduit-depth-promote).
+    - routing_mode    : optional enum — absent = heuristic (Pass D resolves).
+                        shared_memory: force shared mem; error if not adjacent.
+                        dma: force DMA; infer-modes picks circuit or packet.
+                        circuit: pin circuit-switched DMA; skips shared mem.
+                        packet: pin packet-switched DMA.
+                        cascade: cascade stream.
+                        stream: AXI stream direct (no DMA BD).
+    - sync_mode       : optional enum — absent = barrier (default).
+                        none: suppress all lock allocation/emission (keeps DMA).
+                        independent: per-endpoint lock pair.
+    - producer_rates  : optional DenseI64Array — CSDF producer token-count per phase.
+    - consumer_rates  : optional DenseI64Array — CSDF consumer token-count per phase.
+                        Both must appear together. Verifier checks Lee-Messerschmitt
+                        balance: sum(P)*len(C) == sum(C)*len(P).
+    - fusion_group    : optional string — IRON hint pairing this channel with one other
+                        for spatial fusion via --conduit-fuse-operators.
+    - bd_repeat       : lowering annotation — BD unroll factor (Pass A → Pass C).
+    - dma_repeat      : lowering annotation — whole-chain repeat count (Pass A → Pass C).
 
     Example:
-      conduit.create @c1 {slot_elems = 10 : i64,
-                          element_type = memref<10xi32>,
-                          depth = 1 : i64}
+      conduit.create @c1 {element_type = memref<10xi32>, depth = 1 : i64}
 
-    Full CSDF example with explicit producer and consumer rates:
-      conduit.create @csdf_full {slot_elems = 6 : i64,
-                                 element_type = memref<i32>,
-                                 depth = 6 : i64,
-                                 producer_rates = array<i64: 1, 2>,
-                                 consumer_rates = array<i64: 1, 2>}
-      // Balance check: sum(P)*len(C) = 3*2 = 6 == sum(C)*len(P) = 3*2 = 6 ✓
-      // (same-period case q=r=2, average rate = 1.5 tokens/firing for both)
+    CSDF example:
+      conduit.create @csdf {element_type = memref<i32>, depth = 6 : i64,
+                            producer_rates = array<i64: 1, 2>,
+                            consumer_rates = array<i64: 1, 2>}
+      // Balance: sum(P)*len(C) = 3*2 = 6 == sum(C)*len(P) = 3*2 = 6 ✓
 
-    Different-period balanced example (producer bursts 3 then 1; consumer uniform 2):
-      conduit.create @csdf_diff_period {slot_elems = 4 : i64, ...,
-                                        producer_rates = array<i64: 3, 1>,
-                                        consumer_rates = array<i64: 2>}
-      // P=[3,1] sum=4 q=2; C=[2] sum=2 r=1
-      // Balance: sum(P)*len(C) = 4*1 = 4 == sum(C)*len(P) = 2*2 = 4 ✓
-      // Average rate: 4/2 = 2 tokens/phase for both actors.
-
-    Sum-equal but CSDF-imbalanced (rejected):
-      // P=[3] sum=3 q=1; C=[1,2] sum=3 r=2
-      // Balance: sum(P)*len(C) = 3*2 = 6 != sum(C)*len(P) = 3*1 = 3 ✗
-      // Producer avg rate = 3/1 = 3; consumer avg rate = 3/2 = 1.5 — mismatch.
+    Fusion hint example:
+      conduit.create @a_out {element_type = memref<128xbf16>, depth = 2 : i64,
+                             fusion_group = "a_to_b"}
+      conduit.create @b_in  {element_type = memref<128xbf16>, depth = 2 : i64,
+                             fusion_group = "a_to_b"}
   }];
   let arguments = (ins SymbolNameAttr:$sym_name,
-                       I64Attr:$slot_elems,
-                       OptionalAttr<Conduit_SyncModeAttr>:$sync_mode,
-                       OptionalAttr<I64Attr>:$window_size,
-                       OptionalAttr<TypeAttr>:$element_type,
+                       // Semantic core (all required except routing_mode/sync_mode/rates)
+                       TypeAttr:$element_type,
                        OptionalAttr<I64Attr>:$depth,
+                       // Routing and synchronization (optional — absent = heuristic)
+                       // routing_mode values:
+                       //   shared_memory — force shared mem; error if not adjacent
+                       //   dma          — force DMA; infer-modes picks circuit or packet
+                       //   circuit      — pin circuit-switched DMA (skips shared mem)
+                       //   packet       — pin packet-switched DMA
+                       //   cascade      — cascade stream
+                       //   stream       — AXI stream direct (no DMA BD)
                        OptionalAttr<Conduit_RoutingModeAttr>:$routing_mode,
+                       // sync_mode values:
+                       //   barrier     — single lock protocol (default)
+                       //   independent — per-endpoint lock pair
+                       //   none        — no lock allocation or emission
+                       OptionalAttr<Conduit_SyncModeAttr>:$sync_mode,
+                       // CSDF rates (must appear together)
                        OptionalAttr<DenseI64ArrayAttr>:$producer_rates,
                        OptionalAttr<DenseI64ArrayAttr>:$consumer_rates,
-                       // bd_repeat: BD-level unroll factor within one chain pass.
-                       // When present, Pass C sets effectiveBDs = depth * bd_repeat;
-                       // each BD in the chain fires bd_repeat times before advancing.
-                       // Pass A propagates this from aie.objectfifo.create's
-                       // repeat_count attribute.
+                       // Fusion hint: IRON stamps this to pair two conduit.create ops
+                       // as candidates for --conduit-fuse-operators (spatial fusion).
+                       // The pass reads D_A from producer put_memref descriptors and
+                       // D_B from consumer get_memref descriptors, computes D_B ∘ D_A,
+                       // and selects: shared_memory (identity+adjacent), direct DMA
+                       // (geometric 1:1), or conduit.transpose relay (geometric N:M).
+                       OptionalAttr<StrAttr>:$fusion_group,
+                       // Lowering annotations (set by Pass A/B, consumed by Pass C only)
+                       // bd_repeat: BD-level unroll factor; effectiveBDs = depth * bd_repeat
                        OptionalAttr<I64Attr>:$bd_repeat,
-                       // disable_synchronization: when true, suppress all lock
-                       // allocation and use_lock emission for this conduit.
-                       // Producer and consumer run without synchronization
-                       // (suitable for streaming pipelines with no backpressure).
-                       // Pass A propagates this from objectfifo.create.
-                       // Pass C: skip allocateLockPair; lower acquire/release to no-ops.
-                       OptionalAttr<BoolAttr>:$disable_synchronization,
-                       // viaDMA: when true, force DMA path even for adjacent tiles
-                       // that would otherwise use shared memory.  Pass A propagates
-                       // from objectfifo.create.  Pass C: skip Phase 3c shared-memory
-                       // path and emit aie.flow for adjacent tiles.
-                       OptionalAttr<BoolAttr>:$viaDMA,
-                       // plio: when true, the shim endpoint uses Platform I/O (PLIO)
-                       // instead of DMA.  Pass C emits WireBundle::PLIO flows and sets
-                       // plio=true on shim_dma_allocation ops.  Requires the producer
-                       // tile (inferred via inferAllTiles) to be a shim tile (row == 0).
-                       OptionalAttr<BoolAttr>:$plio,
-                       // dma_repeat: number of times the DMA engine runs the whole
-                       // BD chain.  Maps to DMAStartOp.repeat_count = dma_repeat - 1
-                       // with a non-circular BD chain (last BD → aie.end).
-                       // Pass A propagates from objectfifo.create iter_count.
-                       OptionalAttr<I64Attr>:$dma_repeat,
-                       // producer_dimensions: BDDimLayout traversal descriptor for
-                       // the producer (MM2S) DMA BD chain.
-                       OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions,
-                       // consumer_dimensions: per-consumer BDDimLayout array.
-                       OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions
+                       // dma_repeat: whole-chain repeat count; DMAStartOp.repeat_count = dma_repeat - 1
+                       OptionalAttr<I64Attr>:$dma_repeat
   );
   // Print as: conduit.create @sym_name { slot_elems = ..., ... }
   // sym_name is consumed by $sym_name so attr-dict omits it automatically.
@@ -747,18 +723,25 @@ def Conduit_SubviewAccess : Conduit_Op<"subview_access", [Pure]> {
 }
 
 // ---------------------------------------------------------------------------
-// Relay ops — scatter, gather, transpose, register_buffers
-// ---------------------------------------------------------------------------
 
 def Conduit_ScatterOp : Conduit_Op<"scatter", []> {
-  let summary = "1:N fan-out relay — routes one source channel to N destination channels";
+  let summary = "1:N fan-out relay — routes one source channel to N destination channels via a MemTile";
+  let description = [{
+    Routes data from one source channel to N destination channels through a MemTile
+    DMA relay. The memtile operand is a FlatSymbolRef to an aie.tile op (row=1).
+    offsets: optional per-destination element offsets into the MemTile buffer
+    (absent = uniform — all destinations start at offset 0, full buffer length).
+    Each relay edge (compute→MemTile or MemTile→compute) may carry a fusion_group
+    hint on its conduit.create for --conduit-fuse-operators.
+  }];
   let arguments = (ins
     FlatSymbolRefAttr:$src,
     Conduit_FlatSymbolRefArrayAttr:$dsts,
+    // memtile: "tile(col,row)" string identifying the MemTile relay tile.
+    // TODO (post-Sprint 6): migrate to FlatSymbolRefAttr once AIE tile ops
+    // carry sym_names. The current StrAttr format is validated by the verifier.
     StrAttr:$memtile,
-    OptionalAttr<DenseI64ArrayAttr>:$offsets,
-    OptionalAttr<I64Attr>:$lock_id,
-    OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
+    OptionalAttr<DenseI64ArrayAttr>:$offsets
   );
   let assemblyFormat = [{
     `{` `src` `=` $src `,` `dsts` `=` $dsts attr-dict `}`
@@ -767,14 +750,16 @@ def Conduit_ScatterOp : Conduit_Op<"scatter", []> {
 }
 
 def Conduit_GatherOp : Conduit_Op<"gather", []> {
-  let summary = "N:1 fan-in relay — collects N source channels into one destination channel";
+  let summary = "N:1 fan-in relay — collects N source channels into one destination channel via a MemTile";
+  let description = [{
+    Collects data from N source channels into one destination channel through a
+    MemTile DMA relay. offsets: optional per-source element offsets (absent = uniform).
+  }];
   let arguments = (ins
     Conduit_FlatSymbolRefArrayAttr:$srcs,
     FlatSymbolRefAttr:$dst,
     StrAttr:$memtile,
-    OptionalAttr<DenseI64ArrayAttr>:$offsets,
-    OptionalAttr<I64Attr>:$lock_id,
-    OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
+    OptionalAttr<DenseI64ArrayAttr>:$offsets
   );
   let assemblyFormat = [{
     `{` `srcs` `=` $srcs `,` `dst` `=` $dst attr-dict `}`
@@ -783,29 +768,21 @@ def Conduit_GatherOp : Conduit_Op<"gather", []> {
 }
 
 def Conduit_TransposeOp : Conduit_Op<"transpose", []> {
-  let summary = "N:M static redistribution relay using time-multiplexed DMA";
+  let summary = "N:M static redistribution relay using time-multiplexed DMA via a MemTile";
+  let description = [{
+    Redistributes data from N source channels to M destination channels through a
+    MemTile using time-multiplexed DMA. offsets (required): N*M element offsets
+    encoding the redistribution map — offsets[i*M + j] is the MemTile offset for
+    source i to destination j. Packet ID budget: N*M <= 32 (AIE2 packet ID space).
+  }];
   let arguments = (ins
     Conduit_FlatSymbolRefArrayAttr:$srcs,
     Conduit_FlatSymbolRefArrayAttr:$dsts,
     StrAttr:$memtile,
-    DenseI64ArrayAttr:$offsets,
-    OptionalAttr<I64Attr>:$lock_id,
-    OptionalAttr<Conduit_SyncModeAttr>:$sync_mode
+    DenseI64ArrayAttr:$offsets
   );
   let assemblyFormat = [{
     `{` `srcs` `=` `[` $srcs `]` `,` `dsts` `=` `[` $dsts `]` attr-dict `}`
-  }];
-  let hasVerifier = 1;
-}
-
-def Conduit_RegisterBuffersOp : Conduit_Op<"register_buffers", []> {
-  let summary = "register pre-allocated buffers (aie.buffer / aie.external_buffer) with a conduit channel";
-  let arguments = (ins
-    FlatSymbolRefAttr:$name,
-    Variadic<AnyMemRef>:$buffers
-  );
-  let assemblyFormat = [{
-    `{` `name` `=` $name `,` `buffers` `=` `[` $buffers `]` attr-dict `}` `:` type($buffers)
   }];
   let hasVerifier = 1;
 }
@@ -846,7 +823,12 @@ def Conduit_PutMemref : Conduit_Op<"put_memref"> {
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
-                       DenseI64ArrayAttr:$strides);
+                       DenseI64ArrayAttr:$strides,
+                       // producer_dimensions: pre-computed BDDimLayout for the MM2S
+                       // BD chain. Set by Pass A when the objectfifo carries
+                       // dimensionsToStream. The fusion pass reads this as D_A when
+                       // computing the composed transformation D_B ∘ D_A.
+                       OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions);
   let assemblyFormat = "attr-dict";
 }
 
@@ -863,7 +845,12 @@ def Conduit_GetMemref : Conduit_Op<"get_memref"> {
                        I64Attr:$num_elems,
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
-                       DenseI64ArrayAttr:$strides);
+                       DenseI64ArrayAttr:$strides,
+                       // consumer_dimensions: pre-computed BDDimLayout for the S2MM
+                       // BD chain. Set by Pass A when the objectfifo carries
+                       // dimensionsFromStream. The fusion pass reads this as D_B when
+                       // computing the composed transformation D_B ∘ D_A.
+                       OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions);
   let assemblyFormat = "attr-dict";
 }
 
@@ -893,7 +880,8 @@ def Conduit_PutMemrefAsync : Conduit_Op<"put_memref_async"> {
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
                        DenseI64ArrayAttr:$strides,
-                       Variadic<Conduit_AnyTokenType>:$deps);
+                       Variadic<Conduit_AnyTokenType>:$deps,
+                       OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions);
   let results   = (outs Conduit_DMATokenType:$token);
   let assemblyFormat = "(`[` $deps^ `:` type($deps) `]`)? attr-dict `:` type($token)";
   let hasVerifier = 1;
@@ -912,7 +900,8 @@ def Conduit_GetMemrefAsync : Conduit_Op<"get_memref_async"> {
                        DenseI64ArrayAttr:$offsets,
                        DenseI64ArrayAttr:$sizes,
                        DenseI64ArrayAttr:$strides,
-                       Variadic<Conduit_AnyTokenType>:$deps);
+                       Variadic<Conduit_AnyTokenType>:$deps,
+                       OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions);
   let results   = (outs Conduit_DMATokenType:$token);
   let assemblyFormat = "(`[` $deps^ `:` type($deps) `]`)? attr-dict `:` type($token)";
   let hasVerifier = 1;

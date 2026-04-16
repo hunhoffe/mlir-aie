@@ -24,11 +24,11 @@
 // Each conduit.create is on one line so CHECK-DAG matching works.
 
 // (a) loop_fifo: promoted — capacity doubles 8→16, depth 1→2
-// CHECK-DAG: conduit.create @loop_fifo {{{.*}}depth = 2 : i64, {{.*}}slot_elems = 16 : i64
+// CHECK-DAG: conduit.create @loop_fifo {{{.*}}depth = 2 : i64, {{.*}}
 // (b) linked_fifo: NOT promoted — capacity stays 8, depth stays 1
-// CHECK-DAG: conduit.create @linked_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 8 : i64
+// CHECK-DAG: conduit.create @linked_fifo {{{.*}}depth = 1 : i64, {{.*}}
 // (c) passthrough_fifo: NOT promoted — capacity stays 4, depth stays 1
-// CHECK-DAG: conduit.create @passthrough_fifo {{{.*}}depth = 1 : i64, {{.*}}slot_elems = 4 : i64
+// CHECK-DAG: conduit.create @passthrough_fifo {{{.*}}depth = 1 : i64, {{.*}}
 // conduit.scatter must survive unchanged (also CHECK-DAG to allow any order)
 // CHECK-DAG: conduit.scatter{src = @linked_fifo, dsts = [@linked_out]
 
@@ -39,26 +39,22 @@ aie.device(npu1) {
 // (a) Eligible: depth-1 with loop-enclosed acquire and compute.
 // Pass must promote to depth=2, slot_elems =16.
 // expected-remark @+1 {{conduit-depth-promote: promoted 'loop_fifo' from depth-1 to depth-2}}
-conduit.create @loop_fifo {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @loop_fifo {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 
 // (b) Linked: depth-1 but conduit.link references it.
 // Pass must skip it (exclusion criterion #2).
 // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_fifo' -- linked conduit}}
-conduit.create @linked_fifo {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @linked_fifo {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_out' -- linked conduit}}
-conduit.create @linked_out {slot_elems = 8 : i64,
-                element_type = memref<8xi32>,
+conduit.create @linked_out {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 
 // (c) Passthrough: depth-1 with acquire immediately followed by release, no compute.
 // Pass must skip it (exclusion criterion #4).
 // expected-remark @+1 {{conduit-depth-promote: skipping 'passthrough_fifo' -- passthrough-only (no compute)}}
-conduit.create @passthrough_fifo {slot_elems = 4 : i64,
-                element_type = memref<4xi32>,
+conduit.create @passthrough_fifo {                element_type = memref<4xi32>,
                 depth = 1 : i64}
 
 func.func @eligible_loop_fifo(%result: memref<8xi32>) {

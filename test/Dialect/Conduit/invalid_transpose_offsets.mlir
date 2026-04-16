@@ -21,7 +21,7 @@ func.func @bad_transpose_offsets_size() {
 // transpose with 6 srcs * 6 dsts = 36 packet IDs — exceeds AIE2 packet ID budget of 32.
 // offsets must be provided: 36 entries.
 func.func @bad_transpose_packet_budget() {
-  // expected-error@+1 {{'conduit.transpose' op transpose packet ID budget exceeded: srcs.size() * dsts.size() = 6 * 6 = 36, maximum is 32 (AIE2 packet ID space)}}
+  // expected-error@+1 {{'conduit.transpose' op transpose packet ID budget exceeded: 6 * 6 = 36, maximum is 32 (AIE2 packet ID space)}}
   conduit.transpose{srcs = [[@s0, @s1, @s2, @s3, @s4, @s5]], dsts = [[@d0, @d1, @d2, @d3, @d4, @d5]] {memtile = "tile(0,1)", offsets = array<i64: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
                   10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
                   20, 21, 22, 23, 24, 25, 26, 27, 28, 29,

@@ -13,7 +13,7 @@
 //   - one air.wait_all (async)
 //
 // Expected output after --air-channel-to-conduit:
-//   - conduit.create {name="chan", slot_elems =1, depth=1}
+//   - conduit.create @chan {depth=0, element_type=...}
 //     with element_type inferred from the put memref operand type
 //   - conduit.put_memref_async with name="chan", num_elems=64, offsets/sizes/strides extracted
 //   - conduit.get_memref_async with name="chan", num_elems=64, matching descriptor
@@ -24,11 +24,10 @@
 //
 // --- Channel declaration becomes conduit.create ---
 // Attributes are printed in alphabetical order:
-//   capacity, depth, element_type, name
+//   depth, element_type
 // CHECK:   conduit.create @chan
 // CHECK-SAME: depth = 0
 // CHECK-SAME: element_type = memref<8x8xi32>
-// CHECK-SAME: slot_elems = 1
 //
 // --- air.channel.put becomes conduit.put_memref_async ---
 // Static descriptor: offsets=[0,0], sizes=[8,8], strides=[8,1], num_elems=8*8=64

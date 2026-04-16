@@ -33,11 +33,11 @@ module @conduit_relay_join_s2mm_consistent {
     %tile_b = aie.tile(3, 2)
 
     // Source A: tile(2,2) → MemTile(2,1)
-    conduit.create @src_a {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @src_a {element_type = memref<64xi8>, depth = 2 : i64}
     // Source B: tile(3,2) → MemTile(2,1)
-    conduit.create @src_b {slot_elems = 128 : i64, element_type = memref<64xi8>, depth = 2 : i64}
+    conduit.create @src_b {element_type = memref<64xi8>, depth = 2 : i64}
     // Joined output: MemTile(2,1) → shim(2,0)
-    conduit.create @join_out {slot_elems = 256 : i64, element_type = memref<128xi8>, depth = 2 : i64}
+    conduit.create @join_out {element_type = memref<128xi8>, depth = 2 : i64}
 
     // Join link: combine src_a + src_b → join_out
     conduit.gather{srcs = [@src_a, @src_b], dst = @join_out {memtile = "tile(2,1)", offsets = array<i64: 0, 64>}}

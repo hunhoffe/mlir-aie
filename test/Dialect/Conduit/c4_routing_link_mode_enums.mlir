@@ -18,30 +18,34 @@ aie.device(npu1) {
 // -----------------------------------------------------------------------
 
 // CHECK: routing_mode = #conduit.routing_mode<circuit>
-conduit.create @rm_circuit {slot_elems = 4 : i64, depth = 0 : i64,
+conduit.create @rm_circuit {depth = 0 : i64,
+                element_type = memref<4xi32>,
                 routing_mode = #conduit.routing_mode<circuit>}
 // CHECK: routing_mode = #conduit.routing_mode<packet>
-conduit.create @rm_packet {slot_elems = 4 : i64, depth = 0 : i64,
+conduit.create @rm_packet {depth = 0 : i64,
+                element_type = memref<4xi32>,
                 routing_mode = #conduit.routing_mode<packet>}
 // CHECK: routing_mode = #conduit.routing_mode<cascade>
-conduit.create @rm_cascade {slot_elems = 1 : i64, depth = 1 : i64,
+conduit.create @rm_cascade {depth = 1 : i64,
+                element_type = memref<64xi32>,
                 routing_mode = #conduit.routing_mode<cascade>}
 // CHECK: routing_mode = #conduit.routing_mode<stream>
-conduit.create @rm_stream {slot_elems = 4 : i64, depth = 0 : i64,
+conduit.create @rm_stream {depth = 0 : i64,
+                element_type = memref<4xi32>,
                 routing_mode = #conduit.routing_mode<stream>}
 
 // -----------------------------------------------------------------------
 // Case 2: relay op roundtrip — scatter and gather.
 // -----------------------------------------------------------------------
 
-conduit.create @src {slot_elems = 4 : i64, depth = 0 : i64}
-conduit.create @dst0 {slot_elems = 2 : i64, depth = 0 : i64}
-conduit.create @dst1 {slot_elems = 2 : i64, depth = 0 : i64}
-conduit.create @src0 {slot_elems = 2 : i64, depth = 0 : i64}
-conduit.create @src1 {slot_elems = 2 : i64, depth = 0 : i64}
-conduit.create @dst {slot_elems = 4 : i64, depth = 0 : i64}
-conduit.create @in_fwd {slot_elems = 4 : i64, depth = 0 : i64}
-conduit.create @out_fwd {slot_elems = 4 : i64, depth = 0 : i64}
+conduit.create @src {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @dst0 {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @dst1 {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @src0 {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @src1 {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @dst {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @in_fwd {depth = 0 : i64, element_type = memref<4xi32>}
+conduit.create @out_fwd {depth = 0 : i64, element_type = memref<4xi32>}
 
 // -----------------------------------------------------------------------
 // Case 3: absent routing_mode (unresolved) is valid.
@@ -49,7 +53,7 @@ conduit.create @out_fwd {slot_elems = 4 : i64, depth = 0 : i64}
 
 // CHECK: conduit.create @unresolved
 // CHECK-NOT: routing_mode
-conduit.create @unresolved {slot_elems = 4 : i64, depth = 0 : i64}
+conduit.create @unresolved {depth = 0 : i64, element_type = memref<4xi32>}
 
 // CHECK-LABEL: func.func @routing_mode_circuit
 func.func @routing_mode_circuit() {

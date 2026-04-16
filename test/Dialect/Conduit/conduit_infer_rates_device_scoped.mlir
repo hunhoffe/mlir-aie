@@ -37,8 +37,7 @@
 module @case1_spsc {
   aie.device(npu2) {
     // expected-remark@+1 {{conduit-infer-rates: attached producer_rates=[32] consumer_rates=[32] to conduit 'simple_chan'}}
-    conduit.create @simple_chan {slot_elems = 32 : i64,
-                    depth = 1 : i64,
+    conduit.create @simple_chan {                    depth = 1 : i64,
                     element_type = memref<32xi32>}
 
     aie.runtime_sequence(%buf : memref<32xi32>) {
@@ -84,15 +83,13 @@ module @case1_spsc {
 
 // CHECK-LABEL: module @case2_sliding_window
 // CHECK:       conduit.create @sliding_win
-// CHECK-SAME:  slot_elems = 1
 // CHECK-NOT:   producer_rates
 // CHECK-NOT:   consumer_rates
 
 module @case2_sliding_window {
   aie.device(npu2) {
     // expected-remark@+1 {{conduit-infer-rates: skipping 'sliding_win': sliding-window channel (acquire count 3 > release count 1)}}
-    conduit.create @sliding_win {slot_elems = 1 : i64,
-                    depth = 3 : i64,
+    conduit.create @sliding_win {                    depth = 3 : i64,
                     element_type = memref<1xi32>}
 
     %prod_tile = aie.tile(0, 2)
@@ -158,8 +155,7 @@ module @case2_sliding_window {
 module @case3_dma_repeat {
   aie.device(npu2) {
     // expected-remark@+1 {{conduit-infer-rates: skipping 'iterating': dma_repeat set; Pass C infers BD chain length from putCount independently}}
-    conduit.create @iterating {slot_elems = 16 : i64,
-                    depth = 1 : i64,
+    conduit.create @iterating {                    depth = 1 : i64,
                     dma_repeat = 4 : i64,
                     element_type = memref<16xi32>}
 

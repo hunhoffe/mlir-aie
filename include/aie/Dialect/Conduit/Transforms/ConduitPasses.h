@@ -152,8 +152,7 @@ createConduitCheckLoopBalancePass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitFuseOperatorsPass();
 
-/// Buffer materialization: emit aie.buffer × max(depth, window_size+1) on
-/// each consumer tile and conduit.register_buffers linking them to the channel.
+/// Buffer materialization: emit aie.buffer × depth on each consumer tile.
 /// Enables --conduit-place-buffers to run before --conduit-to-dma.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitMaterializeBuffersPass();

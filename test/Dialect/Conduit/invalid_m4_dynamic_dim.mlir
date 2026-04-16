@@ -11,8 +11,7 @@
 // Use expected-warning annotation with -verify-diagnostics.
 
 aie.device(npu1) {
-// expected-warning @+1 {{conduit.create: element_type has dynamic dimensions; capacity is approximate}}
-conduit.create @dyn_fifo {slot_elems = 16 : i64,
-                element_type = memref<?xi32>,
+// expected-warning @+1 {{conduit.create: element_type has dynamic dimensions; buffer capacity is approximate}}
+conduit.create @dyn_fifo {                element_type = memref<?xi32>,
                 depth = 1 : i64}
 }

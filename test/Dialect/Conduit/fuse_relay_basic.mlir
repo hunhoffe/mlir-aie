@@ -11,11 +11,11 @@
 //   @intermediate conduit.create is erased.
 
 aie.device(npu1) {
-conduit.create @src0 {slot_elems = 64 : i64, depth = 0 : i64}
-conduit.create @src1 {slot_elems = 64 : i64, depth = 0 : i64}
-conduit.create @intermediate {slot_elems = 128 : i64, depth = 0 : i64}
-conduit.create @dst0 {slot_elems = 64 : i64, depth = 0 : i64}
-conduit.create @dst1 {slot_elems = 64 : i64, depth = 0 : i64}
+conduit.create @src0 {element_type = memref<64xi32>, depth = 0 : i64}
+conduit.create @src1 {element_type = memref<64xi32>, depth = 0 : i64}
+conduit.create @intermediate {element_type = memref<128xi32>, depth = 0 : i64}
+conduit.create @dst0 {element_type = memref<64xi32>, depth = 0 : i64}
+conduit.create @dst1 {element_type = memref<64xi32>, depth = 0 : i64}
 // CHECK-NOT:   conduit.create @intermediate
 // CHECK-LABEL: func.func @fuse_gather_scatter_basic
 // CHECK:       conduit.transpose
@@ -35,9 +35,9 @@ func.func @fuse_gather_scatter_basic() {
 // Negative test: gather and scatter on different memtiles should NOT fuse.
 
 aie.device(npu1) {
-conduit.create @a0 {slot_elems = 64 : i64, depth = 0 : i64}
-conduit.create @relay {slot_elems = 128 : i64, depth = 0 : i64}
-conduit.create @b0 {slot_elems = 64 : i64, depth = 0 : i64}
+conduit.create @a0 {element_type = memref<64xi32>, depth = 0 : i64}
+conduit.create @relay {element_type = memref<128xi32>, depth = 0 : i64}
+conduit.create @b0 {element_type = memref<64xi32>, depth = 0 : i64}
 // CHECK-LABEL: func.func @no_fuse_different_memtile
 // CHECK:       conduit.gather
 // CHECK:       conduit.scatter
@@ -53,9 +53,9 @@ func.func @no_fuse_different_memtile() {
 // Negative test: intermediate channel has an acquire user → should NOT fuse.
 
 aie.device(npu1) {
-conduit.create @x0 {slot_elems = 64 : i64, depth = 0 : i64}
-conduit.create @relay_used {slot_elems = 128 : i64, depth = 1 : i64}
-conduit.create @y0 {slot_elems = 64 : i64, depth = 0 : i64}
+conduit.create @x0 {element_type = memref<64xi32>, depth = 0 : i64}
+conduit.create @relay_used {element_type = memref<128xi32>, depth = 1 : i64}
+conduit.create @y0 {element_type = memref<64xi32>, depth = 0 : i64}
 // CHECK-LABEL: func.func @no_fuse_intermediate_has_users
 // CHECK:       conduit.gather
 // CHECK:       conduit.scatter
@@ -75,19 +75,19 @@ func.func @no_fuse_intermediate_has_users() {
 // The pass should NOT fuse even though gather.dst == scatter.src and same memtile.
 
 aie.device(npu1) {
-conduit.create @s0 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @s1 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @s2 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @s3 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @s4 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @s5 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @mid {slot_elems = 96 : i64, depth = 0 : i64}
-conduit.create @d0 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @d1 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @d2 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @d3 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @d4 {slot_elems = 16 : i64, depth = 0 : i64}
-conduit.create @d5 {slot_elems = 16 : i64, depth = 0 : i64}
+conduit.create @s0 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @s1 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @s2 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @s3 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @s4 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @s5 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @mid {element_type = memref<96xi32>, depth = 0 : i64}
+conduit.create @d0 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @d1 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @d2 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @d3 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @d4 {element_type = memref<16xi32>, depth = 0 : i64}
+conduit.create @d5 {element_type = memref<16xi32>, depth = 0 : i64}
 // CHECK-LABEL: func.func @no_fuse_budget_overflow
 // CHECK:       conduit.gather
 // CHECK:       conduit.scatter

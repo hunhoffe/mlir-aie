@@ -51,7 +51,7 @@ module @conduit_bd_ring_count {
 
     // depth=3, but maxConsumerAcquire=3 → max(3, 3+1) = 4 buffers needed.
     // slot_elems = 96 = 32 elements * depth(3); perBufLen = 96/3 = 32.
-    conduit.create @fifo {slot_elems = 96 : i64, depth = 3 : i64,
+    conduit.create @fifo {depth = 3 : i64,
                     element_type = memref<32xi32>
                     }
 

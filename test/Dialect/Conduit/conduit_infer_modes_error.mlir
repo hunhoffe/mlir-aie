@@ -14,19 +14,16 @@ module @test_step35_remark {
     %t14 = aie.tile(1, 4)
     %t15 = aie.tile(1, 5)
     // Two circuit conduits exhaust both MM2S channels on tile(0,2).
-    conduit.create @c1 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c1 {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
-    conduit.create @c2 {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c2 {                    element_type = memref<4xi32>,
                     depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<circuit>}
     // Third conduit with absent routing_mode (unresolved): circuit exhausted,
     // packet fallback emits remark.
     // expected-remark @+1 {{conduit-infer-modes: resolved unresolved routing_mode to "packet" (circuit DMA exhausted on tile (0,2))}}
-    conduit.create @c3_any {slot_elems = 4 : i64,
-                    element_type = memref<4xi32>,
+    conduit.create @c3_any {                    element_type = memref<4xi32>,
                     depth = 1 : i64}
 
     // Structural tile info: tile(0,2) produces all three conduits.

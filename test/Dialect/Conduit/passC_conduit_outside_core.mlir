@@ -23,7 +23,7 @@ module @passC_conduit_outside_core {
     %shim = aie.tile(0, 0)
     %tile = aie.tile(0, 2)
 
-    conduit.create @myChan {slot_elems = 32 : i64, depth = 1 : i64,
+    conduit.create @myChan {depth = 1 : i64,
                     element_type = memref<32xi32>}
 
     aie.shim_dma_allocation @myChan_shim_alloc(%shim, MM2S, 0)

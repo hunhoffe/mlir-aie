@@ -48,8 +48,7 @@ module @subview_wait_window_produce_side {
     %tile_0_2 = aie.tile(0, 2)
     %tile_0_4 = aie.tile(0, 4)
 
-    conduit.create @fifo {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @fifo {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     // Producer core: uses async acquire + wait_window + subview_access on

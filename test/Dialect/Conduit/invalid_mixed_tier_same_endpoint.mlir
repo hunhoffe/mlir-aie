@@ -20,8 +20,7 @@ module {
     %prod = aie.tile(0, 0)
     %cons = aie.tile(0, 2)
 
-    conduit.create @foo {slot_elems = 32 : i64,
-                    element_type = memref<32xi32>,
+    conduit.create @foo {                    element_type = memref<32xi32>,
                     depth = 1 : i64}
 
     aie.core(%cons) {
@@ -56,8 +55,7 @@ module {
     %prod = aie.tile(0, 0)
     %cons = aie.tile(0, 2)
 
-    conduit.create @bar {slot_elems = 16 : i64,
-                    element_type = memref<16xi32>,
+    conduit.create @bar {                    element_type = memref<16xi32>,
                     depth = 1 : i64}
 
     aie.core(%cons) {
@@ -92,8 +90,7 @@ module {
     %prod = aie.tile(0, 2)
     %cons = aie.tile(0, 3)
 
-    conduit.create @baz {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @baz {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     aie.core(%prod) {
@@ -128,8 +125,7 @@ module {
     %shim = aie.tile(0, 0)
     %core = aie.tile(0, 2)
 
-    conduit.create @input {slot_elems = 32 : i64,
-                    element_type = memref<32xi32>,
+    conduit.create @input {                    element_type = memref<32xi32>,
                     depth = 1 : i64}
 
     // Shim tile uses Tier 3 (put_memref via DMA from host) — no aie.core here.
@@ -162,8 +158,7 @@ module {
     %coreA = aie.tile(0, 2)
     %coreB = aie.tile(1, 2)
 
-    conduit.create @shared {slot_elems = 16 : i64,
-                    element_type = memref<16xi32>,
+    conduit.create @shared {                    element_type = memref<16xi32>,
                     depth = 1 : i64}
 
     // Core A: Tier 2 only.
@@ -196,8 +191,7 @@ module {
   aie.device(npu1) {
     %t = aie.tile(0, 2)
 
-    conduit.create @only_t2 {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @only_t2 {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     aie.core(%t) {
@@ -221,8 +215,7 @@ module {
   aie.device(npu1) {
     %t = aie.tile(0, 2)
 
-    conduit.create @only_t3 {slot_elems = 8 : i64,
-                    element_type = memref<8xi32>,
+    conduit.create @only_t3 {                    element_type = memref<8xi32>,
                     depth = 1 : i64}
 
     aie.core(%t) {

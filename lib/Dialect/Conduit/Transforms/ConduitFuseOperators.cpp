@@ -293,10 +293,10 @@ struct ConduitFuseOperatorsPass
       // For single-output/single-input operators this is unambiguous.
       llvm::SmallVector<std::pair<Create, Create>> matched;
       for (Create outCh : outputChannels) {
-        auto outET = outCh.getElementType();
+        mlir::Type outET = outCh.getElementType();
         for (Create inCh : inputChannels) {
-          auto inET = inCh.getElementType();
-          if (outET && inET && *outET == *inET) {
+          mlir::Type inET = inCh.getElementType();
+          if (outET == inET) {
             matched.push_back({outCh, inCh});
             break; // first match per output channel
           }
@@ -338,14 +338,9 @@ struct ConduitFuseOperatorsPass
         // No sentinel needed — we accept DMA routing, no shared-mem required.
         mlir::IntegerAttr depthAttr = builder.getI64IntegerAttr(2);
 
-        // element_type: copy from outCh (may be null → TypeAttr{}).
-        mlir::TypeAttr elemTypeAttr;
-        if (auto et = outCh.getElementType())
-          elemTypeAttr = mlir::TypeAttr::get(*et);
-
-        // slot_elems: copy from outCh (0 if unset → default 1 slot).
-        uint64_t slotElems = static_cast<uint64_t>(
-            outCh.getSlotElems() > 0 ? outCh.getSlotElems() : 1);
+        // element_type: copy from outCh (required in redesign 2).
+        // The Create builder takes mlir::Type directly (not TypeAttr).
+        mlir::Type elemType = outCh.getElementType();
 
         // producer_rates / consumer_rates: propagate if present.
         mlir::DenseI64ArrayAttr producerRatesAttr, consumerRatesAttr;
@@ -364,19 +359,7 @@ struct ConduitFuseOperatorsPass
 
         // Emit conduit.create INSIDE devA (not at module scope) so Pass C
         // sees it as a normal intra-device channel after the device merge.
-        // Signature (from ConduitOps.h.inc build candidate):
-        //   build(builder, state, sym_name, slot_elems,
-        //         sync_mode, window_size, producer_tile, consumer_tiles,
-        //         shim_consumer_tiles, element_type, depth, access_pattern,
-        //         routing_mode, producer_rates, consumer_rates, alloc_tile,
-        //         bd_repeat, disable_synchronization, viaDMA, plio, dma_repeat,
-        //         producer_dimensions, consumer_dimensions)
-        // Emit the fused conduit.create inside devA's body (Step 8 will merge
-        // devB into devA, so this channel becomes a normal intra-device DMA
-        // channel between tile(prodCol,prodRow) and tile(consCol,consRow)).
         // Insert after the last existing conduit.create in devA.
-        // Use direct iteration (not walk) to avoid descending into sub-regions
-        // or accidentally picking up conduit.creates from devB.
         {
           mlir::Operation *insertPt = nullptr;
           for (mlir::Operation &op : devA.getBodyRegion().front())
@@ -388,21 +371,17 @@ struct ConduitFuseOperatorsPass
             builder.setInsertionPoint(
                 devA.getBodyRegion().front().getTerminator());
         }
-        builder.create<Create>(devA.getLoc(), fusedName, slotElems,
-                               /*sync_mode=*/SyncModeAttr{},
-                               /*window_size=*/mlir::IntegerAttr{},
-                               /*element_type=*/elemTypeAttr,
+        builder.create<Create>(devA.getLoc(),
+                               mlir::StringAttr::get(ctx, fusedName),
+                               /*element_type=*/elemType,
                                /*depth=*/depthAttr,
                                /*routing_mode=*/routingModeAttr,
+                               /*sync_mode=*/SyncModeAttr{},
                                /*producer_rates=*/producerRatesAttr,
                                /*consumer_rates=*/consumerRatesAttr,
+                               /*fusion_group=*/mlir::StringAttr{},
                                /*bd_repeat=*/mlir::IntegerAttr{},
-                               /*disable_synchronization=*/mlir::BoolAttr{},
-                               /*viaDMA=*/mlir::BoolAttr{},
-                               /*plio=*/mlir::BoolAttr{},
-                               /*dma_repeat=*/mlir::IntegerAttr{},
-                               /*producer_dimensions=*/mlir::Attribute{},
-                               /*consumer_dimensions=*/mlir::Attribute{});
+                               /*dma_repeat=*/mlir::IntegerAttr{});
 
         // --- Step 6: Rename channel references in core bodies. ---
         // The GEMV core has conduit.acquire/release on @outName (the old output
