@@ -1025,7 +1025,162 @@ void lowerPhase(ConduitToDMAState &state) {
       op.erase();
   }
 
-  // Steps 8g-8h: Erase sync put/get memref ops (collect-then-erase).
+  // Step 8g: Lower conduit.put_memref / get_memref inside
+  // aie.runtime_sequence → aiex.dma_configure_task_for + dma_start/await/free.
+  //
+  // This is the reverse of --dma-task-to-conduit. After --conduit-fuse-operators
+  // merges runtime_sequences and eliminates dead block args, the remaining
+  // put/get ops correspond 1:1 (positionally) to the runtime_sequence block
+  // args.  Each Nth conduit.put_memref/get_memref maps to block arg N.
+  //
+  // Mapping:
+  //   conduit.put_memref {name=@chan} → aiex.dma_configure_task_for
+  //       @chan_shim_alloc { aie.dma_bd(%argN, ...) / aie.end }
+  //   conduit.get_memref {name=@chan} → same but with {issue_token = true}
+  //       + aiex.dma_await_task after dma_start_task
+  //
+  // The shim_dma_allocation symbol is looked up via the conduit_channel attr
+  // or by the "{name}_shim_alloc" naming convention established by routePhase.
+  {
+    // Build conduit_name → shim_alloc info from aie.shim_dma_allocation ops.
+    llvm::StringMap<std::string> conduitToAllocSym;
+    llvm::StringMap<AIE::DMAChannelDir> conduitToDir;
+    module.walk([&](AIE::ShimDMAAllocationOp alloc) {
+      llvm::StringRef conduitName;
+      if (auto cc = alloc->getAttrOfType<mlir::FlatSymbolRefAttr>(
+              "conduit_channel"))
+        conduitName = cc.getValue();
+      else {
+        // Fallback: strip _shim_alloc suffix.
+        conduitName = alloc.getSymName();
+        if (conduitName.ends_with("_shim_alloc"))
+          conduitName = conduitName.drop_back(strlen("_shim_alloc"));
+      }
+      conduitToAllocSym[conduitName] = alloc.getSymName().str();
+      conduitToDir[conduitName] = alloc.getChannelDir();
+    });
+
+    module.walk([&](AIE::RuntimeSequenceOp rtSeq) {
+      // Collect put/get_memref ops in source order.
+      llvm::SmallVector<mlir::Operation *> memrefOps;
+      for (auto &op : rtSeq.getBody().front()) {
+        if (mlir::isa<PutMemref>(op) || mlir::isa<GetMemref>(op))
+          memrefOps.push_back(&op);
+      }
+      if (memrefOps.empty())
+        return;
+
+      auto blockArgs = rtSeq.getBody().front().getArguments();
+      auto indexTy = mlir::IndexType::get(ctx);
+
+      // Task SSA values for free/await at end.
+      llvm::SmallVector<mlir::Value> putTasks;
+      mlir::Value awaitTask;
+
+      for (unsigned i = 0; i < memrefOps.size(); ++i) {
+        mlir::Operation *op = memrefOps[i];
+        auto nameRef = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+        if (!nameRef)
+          continue;
+
+        llvm::StringRef conduitName = nameRef.getValue();
+        auto allocIt = conduitToAllocSym.find(conduitName);
+        if (allocIt == conduitToAllocSym.end())
+          continue;
+
+        std::string allocSym = allocIt->second;
+        bool isS2MM =
+            (conduitToDir[conduitName] == AIE::DMAChannelDir::S2MM);
+
+        if (i >= blockArgs.size())
+          continue;
+        mlir::Value bufArg = blockArgs[i];
+
+        int64_t numElems =
+            op->getAttrOfType<mlir::IntegerAttr>("num_elems").getInt();
+
+        // Get BDDimLayout dimensions (put_memref carries producer_dimensions).
+        AIE::BDDimLayoutArrayAttr dims;
+        if (auto dimsAttr =
+                op->getAttrOfType<AIE::BDDimLayoutArrayAttr>(
+                    "producer_dimensions"))
+          dims = dimsAttr;
+
+        builder.setInsertionPoint(op);
+        mlir::Location loc = op->getLoc();
+
+        // Build aiex.dma_configure_task_for.
+        mlir::OperationState configState(loc,
+                                         "aiex.dma_configure_task_for");
+        configState.addAttribute(
+            "alloc", mlir::FlatSymbolRefAttr::get(ctx, allocSym));
+        if (isS2MM)
+          configState.addAttribute("issue_token",
+                                   builder.getBoolAttr(true));
+        configState.addTypes(indexTy);
+        configState.addRegion();
+        mlir::Operation *configOp = builder.create(configState);
+
+        // Build body: aie.dma_bd + aie.end.
+        mlir::Region &bodyRegion = configOp->getRegion(0);
+        mlir::Block *bdBlock = new mlir::Block();
+        bodyRegion.push_back(bdBlock);
+        builder.setInsertionPointToEnd(bdBlock);
+
+        if (dims && !dims.getValue().empty())
+          builder.create<AIE::DMABDOp>(
+              loc, bufArg, /*offset=*/0,
+              static_cast<int>(numElems), dims);
+        else
+          builder.create<AIE::DMABDOp>(
+              loc, bufArg, /*offset=*/0,
+              static_cast<int>(numElems));
+        // Set burst_length = 0 on the dma_bd.
+        bdBlock->back().setAttr("burst_length",
+                                builder.getI32IntegerAttr(0));
+        builder.create<AIE::EndOp>(loc);
+
+        // Emit aiex.dma_start_task(%task).
+        builder.setInsertionPointAfter(configOp);
+        mlir::Value taskResult = configOp->getResult(0);
+        {
+          mlir::OperationState startState(loc, "aiex.dma_start_task");
+          startState.addOperands(taskResult);
+          builder.create(startState);
+        }
+
+        if (isS2MM)
+          awaitTask = taskResult;
+        else
+          putTasks.push_back(taskResult);
+      }
+
+      // Emit await + free at the end of the runtime_sequence body.
+      builder.setInsertionPointToEnd(&rtSeq.getBody().front());
+
+      if (awaitTask) {
+        mlir::OperationState awaitState(rtSeq.getLoc(),
+                                        "aiex.dma_await_task");
+        awaitState.addOperands(awaitTask);
+        builder.create(awaitState);
+      }
+
+      // Free put tasks in reverse order.
+      for (auto task : llvm::reverse(putTasks)) {
+        mlir::OperationState freeState(rtSeq.getLoc(),
+                                       "aiex.dma_free_task");
+        freeState.addOperands(task);
+        builder.create(freeState);
+      }
+
+      // Erase the conduit put/get_memref ops.
+      for (auto *op : llvm::reverse(memrefOps))
+        op->erase();
+    });
+  }
+
+  // Step 8h: Erase remaining sync put/get memref ops NOT inside
+  // runtime_sequence (e.g., stale ops in other contexts).
   {
     llvm::SmallVector<PutMemref> toErase;
     module.walk([&](PutMemref op) { toErase.push_back(op); });

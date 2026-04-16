@@ -412,6 +412,32 @@ struct ConduitFuseOperatorsPass
         renameChannelRefs(devA, outName);
         renameChannelRefs(devB, inName);
 
+        // --- Step 6b: Erase dead put_memref/get_memref for the fused channel.
+        // After renaming, the runtime sequences contain put_memref/get_memref
+        // ops referencing @fused_intermediate_N.  These drove the shim DMA for
+        // the intermediate LPDDR5 crossing; after spatial fusion the
+        // intermediate lives in shared tile memory and needs no shim DMA.
+        // Erase them now so they are not cloned into the merged sequence.
+        auto eraseFusedMemrefOps = [&](AIE::DeviceOp device) {
+          llvm::SmallVector<mlir::Operation *> toErase;
+          device.walk([&](mlir::Operation *op) {
+            llvm::StringRef opName = op->getName().getStringRef();
+            if (opName != "conduit.put_memref" &&
+                opName != "conduit.get_memref" &&
+                opName != "conduit.put_memref_async" &&
+                opName != "conduit.get_memref_async")
+              return;
+            auto nameAttr =
+                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+            if (nameAttr && nameAttr.getValue() == fusedName)
+              toErase.push_back(op);
+          });
+          for (auto *op : toErase)
+            op->erase();
+        };
+        eraseFusedMemrefOps(devA);
+        eraseFusedMemrefOps(devB);
+
         eraseShimAlloc(devA, outName);
         eraseShimAlloc(devB, inName);
 
@@ -588,6 +614,79 @@ struct ConduitFuseOperatorsPass
               op->moveBefore(termA);
             else
               op->moveBefore(&bodyA, bodyA.end());
+          }
+        }
+
+        // --- Step 8c: Eliminate dead block args from the merged sequence.
+        //
+        // After --dma-task-to-conduit, conduit.put/get_memref ops are purely
+        // attribute-based (no SSA operands).  All runtime_sequence block args
+        // are therefore SSA-dead.  After fusion, the merged sequence carries
+        // extra block args from the intermediate channels (erased in Step 6b)
+        // and unused pass-through buffers.
+        //
+        // Reconstruct the block args to have exactly one per surviving
+        // put/get_memref op.  The type of each arg is derived from the op's
+        // num_elems attribute and the scalar element type of the referenced
+        // conduit.create.
+        if (seqA && seqA->getNumRegions() > 0) {
+          mlir::Block &seqBody = seqA->getRegion(0).front();
+
+          // Collect surviving put/get_memref ops in body order.
+          llvm::SmallVector<mlir::Operation *> survivingOps;
+          for (mlir::Operation &op : seqBody) {
+            llvm::StringRef n = op.getName().getStringRef();
+            if (n == "conduit.put_memref" || n == "conduit.get_memref" ||
+                n == "conduit.put_memref_async" ||
+                n == "conduit.get_memref_async")
+              survivingOps.push_back(&op);
+          }
+
+          // Build a name→element_type map from conduit.create ops in devA.
+          llvm::StringMap<mlir::Type> channelElemTypes;
+          devA.walk([&](Create create) {
+            channelElemTypes[create.getName()] = create.getElementType();
+          });
+
+          // Derive block arg types from surviving ops.
+          llvm::SmallVector<mlir::Type> newArgTypes;
+          bool allResolved = true;
+          for (mlir::Operation *op : survivingOps) {
+            auto nameAttr =
+                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+            auto numElemsAttr =
+                op->getAttrOfType<mlir::IntegerAttr>("num_elems");
+            if (!nameAttr || !numElemsAttr) {
+              allResolved = false;
+              break;
+            }
+            auto it = channelElemTypes.find(nameAttr.getValue());
+            if (it == channelElemTypes.end()) {
+              allResolved = false;
+              break;
+            }
+            mlir::Type scalarType;
+            if (auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(it->second))
+              scalarType = memrefTy.getElementType();
+            if (!scalarType) {
+              allResolved = false;
+              break;
+            }
+            int64_t numElems = numElemsAttr.getInt();
+            newArgTypes.push_back(
+                mlir::MemRefType::get({numElems}, scalarType));
+          }
+
+          // Only reconstruct if we resolved all types and the count differs.
+          if (allResolved &&
+              newArgTypes.size() != seqBody.getNumArguments()) {
+            // Erase existing args back-to-front (none have SSA uses).
+            for (int idx = static_cast<int>(seqBody.getNumArguments()) - 1;
+                 idx >= 0; --idx)
+              seqBody.eraseArgument(static_cast<unsigned>(idx));
+            // Add new args matching surviving ops.
+            for (mlir::Type ty : newArgTypes)
+              seqBody.addArgument(ty, seqA->getLoc());
           }
         }
       }
