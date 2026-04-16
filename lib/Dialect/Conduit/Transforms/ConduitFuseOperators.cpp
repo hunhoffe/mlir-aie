@@ -285,16 +285,32 @@ struct ConduitFuseOperatorsPass
       if (outputChannels.empty() || inputChannels.empty())
         continue;
 
-      // --- Step 3: Match by element_type. ---
-      // For single-output/single-input operators this is unambiguous.
+      // --- Step 3: Match by fusion_group attribute. ---
+      // Channels with matching fusion_group values are paired for fusion.
+      // Falls back to element_type matching for IR without fusion_group attrs.
       llvm::SmallVector<std::pair<Create, Create>> matched;
       for (Create outCh : outputChannels) {
-        mlir::Type outET = outCh.getElementType();
+        auto outFG = outCh.getFusionGroup();
+        if (!outFG || outFG->empty())
+          continue;
         for (Create inCh : inputChannels) {
-          mlir::Type inET = inCh.getElementType();
-          if (outET == inET) {
+          auto inFG = inCh.getFusionGroup();
+          if (inFG && *outFG == *inFG) {
             matched.push_back({outCh, inCh});
-            break; // first match per output channel
+            break;
+          }
+        }
+      }
+      // Fallback: match by element_type if no fusion_group attrs found.
+      if (matched.empty()) {
+        for (Create outCh : outputChannels) {
+          mlir::Type outET = outCh.getElementType();
+          for (Create inCh : inputChannels) {
+            mlir::Type inET = inCh.getElementType();
+            if (outET == inET) {
+              matched.push_back({outCh, inCh});
+              break;
+            }
           }
         }
       }
@@ -304,7 +320,7 @@ struct ConduitFuseOperatorsPass
             "conduit-fuse-operators: no matching channel pair found between "
             "device " +
             std::to_string(i) + " and device " + std::to_string(i + 1) +
-            " by element_type; skipping");
+            " by fusion_group or element_type; skipping");
         continue;
       }
 
@@ -448,6 +464,36 @@ struct ConduitFuseOperatorsPass
         outCh->erase();
         inCh->erase();
       }
+
+      // --- Step 7b: Renumber shim DMA channels sequentially after erasure. ---
+      // After fused shim_dma_allocation ops are erased, surviving allocations
+      // may have non-contiguous channel numbers (e.g., channel 1 with channel 0
+      // erased). Pass C expects channels numbered from 0.  Renumber each
+      // (tile, direction) group sequentially.
+      auto renumberShimAllocs = [&](AIE::DeviceOp device) {
+        // Group by (tile SSA value, direction).
+        using Key = std::pair<mlir::Value, int>;
+        llvm::DenseMap<Key, llvm::SmallVector<AIE::ShimDMAAllocationOp>> groups;
+        device.walk([&](AIE::ShimDMAAllocationOp alloc) {
+          Key k = {alloc.getTile(),
+                   static_cast<int>(alloc.getChannelDir())};
+          groups[k].push_back(alloc);
+        });
+        for (auto &[key, allocs] : groups) {
+          // Sort by original channel index to preserve relative order.
+          llvm::sort(allocs, [](AIE::ShimDMAAllocationOp a,
+                                AIE::ShimDMAAllocationOp b) {
+            return a.getChannelIndex() < b.getChannelIndex();
+          });
+          for (unsigned idx = 0; idx < allocs.size(); ++idx) {
+            if (allocs[idx].getChannelIndex() !=
+                static_cast<int64_t>(idx))
+              allocs[idx].setChannelIndex(static_cast<int64_t>(idx));
+          }
+        }
+      };
+      renumberShimAllocs(devA);
+      renumberShimAllocs(devB);
 
       // --- Step 8: Merge device B into device A by physically moving ops. ---
       //
