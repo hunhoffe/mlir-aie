@@ -361,11 +361,19 @@ struct ConduitFuseOperatorsPass
           for (mlir::Operation &op : devA.getBodyRegion().front())
             if (mlir::isa<Create>(op))
               insertPt = &op;
-          if (insertPt)
+          if (insertPt) {
             builder.setInsertionPointAfter(insertPt);
-          else
-            builder.setInsertionPoint(
-                devA.getBodyRegion().front().getTerminator());
+          } else {
+            auto &front = devA.getBodyRegion().front();
+            if (front.mightHaveTerminator()) {
+              if (mlir::Operation *term = front.getTerminator())
+                builder.setInsertionPoint(term);
+              else
+                builder.setInsertionPointToEnd(&front);
+            } else {
+              builder.setInsertionPointToEnd(&front);
+            }
+          }
         }
         builder.create<Create>(devA.getLoc(),
                                mlir::StringAttr::get(ctx, fusedName),
@@ -455,7 +463,15 @@ struct ConduitFuseOperatorsPass
         // bodyA. This establishes the tile/shim SSA values in devA's scope so
         // that the sequence body ops (which use those tile values) can be moved
         // safely in Phase 2.
-        mlir::OpBuilder b(bodyA.getTerminator());
+        mlir::OpBuilder b(ctx);
+        if (bodyA.mightHaveTerminator()) {
+          if (mlir::Operation *term = bodyA.getTerminator())
+            b.setInsertionPoint(term);
+          else
+            b.setInsertionPointToEnd(&bodyA);
+        } else {
+          b.setInsertionPointToEnd(&bodyA);
+        }
         llvm::SmallVector<mlir::Operation *> seqOps;
         {
           llvm::SmallVector<mlir::Operation *> nonSeq;
@@ -513,7 +529,17 @@ struct ConduitFuseOperatorsPass
               // no mapping because they were physically moved to bodyA in
               // Phase 1 and are the same SSA Value objects.
               mlir::OpBuilder seqBuilder(ctx);
-              seqBuilder.setInsertionPoint(seqBodyA.getTerminator());
+              // Use setInsertionPoint(terminator) if one exists (e.g. aie.core
+              // has aie.end), otherwise setInsertionPointToEnd for blocks
+              // without terminators (aie.runtime_sequence).
+              if (seqBodyA.mightHaveTerminator()) {
+                if (mlir::Operation *term = seqBodyA.getTerminator())
+                  seqBuilder.setInsertionPoint(term);
+                else
+                  seqBuilder.setInsertionPointToEnd(&seqBodyA);
+              } else {
+                seqBuilder.setInsertionPointToEnd(&seqBodyA);
+              }
               for (mlir::Operation &inner : seqBodyB) {
                 if (inner.hasTrait<mlir::OpTrait::IsTerminator>())
                   continue;
@@ -555,9 +581,14 @@ struct ConduitFuseOperatorsPass
                 name == "aie.runtime_sequence")
               toSink.push_back(&op);
           }
-          mlir::Operation *termA = bodyA.getTerminator();
-          for (mlir::Operation *op : toSink)
-            op->moveBefore(termA);
+          mlir::Operation *termA =
+              bodyA.mightHaveTerminator() ? bodyA.getTerminator() : nullptr;
+          for (mlir::Operation *op : toSink) {
+            if (termA)
+              op->moveBefore(termA);
+            else
+              op->moveBefore(&bodyA, bodyA.end());
+          }
         }
       }
     }

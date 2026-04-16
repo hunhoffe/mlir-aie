@@ -710,6 +710,70 @@ void lowerPhase(ConduitToDMAState &state) {
     AIE::LockOp resolvedProdLock = resolved.prodLock;
     AIE::LockOp resolvedConsLock = resolved.consLock;
 
+    // Rotation counter init for async acquires (via wait_window).
+    // Step 4 initializes counters for sync AcquireOp but async paths
+    // (acquire_async → wait_window) were missed, leaving rotation
+    // counters uninitialized for channels accessed only via async acquire.
+    {
+      mlir::Value resolvedRotationBuf = resolved.rotationBuf;
+      mlir::Value resolvedProducerRotationBuf = resolved.producerRotationBuf;
+      mlir::Operation *acquireCoreOp = resolved.coreOp;
+
+      if (resolvedRotationBuf && port == Port::Consume && cinfo->depth > 1 &&
+          acquireCoreOp) {
+        mlir::Value coreTileVal =
+            mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
+        auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
+        int64_t col = static_cast<int64_t>(coreTileOp.getCol());
+        int64_t row = static_cast<int64_t>(coreTileOp.getRow());
+        auto ctrKey =
+            std::make_tuple(conduitName.str(), col, row, false);
+        if (!counterInitialized.count(ctrKey)) {
+          counterInitialized.insert(ctrKey);
+          mlir::OpBuilder initBuilder(ctx);
+          initBuilder.setInsertionPointAfterValue(resolvedRotationBuf);
+          mlir::Location loc = op.getLoc();
+          mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+          mlir::Value zero =
+              mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
+          int64_t rotationBufSlot = resolved.rotationBufSlot;
+          mlir::Value slotIdx =
+              initBuilder.create<mlir::arith::ConstantIndexOp>(
+                  loc, rotationBufSlot);
+          initBuilder.create<mlir::memref::StoreOp>(
+              loc, zero, resolvedRotationBuf, mlir::ValueRange{slotIdx});
+        }
+      }
+
+      if (resolvedProducerRotationBuf && port == Port::Produce &&
+          cinfo->depth > 1 && acquireCoreOp) {
+        mlir::Value coreTileVal =
+            mlir::cast<AIE::CoreOp>(acquireCoreOp).getTile();
+        auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
+        int64_t col = static_cast<int64_t>(coreTileOp.getCol());
+        int64_t row = static_cast<int64_t>(coreTileOp.getRow());
+        auto ctrKey =
+            std::make_tuple(conduitName.str(), col, row, true);
+        if (!counterInitialized.count(ctrKey)) {
+          counterInitialized.insert(ctrKey);
+          mlir::OpBuilder initBuilder(ctx);
+          initBuilder.setInsertionPointAfterValue(
+              resolvedProducerRotationBuf);
+          mlir::Location loc = op.getLoc();
+          mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
+          mlir::Value zero =
+              mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
+          int64_t producerRotationBufSlot = resolved.producerRotationBufSlot;
+          mlir::Value slotIdx =
+              initBuilder.create<mlir::arith::ConstantIndexOp>(
+                  loc, producerRotationBufSlot);
+          initBuilder.create<mlir::memref::StoreOp>(
+              loc, zero, resolvedProducerRotationBuf,
+              mlir::ValueRange{slotIdx});
+        }
+      }
+    }
+
     builder.setInsertionPoint(op);
     AIE::LockOp lock =
         (port == Port::Produce) ? resolvedProdLock : resolvedConsLock;
