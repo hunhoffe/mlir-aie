@@ -346,8 +346,8 @@ struct ConduitFuseOperatorsPass
         // tile coordinates are inferred from IR structure via inferAllTiles()
         // after Step 6 renames channel references in the core bodies.
 
-        // depth = 2: standard double-buffering for circuit DMA.
-        // No sentinel needed — we accept DMA routing, no shared-mem required.
+        // depth = 2: standard double-buffering (works for both shared-memory
+        // and circuit DMA routing).
         mlir::IntegerAttr depthAttr = builder.getI64IntegerAttr(2);
 
         // element_type: copy from outCh (required in redesign 2).
@@ -363,11 +363,11 @@ struct ConduitFuseOperatorsPass
                 inCh->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_rates"))
           consumerRatesAttr = attr;
 
-        // routing_mode = circuit: explicit DMA path, no shared-mem inference.
-        // Eliminates the LPDDR5 crossings while keeping two tiles in the
-        // same device (after Step 8 merge).
-        RoutingModeAttr routingModeAttr =
-            RoutingModeAttr::get(ctx, RoutingMode::Circuit);
+        // routing_mode = absent ("any"): let --conduit-infer-modes resolve.
+        // Adjacent tiles (after offset) get shared_memory; non-adjacent get
+        // circuit.  Eliminates DMA channels for the intermediate when tiles
+        // are neighbours.
+        RoutingModeAttr routingModeAttr{};
 
         // Emit conduit.create INSIDE devA (not at module scope) so Pass C
         // sees it as a normal intra-device channel after the device merge.
