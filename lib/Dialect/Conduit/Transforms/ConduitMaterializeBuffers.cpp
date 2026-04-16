@@ -26,6 +26,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
+#include "llvm/ADT/StringSet.h"
+
 using namespace xilinx::conduit;
 using namespace xilinx::AIE;
 
@@ -69,6 +71,24 @@ struct ConduitMaterializeBuffersPass
       });
 
       // ----------------------------------------------------------------
+      // Step 1.5: Build set of relay-managed channel names.
+      // Scatter dst channels and gather src channels get their buffers
+      // allocated by Pass C (ConduitToDMALink), so we must not emit
+      // duplicates here.
+      // ----------------------------------------------------------------
+      llvm::StringSet<> relayDstChannels;
+      device.walk([&](ScatterOp scatterOp) {
+        for (auto d : scatterOp.getDsts())
+          relayDstChannels.insert(
+              mlir::cast<mlir::FlatSymbolRefAttr>(d).getValue());
+      });
+      device.walk([&](GatherOp gatherOp) {
+        for (auto s : gatherOp.getSrcs())
+          relayDstChannels.insert(
+              mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue());
+      });
+
+      // ----------------------------------------------------------------
       // Step 2: For each conduit.create, emit aie.buffer ops.
       // ----------------------------------------------------------------
       llvm::SmallVector<Create> creates;
@@ -76,6 +96,10 @@ struct ConduitMaterializeBuffersPass
 
       for (Create createOp : creates) {
         std::string name = createOp.getName().str();
+
+        // Skip relay-managed channels (Pass C allocates their buffers).
+        if (relayDstChannels.count(name))
+          continue;
 
         // Skip if depth absent or = 0 — run --conduit-depth-promote first.
         if (!createOp.getDepth() || *createOp.getDepth() <= 0)

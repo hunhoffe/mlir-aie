@@ -14,6 +14,7 @@ add_mlir_dialect_library(ConduitTransforms
   ConduitCheckLoopBalance.cpp
   ConduitCheckOrdering.cpp
   ConduitCheckTiers.cpp
+  ConduitDmaTaskToConduit.cpp
   ConduitDepthPromotion.cpp
   ConduitFuseChannels.cpp
   ConduitFuseRelay.cpp

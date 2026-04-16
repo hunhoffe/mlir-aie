@@ -1,8 +1,8 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
 // Tests iter_count=1 (edge case K=1): DMAStartOp should have NO repeat_count
-// attribute (K-1 = 0, which is the default).  The BD chain must be non-circular
-// (last BD goes to end block, not back to ^bb1).
+// attribute (K-1 = 0, which is the default).  The BD chain is circular (last BD
+// loops back to first BD); repeat_count = 0 means the DMA traverses once and stops.
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(xcve2302) {
@@ -12,13 +12,13 @@
 // CHECK:     aie.mem
 // CHECK:       aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK-NOT:   repeat_count
-// BD chain is non-circular: last BD goes to end block
+// BD chain is circular: last BD loops back to ^bb1 (repeat_count controls termination)
 // CHECK:     ^bb1:
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd ^bb2
 // CHECK:     ^bb2:
 // CHECK:       aie.dma_bd
-// CHECK:       aie.next_bd ^bb3
+// CHECK:       aie.next_bd ^bb1
 // CHECK:     ^bb3:
 // CHECK:       aie.end
 

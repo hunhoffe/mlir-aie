@@ -133,14 +133,10 @@ static bool isOutputChannel(Create op,
     noComputeConsumers = false;
   // No inferred consumer tiles — assume no compute consumers.
 
-  // Check producer is shim (row == 0).
-  bool producerIsShim = false;
-  if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
-    auto [col, row] = extractCoord(tileIt->second.producerTile);
-    producerIsShim = (row == 0);
-  }
+  // Check consumer is shim (output channels exit to LPDDR5 via shim DMA).
+  bool hasShimConsumer = tileIt != inferredMap.end() && !tileIt->second.shimConsumerTiles.empty();
 
-  return noComputeConsumers && producerIsShim;
+  return noComputeConsumers && hasShimConsumer;
 }
 
 // ---------------------------------------------------------------------------
@@ -517,9 +513,12 @@ struct ConduitFuseOperatorsPass
               // no mapping because they were physically moved to bodyA in
               // Phase 1 and are the same SSA Value objects.
               mlir::OpBuilder seqBuilder(ctx);
-              seqBuilder.setInsertionPointToEnd(&seqBodyA);
-              for (mlir::Operation &inner : seqBodyB)
+              seqBuilder.setInsertionPoint(seqBodyA.getTerminator());
+              for (mlir::Operation &inner : seqBodyB) {
+                if (inner.hasTrait<mlir::OpTrait::IsTerminator>())
+                  continue;
                 seqBuilder.clone(inner, argMapping);
+              }
               // seqB's body is now represented in seqA. seqB itself remains
               // in devB and will be erased with devB below.
             } else if (!seqA) {

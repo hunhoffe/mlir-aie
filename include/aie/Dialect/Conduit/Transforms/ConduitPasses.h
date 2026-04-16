@@ -64,6 +64,7 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITCHECKORDERING
 #define GEN_PASS_DECL_CONDUITCHECKTIERS
 #define GEN_PASS_DECL_CONDUITCHECKLOOPBALANCE
+#define GEN_PASS_DECL_CONDUITDMATASKTOCONDUIT
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -161,6 +162,12 @@ createConduitMaterializeBuffersPass();
 /// --conduit-materialize-buffers for DMA-aware SRAM bank staggering.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitPlaceBuffersPass();
+
+/// DMA task → Conduit: convert aiex.dma_configure_task_for / dma_start_task /
+/// dma_await_task / dma_free_task in aie.runtime_sequence into conduit.put_memref
+/// or conduit.get_memref ops.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitDmaTaskToConduitPass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

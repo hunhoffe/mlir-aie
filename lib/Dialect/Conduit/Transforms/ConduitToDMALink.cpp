@@ -1818,13 +1818,13 @@ void linkPhase(ConduitToDMAState &state) {
                         0, perBufLen, blockRel,
                         state.lockRelValue(Port::Consume),
                         info.producerDimensions, pktID);
-                    // Non-circular when dma_repeat > 0: last BD → bdTermBlock
-                    // (aie.end).
+                    // When dma_repeat > 0, the DMA engine uses repeat_count
+                    // to replay the BD chain — loop back to the first BD.
                     bool isLast =
                         (i == effectiveBDs - 1) && (info.dmaRepeat > 0);
                     if (isLast)
                       builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                                    bdTermBlock);
+                                                    bdBlocks[0]);
                     else
                       builder.create<AIE::NextBDOp>(
                           state.deviceOp.getLoc(),
@@ -1895,11 +1895,12 @@ void linkPhase(ConduitToDMAState &state) {
                           .getResult(),
                       0, perBufLen, blockRel, state.lockRelValue(Port::Consume),
                       info.producerDimensions, pktID);
-                  // Non-circular when dma_repeat > 0.
+                  // When dma_repeat > 0, loop back to the first BD so the
+                  // DMA engine can replay the chain via repeat_count.
                   bool isLast = (i == effectiveBDs - 1) && (info.dmaRepeat > 0);
                   if (isLast)
                     builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                                  endBlock);
+                                                  bdBlocks[0]);
                   else
                     builder.create<AIE::NextBDOp>(
                         state.deviceOp.getLoc(),
@@ -2306,11 +2307,14 @@ void linkPhase(ConduitToDMAState &state) {
                             (*tileBuffers)[i % tileBuffers->size()].getResult(),
                             0, perBufLen, blockLockRel,
                             state.lockRelValue(Port::Produce), consDims);
-          // Non-circular chain when iter_count > 0 or putCount > 1:
-          // last BD → bdTermBlock (if existingEndBlock) or endMemBlock (fresh
-          // region).
+          // Linear chain handling: dma_repeat > 0 loops back to first BD
+          // (repeat_count replays); putCount > 1 terminates at bdTermBlock
+          // or endMemBlock.
           bool isLast = (i == nBufs - 1) && isLinearChain;
-          if (isLast)
+          if (isLast && info.dmaRepeat > 0)
+            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                          bdBlocks[0]);
+          else if (isLast)
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdTermBlock ? bdTermBlock
                                                       : endMemBlock);

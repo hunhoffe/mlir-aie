@@ -1,7 +1,7 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// Tests iter_count=K: DMAStartOp.repeat_count should be K-1, and the last BD
-// in the chain should be non-circular (last BD → end block, not back to bb1).
+// Tests iter_count=K: DMAStartOp.repeat_count should be K-1, and the BD chain
+// loops back (last BD → first BD). repeat_count controls termination.
 //
 // For iter_count = 5 on a depth-2 shim→compute fifo, DMAStartOp repeat_count = 4.
 
@@ -9,8 +9,11 @@
 // CHECK:   aie.device(xcve2302) {
 // CHECK:     aie.mem
 // CHECK:       aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 4)
-// The last BD must NOT loop back to ^bb1; instead it goes to the end block.
-// CHECK:       aie.next_bd ^bb3
+// BD chain is circular: last BD loops back to ^bb1 (repeat_count controls termination)
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd ^bb2
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd ^bb1
 
 module {
   aie.device(xcve2302) {

@@ -3,7 +3,7 @@
 // Tests repeat_count=3 + iter_count=5 combined on a non-adjacent compute path.
 //
 // Expected: DMAStartOp repeat_count = iter_count-1 = 4.
-// BD chain has 3 blocks (one per repeat), last BD → end block (non-circular).
+// BD chain has 3 blocks (one per repeat), last BD loops back to first BD.
 // Producer lock init = depth * repeat_count = 1 * 3 = 3.
 // Consumer lock init = depth = 1.
 
@@ -24,8 +24,8 @@
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
-// Last BD goes to end block (non-circular)
-// CHECK:       aie.next_bd ^bb4
+// Last BD loops back to first BD (repeat_count controls termination)
+// CHECK:       aie.next_bd ^bb1
 // CHECK:     ^bb4:
 // CHECK:       aie.end
 // Consumer DMA also gets repeat_count = 4

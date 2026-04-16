@@ -604,7 +604,7 @@ struct ObjectFifoToConduitPass
           /*sync_mode=*/disableSyncModeAttr,
           /*producer_rates=*/inferredPRAttr,
           /*consumer_rates=*/inferredCRAttr,
-          /*fusion_group=*/mlir::StringAttr{},
+          /*fusion_group=*/op->getAttrOfType<mlir::StringAttr>("fusion_group"),
           /*bd_repeat=*/repeatCountAttr,
           /*dma_repeat=*/iterCountAttr);
 

@@ -829,4 +829,41 @@ def ConduitPlaceBuffers
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// DMA Task → Conduit — dma-task-to-conduit
+//===----------------------------------------------------------------------===//
+
+def ConduitDmaTaskToConduit
+    : Pass<"dma-task-to-conduit", "::mlir::ModuleOp"> {
+  let summary = "Convert IRON DMATask ops in aie.runtime_sequence to "
+                "conduit.put_memref / conduit.get_memref";
+  let description = [{
+    Converts DMA task programming ops inside aie.runtime_sequence into
+    Conduit IR Tier 3 memref-DMA ops:
+
+      aiex.dma_configure_task_for @chan (MM2S) + aiex.dma_start_task
+        → conduit.put_memref {name = @chan, num_elems, offsets, sizes, strides}
+
+      aiex.dma_configure_task_for @chan (S2MM) + aiex.dma_start_task
+        → conduit.get_memref {name = @chan, num_elems, offsets, sizes, strides}
+
+      aiex.dma_await_task / aiex.dma_free_task → erased
+
+    Direction (MM2S vs S2MM) is determined by looking up the
+    aie.shim_dma_allocation that the dma_configure_task_for references.
+    The conduit channel name is read from the shim_dma_allocation's
+    conduit_channel attribute (set by Pass A).
+
+    This pass runs AFTER Pass A (--objectfifo-to-conduit) and converts the
+    remaining runtime sequence DMA ops into the Conduit abstraction level.
+  }];
+
+  let constructor = "xilinx::conduit::createConduitDmaTaskToConduitPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES
