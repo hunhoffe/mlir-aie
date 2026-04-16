@@ -217,6 +217,21 @@ static bool tryPacketFallback(ConduitToDMAState &state,
   }
   state.conduitConsS2MMChannel[{conduitName, consIdx}] = s2mmChannel;
 
+  // Lock sharing for packet-muxed channels (parallel to S2MM sharing).
+  {
+    auto lockIt = state.pktTileS2MMLock.find(consTileVal);
+    if (lockIt != state.pktTileS2MMLock.end()) {
+      info.consumerTileLocks[consTileVal] = {
+          lockIt->second.first.getDefiningOp<AIE::LockOp>(),
+          lockIt->second.second.getDefiningOp<AIE::LockOp>()};
+    } else {
+      auto &locks = info.consumerTileLocks[consTileVal];
+      if (locks.first && locks.second) {
+        state.pktTileS2MMLock[consTileVal] = {locks.first.getResult(),
+                                               locks.second.getResult()};
+      }
+    }
+  }
 
   // Record occupancy for future convergence checks.
   occupancy.push_back({*pktID, consTileOp});
@@ -729,6 +744,24 @@ void routePhase(ConduitToDMAState &state) {
           state.pktTileS2MMChannel[consTileVal] = s2mmChannel;
         }
         state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
+
+        // Lock sharing: packet-muxed channels on the same S2MM port share
+        // one lock pair.  Overwrite the per-conduit consumerTileLocks entry
+        // so Phase 5.5 BD chain generation picks up the shared lock pair.
+        auto lockIt = state.pktTileS2MMLock.find(consTileVal);
+        if (lockIt != state.pktTileS2MMLock.end()) {
+          // Reuse existing lock pair.
+          info.consumerTileLocks[consTileVal] = {
+              lockIt->second.first.getDefiningOp<AIE::LockOp>(),
+              lockIt->second.second.getDefiningOp<AIE::LockOp>()};
+        } else {
+          // Record this conduit's lock pair for future sharing.
+          auto &locks = info.consumerTileLocks[consTileVal];
+          if (locks.first && locks.second) {
+            state.pktTileS2MMLock[consTileVal] = {locks.first.getResult(),
+                                                   locks.second.getResult()};
+          }
+        }
 
         builder.create<AIE::PacketDestOp>(state.deviceOp.getLoc(), consTileVal,
                                           AIE::WireBundle::DMA,

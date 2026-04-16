@@ -549,6 +549,15 @@ struct ConduitToDMAState {
   // Populated during Phase 4.5a packet-mode flow emission.
   llvm::DenseMap<mlir::Value, int32_t> pktTileS2MMChannel;
 
+  // Packet-mode S2MM lock sharing: when multiple packet-mode conduits share
+  // an S2MM port on a consumer tile (via pktTileS2MMChannel), they also share
+  // a single lock pair.  This prevents lock ID overflow on tiles with many
+  // packet-muxed channels (e.g., flash attention Q+K+V → 1 lock pair instead
+  // of 3).  Populated alongside pktTileS2MMChannel; consumed by Phase 5.5 BD
+  // chain generation (via info.consumerTileLocks overwrite).
+  llvm::DenseMap<mlir::Value,
+                 std::pair<mlir::Value, mlir::Value>> pktTileS2MMLock;
+
   // Pre-computed used DMA channels per tile (populated before Phase 5.5).
   llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedMM2SChannels;
   llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedS2MMChannels;

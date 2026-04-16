@@ -789,6 +789,22 @@ void linkPhase(ConduitToDMAState &state) {
             }
             state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
 
+            // Lock sharing for packet-muxed channels on the same S2MM port.
+            {
+              auto lockIt = state.pktTileS2MMLock.find(consTileVal);
+              if (lockIt != state.pktTileS2MMLock.end()) {
+                dstInfo->consumerTileLocks[consTileVal] = {
+                    lockIt->second.first.getDefiningOp<AIE::LockOp>(),
+                    lockIt->second.second.getDefiningOp<AIE::LockOp>()};
+              } else {
+                auto &locks = dstInfo->consumerTileLocks[consTileVal];
+                if (locks.first && locks.second) {
+                  state.pktTileS2MMLock[consTileVal] = {
+                      locks.first.getResult(), locks.second.getResult()};
+                }
+              }
+            }
+
             builder.create<AIE::PacketDestOp>(
                 state.deviceOp.getLoc(), dstConsTile.getResult(),
                 AIE::WireBundle::DMA, static_cast<int32_t>(s2mmCh));
@@ -1505,6 +1521,14 @@ void linkPhase(ConduitToDMAState &state) {
       builder.create<AIE::EndOp>(state.deviceOp.getLoc());
     }
   }
+
+  // Track packet-muxed S2MM channels that already have a dma_start emitted
+  // in Phase 5.5 Case A.  When multiple conduits share the same S2MM port on
+  // a consumer tile (via pktTileS2MMChannel), only the FIRST conduit emits a
+  // dma_start; subsequent conduits append BD blocks and the post-pass links
+  // them into a combined circular ring.
+  // Maps consumer tile → (s2mmChannel → synthetic fuse group label).
+  llvm::DenseMap<mlir::Value, std::map<int32_t, std::string>> s2mmPktStarted;
 
   for (auto &[name, info] : state.conduitMap) {
     // For disable_synchronization conduits, locks are null by design — skip the
@@ -2254,6 +2278,30 @@ void linkPhase(ConduitToDMAState &state) {
                 existingEndBlock = &block;
         }
 
+        // Detect packet-muxed S2MM channels: when multiple conduits share the
+        // same S2MM port on a consumer tile (via pktTileS2MMChannel), only the
+        // first conduit emits a dma_start.  Subsequent conduits append BD blocks
+        // and the post-pass links all BD chains into a single combined ring.
+        bool isS2MMPktNonFirst = false;
+        std::string s2mmPktGroupLabel;
+        {
+          auto pktIt = state.pktTileS2MMChannel.find(consTileVal2);
+          if (pktIt != state.pktTileS2MMChannel.end() &&
+              pktIt->second == s2mmChannel) {
+            auto &chanMap = s2mmPktStarted[consTileVal2];
+            auto grpIt = chanMap.find(s2mmChannel);
+            if (grpIt != chanMap.end()) {
+              isS2MMPktNonFirst = true;
+              s2mmPktGroupLabel = grpIt->second;
+            } else {
+              s2mmPktGroupLabel =
+                  "pkt_s2mm__" + std::to_string(consCol) + "_" +
+                  std::to_string(consRow) + "_ch" + std::to_string(s2mmChannel);
+              chanMap[s2mmChannel] = s2mmPktGroupLabel;
+            }
+          }
+        }
+
         // Compute DMAStartOp repeat_count from dma_repeat.
         int32_t dmaRepeatCount =
             (info.dmaRepeat > 0) ? static_cast<int32_t>(info.dmaRepeat - 1) : 0;
@@ -2262,37 +2310,52 @@ void linkPhase(ConduitToDMAState &state) {
         for (int64_t i = 0; i < nBufs; ++i)
           bdBlocks.push_back(addMemBlock());
 
-        // bdTermBlock strategy: when adding a channel to an existing DMA region
-        // (existingEndBlock != null), the "next-channel" scan finds the LAST
-        // aie.end block and replaces it with a DMAStartOp.  For finite chains
-        // (dma_repeat > 0), we need a dedicated bdTermBlock (placed BEFORE
-        // endMemBlock) whose aie.end stays permanent so the scan correctly
-        // targets only endMemBlock.  When creating a fresh DMA region (no
-        // existing channels), no scan occurs, so the last BD can point directly
-        // to endMemBlock — no extra terminal block needed.
-        // Linear chain condition: either dma_repeat>0 (finite DMA task queue),
-        // or putCount>1 with no dmaRepeat (N sequential puts merged by
-        // --conduit-fuse-channels; annotation-free temporal multiplexing).
-        bool isLinearChain =
-            (info.dmaRepeat > 0) || (info.putCount > 1 && info.dmaRepeat == 0);
-        mlir::Block *bdTermBlock =
-            (isLinearChain && existingEndBlock) ? addMemBlock() : nullptr;
-        mlir::Block *endMemBlock = addMemBlock();
+        // For packet-muxed non-first conduits: skip dma_start and terminal
+        // blocks.  The first conduit's dma_start and end block serve the entire
+        // combined ring.  BD chain circularity within each member is preserved
+        // (last BD → first BD); the post-pass replaces these to form the
+        // combined ring: Q0→Q1→K0→K1→V0→V1→Q0.
+        bool isLinearChain = false;
+        mlir::Block *bdTermBlock = nullptr;
+        mlir::Block *endMemBlock = nullptr;
 
-        if (existingEndBlock) {
-          mlir::Operation *oldEnd = existingEndBlock->getTerminator();
-          builder.setInsertionPointToEnd(existingEndBlock);
-          oldEnd->erase();
-          builder.create<AIE::DMAStartOp>(
-              state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM, s2mmChannel,
-              dmaRepeatCount, bdBlocks[0], endMemBlock);
+        if (isS2MMPktNonFirst) {
+          // Non-first packet-muxed conduit: no dma_start, no terminal blocks.
+          // BD blocks were already created above.
         } else {
-          mlir::Block *dmaStartBlock = addMemBlock();
-          dmaStartBlock->moveBefore(&memRegion.front());
-          builder.setInsertionPointToEnd(dmaStartBlock);
-          builder.create<AIE::DMAStartOp>(
-              state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM, s2mmChannel,
-              dmaRepeatCount, bdBlocks[0], endMemBlock);
+          // bdTermBlock strategy: when adding a channel to an existing DMA
+          // region (existingEndBlock != null), the "next-channel" scan finds the
+          // LAST aie.end block and replaces it with a DMAStartOp.  For finite
+          // chains (dma_repeat > 0), we need a dedicated bdTermBlock (placed
+          // BEFORE endMemBlock) whose aie.end stays permanent so the scan
+          // correctly targets only endMemBlock.  When creating a fresh DMA
+          // region (no existing channels), no scan occurs, so the last BD can
+          // point directly to endMemBlock — no extra terminal block needed.
+          // Linear chain condition: either dma_repeat>0 (finite DMA task queue),
+          // or putCount>1 with no dmaRepeat (N sequential puts merged by
+          // --conduit-fuse-channels; annotation-free temporal multiplexing).
+          isLinearChain =
+              (info.dmaRepeat > 0) ||
+              (info.putCount > 1 && info.dmaRepeat == 0);
+          bdTermBlock =
+              (isLinearChain && existingEndBlock) ? addMemBlock() : nullptr;
+          endMemBlock = addMemBlock();
+
+          if (existingEndBlock) {
+            mlir::Operation *oldEnd = existingEndBlock->getTerminator();
+            builder.setInsertionPointToEnd(existingEndBlock);
+            oldEnd->erase();
+            builder.create<AIE::DMAStartOp>(
+                state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM, s2mmChannel,
+                dmaRepeatCount, bdBlocks[0], endMemBlock);
+          } else {
+            mlir::Block *dmaStartBlock = addMemBlock();
+            dmaStartBlock->moveBefore(&memRegion.front());
+            builder.setInsertionPointToEnd(dmaStartBlock);
+            builder.create<AIE::DMAStartOp>(
+                state.deviceOp.getLoc(), AIE::DMAChannelDir::S2MM, s2mmChannel,
+                dmaRepeatCount, bdBlocks[0], endMemBlock);
+          }
         }
 
         // Pick consumer BDDimLayout for this consumer index.
@@ -2343,8 +2406,18 @@ void linkPhase(ConduitToDMAState &state) {
           builder.setInsertionPointToEnd(bdTermBlock);
           builder.create<AIE::EndOp>(state.deviceOp.getLoc());
         }
-        builder.setInsertionPointToEnd(endMemBlock);
-        builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+        if (endMemBlock) {
+          builder.setInsertionPointToEnd(endMemBlock);
+          builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+        }
+
+        // Record BD range for packet-muxed S2MM chain fusion.
+        if (!s2mmPktGroupLabel.empty()) {
+          std::string bdKey =
+              name + "__s2mm_" + std::to_string(consIdx);
+          state.conduitBDRange[bdKey] = {bdBlocks.front(), bdBlocks.back()};
+          state.fuseGroupMembers[s2mmPktGroupLabel].push_back(bdKey);
+        }
       }
     }
   }
