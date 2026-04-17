@@ -138,6 +138,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
+#include <map>
 #include <set>
 #include <string>
 
@@ -821,30 +822,35 @@ struct AirChannelToConduitPass
               aliasToSourceChannel[dstName] = name;
             }
 
-            // Build dsts symbol ref array for conduit.scatter.
-            llvm::SmallVector<mlir::Attribute> dstsAttrs;
-            for (auto &dst : dstNames)
-              dstsAttrs.push_back(mlir::FlatSymbolRefAttr::get(ctx, dst));
+            // Group consumers by column so each scatter uses its column-local
+            // MemTile instead of routing everything through column 0.
+            std::map<int64_t, llvm::SmallVector<size_t>> consumersByCol;
+            for (size_t ci = 0; ci < consumerCoords.size(); ++ci)
+              consumersByCol[consumerCoords[ci].first].push_back(ci);
 
-            // Emit conduit.scatter.
-            // Determine relay MemTile from consumer tile column.
-            std::string memtileStr;
-            if (!consumerCoords.empty()) {
-              int64_t consCol = consumerCoords[0].first;
-              memtileStr = findMemTileInColumn(createOp, consCol);
+            // Emit one conduit.scatter per column group.
+            for (auto &[col, indices] : consumersByCol) {
+              llvm::SmallVector<mlir::Attribute> dstsAttrs;
+              for (size_t idx : indices)
+                dstsAttrs.push_back(
+                    mlir::FlatSymbolRefAttr::get(ctx, dstNames[idx]));
+
+              // Determine relay MemTile from this column.
+              std::string memtileStr =
+                  findMemTileInColumn(createOp, col);
+              if (memtileStr.empty()) {
+                // Fallback: try producer tile column.
+                auto prodIt2 = channelProducerTile.find(name);
+                if (prodIt2 != channelProducerTile.end())
+                  memtileStr =
+                      findMemTileInColumn(createOp, prodIt2->second.first);
+              }
+              builder.create<ScatterOp>(
+                  loc, mlir::FlatSymbolRefAttr::get(ctx, name),
+                  mlir::ArrayAttr::get(ctx, dstsAttrs),
+                  mlir::StringAttr::get(ctx, memtileStr),
+                  /*offsets=*/mlir::DenseI64ArrayAttr{});
             }
-            if (memtileStr.empty()) {
-              // Fallback: try producer tile column.
-              auto prodIt2 = channelProducerTile.find(name);
-              if (prodIt2 != channelProducerTile.end())
-                memtileStr =
-                    findMemTileInColumn(createOp, prodIt2->second.first);
-            }
-            builder.create<ScatterOp>(loc,
-                                      mlir::FlatSymbolRefAttr::get(ctx, name),
-                                      mlir::ArrayAttr::get(ctx, dstsAttrs),
-                                      mlir::StringAttr::get(ctx, memtileStr),
-                                      /*offsets=*/mlir::DenseI64ArrayAttr{});
           }
         }
       }
