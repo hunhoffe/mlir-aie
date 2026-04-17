@@ -326,6 +326,7 @@ void routePhase(ConduitToDMAState &state) {
 
       // Check MM2S budget on this shim tile; if exhausted, spill to
       // the next available shim tile in the same device.
+      bool shimSpilled = false;
       {
         uint32_t maxShimMM2S = 2;
         if (state.targetModel)
@@ -368,6 +369,7 @@ void routePhase(ConduitToDMAState &state) {
                   static_cast<int>(adjCol), 0, AIE::WireBundle::DMA);
             if (static_cast<uint32_t>(adjMM2S) < adjMax) {
               shimTile = adjTile;
+              shimSpilled = true;
               found = true;
               break;
             }
@@ -449,6 +451,14 @@ void routePhase(ConduitToDMAState &state) {
 
       std::string allocSym = info.origName + "_shim_alloc";
       state.shimConduitNames.insert(info.origName);
+      // If the shim tile was spilled to an adjacent tile, the pre-existing
+      // ShimDMAAllocationOp (from ObjectFifo/DMATask lowering) references the
+      // wrong tile and channel. Erase it so a fresh one is created below.
+      if (shimSpilled) {
+        if (auto *existingAlloc = mlir::SymbolTable::lookupSymbolIn(
+                state.deviceOp, mlir::StringAttr::get(ctx, allocSym)))
+          existingAlloc->erase();
+      }
       if (!mlir::SymbolTable::lookupSymbolIn(
               state.deviceOp, mlir::StringAttr::get(ctx, allocSym)))
         builder.create<AIE::ShimDMAAllocationOp>(
