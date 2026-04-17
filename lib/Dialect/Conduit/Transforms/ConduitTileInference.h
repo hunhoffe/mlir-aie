@@ -69,18 +69,22 @@ struct InferredTiles {
   /// Producer tile SSA value (aie.tile / aie.logical_tile result).
   /// Null if no producer tile inferred.
   /// Sources: Acquire(Port::Produce) inside aie.core,
-  ///          aie.shim_dma_allocation with MM2S direction, or
-  ///          aie.put_cascade with conduit_channel attr.
+  ///          aie.shim_dma_allocation with MM2S direction,
+  ///          aie.put_cascade with conduit_channel attr,
+  ///          PutMemrefAsync inside aie.core (Source 8a), or
+  ///          air_producer_tile attr on conduit.create (Source 8b).
   mlir::Value producerTile;
 
   /// Non-shim consumer tiles.
   /// Sources: Acquire(Port::Consume) or GetMemrefAsync inside aie.core,
-  ///          or aie.get_cascade with conduit_channel attr.
+  ///          aie.get_cascade with conduit_channel attr, or
+  ///          air_consumer_tiles attr on conduit.create (Source 8b, row>0).
   llvm::SmallVector<mlir::Value> consumerTiles;
 
   /// Shim consumer tiles (row == 0).
   /// Sources: aie.shim_dma_allocation with S2MM direction, matched via
-  ///          conduit_channel attr, sym_name, or _shim_alloc suffix.
+  ///          conduit_channel attr, sym_name, or _shim_alloc suffix, or
+  ///          air_consumer_tiles attr on conduit.create (Source 8b, row==0).
   llvm::SmallVector<mlir::Value> shimConsumerTiles;
 
   /// Relay MemTile intermediaries (from conduit.scatter/gather $memtile attr).
@@ -101,6 +105,10 @@ struct InferredTiles {
 //      aie.core → GetCascade(conduit_channel) → cascade consumer tiles
 //   7. conduit.create with dma_channel_group + no producer after 1–6 →
 //      standalone MemTile producer (exactly one unused MemTile in scope)
+//   8. Air-channel origin inference (from Pass B via --air-channel-to-conduit):
+//      a. aie.core → PutMemrefAsync → producer tile
+//      b. conduit.create with air_producer_tile / air_consumer_tiles attrs
+//         (persisted by Pass B Phase 2b.7 from hierarchy context)
 //
 // For efficiency, call this once per pass and reuse the result map.
 // ---------------------------------------------------------------------------

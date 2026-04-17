@@ -19,9 +19,9 @@
 //   0 circuit aie.flow ops
 
 // CHECK-LABEL: module @pkt_fallback_with_cascade
-// CHECK:       aie.packet_flow(0)
 // CHECK:       aie.packet_flow(1)
 // CHECK:       aie.packet_flow(2)
+// CHECK:       aie.packet_flow(3)
 // CHECK:       aie.configure_cascade
 // CHECK-NOT:   conduit.create
 

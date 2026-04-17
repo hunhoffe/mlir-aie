@@ -61,6 +61,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace xilinx::conduit {
@@ -236,6 +237,83 @@ static void eraseRuntimeDMAOpsForName(AIE::DeviceOp device,
       user->erase();
     configOp->erase();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: sync-group-aware runtime sequence interleaving.
+// ---------------------------------------------------------------------------
+
+/// Extract channel name from a conduit runtime sequence op.
+/// Returns std::nullopt for non-conduit ops or ops without a name attribute.
+static std::optional<std::string>
+getConduitRuntimeChannelName(mlir::Operation *op) {
+  llvm::StringRef opName = op->getName().getStringRef();
+  if (opName != "conduit.put_memref" && opName != "conduit.get_memref" &&
+      opName != "conduit.put_memref_async" &&
+      opName != "conduit.get_memref_async")
+    return std::nullopt;
+  auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+  if (!nameAttr)
+    return std::nullopt;
+  return nameAttr.getValue().str();
+}
+
+/// Partitioned runtime sequence ops for sync-group-aware interleaving.
+struct PartitionedSeqOps {
+  /// Ops for channels that appear exactly once (one-shot, e.g., bias vector).
+  llvm::SmallVector<mlir::Operation *> oneShot;
+  /// Ops for channels that appear multiple times, grouped into sync-group
+  /// chunks.  chunks[i] is the i-th sync group's ops.
+  llvm::SmallVector<llvm::SmallVector<mlir::Operation *>> chunks;
+};
+
+/// Partition runtime sequence ops into one-shot ops and batched sync-group
+/// chunks.
+///
+/// Chunk detection: walk ops in order; a new occurrence of an already-seen
+/// channel name within the current chunk signals a new chunk boundary.
+/// Ops without channel names (e.g., wait_all) are appended to the current
+/// chunk.
+static PartitionedSeqOps
+partitionRuntimeOps(llvm::ArrayRef<mlir::Operation *> ops) {
+  // 1. Count channel name occurrences across all ops.
+  llvm::StringMap<unsigned> nameCounts;
+  for (mlir::Operation *op : ops) {
+    if (auto name = getConduitRuntimeChannelName(op))
+      nameCounts[*name]++;
+  }
+
+  // 2. Separate one-shot ops from batched ops, preserving order.
+  PartitionedSeqOps result;
+  llvm::SmallVector<mlir::Operation *> batchedOps;
+  for (mlir::Operation *op : ops) {
+    auto name = getConduitRuntimeChannelName(op);
+    if (name && nameCounts[*name] == 1) {
+      result.oneShot.push_back(op);
+    } else {
+      batchedOps.push_back(op);
+    }
+  }
+
+  // 3. Group batched ops into sync-group chunks.
+  if (!batchedOps.empty()) {
+    result.chunks.push_back({});
+    llvm::StringSet<> seenInChunk;
+    for (mlir::Operation *op : batchedOps) {
+      auto name = getConduitRuntimeChannelName(op);
+      if (name) {
+        if (!seenInChunk.insert(*name).second) {
+          // Name already seen in this chunk → start a new chunk.
+          result.chunks.push_back({});
+          seenInChunk.clear();
+          seenInChunk.insert(*name);
+        }
+      }
+      result.chunks.back().push_back(op);
+    }
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -600,10 +678,50 @@ struct ConduitFuseOperatorsPass
               // The IRMapping covers seqB's block args; tile/shim values need
               // no mapping because they were physically moved to bodyA in
               // Phase 1 and are the same SSA Value objects.
+              // --- Sync-group-aware interleaving ---
+              // Instead of simply appending all of seqB's ops after seqA's
+              // ops (which is only correct for single-sync-group operators),
+              // we partition both sequences into one-shot ops and batched
+              // chunks, then interleave the chunks to preserve per-batch
+              // correctness for multi-batch operators.
+              //
+              // Rule: one_shot_A + one_shot_B
+              //       + [chunk_A[0] + chunk_B[0]]
+              //       + [chunk_A[1] + chunk_B[1]] + ...
+
+              // Collect surviving ops from both sequences.
+              llvm::SmallVector<mlir::Operation *> opsA, opsB;
+              for (mlir::Operation &op : seqBodyA) {
+                if (!op.hasTrait<mlir::OpTrait::IsTerminator>())
+                  opsA.push_back(&op);
+              }
+              for (mlir::Operation &op : seqBodyB) {
+                if (!op.hasTrait<mlir::OpTrait::IsTerminator>())
+                  opsB.push_back(&op);
+              }
+
+              // Partition into one-shot ops and batched chunks.
+              PartitionedSeqOps partA = partitionRuntimeOps(opsA);
+              PartitionedSeqOps partB = partitionRuntimeOps(opsB);
+
+              // Check chunk count compatibility.
+              if (!partA.chunks.empty() && !partB.chunks.empty() &&
+                  partA.chunks.size() != partB.chunks.size()) {
+                seqA->emitError()
+                    << "conduit-fuse-operators: incompatible batch counts "
+                       "in runtime sequences: device A has "
+                    << partA.chunks.size() << " sync groups, device B has "
+                    << partB.chunks.size();
+                signalPassFailure();
+                return;
+              }
+
+              // Detach all non-terminator ops from seqBodyA.
+              for (mlir::Operation *op : opsA)
+                op->remove();
+
+              // Set insertion point before the terminator (or end of block).
               mlir::OpBuilder seqBuilder(ctx);
-              // Use setInsertionPoint(terminator) if one exists (e.g. aie.core
-              // has aie.end), otherwise setInsertionPointToEnd for blocks
-              // without terminators (aie.runtime_sequence).
               if (seqBodyA.mightHaveTerminator()) {
                 if (mlir::Operation *term = seqBodyA.getTerminator())
                   seqBuilder.setInsertionPoint(term);
@@ -612,10 +730,25 @@ struct ConduitFuseOperatorsPass
               } else {
                 seqBuilder.setInsertionPointToEnd(&seqBodyA);
               }
-              for (mlir::Operation &inner : seqBodyB) {
-                if (inner.hasTrait<mlir::OpTrait::IsTerminator>())
-                  continue;
-                seqBuilder.clone(inner, argMapping);
+
+              // Re-insert in interleaved order.
+              // 1. One-shot ops from A (re-insert originals).
+              for (mlir::Operation *op : partA.oneShot)
+                seqBuilder.insert(op);
+              // 2. One-shot ops from B (clone with arg mapping).
+              for (mlir::Operation *op : partB.oneShot)
+                seqBuilder.clone(*op, argMapping);
+              // 3. Interleave batched chunks.
+              size_t numChunks = partA.chunks.size();
+              if (partB.chunks.size() > numChunks)
+                numChunks = partB.chunks.size();
+              for (size_t c = 0; c < numChunks; ++c) {
+                if (c < partA.chunks.size())
+                  for (mlir::Operation *op : partA.chunks[c])
+                    seqBuilder.insert(op);
+                if (c < partB.chunks.size())
+                  for (mlir::Operation *op : partB.chunks[c])
+                    seqBuilder.clone(*op, argMapping);
               }
               // seqB's body is now represented in seqA. seqB itself remains
               // in devB and will be erased with devB below.

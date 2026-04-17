@@ -65,6 +65,8 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITCHECKTIERS
 #define GEN_PASS_DECL_CONDUITCHECKLOOPBALANCE
 #define GEN_PASS_DECL_CONDUITDMATASKTOCONDUIT
+#define GEN_PASS_DECL_CONDUITFUSECOREBODIES
+#define GEN_PASS_DECL_CONDUITCOMBINEDEVICE
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -168,6 +170,19 @@ createConduitPlaceBuffersPass();
 /// or conduit.get_memref ops.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitDmaTaskToConduitPass();
+
+/// Loop-body fusion: compose aie.core bodies on the same tile connected by
+/// intermediate conduit channels, replacing intermediate with L1 memref.alloc
+/// or MemTile relay.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitFuseCoreBodyPass();
+
+/// Device merge: merge two aie.device ops connected by matching fusion_group
+/// attributes into one. tile-offset mode offsets devB tiles; same-tile mode
+/// keeps coordinates. Does NOT rewrite channels — leaves that to downstream
+/// fusion passes.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitCombineDevicePass();
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

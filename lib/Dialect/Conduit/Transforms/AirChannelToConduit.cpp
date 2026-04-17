@@ -846,53 +846,83 @@ struct AirChannelToConduitPass
       }
 
       // Phase 2b: scan put/get ops to extract element_type for conduit.create.
-      // For each channel, use the memref operand type from the first put/get.
+      //
+      // Two-pass strategy: prefer L2 consumer (get) buffer types over L3
+      // producer (put) source types.  For L3→L2 relay channels, the put's
+      // memref is the full DRAM tensor (e.g. memref<768x64xbf16> = 96KB)
+      // while the get's L2 buffer is the per-tile relay size (e.g.
+      // memref<96x64xbf16> = 12KB).  Using the L2 size matches the original
+      // air design's explicit buffer allocation and avoids MemTile overflow.
+      //
+      // Helper lambda: extract the memref type from a put/get op.
+      auto extractMemRefType =
+          [](mlir::Operation *op) -> std::optional<mlir::MemRefType> {
+        auto segs = getOperandSegments(op);
+        if (segs.size() >= 3) {
+          int32_t ndeps = segs[0];
+          int32_t nidx = segs[1];
+          int32_t memrefPos = ndeps + nidx;
+          if (static_cast<int32_t>(op->getNumOperands()) > memrefPos) {
+            mlir::Value memrefVal = op->getOperand(memrefPos);
+            if (auto mt =
+                    mlir::dyn_cast<mlir::MemRefType>(memrefVal.getType()))
+              return mt;
+          }
+        } else if (op->getNumOperands() >= 1) {
+          if (auto mt =
+                  mlir::dyn_cast<mlir::MemRefType>(op->getOperand(0).getType()))
+            return mt;
+        }
+        return std::nullopt;
+      };
+
+      // Pass 1: scan get ops with L2 memory space (1) — preferred source for
+      // element_type because these are the actual MemTile relay buffers.
+      for (mlir::Operation *op : putGetToRewrite) {
+        if (!isAirChannelGet(op))
+          continue;
+        std::string chanName = getChanName(op);
+        if (chanName.empty())
+          continue;
+        auto it = channelCreateOps.find(chanName);
+        if (it == channelCreateOps.end())
+          continue;
+        auto createTypedOp =
+            mlir::dyn_cast<Create>(it->second);
+        if (!createTypedOp || createTypedOp.getElementTypeAttr())
+          continue;
+        auto optMt = extractMemRefType(op);
+        if (!optMt)
+          continue;
+        mlir::MemRefType mt = *optMt;
+        // Only prefer get ops whose buffer lives in L2 (memory space 1).
+        if (auto msAttr =
+                mlir::dyn_cast_or_null<mlir::IntegerAttr>(mt.getMemorySpace()))
+          if (msAttr.getInt() == 1) {
+            mlir::MemRefType collapsed = collapseToRank2(mt);
+            createTypedOp.setElementTypeAttr(
+                mlir::TypeAttr::get(collapsed));
+          }
+      }
+
+      // Pass 2: for channels still unpatched, fall back to any put/get op
+      // (preserves the original first-encountered behavior).
       for (mlir::Operation *op : putGetToRewrite) {
         std::string chanName = getChanName(op);
         if (chanName.empty())
           continue;
-
-        // Find the create op for this channel.
         auto it = channelCreateOps.find(chanName);
         if (it == channelCreateOps.end())
           continue;
-
-        mlir::Operation *createOp = it->second;
-        auto createTypedOp = mlir::dyn_cast<Create>(createOp);
-        if (!createTypedOp)
+        auto createTypedOp =
+            mlir::dyn_cast<Create>(it->second);
+        if (!createTypedOp || createTypedOp.getElementTypeAttr())
           continue;
-
-        // Only patch if element_type not yet set (null TypeAttr means unset).
-        if (createTypedOp.getElementTypeAttr())
+        auto optMt = extractMemRefType(op);
+        if (!optMt)
           continue;
-
-        // Get operand segment sizes to locate the memref operand.
-        auto segs = getOperandSegments(op);
-        // segs = [ndeps, nidx, 1 (memref), noffsets, nsizes, nstrides]
-        if (segs.size() >= 3) {
-          int32_t ndeps = segs[0];
-          int32_t nidx = segs[1];
-          int32_t memrefPos = ndeps + nidx; // index of the memref operand
-          if (static_cast<int32_t>(op->getNumOperands()) > memrefPos) {
-            mlir::Value memrefVal = op->getOperand(memrefPos);
-            mlir::Type memrefTy = memrefVal.getType();
-            if (auto mt = mlir::dyn_cast<mlir::MemRefType>(memrefTy)) {
-              // Collapse rank≥3 memrefs to rank-2 before patching element_type
-              // so that Pass C sees a valid rank-2 buffer type.
-              mlir::MemRefType collapsed = collapseToRank2(mt);
-              createTypedOp.setElementTypeAttr(mlir::TypeAttr::get(collapsed));
-            }
-          }
-        } else {
-          // Fallback: if no segment sizes, assume first operand is the memref.
-          if (op->getNumOperands() >= 1) {
-            mlir::Value first = op->getOperand(0);
-            if (auto mt = mlir::dyn_cast<mlir::MemRefType>(first.getType())) {
-              mlir::MemRefType collapsed = collapseToRank2(mt);
-              createTypedOp.setElementTypeAttr(mlir::TypeAttr::get(collapsed));
-            }
-          }
-        }
+        mlir::MemRefType collapsed = collapseToRank2(*optMt);
+        createTypedOp.setElementTypeAttr(mlir::TypeAttr::get(collapsed));
       }
 
       // Phase 2b.5: propagate element_type from source channels to broadcast
@@ -920,6 +950,34 @@ struct AirChannelToConduitPass
           continue;
 
         aliasCreate.setElementTypeAttr(srcCreate.getElementTypeAttr());
+      }
+
+      // Phase 2b.7: Persist inferred tile coordinates as discardable
+      // attributes on conduit.create ops for Source 8 in inferAllTiles().
+      //
+      // Pass B has tile info from enclosing aie.core (tryGetEnclosingCoreTile)
+      // and memory-space-based inference (inferNonCoreTile) that is lost when
+      // the original air.channel put/get ops are erased in Phase 3/5.
+      // Storing these as attrs on conduit.create allows inferAllTiles() to
+      // recover producer/consumer tile coordinates for channels that have
+      // no Acquire/Release, no conduit_channel, and no dma_channel_group.
+      for (auto &[chName, createOp] : channelCreateOps) {
+        auto prodIt = channelProducerTile.find(chName);
+        if (prodIt != channelProducerTile.end()) {
+          auto [col, row] = prodIt->second;
+          createOp->setAttr("air_producer_tile",
+                            mlir::DenseI64ArrayAttr::get(ctx, {col, row}));
+        }
+        auto consIt = channelConsumerTiles.find(chName);
+        if (consIt != channelConsumerTiles.end() && !consIt->second.empty()) {
+          llvm::SmallVector<int64_t> coords;
+          for (auto &[col, row] : consIt->second) {
+            coords.push_back(col);
+            coords.push_back(row);
+          }
+          createOp->setAttr("air_consumer_tiles",
+                            mlir::DenseI64ArrayAttr::get(ctx, coords));
+        }
       }
 
       // Phase 2c: create shim aie.tile ops for channels with shim endpoints

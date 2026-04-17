@@ -63,6 +63,7 @@ void linkPhase(ConduitToDMAState &state) {
     llvm::StringRef memtileStr;
     bool isDistribute; // true for Scatter; false for Gather
     std::optional<llvm::ArrayRef<int64_t>> offsets;
+    int deviceIndex = -1; // Multi-device: owning device index.
 
     mlir::Location getLoc() const { return op->getLoc(); }
     mlir::InFlightDiagnostic emitError(const llvm::Twine &msg) const {
@@ -99,6 +100,15 @@ void linkPhase(ConduitToDMAState &state) {
     }
     a.isDistribute = true; // scatter = 1→N distribute
     a.offsets = scatterOp.getOffsets();
+    // Multi-device: determine owning device index.
+    if (state.isMultiDevice()) {
+      for (int i = 0; i < static_cast<int>(state.deviceOps.size()); ++i) {
+        if (scatterOp->getParentOfType<AIE::DeviceOp>() == state.deviceOps[i]) {
+          a.deviceIndex = i;
+          break;
+        }
+      }
+    }
     linkAdapters.push_back(a);
   });
   state.module.walk([&](GatherOp gatherOp) {
@@ -126,6 +136,15 @@ void linkPhase(ConduitToDMAState &state) {
     }
     a.isDistribute = false; // gather = N→1 join
     a.offsets = gatherOp.getOffsets();
+    // Multi-device: determine owning device index.
+    if (state.isMultiDevice()) {
+      for (int i = 0; i < static_cast<int>(state.deviceOps.size()); ++i) {
+        if (gatherOp->getParentOfType<AIE::DeviceOp>() == state.deviceOps[i]) {
+          a.deviceIndex = i;
+          break;
+        }
+      }
+    }
     linkAdapters.push_back(a);
   });
 
@@ -135,6 +154,10 @@ void linkPhase(ConduitToDMAState &state) {
   llvm::DenseMap<mlir::Value, AIE::MemTileDMAOp> memtileDMAMap;
 
   for (auto &linkOp : linkAdapters) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice() && linkOp.deviceIndex >= 0)
+      state.switchToDeviceIndex(linkOp.deviceIndex);
+
     builder.setInsertionPoint(state.deviceBody->getTerminator());
     mlir::Location loc = linkOp.getLoc();
 
@@ -747,7 +770,9 @@ void linkPhase(ConduitToDMAState &state) {
             state.passFailed = true;
             return;
           }
-          std::optional<uint8_t> pktID = state.packetIDAllocator->allocate();
+          mlir::Value pktDomain = state.getMemTileDomain(memtileVal);
+          std::optional<uint8_t> pktID =
+              state.packetIDAllocator->allocate(pktDomain);
           if (!pktID) {
             state.passFailed = true;
             return;
@@ -774,34 +799,46 @@ void linkPhase(ConduitToDMAState &state) {
             if (!dstConsTile)
               continue;
             mlir::Value consTileVal = dstConsTile.getResult();
-            // Packet-mode S2MM sharing: reuse existing packet S2MM port if
-            // one was already allocated on this tile (by routePhase or an
-            // earlier scatter destination).  Multiple packet channels share
-            // one physical S2MM port, differentiated by packet_id in BD
-            // headers.
+            // S2MM port assignment: only share S2MM ports between packet
+            // channels that have the same dma_channel_group.  Independent
+            // packet channels (no group) get separate S2MM ports to prevent
+            // data crossover.
+            // Effective group key: dma_channel_group_s2mm if set, else
+            // dma_channel_group.
+            std::string s2mmGrp = state.qualifyFuseGroup(
+                !dstInfo->fuseGroupS2MM.empty() ? dstInfo->fuseGroupS2MM
+                                                : dstInfo->fuseGroup,
+                linkOp.deviceIndex);
             int32_t s2mmCh;
-            auto pktIt = state.pktTileS2MMChannel.find(consTileVal);
-            if (pktIt != state.pktTileS2MMChannel.end()) {
-              s2mmCh = pktIt->second;
-            } else {
+            bool s2mmShared = false;
+            if (!s2mmGrp.empty()) {
+              auto it = state.fuseGroupS2MMChannel.find(s2mmGrp);
+              if (it != state.fuseGroupS2MMChannel.end()) {
+                s2mmCh = it->second;
+                s2mmShared = true;
+              }
+            }
+            if (!s2mmShared) {
               s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
-              state.pktTileS2MMChannel[consTileVal] = s2mmCh;
+              if (!s2mmGrp.empty())
+                state.fuseGroupS2MMChannel[s2mmGrp] = s2mmCh;
             }
             state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
 
-            // Lock sharing for packet-muxed channels on the same S2MM port.
-            {
+            // Lock sharing: only share locks when channels share an S2MM
+            // port (same dma_channel_group).
+            if (s2mmShared) {
               auto lockIt = state.pktTileS2MMLock.find(consTileVal);
               if (lockIt != state.pktTileS2MMLock.end()) {
                 dstInfo->consumerTileLocks[consTileVal] = {
                     lockIt->second.first.getDefiningOp<AIE::LockOp>(),
                     lockIt->second.second.getDefiningOp<AIE::LockOp>()};
-              } else {
-                auto &locks = dstInfo->consumerTileLocks[consTileVal];
-                if (locks.first && locks.second) {
-                  state.pktTileS2MMLock[consTileVal] = {
-                      locks.first.getResult(), locks.second.getResult()};
-                }
+              }
+            } else if (!s2mmGrp.empty()) {
+              auto &locks = dstInfo->consumerTileLocks[consTileVal];
+              if (locks.first && locks.second) {
+                state.pktTileS2MMLock[consTileVal] = {
+                    locks.first.getResult(), locks.second.getResult()};
               }
             }
 
@@ -848,6 +885,16 @@ void linkPhase(ConduitToDMAState &state) {
             if (srcInfo.routingMode == "stream") {
               srcBundle = AIE::WireBundle::Core;
               srcPort = srcInfo.aieStreamPort >= 0 ? srcInfo.aieStreamPort : 0;
+            } else {
+              // Allocate MM2S channel dynamically instead of hardcoding
+              // channel 0.  Record in conduitMM2SChannel so Phase 5.5a BD
+              // chain generation uses the same channel, and in
+              // preUsedMM2SChannels so other phases avoid conflicts.
+              srcPort =
+                  state.tileNextMM2SChannel[srcProdTile.getResult()]++;
+              state.conduitMM2SChannel[srcName] = srcPort;
+              state.preUsedMM2SChannels[srcProdTile.getResult()].insert(
+                  srcPort);
             }
             builder.create<AIE::FlowOp>(
                 state.deviceOp.getLoc(), srcProdTile.getResult(), srcBundle,
@@ -944,17 +991,19 @@ void linkPhase(ConduitToDMAState &state) {
 
     auto mtIt = memtileDMAMap.find(memtileVal);
     if (mtIt != memtileDMAMap.end()) {
-      // Reuse existing MemTileDMAOp — find and remove the aie.end block.
+      // Reuse existing MemTileDMAOp — find the LAST aie.end block.
+      // Scanning for the first could pick up orphan aie.end blocks from
+      // packet-muxed distribute sub-chains, disconnecting the DMA chain.
       dmaRegionPtr = &mtIt->second.getBody();
       for (mlir::Block &block : *dmaRegionPtr) {
         if (auto *term = block.getTerminator()) {
           if (mlir::isa<AIE::EndOp>(term)) {
             mergeChainBlock = &block;
-            term->erase();
-            break;
           }
         }
       }
+      if (mergeChainBlock)
+        mergeChainBlock->getTerminator()->erase();
     } else {
       builder.setInsertionPoint(state.deviceBody->getTerminator());
       auto memtileDMA = builder.create<AIE::MemTileDMAOp>(loc, memtileVal);
@@ -1266,32 +1315,38 @@ void linkPhase(ConduitToDMAState &state) {
   // -----------------------------------------------------------------------
 
   // Pre-compute used DMA channels per tile (avoids O(n²) scan).
-  state.deviceOp.walk([&](AIE::DMAStartOp dmaStart) {
-    mlir::Value parentTile;
-    if (auto memOp = mlir::dyn_cast<AIE::MemOp>(dmaStart->getParentOp()))
-      parentTile = memOp.getTile();
-    else if (auto mtOp =
-                 mlir::dyn_cast<AIE::MemTileDMAOp>(dmaStart->getParentOp()))
-      parentTile = mtOp.getTile();
-    if (!parentTile)
-      return;
-    if (dmaStart.getChannelDir() == AIE::DMAChannelDir::MM2S)
-      state.preUsedMM2SChannels[parentTile].insert(
-          static_cast<int32_t>(dmaStart.getChannelIndex()));
-    else
-      state.preUsedS2MMChannels[parentTile].insert(
-          static_cast<int32_t>(dmaStart.getChannelIndex()));
-  });
+  // Walk ALL devices (not just state.deviceOp) to handle multi-device modules.
+  for (auto &devOp : state.deviceOps) {
+    devOp.walk([&](AIE::DMAStartOp dmaStart) {
+      mlir::Value parentTile;
+      if (auto memOp = mlir::dyn_cast<AIE::MemOp>(dmaStart->getParentOp()))
+        parentTile = memOp.getTile();
+      else if (auto mtOp =
+                   mlir::dyn_cast<AIE::MemTileDMAOp>(dmaStart->getParentOp()))
+        parentTile = mtOp.getTile();
+      if (!parentTile)
+        return;
+      if (dmaStart.getChannelDir() == AIE::DMAChannelDir::MM2S)
+        state.preUsedMM2SChannels[parentTile].insert(
+            static_cast<int32_t>(dmaStart.getChannelIndex()));
+      else
+        state.preUsedS2MMChannels[parentTile].insert(
+            static_cast<int32_t>(dmaStart.getChannelIndex()));
+    });
+  }
 
   // Pre-compute tile → DMA region map to avoid O(n²) walks inside the
   // conduitMap loop.  Updated when new DMA ops are created below.
+  // Walk ALL devices for multi-device support.
   llvm::DenseMap<mlir::Value, mlir::Region *> tileToDMARegion;
-  state.deviceOp.walk([&](AIE::MemOp memOp) {
-    tileToDMARegion[memOp.getTile()] = &memOp.getBody();
-  });
-  state.deviceOp.walk([&](AIE::MemTileDMAOp mtOp) {
-    tileToDMARegion[mtOp.getTile()] = &mtOp.getBody();
-  });
+  for (auto &devOp : state.deviceOps) {
+    devOp.walk([&](AIE::MemOp memOp) {
+      tileToDMARegion[memOp.getTile()] = &memOp.getBody();
+    });
+    devOp.walk([&](AIE::MemTileDMAOp mtOp) {
+      tileToDMARegion[mtOp.getTile()] = &mtOp.getBody();
+    });
+  }
 
   // -----------------------------------------------------------------------
   // Phase 5.5e: Build aie.shim_dma BD chains for external-buffer conduits.
@@ -1302,6 +1357,10 @@ void linkPhase(ConduitToDMAState &state) {
   // locks (shimProdLock / shimConsLock) and shim_dma_allocation.
   // -----------------------------------------------------------------------
   for (auto &[name, info] : state.conduitMap) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice())
+      state.switchToDeviceIndex(info.deviceIndex);
+
     if (info.externalBuffers.empty())
       continue;
     auto [prodCol, prodRow] = info.producerTileCoord;
@@ -1377,6 +1436,10 @@ void linkPhase(ConduitToDMAState &state) {
   // them in a dedicated loop here.
   // -----------------------------------------------------------------------
   for (auto &[name, info] : state.conduitMap) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice())
+      state.switchToDeviceIndex(info.deviceIndex);
+
     if (!state.linkSrcNamesEarly.count(name))
       continue;
     // Stream conduits: producer uses Core AXI stream port, no DMA needed.
@@ -1415,13 +1478,19 @@ void linkPhase(ConduitToDMAState &state) {
     }
     int64_t nBufs = static_cast<int64_t>(prodBufs.size());
 
-    // Acquire the MM2S channel index (channel 0 unless pre-used).
+    // Reuse MM2S channel allocated by Phase 5 flow emission, if present.
+    // Otherwise allocate a new one (channel 0 unless pre-used).
     int32_t mm2sChannel = 0;
     {
-      auto &usedCh = state.preUsedMM2SChannels[prodTileVal];
-      while (usedCh.count(mm2sChannel))
-        ++mm2sChannel;
-      usedCh.insert(mm2sChannel);
+      auto chIt = state.conduitMM2SChannel.find(name);
+      if (chIt != state.conduitMM2SChannel.end()) {
+        mm2sChannel = chIt->second;
+      } else {
+        auto &usedCh = state.preUsedMM2SChannels[prodTileVal];
+        while (usedCh.count(mm2sChannel))
+          ++mm2sChannel;
+        usedCh.insert(mm2sChannel);
+      }
     }
 
     // Check for an existing aie.mem for this tile.
@@ -1530,7 +1599,17 @@ void linkPhase(ConduitToDMAState &state) {
   // Maps consumer tile → (s2mmChannel → synthetic fuse group label).
   llvm::DenseMap<mlir::Value, std::map<int32_t, std::string>> s2mmPktStarted;
 
+  // Track S2MM fuse-group channels that already have a dma_start emitted.
+  // Symmetric to s2mmPktStarted but for circuit-mode S2MM fusion groups
+  // annotated by --conduit-fuse-channels (dma_channel_group_s2mm attribute).
+  // Maps consumer tile → (fuse group label → bool).
+  llvm::DenseMap<mlir::Value, llvm::StringMap<bool>> s2mmFuseStarted;
+
   for (auto &[name, info] : state.conduitMap) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice())
+      state.switchToDeviceIndex(info.deviceIndex);
+
     // For disable_synchronization conduits, locks are null by design — skip the
     // lock check. Still skip if buffers are empty (no allocation happened).
     if (info.buffers.empty())
@@ -1774,7 +1853,9 @@ void linkPhase(ConduitToDMAState &state) {
 
               bool isFusedNonFirst = false;
               if (!info.fuseGroup.empty()) {
-                auto &members = state.fuseGroupMembers[info.fuseGroup];
+                std::string qFG = state.qualifyFuseGroup(info.fuseGroup,
+                                                          info.deviceIndex);
+                auto &members = state.fuseGroupMembers[qFG];
                 isFusedNonFirst = (!members.empty() && members.front() != name);
               }
 
@@ -2294,11 +2375,25 @@ void linkPhase(ConduitToDMAState &state) {
               isS2MMPktNonFirst = true;
               s2mmPktGroupLabel = grpIt->second;
             } else {
-              s2mmPktGroupLabel =
+              s2mmPktGroupLabel = state.qualifyFuseGroup(
                   "pkt_s2mm__" + std::to_string(consCol) + "_" +
-                  std::to_string(consRow) + "_ch" + std::to_string(s2mmChannel);
+                  std::to_string(consRow) + "_ch" + std::to_string(s2mmChannel),
+                  info.deviceIndex);
               chanMap[s2mmChannel] = s2mmPktGroupLabel;
             }
+          }
+        }
+
+        // Detect S2MM fuse-group channels (circuit-mode fusion annotated by
+        // --conduit-fuse-channels).  Symmetric to packet-muxed detection:
+        // first conduit in group emits dma_start, subsequent conduits skip it.
+        bool isS2MMFuseNonFirst = false;
+        if (!info.fuseGroupS2MM.empty()) {
+          auto &chanMap = s2mmFuseStarted[consTileVal2];
+          if (chanMap.count(info.fuseGroupS2MM)) {
+            isS2MMFuseNonFirst = true;
+          } else {
+            chanMap[info.fuseGroupS2MM] = true;
           }
         }
 
@@ -2319,8 +2414,8 @@ void linkPhase(ConduitToDMAState &state) {
         mlir::Block *bdTermBlock = nullptr;
         mlir::Block *endMemBlock = nullptr;
 
-        if (isS2MMPktNonFirst) {
-          // Non-first packet-muxed conduit: no dma_start, no terminal blocks.
+        if (isS2MMPktNonFirst || isS2MMFuseNonFirst) {
+          // Non-first fused conduit: no dma_start, no terminal blocks.
           // BD blocks were already created above.
         } else {
           // bdTermBlock strategy: when adding a channel to an existing DMA
@@ -2417,6 +2512,16 @@ void linkPhase(ConduitToDMAState &state) {
               name + "__s2mm_" + std::to_string(consIdx);
           state.conduitBDRange[bdKey] = {bdBlocks.front(), bdBlocks.back()};
           state.fuseGroupMembers[s2mmPktGroupLabel].push_back(bdKey);
+        }
+
+        // Record BD range for circuit-mode S2MM fuse-group chain fusion.
+        if (!info.fuseGroupS2MM.empty()) {
+          std::string bdKey =
+              name + "__s2mm_" + std::to_string(consIdx);
+          std::string qS2MM = state.qualifyFuseGroup(info.fuseGroupS2MM,
+                                                      info.deviceIndex);
+          state.conduitBDRange[bdKey] = {bdBlocks.front(), bdBlocks.back()};
+          state.fuseGroupMembers[qS2MM].push_back(bdKey);
         }
       }
     }

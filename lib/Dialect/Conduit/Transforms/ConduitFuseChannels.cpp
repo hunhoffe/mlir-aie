@@ -64,8 +64,8 @@
 //   - When the same conduit name appears in multiple blocks with conflicting
 //     orderings, the first block analyzed wins.  In practice each conduit's
 //     ops appear in exactly one function body block, so this does not arise.
-//   - Only producer-tile (MM2S) grouping is implemented; consumer-side (S2MM)
-//     fusion is a symmetric future extension.
+//   - Both producer-tile (MM2S) and consumer-tile (S2MM) grouping are
+//     implemented.  S2MM fusion annotates with dma_channel_group_s2mm.
 //   - The pass does not verify that the target tile has a DMA channel budget
 //     deficit; that check belongs in Pass C or a resource-check pass.
 //
@@ -226,8 +226,6 @@ struct ConduitFuseChannelsPass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
-    // Infer tile coordinates from IR structure.
-    auto inferredMap = inferAllTiles(module);
     auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
       if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
         return {static_cast<int64_t>(tileOp.getCol()),
@@ -235,174 +233,300 @@ struct ConduitFuseChannelsPass
       return {-1, -1};
     };
 
-    // -----------------------------------------------------------------------
-    // MM2S Live-Interval Fusion
-    //
-    // Groups conduit.create ops by producer tile and fuses them using greedy
-    // interval coloring when their live intervals are non-overlapping in a
-    // basic block.
-    // -----------------------------------------------------------------------
-
-    // Step 1: collect conduit.create ops grouped by producer tile [col, row].
-    // Prefer inferred tile coordinates; fallback to producer_tile attribute
-    // for hand-written IR outside aie.core (cascade channels are now
-    // covered by Source 6 in inferAllTiles).
-    // DenseMapInfo for std::pair<int64_t,int64_t> is provided by LLVM.
-    llvm::DenseMap<std::pair<int64_t, int64_t>,
-                   llvm::SmallVector<ConduitInfo, 4>>
-        tileGroups;
-
-    module.walk([&](Create createOp) {
-      int64_t col = -1, row = -1;
-      auto tileIt = inferredMap.find(createOp.getName().str());
-      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
-        std::tie(col, row) = extractCoord(tileIt->second.producerTile);
-      }
-      // Shim tiles (row == 0) use a separate DMA model; exclude them.
-      if (col >= 0 && row == 0)
-        return;
-      // Unknown tile: place in a default group {-1, -1}.
-      // This allows fusion analysis for conduits whose producer tile is not
-      // in an aie.core (e.g. hand-written IR with conduit ops in func.func).
-      tileGroups[{col, row}].push_back({createOp.getName().str(), createOp});
-    });
-
-    // Group IDs are globally unique across tiles so that Pass C can
-    // distinguish "group0 on tile [0,2]" from "group0 on tile [1,2]".
+    // Group IDs are globally unique across tiles and devices so that Pass C
+    // can distinguish groups.
     unsigned nextGroupId = 0;
 
-    // Step 2: for each tile with >= 2 conduits, attempt fusion.
-    for (auto &[tile, conduits] : tileGroups) {
-      if (conduits.size() < 2)
-        continue;
+    // Process each aie.device independently to avoid cross-device name
+    // collisions.  When two aie.device blocks share channel names (e.g.
+    // flash_attn_air_channel), module-scope walks would create duplicate
+    // ConduitInfo entries, causing premature singleton assignments and DMA
+    // channel exhaustion.
+    module.walk([&](AIE::DeviceOp deviceOp) {
+      // Infer tile coordinates scoped to this device.
+      auto inferredMap = inferAllTiles(deviceOp);
 
-      // Build a map from each basic block to the (name, interval) pairs for
-      // conduits of this tile that have activity in that block.
-      llvm::DenseMap<mlir::Block *,
-                     llvm::SmallVector<std::pair<std::string, LiveInterval>, 4>>
-          blockConduits;
+      // ---------------------------------------------------------------------
+      // MM2S Live-Interval Fusion
+      //
+      // Groups conduit.create ops by producer tile and fuses them using greedy
+      // interval coloring when their live intervals are non-overlapping in a
+      // basic block.
+      // ---------------------------------------------------------------------
 
-      module.walk([&](mlir::Block *block) {
-        for (auto &ci : conduits) {
-          auto iv = computeInterval(block, ci.name);
-          if (!iv)
+      // Step 1: collect conduit.create ops grouped by producer tile [col, row].
+      llvm::DenseMap<std::pair<int64_t, int64_t>,
+                     llvm::SmallVector<ConduitInfo, 4>>
+          tileGroups;
+
+      deviceOp.walk([&](Create createOp) {
+        int64_t col = -1, row = -1;
+        auto tileIt = inferredMap.find(createOp.getName().str());
+        if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
+          std::tie(col, row) = extractCoord(tileIt->second.producerTile);
+        }
+        // Shim tiles (row == 0) use a separate DMA model; exclude them.
+        if (col >= 0 && row == 0)
+          return;
+        // Unknown tile: place in a default group {-1, -1}.
+        tileGroups[{col, row}].push_back({createOp.getName().str(), createOp});
+      });
+
+      // Step 2: for each tile with >= 2 conduits, attempt fusion.
+      for (auto &[tile, conduits] : tileGroups) {
+        if (conduits.size() < 2)
+          continue;
+
+        // Build a map from each basic block to the (name, interval) pairs for
+        // conduits of this tile that have activity in that block.
+        llvm::DenseMap<
+            mlir::Block *,
+            llvm::SmallVector<std::pair<std::string, LiveInterval>, 4>>
+            blockConduits;
+
+        deviceOp.walk([&](mlir::Block *block) {
+          for (auto &ci : conduits) {
+            auto iv = computeInterval(block, ci.name);
+            if (!iv)
+              continue;
+            blockConduits[block].push_back({ci.name, *iv});
+          }
+        });
+
+        // For each block where >= 2 conduits of this tile appear, run greedy
+        // interval coloring and record name → group assignments.
+        llvm::StringMap<unsigned> nameToGroup;
+
+        // Track whether any block hosting a conduit has an scf::IfOp parent.
+        llvm::StringMap<bool> nameNeedsRuntime;
+
+        for (auto &[block, items] : blockConduits) {
+          bool inIfBlock =
+              mlir::isa_and_present<mlir::scf::IfOp>(block->getParentOp());
+          for (auto &[name, iv] : items) {
+            if (inIfBlock)
+              nameNeedsRuntime[name] = true;
+            else if (!nameNeedsRuntime.count(name))
+              nameNeedsRuntime[name] = false;
+          }
+
+          if (items.size() < 2)
             continue;
-          blockConduits[block].push_back({ci.name, *iv});
+
+          llvm::SmallVector<std::pair<std::string, LiveInterval>, 4> sortable(
+              items.begin(), items.end());
+          llvm::SmallVector<unsigned> groupIds = assignGroups(sortable);
+
+          for (unsigned i = 0; i < sortable.size(); ++i) {
+            llvm::StringRef n = sortable[i].first;
+            if (!nameToGroup.count(n))
+              nameToGroup[n] = nextGroupId + groupIds[i];
+          }
+
+          unsigned maxGroup =
+              *std::max_element(groupIds.begin(), groupIds.end());
+          nextGroupId += maxGroup + 1;
+        }
+
+        // Build a set of conduit names that have Tier 3 ops (put_memref /
+        // get_memref) for this tile group.
+        llvm::StringMap<bool> nameIsTier3;
+        for (auto &ci : conduits) {
+          bool hasTier3 = false;
+          deviceOp.walk([&](mlir::Operation *op) {
+            if (!mlir::isa<PutMemref, GetMemref, PutMemrefAsync,
+                           GetMemrefAsync>(op))
+              return;
+            auto nameAttr =
+                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+            if (nameAttr && nameAttr.getValue() == ci.name)
+              hasTier3 = true;
+          });
+          nameIsTier3[ci.name] = hasTier3;
+        }
+
+        llvm::DenseMap<unsigned, unsigned> groupCount;
+        for (auto &[name, gid] : nameToGroup)
+          ++groupCount[gid];
+
+        llvm::DenseMap<unsigned, bool> groupNeedsRuntime;
+        for (auto &[name, gid] : nameToGroup) {
+          auto it = nameNeedsRuntime.find(name);
+          if (it != nameNeedsRuntime.end() && it->second)
+            groupNeedsRuntime[gid] = true;
+          else if (!groupNeedsRuntime.count(gid))
+            groupNeedsRuntime[gid] = false;
+        }
+
+        for (auto &ci : conduits) {
+          auto it = nameToGroup.find(ci.name);
+          if (it == nameToGroup.end())
+            continue;
+          unsigned gid = it->second;
+          if (groupCount[gid] < 2)
+            continue;
+
+          if (nameIsTier3.count(ci.name) && nameIsTier3[ci.name]) {
+            int64_t depth = 1;
+            if (auto depthOpt = ci.createOp.getDepth())
+              depth = *depthOpt;
+            if (depth > 1) {
+              ci.createOp.emitRemark()
+                  << "conduit-fuse-channels: skipping '" << ci.name
+                  << "' — Tier 3 channel with depth>1 not supported in fuse "
+                     "groups";
+              continue;
+            }
+          }
+
+          std::string label = "group" + std::to_string(gid);
+          mlir::MLIRContext *ctx = module.getContext();
+          ci.createOp->setAttr("dma_channel_group",
+                               mlir::StringAttr::get(ctx, label));
+          llvm::StringRef fuseMode =
+              groupNeedsRuntime[gid] ? "runtime" : "static";
+          ci.createOp->setAttr("fuse_mode",
+                               mlir::StringAttr::get(ctx, fuseMode));
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // S2MM Live-Interval Fusion
+      //
+      // Symmetric to MM2S: groups conduit.create ops by consumer tile and
+      // fuses them using greedy interval coloring when their live intervals
+      // are non-overlapping in a basic block.
+      // ---------------------------------------------------------------------
+
+      // Step 1: collect conduit.create ops grouped by consumer tile.
+      llvm::DenseMap<std::pair<int64_t, int64_t>,
+                     llvm::SmallVector<ConduitInfo, 4>>
+          s2mmTileGroups;
+
+      deviceOp.walk([&](Create createOp) {
+        auto tileIt = inferredMap.find(createOp.getName().str());
+        if (tileIt == inferredMap.end())
+          return;
+        for (auto consTile : tileIt->second.consumerTiles) {
+          auto [col, row] = extractCoord(consTile);
+          if (col >= 0 && row == 0)
+            continue;
+          s2mmTileGroups[{col, row}].push_back(
+              {createOp.getName().str(), createOp});
         }
       });
 
-      // For each block where >= 2 conduits of this tile appear, run greedy
-      // interval coloring and record name → group assignments.
-      llvm::StringMap<unsigned> nameToGroup;
-
-      // Track whether any block hosting a conduit has an scf::IfOp parent.
-      // Such conduits require runtime (control-packet) mode for safe fusion;
-      // all others can use the static BD chain path.
-      llvm::StringMap<bool> nameNeedsRuntime;
-
-      for (auto &[block, items] : blockConduits) {
-        // Check if this block is directly inside an scf::IfOp region.
-        bool inIfBlock =
-            mlir::isa_and_present<mlir::scf::IfOp>(block->getParentOp());
-        for (auto &[name, iv] : items) {
-          if (inIfBlock)
-            nameNeedsRuntime[name] = true;
-          else if (!nameNeedsRuntime.count(name))
-            nameNeedsRuntime[name] = false;
-        }
-
-        if (items.size() < 2)
+      // Step 2: for each consumer tile with >= 2 conduits, attempt fusion.
+      for (auto &[tile, conduits] : s2mmTileGroups) {
+        if (conduits.size() < 2)
           continue;
 
-        llvm::SmallVector<std::pair<std::string, LiveInterval>, 4> sortable(
-            items.begin(), items.end());
-        llvm::SmallVector<unsigned> groupIds = assignGroups(sortable);
+        llvm::DenseMap<
+            mlir::Block *,
+            llvm::SmallVector<std::pair<std::string, LiveInterval>, 4>>
+            blockConduits;
 
-        // Record assignments; first-block-wins if a name appears in multiple
-        // blocks (see Limitations in file header).
-        for (unsigned i = 0; i < sortable.size(); ++i) {
-          llvm::StringRef n = sortable[i].first;
-          if (!nameToGroup.count(n))
-            nameToGroup[n] = nextGroupId + groupIds[i];
-        }
-
-        unsigned maxGroup = *std::max_element(groupIds.begin(), groupIds.end());
-        nextGroupId += maxGroup + 1;
-      }
-
-      // Build a set of conduit names that have Tier 3 ops (put_memref /
-      // get_memref) for this tile group.  Tier 3 channels with depth>1 have
-      // a multi-block BD ring; fusing them would create BD chain ordering
-      // conflicts and is therefore not supported.
-      llvm::StringMap<bool> nameIsTier3;
-      for (auto &ci : conduits) {
-        bool hasTier3 = false;
-        module.walk([&](mlir::Operation *op) {
-          if (!mlir::isa<PutMemref, GetMemref, PutMemrefAsync, GetMemrefAsync>(
-                  op))
-            return;
-          auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
-          if (nameAttr && nameAttr.getValue() == ci.name)
-            hasTier3 = true;
-        });
-        nameIsTier3[ci.name] = hasTier3;
-      }
-
-      // Only annotate groups with >= 2 members; singleton groups have no
-      // fusion partner and annotating them would mislead Pass C.
-      llvm::DenseMap<unsigned, unsigned> groupCount;
-      for (auto &[name, gid] : nameToGroup)
-        ++groupCount[gid];
-
-      // For each group, determine fuse_mode: "runtime" if any member has an
-      // scf::IfOp parent block (static BD chain would silently corrupt data
-      // when the branch is not taken); "static" otherwise.
-      llvm::DenseMap<unsigned, bool> groupNeedsRuntime;
-      for (auto &[name, gid] : nameToGroup) {
-        auto it = nameNeedsRuntime.find(name);
-        if (it != nameNeedsRuntime.end() && it->second)
-          groupNeedsRuntime[gid] = true;
-        else if (!groupNeedsRuntime.count(gid))
-          groupNeedsRuntime[gid] = false;
-      }
-
-      for (auto &ci : conduits) {
-        auto it = nameToGroup.find(ci.name);
-        if (it == nameToGroup.end())
-          continue;
-        unsigned gid = it->second;
-        if (groupCount[gid] < 2)
-          continue;
-
-        // Skip Tier 3 channels with depth > 1 — their multi-block BD ring
-        // would create ordering conflicts when chained into a fuse group.
-        // Pass A/B only emit Tier 3 at depth=1, so this only arises in
-        // hand-authored Conduit IR.
-        if (nameIsTier3.count(ci.name) && nameIsTier3[ci.name]) {
-          int64_t depth = 1;
-          if (auto depthOpt = ci.createOp.getDepth())
-            depth = *depthOpt;
-          if (depth > 1) {
-            ci.createOp.emitRemark()
-                << "conduit-fuse-channels: skipping '" << ci.name
-                << "' — Tier 3 channel with depth>1 not supported in fuse "
-                   "groups";
-            continue;
+        deviceOp.walk([&](mlir::Block *block) {
+          for (auto &ci : conduits) {
+            auto iv = computeInterval(block, ci.name);
+            if (!iv)
+              continue;
+            blockConduits[block].push_back({ci.name, *iv});
           }
+        });
+
+        llvm::StringMap<unsigned> nameToGroup;
+        llvm::StringMap<bool> nameNeedsRuntime;
+
+        for (auto &[block, items] : blockConduits) {
+          bool inIfBlock =
+              mlir::isa_and_present<mlir::scf::IfOp>(block->getParentOp());
+          for (auto &[name, iv] : items) {
+            if (inIfBlock)
+              nameNeedsRuntime[name] = true;
+            else if (!nameNeedsRuntime.count(name))
+              nameNeedsRuntime[name] = false;
+          }
+
+          if (items.size() < 2)
+            continue;
+
+          llvm::SmallVector<std::pair<std::string, LiveInterval>, 4> sortable(
+              items.begin(), items.end());
+          llvm::SmallVector<unsigned> groupIds = assignGroups(sortable);
+
+          for (unsigned i = 0; i < sortable.size(); ++i) {
+            llvm::StringRef n = sortable[i].first;
+            if (!nameToGroup.count(n))
+              nameToGroup[n] = nextGroupId + groupIds[i];
+          }
+
+          unsigned maxGroup =
+              *std::max_element(groupIds.begin(), groupIds.end());
+          nextGroupId += maxGroup + 1;
         }
 
-        std::string label = "group" + std::to_string(gid);
-        mlir::MLIRContext *ctx = module.getContext();
-        ci.createOp->setAttr("dma_channel_group",
-                             mlir::StringAttr::get(ctx, label));
-        // fuse_mode = "static"  → Pass C emits static BD chain (NextBDOp
-        // linking) fuse_mode = "runtime" → Pass C must use control-packet path
-        // (Phase 3)
-        llvm::StringRef fuseMode =
-            groupNeedsRuntime[gid] ? "runtime" : "static";
-        ci.createOp->setAttr("fuse_mode", mlir::StringAttr::get(ctx, fuseMode));
+        llvm::StringMap<bool> nameIsTier3;
+        for (auto &ci : conduits) {
+          bool hasTier3 = false;
+          deviceOp.walk([&](mlir::Operation *op) {
+            if (!mlir::isa<PutMemref, GetMemref, PutMemrefAsync,
+                           GetMemrefAsync>(op))
+              return;
+            auto nameAttr =
+                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+            if (nameAttr && nameAttr.getValue() == ci.name)
+              hasTier3 = true;
+          });
+          nameIsTier3[ci.name] = hasTier3;
+        }
+
+        llvm::DenseMap<unsigned, unsigned> groupCount;
+        for (auto &[name, gid] : nameToGroup)
+          ++groupCount[gid];
+
+        llvm::DenseMap<unsigned, bool> groupNeedsRuntime;
+        for (auto &[name, gid] : nameToGroup) {
+          auto it = nameNeedsRuntime.find(name);
+          if (it != nameNeedsRuntime.end() && it->second)
+            groupNeedsRuntime[gid] = true;
+          else if (!groupNeedsRuntime.count(gid))
+            groupNeedsRuntime[gid] = false;
+        }
+
+        for (auto &ci : conduits) {
+          auto it = nameToGroup.find(ci.name);
+          if (it == nameToGroup.end())
+            continue;
+          unsigned gid = it->second;
+          if (groupCount[gid] < 2)
+            continue;
+
+          if (nameIsTier3.count(ci.name) && nameIsTier3[ci.name]) {
+            int64_t depth = 1;
+            if (auto depthOpt = ci.createOp.getDepth())
+              depth = *depthOpt;
+            if (depth > 1) {
+              ci.createOp.emitRemark()
+                  << "conduit-fuse-channels: skipping S2MM fusion for '"
+                  << ci.name
+                  << "' — Tier 3 channel with depth>1 not supported in fuse "
+                     "groups";
+              continue;
+            }
+          }
+
+          std::string label = "group" + std::to_string(gid);
+          mlir::MLIRContext *ctx = module.getContext();
+          ci.createOp->setAttr("dma_channel_group_s2mm",
+                               mlir::StringAttr::get(ctx, label));
+          llvm::StringRef fuseMode =
+              groupNeedsRuntime[gid] ? "runtime" : "static";
+          ci.createOp->setAttr("fuse_mode_s2mm",
+                               mlir::StringAttr::get(ctx, fuseMode));
+        }
       }
-    }
+    }); // end module.walk over DeviceOp
   }
 };
 

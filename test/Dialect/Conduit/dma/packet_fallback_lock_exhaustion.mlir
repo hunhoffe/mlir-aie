@@ -18,8 +18,8 @@
 // npu1_1col: rows 2-5 are compute tiles; (0,2) is adjacent to (0,3).
 // The packet conduits go to non-adjacent tiles in other columns.
 
+// expected-error @below {{conduit-to-dma: lock ID exhausted on tile (0,3): need 2 locks for 'fallback' but only 0 of 16 remain}}
 module @pkt_fallback_lock_exhaustion {
-  // expected-error @+1 {{conduit-to-dma: S2MM DMA channel exhausted on tile (0,2): all 2 channels in use}}
   aie.device(npu1) {
     %t02 = aie.tile(0, 2)
     %t03 = aie.tile(0, 3)

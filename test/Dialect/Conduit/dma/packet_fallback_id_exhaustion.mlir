@@ -1,41 +1,42 @@
 // RUN: aie-opt --conduit-to-dma --verify-diagnostics %s
 //
-// P2-A Step 3.5a: Packet DMA fallback — global ID budget exhausted.
+// P2-A Step 3.5a: Packet DMA fallback — per-MemTile ID budget exhausted.
 //
-// 32 explicit packet conduits from shim tiles consume all 32 flow IDs
-// (through Phase 4a).  Then two explicit packet conduits from a compute
-// tile fill both of its MM2S channels as packet-mode.  A final conduit
-// with routing_mode="any" from the same compute tile triggers Step 3.5:
-// Step 3.5c finds an existing packet-mode channel (ch 0), but Step 3.5a
-// fires first (remaining() == 0) → returns false → Step 4 error emitted
-// on the device op.
+// 32 explicit packet conduits from shim tile (2,0) consume all 32 flow
+// IDs in column 2's per-MemTile domain (through Phase 4a).  Then an
+// explicit packet conduit from compute tile (2,1) — which shares the
+// same per-MemTile domain — tries to allocate ID 32 → error fires.
 //
-// Expected: error about packet flow ID exhaustion.
+// Tile (2,1) acts as both consumer of p00 and producer of pkt_c1/pkt_c2.
+// Consumer tiles for pkt_c1/pkt_c2 are in column 5 (different domain).
+//
+// Expected: error about per-MemTile packet flow ID exhaustion.
 
-// expected-error @+1 {{packet flow ID exhausted: design requires more than 32 distinct packet flows}}
+// expected-error @+1 {{packet flow ID exhausted in MemTile domain: design requires more than 31 distinct packet flows per MemTile}}
 module @pkt_fallback_id_exhaustion {
   aie.device(xcvc1902) {
-    // Shim-produced packet conduits that consume IDs 0-31 via Phase 4a.
+    // Shim tile: single producer for all 32 shim conduits.
     %ts2_0 = aie.tile(2, 0)
+    // Column 2 consumer tiles (also the per-MemTile domain scope).
     %ts2_1 = aie.tile(2, 1)  %ts2_2 = aie.tile(2, 2)  %ts2_3 = aie.tile(2, 3)
     %ts2_4 = aie.tile(2, 4)  %ts2_5 = aie.tile(2, 5)  %ts2_6 = aie.tile(2, 6)
     %ts2_7 = aie.tile(2, 7)  %ts2_8 = aie.tile(2, 8)
-    %ts3_0 = aie.tile(3, 0)
+    // Column 3 consumer tiles.
     %ts3_1 = aie.tile(3, 1)  %ts3_2 = aie.tile(3, 2)  %ts3_3 = aie.tile(3, 3)
     %ts3_4 = aie.tile(3, 4)  %ts3_5 = aie.tile(3, 5)  %ts3_6 = aie.tile(3, 6)
     %ts3_7 = aie.tile(3, 7)  %ts3_8 = aie.tile(3, 8)
-    %ts6_0 = aie.tile(6, 0)
+    // Column 6 consumer tiles.
     %ts6_1 = aie.tile(6, 1)  %ts6_2 = aie.tile(6, 2)  %ts6_3 = aie.tile(6, 3)
     %ts6_4 = aie.tile(6, 4)  %ts6_5 = aie.tile(6, 5)  %ts6_6 = aie.tile(6, 6)
     %ts6_7 = aie.tile(6, 7)  %ts6_8 = aie.tile(6, 8)
-    %ts7_0 = aie.tile(7, 0)
+    // Column 7 consumer tiles.
     %ts7_1 = aie.tile(7, 1)  %ts7_2 = aie.tile(7, 2)  %ts7_3 = aie.tile(7, 3)
     %ts7_4 = aie.tile(7, 4)  %ts7_5 = aie.tile(7, 5)  %ts7_6 = aie.tile(7, 6)
     %ts7_7 = aie.tile(7, 7)  %ts7_8 = aie.tile(7, 8)
-    // Compute tile for the mode=any conduit.
-    %tc5_1 = aie.tile(5, 1)  %tc5_3 = aie.tile(5, 3)  %tc5_5 = aie.tile(5, 5)
+    // Column 5: consumer tiles for compute conduits (different domain).
+    %tc5_3 = aie.tile(5, 3)  %tc5_5 = aie.tile(5, 5)
 
-    // IDs 0-7: shim col 2 → compute col 2
+    // 32 explicit packet conduits, all from shim (2,0) → same domain.
     conduit.create @p00 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p01 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p02 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
@@ -44,7 +45,6 @@ module @pkt_fallback_id_exhaustion {
     conduit.create @p05 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p06 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p07 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-    // IDs 8-15: shim col 3
     conduit.create @p08 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p09 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p10 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
@@ -53,7 +53,6 @@ module @pkt_fallback_id_exhaustion {
     conduit.create @p13 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p14 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p15 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-    // IDs 16-23: shim col 6
     conduit.create @p16 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p17 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p18 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
@@ -62,7 +61,6 @@ module @pkt_fallback_id_exhaustion {
     conduit.create @p21 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p22 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p23 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-    // IDs 24-31: shim col 7
     conduit.create @p24 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p25 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p26 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
@@ -72,14 +70,13 @@ module @pkt_fallback_id_exhaustion {
     conduit.create @p30 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p31 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
 
-    // Explicit packet conduits from (5,1) fill both its MM2S channels.
-    // pkt_c1 tries to allocate ID 32 → error fires (explicit packet).
-    conduit.create @pkt_c1 {                    element_type = memref<4xi32>, depth = 1 : i64,
+    // Compute conduits from tile (2,1) — same per-MemTile domain as shim (2,0).
+    // pkt_c1 tries to allocate ID 32 in the column 2 domain → error fires.
+    conduit.create @pkt_c1 {element_type = memref<4xi32>, depth = 1 : i64,
                     routing_mode = #conduit.routing_mode<packet>}
-    conduit.create @pkt_c2 {                    element_type = memref<4xi32>, depth = 1 : i64
-                    }
+    conduit.create @pkt_c2 {element_type = memref<4xi32>, depth = 1 : i64}
 
-    // Shim producer allocations.
+    // ALL shim producer allocations reference shim (2,0) — same domain.
     aie.shim_dma_allocation @p00_shim_alloc(%ts2_0, MM2S, 0)
     aie.shim_dma_allocation @p01_shim_alloc(%ts2_0, MM2S, 0)
     aie.shim_dma_allocation @p02_shim_alloc(%ts2_0, MM2S, 0)
@@ -88,33 +85,39 @@ module @pkt_fallback_id_exhaustion {
     aie.shim_dma_allocation @p05_shim_alloc(%ts2_0, MM2S, 0)
     aie.shim_dma_allocation @p06_shim_alloc(%ts2_0, MM2S, 0)
     aie.shim_dma_allocation @p07_shim_alloc(%ts2_0, MM2S, 0)
-    aie.shim_dma_allocation @p08_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p09_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p10_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p11_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p12_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p13_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p14_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p15_shim_alloc(%ts3_0, MM2S, 0)
-    aie.shim_dma_allocation @p16_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p17_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p18_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p19_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p20_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p21_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p22_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p23_shim_alloc(%ts6_0, MM2S, 0)
-    aie.shim_dma_allocation @p24_shim_alloc(%ts7_0, MM2S, 0)
-    aie.shim_dma_allocation @p25_shim_alloc(%ts7_0, MM2S, 0)
-    aie.shim_dma_allocation @p26_shim_alloc(%ts7_0, MM2S, 0)
-    aie.shim_dma_allocation @p27_shim_alloc(%ts7_0, MM2S, 0)
-    aie.shim_dma_allocation @p28_shim_alloc(%ts7_0, MM2S, 0)
-    aie.shim_dma_allocation @p29_shim_alloc(%ts7_0, MM2S, 0)
-    aie.shim_dma_allocation @p30_shim_alloc(%ts7_0, MM2S, 0)
-    aie.shim_dma_allocation @p31_shim_alloc(%ts7_0, MM2S, 0)
+    aie.shim_dma_allocation @p08_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p09_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p10_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p11_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p12_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p13_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p14_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p15_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p16_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p17_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p18_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p19_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p20_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p21_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p22_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p23_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p24_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p25_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p26_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p27_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p28_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p29_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p30_shim_alloc(%ts2_0, MM2S, 0)
+    aie.shim_dma_allocation @p31_shim_alloc(%ts2_0, MM2S, 0)
 
-    // Consumer cores for shim conduits.
-    aie.core(%ts2_1) { conduit.acquire {name = @p00, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
+    // Consumer cores for shim conduits — 32 unique tiles across columns.
+    // Tile (2,1) also produces pkt_c1 and pkt_c2 (dual role).
+    aie.core(%ts2_1) {
+      conduit.acquire {name = @p00, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @pkt_c1, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      conduit.acquire {name = @pkt_c2, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
+      aie.end
+    }
     aie.core(%ts2_2) { conduit.acquire {name = @p01, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%ts2_3) { conduit.acquire {name = @p02, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%ts2_4) { conduit.acquire {name = @p03, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
@@ -147,12 +150,7 @@ module @pkt_fallback_id_exhaustion {
     aie.core(%ts7_7) { conduit.acquire {name = @p30, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%ts7_8) { conduit.acquire {name = @p31, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
 
-    // Producer and consumer cores for compute conduits (pkt_c1, pkt_c2).
-    aie.core(%tc5_1) {
-      conduit.acquire {name = @pkt_c1, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
-      conduit.acquire {name = @pkt_c2, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
-      aie.end
-    }
+    // Consumers for compute conduits (column 5, different domain).
     aie.core(%tc5_3) { conduit.acquire {name = @pkt_c1, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%tc5_5) { conduit.acquire {name = @pkt_c2, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
   }

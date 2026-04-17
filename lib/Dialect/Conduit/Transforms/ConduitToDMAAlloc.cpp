@@ -80,6 +80,10 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   auto addProducerSlot = [&](mlir::Value tileVal) { tileSlotCount[tileVal]++; };
 
   for (auto &[name, info] : state.conduitMap) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice())
+      state.switchToDeviceIndex(info.deviceIndex);
+
     if (info.consumerTileCoords.empty() && info.shimConsumerTileCoords.empty())
       continue;
 
@@ -120,7 +124,11 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       bool consIsShim = (consRow == 0);
       bool prodIsMemtile = targetModel.isMemTile(prodCol, prodRow);
       bool consIsMemtile = targetModel.isMemTile(consCol, consRow);
-      if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile) {
+      // Same-tile self-loop: not shared memory — core accesses its own
+      // local memory directly.  Skip to normal consumer allocation.
+      bool sameTile = (prodCol == consCol && prodRow == consRow);
+      if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile &&
+          !sameTile) {
         bool rightShared =
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
@@ -202,6 +210,10 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
 
   // Phase 3d: producer-side counters for non-adjacent compute→compute.
   for (auto &[name, info] : state.conduitMap) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice())
+      state.switchToDeviceIndex(info.deviceIndex);
+
     if (info.sharedMemory)
       continue;
     // Stream conduits: no producer-side DMA — skip producer-side counter.
@@ -346,6 +358,10 @@ void allocPhase(ConduitToDMAState &state) {
   prescanAndCreateRotationBufs(state);
 
   for (auto &[name, info] : state.conduitMap) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice())
+      state.switchToDeviceIndex(info.deviceIndex);
+
     // Cascade conduits use no buffers, locks, or DMA — skip entirely.
     if (info.routingMode == "cascade")
       continue;
@@ -461,7 +477,11 @@ void allocPhase(ConduitToDMAState &state) {
       bool consIsShim = (consRow == 0);
       bool prodIsMemtile = targetModel.isMemTile(prodCol, prodRow);
       bool consIsMemtile = targetModel.isMemTile(consCol, consRow);
-      if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile) {
+      // Same-tile self-loop: not shared memory — core accesses its own
+      // local memory directly.  Skip to normal consumer allocation.
+      bool sameTile = (prodCol == consCol && prodRow == consRow);
+      if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile &&
+          !sameTile) {
         bool rightShared =
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
@@ -637,6 +657,17 @@ void allocPhase(ConduitToDMAState &state) {
 
       mlir::Value consTileVal = consTile.getResult();
 
+      // MemTile relay buffer cap: when the consumer is a MemTile acting as a
+      // relay, the putCount-inflated nConsumerBuffers() is wrong — the
+      // ShimTile's runtime sequence put count drives the shim BD chain length,
+      // not the MemTile relay's buffering.  The relay uses a repeating BD
+      // chain whose buffer count is the conduit depth, not putCount.
+      int64_t consNBufs = nBufs;
+      if (targetModel.isMemTile(consCol, consRow) &&
+          info.putCount > 1 && info.dmaRepeat == 0) {
+        consNBufs = depth;
+      }
+
       // Use indexed naming when total consumers (compute + shim) > 1 to avoid
       // symbol collisions between Phase 3 (compute consumer) and Phase 4b
       // (shim consumer) lock names.
@@ -651,7 +682,7 @@ void allocPhase(ConduitToDMAState &state) {
       llvm::SmallVector<AIE::BufferOp> consBuffers;
       if (!preMaterialized) {
         consBuffers =
-            state.allocateBuffers(consTileVal, consPrefix, bufTy, nBufs);
+            state.allocateBuffers(consTileVal, consPrefix, bufTy, consNBufs);
         // Intentionally assigned before the linkSrcNamesEarly branch so the
         // branch's continue does not skip it.
         if (consIdx == 0)
@@ -721,16 +752,16 @@ void allocPhase(ConduitToDMAState &state) {
       // Allocate lock(s) on the consumer tile (skip if
       // disable_synchronization).
       //
-      // Consumer-tile prod_lock init = nBufs (number of buffer slots, including
-      // any extra for sliding-window partial release). bd_repeat does NOT
-      // multiply here: the DMA BD chain fires bd_repeat times per buffer
-      // slot, but the bd_repeat scaling belongs only on the producer-side
-      // lock (allocated in Phase 3d below).
+      // Consumer-tile prod_lock init = consNBufs (number of buffer slots,
+      // including any extra for sliding-window partial release). bd_repeat
+      // does NOT multiply here: the DMA BD chain fires bd_repeat times per
+      // buffer slot, but the bd_repeat scaling belongs only on the
+      // producer-side lock (allocated in Phase 3d below).
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.noLocks) {
-        int64_t prodInit = nBufs;
+        int64_t prodInit = consNBufs;
         auto consLocks =
-            state.allocateLockPair(consTileVal, consPrefix, nBufs, prodInit);
+            state.allocateLockPair(consTileVal, consPrefix, consNBufs, prodInit);
         thisProdLock = consLocks.prodLock;
         thisConsLock = consLocks.consLock;
         if (consIdx == 0) {
@@ -758,6 +789,10 @@ void allocPhase(ConduitToDMAState &state) {
   //           compute→compute conduits.
   // -------------------------------------------------------------------
   for (auto &[name, info] : state.conduitMap) {
+    // Multi-device: ensure tile lookups target the correct device.
+    if (state.isMultiDevice())
+      state.switchToDeviceIndex(info.deviceIndex);
+
     if (info.routingMode == "cascade")
       continue;
     // Stream conduits: no producer-side DMA — skip producer-side allocation.

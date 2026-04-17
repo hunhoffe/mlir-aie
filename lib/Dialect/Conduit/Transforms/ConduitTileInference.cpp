@@ -352,6 +352,81 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
     });
   }
 
+  // -------------------------------------------------------------------------
+  // Source 8: Air-channel origin producer/consumer inference.
+  //
+  // Channels lowered from air.channel through --air-hierarchy-to-aie +
+  // --air-channel-to-conduit (Pass B) use PutMemrefAsync/GetMemrefAsync
+  // instead of Acquire/Release ops.  Source 2 already handles
+  // GetMemrefAsync inside aie.core for consumer tiles, but PutMemrefAsync
+  // inside aie.core is not covered by any prior source.
+  //
+  // Additionally, Pass B (Phase 2b.7) persists inferred tile coordinates
+  // as discardable attrs (air_producer_tile, air_consumer_tiles) on
+  // conduit.create ops.  These capture tile info from enclosing aie.core
+  // and memory-space-based inference that would otherwise be lost when the
+  // original air.channel put/get ops are erased.
+  //
+  // Sub-sources:
+  //   8a: PutMemrefAsync inside aie.core → producer tile.
+  //   8b: air_producer_tile / air_consumer_tiles attrs on conduit.create.
+  // -------------------------------------------------------------------------
+
+  // 8a: PutMemrefAsync inside aie.core → producer tile.
+  scope->walk([&](AIE::CoreOp coreOp) {
+    mlir::Value tileVal = coreOp.getTile();
+    if (!tileVal)
+      return;
+    coreOp.walk([&](PutMemrefAsync putOp) {
+      std::string name = putOp.getName().str();
+      auto &entry = result[name];
+      if (!entry.producerTile)
+        entry.producerTile = tileVal;
+    });
+  });
+
+  // 8b: Read air_producer_tile / air_consumer_tiles attrs from
+  // conduit.create ops.  These are set by Pass B (AirChannelToConduit
+  // Phase 2b.7) to persist tile coordinate information from aie.core
+  // enclosure and memory-space inference.
+  scope->walk([&](Create createOp) {
+    std::string name = createOp.getName().str();
+    auto &entry = result[name];
+
+    // Producer tile from air_producer_tile = [col, row].
+    if (!entry.producerTile) {
+      if (auto attr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
+              "air_producer_tile")) {
+        if (attr.size() >= 2) {
+          auto it = tileCache.find({attr[0], attr[1]});
+          if (it != tileCache.end())
+            entry.producerTile = it->second;
+        }
+      }
+    }
+
+    // Consumer tiles from air_consumer_tiles = [col0, row0, col1, row1, ...].
+    // Tiles at row 0 are dispatched to shimConsumerTiles; others to
+    // consumerTiles.
+    if (auto attr = createOp->getAttrOfType<mlir::DenseI64ArrayAttr>(
+            "air_consumer_tiles")) {
+      for (int64_t i = 0; i + 1 < attr.size(); i += 2) {
+        int64_t col = attr[i], row = attr[i + 1];
+        auto it = tileCache.find({col, row});
+        if (it == tileCache.end())
+          continue;
+        mlir::Value tileVal = it->second;
+        if (row == 0) {
+          if (!contains(entry.shimConsumerTiles, tileVal))
+            entry.shimConsumerTiles.push_back(tileVal);
+        } else {
+          if (!contains(entry.consumerTiles, tileVal))
+            entry.consumerTiles.push_back(tileVal);
+        }
+      }
+    }
+  });
+
   return result;
 }
 

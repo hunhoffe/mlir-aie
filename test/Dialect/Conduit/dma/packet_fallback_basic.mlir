@@ -17,16 +17,16 @@
 //             → emits packet_flow(2) with new ID
 //
 // Expected output:
-//   aie.packet_flow(0) for pkt_a
-//   aie.packet_flow(1) for pkt_b
-//   aie.packet_flow(2) for fallback (Step 3.5 shared channel 0)
+//   aie.packet_flow(1) for pkt_a
+//   aie.packet_flow(2) for pkt_b
+//   aie.packet_flow(3) for fallback (Step 3.5 shared channel 0)
 //   No circuit aie.flow ops
 //   No "no DMA resources" error
 
 // CHECK-LABEL: module @pkt_fallback_basic
-// CHECK:       aie.packet_flow(0)
 // CHECK:       aie.packet_flow(1)
 // CHECK:       aie.packet_flow(2)
+// CHECK:       aie.packet_flow(3)
 // CHECK-NOT:   aie.flow(
 // CHECK-NOT:   conduit.create
 

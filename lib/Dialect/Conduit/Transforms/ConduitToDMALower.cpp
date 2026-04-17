@@ -1004,6 +1004,13 @@ void lowerPhase(ConduitToDMAState &state) {
 
           // Acquire consLock: wait for data to arrive.
           if (resolved.consLock) {
+            // Debug: verify lock belongs to same device as the core.
+            auto coreDev = resolved.coreOp->getParentOfType<AIE::DeviceOp>();
+            auto lockDev = resolved.consLock->getParentOfType<AIE::DeviceOp>();
+            if (coreDev && lockDev && coreDev != lockDev) {
+              op.emitWarning("DEBUG: consLock for '" + conduitName.str() +
+                             "' is from a different device!");
+            }
             int32_t acqVal =
                 state.lockAcqValue(Port::Consume, static_cast<int32_t>(count));
             builder.create<AIE::UseLockOp>(
@@ -1011,6 +1018,12 @@ void lowerPhase(ConduitToDMAState &state) {
           }
           // Release prodLock: signal buffer slot is empty.
           if (resolved.prodLock) {
+            auto coreDev = resolved.coreOp->getParentOfType<AIE::DeviceOp>();
+            auto lockDev = resolved.prodLock->getParentOfType<AIE::DeviceOp>();
+            if (coreDev && lockDev && coreDev != lockDev) {
+              op.emitWarning("DEBUG: prodLock for '" + conduitName.str() +
+                             "' is from a different device!");
+            }
             int32_t relVal =
                 state.lockRelValue(Port::Consume, static_cast<int32_t>(count));
             builder.create<AIE::UseLockOp>(op.getLoc(),

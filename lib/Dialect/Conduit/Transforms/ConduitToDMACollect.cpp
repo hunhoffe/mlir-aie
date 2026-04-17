@@ -94,6 +94,24 @@ void collectPhase(ConduitToDMAState &state) {
       }
     }
 
+    // S2MM DMA channel group label (set by --conduit-fuse-channels).
+    if (auto fuseAttrS2MM =
+            op->getAttrOfType<mlir::StringAttr>("dma_channel_group_s2mm")) {
+      info.fuseGroupS2MM = fuseAttrS2MM.getValue().str();
+
+      if (auto modeAttr =
+              op->getAttrOfType<mlir::StringAttr>("fuse_mode_s2mm")) {
+        if (modeAttr.getValue() == "runtime") {
+          op.emitError(
+              "conduit-to-dma: S2MM fuse_mode=\"runtime\" is not yet "
+              "supported — remove the dma_channel_group_s2mm annotation or "
+              "restructure the program to avoid conditional fusion");
+          state.passFailed = true;
+          return;
+        }
+      }
+    }
+
     // New feature attributes.
     if (auto sm = op.getSyncMode())
       info.noLocks = (*sm == SyncMode::None);
@@ -156,8 +174,6 @@ void collectPhase(ConduitToDMAState &state) {
   // producer_tile / consumer_tiles attribute reads on conduit.create.
   // -----------------------------------------------------------------------
   {
-    auto inferredMap = inferAllTiles(module);
-
     // Extract (col, row) from an aie.tile SSA Value.
     auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
       if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
@@ -166,39 +182,88 @@ void collectPhase(ConduitToDMAState &state) {
       return {-1, -1};
     };
 
-    for (auto &[name, info] : state.conduitMap) {
-      // inferredMap is keyed by unqualified IR names; use origName
-      // for the lookup when conduitMap keys are device-qualified.
-      auto it = inferredMap.find(info.origName);
-      if (it == inferredMap.end())
-        continue;
-      const auto &inferred = it->second;
-
-      // Producer tile.
-      if (inferred.producerTile) {
-        auto [col, row] = extractCoord(inferred.producerTile);
-        if (col >= 0)
-          info.producerTileCoord = {col, row};
-      }
-
-      // Consumer tiles (non-shim).
-      if (!inferred.consumerTiles.empty()) {
-        info.consumerTileCoords.clear();
-        for (mlir::Value tv : inferred.consumerTiles) {
-          auto [col, row] = extractCoord(tv);
+    // Per-device tile inference: call inferAllTiles() separately for each
+    // aie.device to avoid cross-device tile leakage.  When multiple devices
+    // share channel names (e.g., @channel_34 in both segments), a module-
+    // wide walk would conflate tiles from different devices, causing lock
+    // SSA values from one device to be used inside another device's
+    // IsolatedFromAbove region → "using value defined outside the region".
+    //
+    // Fallback: if no devices exist, infer on the module (legacy path).
+    if (state.deviceOps.empty()) {
+      auto inferredMap = inferAllTiles(module);
+      for (auto &[name, info] : state.conduitMap) {
+        auto it = inferredMap.find(info.origName);
+        if (it == inferredMap.end())
+          continue;
+        const auto &inferred = it->second;
+        if (inferred.producerTile) {
+          auto [col, row] = extractCoord(inferred.producerTile);
           if (col >= 0)
-            info.consumerTileCoords.push_back({col, row});
+            info.producerTileCoord = {col, row};
+        }
+        if (!inferred.consumerTiles.empty()) {
+          info.consumerTileCoords.clear();
+          for (mlir::Value tv : inferred.consumerTiles) {
+            auto [col, row] = extractCoord(tv);
+            if (col >= 0)
+              info.consumerTileCoords.push_back({col, row});
+          }
+        }
+        for (mlir::Value tv : inferred.shimConsumerTiles) {
+          auto [col, row] = extractCoord(tv);
+          if (col >= 0) {
+            std::pair<int64_t, int64_t> coord = {col, row};
+            if (llvm::find(info.shimConsumerTileCoords, coord) ==
+                info.shimConsumerTileCoords.end())
+              info.shimConsumerTileCoords.push_back(coord);
+          }
         }
       }
+    } else {
+      for (int devIdx = 0;
+           devIdx < static_cast<int>(state.deviceOps.size()); ++devIdx) {
+        AIE::DeviceOp dev = state.deviceOps[devIdx];
+        auto inferredMap = inferAllTiles(dev);
 
-      // Shim consumer tiles.
-      for (mlir::Value tv : inferred.shimConsumerTiles) {
-        auto [col, row] = extractCoord(tv);
-        if (col >= 0) {
-          std::pair<int64_t, int64_t> coord = {col, row};
-          if (llvm::find(info.shimConsumerTileCoords, coord) ==
-              info.shimConsumerTileCoords.end())
-            info.shimConsumerTileCoords.push_back(coord);
+        for (auto &[name, info] : state.conduitMap) {
+          // Match conduit entries to this device by deviceIndex.
+          if (state.isMultiDevice() && info.deviceIndex != devIdx)
+            continue;
+          // Single-device: deviceIndex == -1; accept all.
+
+          auto it = inferredMap.find(info.origName);
+          if (it == inferredMap.end())
+            continue;
+          const auto &inferred = it->second;
+
+          // Producer tile.
+          if (inferred.producerTile) {
+            auto [col, row] = extractCoord(inferred.producerTile);
+            if (col >= 0)
+              info.producerTileCoord = {col, row};
+          }
+
+          // Consumer tiles (non-shim).
+          if (!inferred.consumerTiles.empty()) {
+            info.consumerTileCoords.clear();
+            for (mlir::Value tv : inferred.consumerTiles) {
+              auto [col, row] = extractCoord(tv);
+              if (col >= 0)
+                info.consumerTileCoords.push_back({col, row});
+            }
+          }
+
+          // Shim consumer tiles.
+          for (mlir::Value tv : inferred.shimConsumerTiles) {
+            auto [col, row] = extractCoord(tv);
+            if (col >= 0) {
+              std::pair<int64_t, int64_t> coord = {col, row};
+              if (llvm::find(info.shimConsumerTileCoords, coord) ==
+                  info.shimConsumerTileCoords.end())
+                info.shimConsumerTileCoords.push_back(coord);
+            }
+          }
         }
       }
     }
@@ -236,11 +301,15 @@ void collectPhase(ConduitToDMAState &state) {
   state.acqAction = state.isAIE2Plus() ? AIE::LockAction::AcquireGreaterEqual
                                        : AIE::LockAction::Acquire;
 
-  // Build unified tile cache across all devices.
-  // Each device's tiles have unique coordinates after --conduit-fuse-operators.
-  for (AIE::DeviceOp dev : state.deviceOps) {
-    dev.walk([&](AIE::TileOp tile) {
+  // Build tile caches.
+  // Global tileCache (for single-device compat) + per-device cache for
+  // multi-device modules where different devices share tile coordinates.
+  state.perDevTileCache.resize(state.deviceOps.size());
+  for (int devIdx = 0; devIdx < static_cast<int>(state.deviceOps.size());
+       ++devIdx) {
+    state.deviceOps[devIdx].walk([&](AIE::TileOp tile) {
       state.tileCache[{tile.getCol(), tile.getRow()}] = tile;
+      state.perDevTileCache[devIdx][{tile.getCol(), tile.getRow()}] = tile;
     });
   }
 

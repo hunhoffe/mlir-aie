@@ -324,8 +324,8 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
 
       if (!funcLinkWith.empty()) {
         state.deviceOp.walk([&](AIE::CoreOp coreOp) {
-          // Skip cores that already have link_with set.
-          if (coreOp.getLinkWith())
+          // Skip cores that already have link_with or link_files set.
+          if (coreOp.getLinkWith() || coreOp.getLinkFiles())
             return;
           // Check if any func.call inside this core references a function
           // with link_with.

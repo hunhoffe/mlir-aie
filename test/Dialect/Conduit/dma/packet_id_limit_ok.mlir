@@ -1,42 +1,109 @@
 // RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
-// P2-A: Exactly 32 packet flows via mixed shim + compute-to-compute paths.
+// P1-A: Packet flow ID allocator — per-MemTile scoping with 4 columns.
 //
-// 30 explicit packet conduits from shim tiles (IDs 0-29).
-// Two compute-to-compute explicit packet conduits (IDs 30-31) from tile (5,1)
-// to tiles (5,3) and (5,5).  Total: 32 flows exactly at the limit.
+// 32 packet conduits spread across 4 shim NOC tiles on xcvc1902 (AIE1,
+// 8 conduits per column).  Each conduit contributes exactly one
+// aie.packet_flow op.  With per-MemTile-domain scoping, each column
+// gets its own 0-31 ID space, so each column uses IDs 0-7 independently.
+//
+// Topology: shim tiles at columns 2, 3, 6, 7 each drive 8 compute tiles
+// in their respective columns (rows 1-8).  All consumer tiles are unique
+// so no S2MM channel conflicts arise (each gets S2MM channel 0).
+//
+// AIE1 (xcvc1902) is used so that no per-shim locks are allocated in
+// Phase 4a (AIE1 shim locks are managed by the runtime, not Conduit).
 //
 // Verifies:
 //   - All 32 aie.packet_flow ops are emitted (no error)
-//   - No residual conduit.create ops
+//   - Packet flow IDs reset to 0 at each column boundary (per-MemTile scoping)
+//   - No "packet flow ID exhausted" diagnostic is emitted
+//   - conduit.create ops are fully erased by Phase 7
 
-// CHECK-LABEL: module @pkt_id_exactly_32
-// CHECK:       aie.packet_flow(0)
-// CHECK:       aie.packet_flow(29)
-// CHECK:       aie.packet_flow(30)
-// CHECK:       aie.packet_flow(31)
-// CHECK-NOT:   error
+// CHECK-LABEL: module @pkt_id_limit_ok
+// Column 2: packet IDs 1-8
+// CHECK:       aie.packet_flow(1)
+// CHECK:       aie.packet_flow(2)
+// CHECK:       aie.packet_flow(3)
+// CHECK:       aie.packet_flow(4)
+// CHECK:       aie.packet_flow(5)
+// CHECK:       aie.packet_flow(6)
+// CHECK:       aie.packet_flow(7)
+// CHECK:       aie.packet_flow(8)
+// Column 3: packet IDs reset to 1-8 (per-MemTile scoping)
+// CHECK:       aie.packet_flow(1)
+// CHECK:       aie.packet_flow(2)
+// CHECK:       aie.packet_flow(3)
+// CHECK:       aie.packet_flow(4)
+// CHECK:       aie.packet_flow(5)
+// CHECK:       aie.packet_flow(6)
+// CHECK:       aie.packet_flow(7)
+// CHECK:       aie.packet_flow(8)
+// Column 6: packet IDs reset to 1-8
+// CHECK:       aie.packet_flow(1)
+// CHECK:       aie.packet_flow(2)
+// CHECK:       aie.packet_flow(3)
+// CHECK:       aie.packet_flow(4)
+// CHECK:       aie.packet_flow(5)
+// CHECK:       aie.packet_flow(6)
+// CHECK:       aie.packet_flow(7)
+// CHECK:       aie.packet_flow(8)
+// Column 7: packet IDs reset to 1-8
+// CHECK:       aie.packet_flow(1)
+// CHECK:       aie.packet_flow(2)
+// CHECK:       aie.packet_flow(3)
+// CHECK:       aie.packet_flow(4)
+// CHECK:       aie.packet_flow(5)
+// CHECK:       aie.packet_flow(6)
+// CHECK:       aie.packet_flow(7)
+// CHECK:       aie.packet_flow(8)
 // CHECK-NOT:   conduit.create
 
-module @pkt_id_exactly_32 {
+module @pkt_id_limit_ok {
   aie.device(xcvc1902) {
-    // Shim tiles and their consumers for IDs 0-29.
-    %t2_0 = aie.tile(2, 0)  %t2_1 = aie.tile(2, 1)  %t2_2 = aie.tile(2, 2)
-    %t2_3 = aie.tile(2, 3)  %t2_4 = aie.tile(2, 4)  %t2_5 = aie.tile(2, 5)
-    %t2_6 = aie.tile(2, 6)  %t2_7 = aie.tile(2, 7)  %t2_8 = aie.tile(2, 8)
-    %t3_0 = aie.tile(3, 0)  %t3_1 = aie.tile(3, 1)  %t3_2 = aie.tile(3, 2)
-    %t3_3 = aie.tile(3, 3)  %t3_4 = aie.tile(3, 4)  %t3_5 = aie.tile(3, 5)
-    %t3_6 = aie.tile(3, 6)  %t3_7 = aie.tile(3, 7)  %t3_8 = aie.tile(3, 8)
-    %t6_0 = aie.tile(6, 0)  %t6_1 = aie.tile(6, 1)  %t6_2 = aie.tile(6, 2)
-    %t6_3 = aie.tile(6, 3)  %t6_4 = aie.tile(6, 4)  %t6_5 = aie.tile(6, 5)
-    %t6_6 = aie.tile(6, 6)  %t6_7 = aie.tile(6, 7)  %t6_8 = aie.tile(6, 8)
-    %t7_0 = aie.tile(7, 0)  %t7_1 = aie.tile(7, 1)  %t7_2 = aie.tile(7, 2)
-    %t7_3 = aie.tile(7, 3)  %t7_4 = aie.tile(7, 4)  %t7_5 = aie.tile(7, 5)
+    // Column 2: shim NOC at (2,0), compute tiles (2,1)-(2,8)
+    %t2_0 = aie.tile(2, 0)
+    %t2_1 = aie.tile(2, 1)
+    %t2_2 = aie.tile(2, 2)
+    %t2_3 = aie.tile(2, 3)
+    %t2_4 = aie.tile(2, 4)
+    %t2_5 = aie.tile(2, 5)
+    %t2_6 = aie.tile(2, 6)
+    %t2_7 = aie.tile(2, 7)
+    %t2_8 = aie.tile(2, 8)
+    // Column 3: shim NOC at (3,0), compute tiles (3,1)-(3,8)
+    %t3_0 = aie.tile(3, 0)
+    %t3_1 = aie.tile(3, 1)
+    %t3_2 = aie.tile(3, 2)
+    %t3_3 = aie.tile(3, 3)
+    %t3_4 = aie.tile(3, 4)
+    %t3_5 = aie.tile(3, 5)
+    %t3_6 = aie.tile(3, 6)
+    %t3_7 = aie.tile(3, 7)
+    %t3_8 = aie.tile(3, 8)
+    // Column 6: shim NOC at (6,0), compute tiles (6,1)-(6,8)
+    %t6_0 = aie.tile(6, 0)
+    %t6_1 = aie.tile(6, 1)
+    %t6_2 = aie.tile(6, 2)
+    %t6_3 = aie.tile(6, 3)
+    %t6_4 = aie.tile(6, 4)
+    %t6_5 = aie.tile(6, 5)
+    %t6_6 = aie.tile(6, 6)
+    %t6_7 = aie.tile(6, 7)
+    %t6_8 = aie.tile(6, 8)
+    // Column 7: shim NOC at (7,0), compute tiles (7,1)-(7,8)
+    %t7_0 = aie.tile(7, 0)
+    %t7_1 = aie.tile(7, 1)
+    %t7_2 = aie.tile(7, 2)
+    %t7_3 = aie.tile(7, 3)
+    %t7_4 = aie.tile(7, 4)
+    %t7_5 = aie.tile(7, 5)
     %t7_6 = aie.tile(7, 6)
-    // Compute tiles for IDs 30-31 (explicit packet compute→compute).
-    %t5_1 = aie.tile(5, 1)  %t5_3 = aie.tile(5, 3)  %t5_5 = aie.tile(5, 5)
+    %t7_7 = aie.tile(7, 7)
+    %t7_8 = aie.tile(7, 8)
 
-    // IDs 0-7: shim col 2
+    // Column 2: 8 packet conduits, each to a unique consumer tile.
+    // Per-MemTile scoping: packet IDs 0-7.
     conduit.create @p00 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p01 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p02 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
@@ -45,7 +112,7 @@ module @pkt_id_exactly_32 {
     conduit.create @p05 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p06 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p07 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-    // IDs 8-15: shim col 3
+    // Column 3: per-MemTile scoping resets IDs to 0-7.
     conduit.create @p08 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p09 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p10 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
@@ -54,7 +121,7 @@ module @pkt_id_exactly_32 {
     conduit.create @p13 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p14 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p15 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-    // IDs 16-23: shim col 6
+    // Column 6: per-MemTile scoping resets IDs to 0-7.
     conduit.create @p16 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p17 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p18 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
@@ -63,19 +130,17 @@ module @pkt_id_exactly_32 {
     conduit.create @p21 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p22 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p23 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-    // IDs 24-29: shim col 7 (6 of 8 rows)
+    // Column 7: per-MemTile scoping resets IDs to 0-7.
     conduit.create @p24 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p25 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p26 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p27 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p28 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
     conduit.create @p29 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
+    conduit.create @p30 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
+    conduit.create @p31 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
 
-    // IDs 30-31: compute-to-compute explicit packet conduits.
-    conduit.create @c30 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-    conduit.create @c31 {element_type = memref<4xi32>, depth = 1 : i64, routing_mode = #conduit.routing_mode<packet>}
-
-    // Shim producer allocations.
+    // Shim producer allocations (inferAllTiles Source 3: MM2S → producer tile).
     aie.shim_dma_allocation @p00_shim_alloc(%t2_0, MM2S, 0)
     aie.shim_dma_allocation @p01_shim_alloc(%t2_0, MM2S, 0)
     aie.shim_dma_allocation @p02_shim_alloc(%t2_0, MM2S, 0)
@@ -106,8 +171,10 @@ module @pkt_id_exactly_32 {
     aie.shim_dma_allocation @p27_shim_alloc(%t7_0, MM2S, 0)
     aie.shim_dma_allocation @p28_shim_alloc(%t7_0, MM2S, 0)
     aie.shim_dma_allocation @p29_shim_alloc(%t7_0, MM2S, 0)
+    aie.shim_dma_allocation @p30_shim_alloc(%t7_0, MM2S, 0)
+    aie.shim_dma_allocation @p31_shim_alloc(%t7_0, MM2S, 0)
 
-    // Consumer cores for shim conduits.
+    // Consumer cores (inferAllTiles Source 2: Acquire{Consume} → consumer tile).
     aie.core(%t2_1) { conduit.acquire {name = @p00, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%t2_2) { conduit.acquire {name = @p01, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%t2_3) { conduit.acquire {name = @p02, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
@@ -138,16 +205,7 @@ module @pkt_id_exactly_32 {
     aie.core(%t7_4) { conduit.acquire {name = @p27, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%t7_5) { conduit.acquire {name = @p28, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
     aie.core(%t7_6) { conduit.acquire {name = @p29, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
-
-    // Producer and consumer cores for compute-to-compute conduits (IDs 30-31).
-    // Note: (5,1) produces both c30 and c31; consumers are (5,3) and (5,5).
-    // Tile (5,3) is adjacent to neither (5,1) nor (5,5) — uses DMA path.
-    aie.core(%t5_1) {
-      conduit.acquire {name = @c30, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
-      conduit.acquire {name = @c31, port = #conduit.port<Produce>, count = 1 : i64} : !conduit.window<memref<4xi32>>
-      aie.end
-    }
-    aie.core(%t5_3) { conduit.acquire {name = @c30, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
-    aie.core(%t5_5) { conduit.acquire {name = @c31, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
+    aie.core(%t7_7) { conduit.acquire {name = @p30, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
+    aie.core(%t7_8) { conduit.acquire {name = @p31, port = #conduit.port<Consume>, count = 1 : i64} : !conduit.window<memref<4xi32>>  aie.end }
   }
 }

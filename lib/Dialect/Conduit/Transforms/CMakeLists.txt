@@ -9,6 +9,7 @@ add_mlir_dialect_library(ConduitTransforms
   PARTIAL_SOURCES_INTENDED
   AirChannelIndexFlattener.cpp
   AirChannelToConduit.cpp
+  ConduitCombineDevicePass.cpp
   ConduitCheckChannels.cpp
   ConduitCheckDeps.cpp
   ConduitCheckLoopBalance.cpp
@@ -17,6 +18,7 @@ add_mlir_dialect_library(ConduitTransforms
   ConduitDmaTaskToConduit.cpp
   ConduitDepthPromotion.cpp
   ConduitFuseChannels.cpp
+  ConduitFuseCoreBodyPass.cpp
   ConduitFuseRelay.cpp
   ConduitFuseOperators.cpp
   ConduitInferModes.cpp

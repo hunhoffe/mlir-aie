@@ -866,4 +866,107 @@ def ConduitDmaTaskToConduit
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// Core-Body Fusion — conduit-fuse-core-bodies
+//===----------------------------------------------------------------------===//
+
+def ConduitFuseCoreBodies : Pass<"conduit-fuse-core-bodies", "::mlir::ModuleOp"> {
+  let summary = "Loop-body IRON operator fusion: compose aie.core bodies connected by intermediate conduits";
+  let description = [{
+    Given two aie.core ops on the same tile connected by an intermediate
+    conduit.create channel, this pass fuses their loop bodies:
+
+      1. Identifies fusable core pairs (same tile, connected by intermediate
+         conduit, 1:1 rate-matched, matching loop structure).
+      2. Decides intermediate routing: L1 (memref.alloc) if intermediate fits
+         in tile L1 SRAM, MemTile relay (conduit.scatter/gather) if L1 pressure,
+         skip if neither suffices.
+      3. Composes the two core bodies into a single aie.core body by cloning
+         Core B's loop body into Core A after the intermediate produce/release.
+      4. Replaces intermediate conduit.acquire/release/subview_access ops with
+         direct memref.alloc references (L1) or relay buffer references (MemTile).
+      5. Deletes the intermediate conduit.create, dead Core B, and associated
+         runtime sequence DMA ops.
+
+    Only 1:1 rate-matched (SDF period 1) edges are supported.
+    Multi-consumer (broadcast) intermediates are not fused.
+
+    Prerequisites: --objectfifo-to-conduit (Pass A) + --dma-task-to-conduit.
+    IRON operators must emit explicit scf.for tile loops.
+
+    Run before: --conduit-infer-modes --conduit-depth-promote --conduit-to-dma.
+
+    This pass is OPT-IN and NOT part of the default pipeline.
+
+    Run with:  aie-opt --conduit-fuse-core-bodies <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitFuseCoreBodyPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+    "::mlir::memref::MemRefDialect",
+    "::mlir::scf::SCFDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Device Merge — aie-combine-device
+//===----------------------------------------------------------------------===//
+
+def ConduitCombineDevice : Pass<"aie-combine-device", "::mlir::ModuleOp"> {
+  let summary = "Merge two aie.device ops connected by matching fusion_group into one";
+  let description = [{
+    General-purpose device merge pass for IRON operator fusion.
+
+    IRON operators emit separate aie.device blocks per operator. Downstream
+    fusion passes (--conduit-fuse-operators, --conduit-fuse-core-bodies) need
+    all fusable tiles to reside in a single aie.device block. This pass merges
+    two consecutive aie.device ops connected by a conduit.create channel with
+    matching `fusion_group` attributes.
+
+    Two modes:
+      - **tile-offset** (default, `same-tile=false`): Offsets all tile
+        coordinates in device B by `max_col(devA) + 1`. This ensures no tile
+        coordinate conflicts when the merged device is processed by downstream
+        passes. Used by spatial fusion (--conduit-fuse-operators).
+      - **same-tile** (`same-tile=true`): Keeps original tile coordinates.
+        Used as a pre-merge step for loop-body fusion
+        (--conduit-fuse-core-bodies) where both cores target the same tile.
+
+    The pass:
+      1. Finds two consecutive aie.device ops connected by a conduit channel
+         with matching `fusion_group` attributes.
+      2. Applies tile offset to device B (tile-offset mode only).
+      3. Physically moves all ops from device B's body into device A's body.
+      4. Merges runtime_sequence bodies (appends devB's sequence args and ops
+         to devA's sequence).
+      5. Sinks aie.core, aie.mem, and aie.runtime_sequence ops to the end of
+         the merged body (before aie.end terminator) to maintain dominance.
+      6. Erases the empty device B.
+
+    This pass does NOT erase or rewrite any conduit channels. Channel
+    rewriting (renaming, erasing intermediate channels, creating fused
+    channels) is left to the downstream fusion pass.
+
+    Run with:  aie-opt --aie-combine-device <input.mlir>
+    Same-tile: aie-opt --aie-combine-device="same-tile=true" <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitCombineDevicePass()";
+
+  let options = [
+    Option<"sameTile", "same-tile", "bool", /*default=*/"false",
+           "Keep original tile coordinates (same-tile mode) instead of "
+           "offsetting device B tiles by max_col(devA)+1 (tile-offset mode). "
+           "Use same-tile=true as a pre-merge for loop-body fusion.">,
+  ];
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
 #endif // CONDUIT_PASSES

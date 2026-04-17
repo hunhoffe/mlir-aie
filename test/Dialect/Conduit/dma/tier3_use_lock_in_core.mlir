@@ -1,51 +1,54 @@
 // RUN: aie-opt --allow-unregistered-dialect --air-channel-to-conduit --conduit-depth-promote --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: Tier 3 use_lock on adjacent tiles via air.channel pipeline.
+// Regression test: Tier 3 ops (put/get_memref_async) inside aie.core bodies
+// must be lowered to use_lock ops (Pass C Phase 6, Steps 8e-8f).
 //
-// Adjacent tiles (2,3) and (2,4): Pass B generates conduit.create, Pass C
-// lowers to DMA with locks on the consumer tile.  Core-side use_lock ops
-// synchronize producer and consumer with the DMA engine.
+// When hierarchy-produced IR (via --air-hierarchy-to-aie -> Pass B) places
+// conduit.put_memref_async / conduit.get_memref_async inside aie.core
+// regions, Pass C must emit use_lock to synchronize the core with the
+// shared buffer.  Adjacent tiles use shared-memory routing (no DMA).
+//
+// Producer (put): acquire prodLock (empty slot) + release consLock (data ready)
+// Consumer (get): acquire consLock (data arrived) + release prodLock (slot free)
+//
+// Input: hierarchy-produced IR with adjacent tiles (3,4) and (3,5).
+// Pipeline: --air-channel-to-conduit --conduit-depth-promote --conduit-to-dma
 //
 // Verifies:
-//   1. Both cores reference the same lock pair (on consumer tile)
-//   2. Producer: acquire prodLock, release consLock
-//   3. Consumer: acquire consLock, release prodLock
-//   4. DMA BD chain exists on consumer tile
-//   5. No residual conduit ops
+//   1. use_lock ops appear in both core bodies
+//   2. Correct lock polarity (acquire/release on correct locks)
+//   3. No residual conduit ops
 
+// Lock definitions appear before the core bodies.
 // CHECK:       %[[PROD_LOCK:.*]] = aie.lock(%{{.*}}, 0) {init = 1
 // CHECK:       %[[CONS_LOCK:.*]] = aie.lock(%{{.*}}, 1) {init = 0
 
-// --- Producer core ---
+// --- Producer core: acquire prodLock, release consLock ---
 // CHECK:       aie.core
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
 // CHECK-NEXT:    aie.use_lock(%[[CONS_LOCK]], Release, 1)
 
-// --- Consumer core: same locks, opposite polarity ---
+// --- Consumer core: acquire consLock, release prodLock ---
 // CHECK:       aie.core
 // CHECK:         aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 1)
 // CHECK-NEXT:    aie.use_lock(%[[PROD_LOCK]], Release, 1)
-
-// --- DMA BD chain on consumer tile ---
-// CHECK:       aie.mem
-// CHECK:         aie.dma_start(S2MM
 
 // --- No residual conduit ops ---
 // CHECK-NOT: conduit.put_memref_async
 // CHECK-NOT: conduit.get_memref_async
 // CHECK-NOT: conduit.create
 
-module @test_tier3_shared_mem {
+module @test_tier3_locks {
   aie.device(xcve2802) @segment_0 {
-    %tile_2_3 = aie.tile(2, 3)
-    %tile_2_4 = aie.tile(2, 4)
-    %core_2_3 = aie.core(%tile_2_3) {
+    %tile_3_4 = aie.tile(3, 4)
+    %tile_3_5 = aie.tile(3, 5)
+    %core_3_4 = aie.core(%tile_3_4) {
       %alloc = memref.alloc() : memref<32xi32, 2>
       "air.channel.put"(%alloc) {chan_name = @channel_0, id = 1 : i32, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>} : (memref<32xi32, 2>) -> ()
       memref.dealloc %alloc : memref<32xi32, 2>
       aie.end
     }
-    %core_2_4 = aie.core(%tile_2_4) {
+    %core_3_5 = aie.core(%tile_3_5) {
       %alloc = memref.alloc() : memref<32xi32, 2>
       "air.channel.get"(%alloc) {chan_name = @channel_0, id = 2 : i32, operand_segment_sizes = array<i32: 0, 0, 1, 0, 0, 0>} : (memref<32xi32, 2>) -> ()
       memref.dealloc %alloc : memref<32xi32, 2>
