@@ -323,7 +323,10 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
       });
 
       if (!funcLinkWith.empty()) {
-        state.deviceOp.walk([&](AIE::CoreOp coreOp) {
+        // Walk ALL devices (not just the first) so multi-device fused modules
+        // get link_with propagated to every aie.core, not just device 0.
+        for (auto dev : state.deviceOps)
+          dev.walk([&](AIE::CoreOp coreOp) {
           // Skip cores that already have link_with or link_files set.
           if (coreOp.getLinkWith() || coreOp.getLinkFiles())
             return;
