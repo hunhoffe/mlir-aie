@@ -33,9 +33,11 @@
 // Consumer alias for tile (3,2).
 // CHECK: conduit.create @bcast_c1
 // CHECK-SAME: element_type = memref<16xi32>
-// Scatter op (Sprint 4: distribute renamed to scatter, srcs array→src single).
-// CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0, @bcast_c1]
+// Per-column scatter ops (one per consumer column, each with column-local MemTile).
+// CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c0]
 // CHECK-SAME: memtile = "tile(2,1)"
+// CHECK: conduit.scatter{src = @bcast, dsts = [@bcast_c1]
+// CHECK-SAME: memtile = "tile(3,1)"
 
 // No residual air.channel declarations.
 // CHECK-NOT: air.channel {

@@ -644,10 +644,6 @@ void routePhase(ConduitToDMAState &state) {
       int32_t mm2sChForShimCons =
           state.tileNextMM2SChannel[prodTile.getResult()]++;
       state.conduitMM2SChannel[name] = mm2sChForShimCons;
-      // DEBUG
-      llvm::errs() << "[Phase4b] shim-consumer alloc: conduit='" << name
-                   << "' prodTile=(" << prodCol << "," << prodRow
-                   << ") mm2sCh=" << mm2sChForShimCons << "\n";
       auto shimBundle =
           info.plio ? AIE::WireBundle::PLIO : AIE::WireBundle::DMA;
       state.emitFlow(info.routingMode, prodTile.getResult(),
@@ -710,6 +706,65 @@ void routePhase(ConduitToDMAState &state) {
   // existing or newly designated packet-mode physical channel, subject to
   // BD budget, lock budget, and global packet-flow-ID constraints.
   // -----------------------------------------------------------------------
+
+  // -----------------------------------------------------------------------
+  // Pre-pass: count packet channels per MM2S fuse group and pre-allocate
+  // power-of-2-aligned packet ID blocks.
+  //
+  // The downstream AIECreatePathFindFlows pass computes mask/value rules for
+  // groups of packet flows sharing a source port.  If the IDs are not a
+  // power-of-2-aligned contiguous block, the mask can be overly broad and
+  // accidentally match IDs from other groups (e.g., IDs {1,2,3,4,5} produce
+  // mask=0b11000 value=0 which matches ALL IDs 0-7).
+  //
+  // This pre-pass ensures correct mask/value by:
+  //   1. Counting packet-mode channels per fuse group.
+  //   2. Calling allocateBlock() to reserve an aligned ID block per group.
+  //   3. Storing the block start; the main loop draws sequential IDs from it.
+  // -----------------------------------------------------------------------
+  llvm::StringMap<uint8_t> fuseGroupPacketIDBase;  // qFG → start ID
+  llvm::StringMap<unsigned> fuseGroupPacketIDNext;  // qFG → next member index
+  {
+    // Step 1: count packet channels per qualified fuse group.
+    llvm::StringMap<unsigned> fuseGroupPacketCount;
+    // Also record one MemTile domain per group for block allocation.
+    llvm::StringMap<mlir::Value> fuseGroupDomain;
+    for (auto &[name, info] : state.conduitMap) {
+      if (info.routingMode != "packet" || info.fuseGroup.empty())
+        continue;
+      if (state.isMultiDevice())
+        state.switchToDeviceIndex(info.deviceIndex);
+      std::string qFG =
+          state.qualifyFuseGroup(info.fuseGroup, info.deviceIndex);
+      fuseGroupPacketCount[qFG]++;
+      if (fuseGroupDomain.find(qFG) == fuseGroupDomain.end()) {
+        auto [prodCol, prodRow] = info.producerTileCoord;
+        if (prodCol >= 0) {
+          AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
+          if (prodTile)
+            fuseGroupDomain[qFG] = state.getMemTileDomain(prodTile.getResult());
+        }
+      }
+    }
+    // Step 2: allocate aligned blocks for groups with >1 packet member.
+    for (auto &entry : fuseGroupPacketCount) {
+      llvm::StringRef qFG = entry.first();
+      unsigned count = entry.second;
+      if (count <= 1)
+        continue;
+      auto domIt = fuseGroupDomain.find(qFG);
+      if (domIt == fuseGroupDomain.end() || !domIt->second)
+        continue;
+      auto startID =
+          state.packetIDAllocator->allocateBlock(domIt->second, count);
+      if (!startID) {
+        state.passFailed = true;
+        return;
+      }
+      fuseGroupPacketIDBase[qFG] = *startID;
+      fuseGroupPacketIDNext[qFG] = 0;
+    }
+  }
 
   // Track emitted flow port pairs to prevent duplicate flows when MM2S
   // fuse group members share the same source→dest ports (e.g. channel_22
@@ -857,8 +912,22 @@ void routePhase(ConduitToDMAState &state) {
         state.passFailed = true;
         return;
       }
-      mlir::Value pktDomain = state.getMemTileDomain(prodTileVal);
-      std::optional<uint8_t> pktID = state.packetIDAllocator->allocate(pktDomain);
+      // Use pre-allocated aligned block ID if this channel belongs to a fuse
+      // group with multiple packet members; otherwise fall back to sequential.
+      std::optional<uint8_t> pktID;
+      std::string qFG;
+      if (!info.fuseGroup.empty()) {
+        qFG = state.qualifyFuseGroup(info.fuseGroup, info.deviceIndex);
+        auto baseIt = fuseGroupPacketIDBase.find(qFG);
+        if (baseIt != fuseGroupPacketIDBase.end()) {
+          unsigned idx = fuseGroupPacketIDNext[qFG]++;
+          pktID = static_cast<uint8_t>(baseIt->second + idx);
+        }
+      }
+      if (!pktID) {
+        mlir::Value pktDomain = state.getMemTileDomain(prodTileVal);
+        pktID = state.packetIDAllocator->allocate(pktDomain);
+      }
       if (!pktID) {
         state.passFailed = true;
         return;

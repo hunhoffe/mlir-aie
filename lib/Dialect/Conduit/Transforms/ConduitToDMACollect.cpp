@@ -135,10 +135,10 @@ void collectPhase(ConduitToDMAState &state) {
     // put/get walks).
     if (auto dims = op.getProducerDimensions())
       info.producerDimensions =
-          mlir::cast<AIE::BDDimLayoutArrayAttr>(dims);
+          mlir::cast<AIE::BDDimLayoutArrayAttr>(*dims);
     if (auto dims = op.getConsumerDimensions()) {
       auto arrayOfArrays =
-          mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(dims);
+          mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(*dims);
       for (auto consArr : arrayOfArrays.getValue())
         info.consumerDimensions.push_back(consArr);
     }
@@ -408,7 +408,7 @@ void collectPhase(ConduitToDMAState &state) {
       auto it = state.conduitMap.find(key);
       if (it != state.conduitMap.end())
         it->second.producerDimensions =
-            mlir::cast<AIE::BDDimLayoutArrayAttr>(dims);
+            mlir::cast<AIE::BDDimLayoutArrayAttr>(*dims);
     }
   });
   // Per-op dimension overrides: get_memref_async consumer_dimensions override
@@ -419,7 +419,7 @@ void collectPhase(ConduitToDMAState &state) {
       auto it = state.conduitMap.find(key);
       if (it != state.conduitMap.end()) {
         auto arrayOfArrays =
-            mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(dims);
+            mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(*dims);
         it->second.consumerDimensions.clear();
         for (auto consArr : arrayOfArrays.getValue())
           it->second.consumerDimensions.push_back(consArr);

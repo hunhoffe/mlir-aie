@@ -88,6 +88,53 @@ struct PacketIDAllocator {
     return next++;
   }
 
+  // Allocate a power-of-2-aligned block of `count` consecutive packet IDs.
+  //
+  // The downstream AIECreatePathFindFlows pass computes mask/value rules for
+  // groups of packet flows that share a source port and destination set.
+  // If the IDs in a group are not a power-of-2-aligned contiguous block, the
+  // computed mask can be overly broad and accidentally match IDs from other
+  // groups (e.g., mask=16 value=0 matches ALL IDs 0-15).
+  //
+  // This method guarantees correctness by:
+  //   1. Rounding `count` up to P = nextPow2(count).
+  //   2. Aligning the starting ID to the next multiple of P.
+  //   3. Reserving the full P-sized block (even if count < P), so unused
+  //      IDs in the block cannot be assigned to a different group.
+  //
+  // Returns the starting ID of the block.  Individual members are at
+  // startID, startID+1, ..., startID+count-1.
+  std::optional<uint8_t> allocateBlock(mlir::Value domain, unsigned count) {
+    if (count == 0)
+      return std::nullopt;
+    // Single ID: use the normal sequential allocator.
+    if (count == 1)
+      return allocate(domain);
+    uint8_t &next = nextPerDomain[domain];
+    if (next == 0)
+      next = 1;
+    // Compute P = next power of 2 >= count.
+    unsigned p = 1;
+    while (p < count)
+      p <<= 1;
+    // Align `next` up to the next multiple of P.
+    uint8_t aligned = static_cast<uint8_t>(((next + p - 1) / p) * p);
+    // If aligned is 0 due to wraparound, bump to p.
+    if (aligned == 0)
+      aligned = static_cast<uint8_t>(p);
+    if (static_cast<unsigned>(aligned) + count > limit) {
+      module.emitError(
+          "packet flow ID exhausted in MemTile domain: need aligned block of ")
+          << count << " IDs (aligned to " << p
+          << ") but only " << (unsigned)(limit - next) << " IDs remain";
+      return std::nullopt;
+    }
+    uint8_t startID = aligned;
+    // Reserve the full power-of-2 block so unused slots are not reused.
+    next = aligned + static_cast<uint8_t>(p);
+    return startID;
+  }
+
   uint8_t remaining(mlir::Value domain) const {
     auto it = nextPerDomain.find(domain);
     if (it == nextPerDomain.end())

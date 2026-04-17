@@ -353,6 +353,7 @@ static std::string findMemTileInColumn(mlir::Operation *contextOp,
 
   const AIE::AIETargetModel &tm = AIE::getTargetModel(deviceOp);
   std::string result;
+  // First, check instantiated TileOps in the column.
   deviceOp.walk([&](AIE::TileOp tileOp) {
     if (result.empty() && (int64_t)tileOp.getCol() == col &&
         tm.isMemTile(tileOp.getCol(), tileOp.getRow())) {
@@ -360,6 +361,16 @@ static std::string findMemTileInColumn(mlir::Operation *contextOp,
       os << "tile(" << tileOp.getCol() << "," << tileOp.getRow() << ")";
     }
   });
+  // Fallback: consult the target model if no TileOp was instantiated.
+  if (result.empty()) {
+    for (int row = 0; row < tm.rows(); ++row) {
+      if (tm.isMemTile(col, row)) {
+        llvm::raw_string_ostream os(result);
+        os << "tile(" << col << "," << row << ")";
+        break;
+      }
+    }
+  }
   return result;
 }
 
@@ -906,6 +917,40 @@ struct AirChannelToConduitPass
           continue;
         mlir::MemRefType mt = *optMt;
         // Only prefer get ops whose buffer lives in L2 (memory space 1).
+        if (auto msAttr =
+                mlir::dyn_cast_or_null<mlir::IntegerAttr>(mt.getMemorySpace()))
+          if (msAttr.getInt() == 1) {
+            mlir::MemRefType collapsed = collapseToRank2(mt);
+            createTypedOp.setElementTypeAttr(
+                mlir::TypeAttr::get(collapsed));
+          }
+      }
+
+      // Pass 1.5: scan put ops with L2 memory space (1) for output channels.
+      //
+      // Output channels (L2→L3, e.g. MemTile→DRAM) have get ops in L3 space
+      // and put ops in L2 space.  Pass 1 only checks get ops, so it misses
+      // these.  The put op's L2 memref carries the correct relay tile size
+      // (e.g., memref<96x64xbf16>) instead of the full L3 output tensor size
+      // (e.g., memref<4096x64xbf16>) which would cause MemTile overflow.
+      for (mlir::Operation *op : putGetToRewrite) {
+        if (!isAirChannelPut(op))
+          continue;
+        std::string chanName = getChanName(op);
+        if (chanName.empty())
+          continue;
+        auto it = channelCreateOps.find(chanName);
+        if (it == channelCreateOps.end())
+          continue;
+        auto createTypedOp =
+            mlir::dyn_cast<Create>(it->second);
+        if (!createTypedOp || createTypedOp.getElementTypeAttr())
+          continue;
+        auto optMt = extractMemRefType(op);
+        if (!optMt)
+          continue;
+        mlir::MemRefType mt = *optMt;
+        // Only use put ops whose buffer lives in L2 (memory space 1).
         if (auto msAttr =
                 mlir::dyn_cast_or_null<mlir::IntegerAttr>(mt.getMemorySpace()))
           if (msAttr.getInt() == 1) {
