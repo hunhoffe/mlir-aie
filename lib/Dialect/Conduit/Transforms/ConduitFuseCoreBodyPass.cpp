@@ -35,7 +35,7 @@
 // Limitations:
 //   - Only 1:1 rate-matched (SDF period 1) edges are supported.
 //   - Multi-consumer (broadcast) intermediates are not fused.
-//   - Three-way chains require multiple pass invocations.
+//   - Three-way chains are handled via iterative re-discovery.
 //   - MemTile relay in loop-body fusion is an exposed stall (sequential core).
 //
 //===----------------------------------------------------------------------===//
@@ -151,6 +151,65 @@ static void mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
 
   std::string prodName = producerChannel.getName().str();
   std::string consName = consumerChannel.getName().str();
+
+  // --- Deconflict channel names before merge. ---
+  // If devB has channels with the same name as devA channels (other than
+  // the matched consumer channel which will be unified), rename them in
+  // devB before moving ops. This prevents the post-merge rename step from
+  // corrupting unrelated channels that happen to share a name.
+  {
+    llvm::StringSet<> devANames;
+    devA.walk([&](Create op) { devANames.insert(op.getName()); });
+
+    // Collect conflicting devB channel names.
+    llvm::SmallVector<std::pair<std::string, std::string>> renames;
+    devB.walk([&](Create op) {
+      std::string name = op.getName().str();
+      if (name == consName)
+        return; // Will be unified with producerChannel.
+      if (!devANames.count(name))
+        return; // No conflict.
+      // Generate unique name.
+      std::string newName = name + "_merged";
+      int suffix = 0;
+      while (devANames.count(newName))
+        newName = name + "_merged_" + std::to_string(suffix++);
+      devANames.insert(newName);
+      renames.push_back({name, newName});
+    });
+
+    // Apply renames within devB before ops are moved.
+    for (auto &[oldN, newN] : renames) {
+      auto newRef = mlir::FlatSymbolRefAttr::get(ctx, newN);
+      auto newStr = mlir::StringAttr::get(ctx, newN);
+      devB.walk([&](mlir::Operation *op) {
+        // conduit.create sym_name.
+        if (auto createOp = mlir::dyn_cast<Create>(op)) {
+          if (createOp.getName() == oldN)
+            createOp.setSymNameAttr(newStr);
+          return;
+        }
+        // ShimDMAAllocation sym_name and conduit_channel attr.
+        if (auto alloc = mlir::dyn_cast<AIE::ShimDMAAllocationOp>(op)) {
+          if (alloc.getSymName() == oldN)
+            alloc.setSymNameAttr(newStr);
+          std::string shimSuffix = oldN + "_shim_alloc";
+          if (alloc.getSymName() == shimSuffix)
+            alloc.setSymNameAttr(
+                mlir::StringAttr::get(ctx, newN + "_shim_alloc"));
+          auto cc =
+              alloc->getAttrOfType<mlir::FlatSymbolRefAttr>("conduit_channel");
+          if (cc && cc.getValue() == oldN)
+            alloc->setAttr("conduit_channel", newRef);
+          return;
+        }
+        // "name" attr on conduit ops (acquire, put_memref, get_memref, etc.).
+        auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+        if (nameAttr && nameAttr.getValue() == oldN)
+          op->setAttr("name", newRef);
+      });
+    }
+  }
 
   // --- Merge devB body into devA (same-tile mode — no column offset). ---
   {
@@ -1066,10 +1125,14 @@ static void cleanUpDeadOps(FusableCorePair &pair, AIE::DeviceOp device,
   pair.intermediateConduit->erase();
   if (consumerChannelName != channelName) {
     // Also erase the consumer-side conduit.create.
+    // Collect first, then erase — walk is not safe for erasure.
+    llvm::SmallVector<mlir::Operation *> consCreates;
     device.walk([&](Create op) {
       if (op.getName() == consumerChannelName)
-        op->erase();
+        consCreates.push_back(op.getOperation());
     });
+    for (auto *op : consCreates)
+      op->erase();
   }
 
   // 3. Walk device for aie.shim_dma_allocation referencing dead channels.
@@ -1204,66 +1267,93 @@ struct ConduitFuseCoreBodyPass
     // aie.device blocks (e.g., GEMV in device A → SiLU in device B).
     mergeDevicesForFusion(module, ctx);
 
-    // Infer tile coordinates from IR structure (after any merges).
-    auto inferredMap = inferAllTiles(module);
-
     // Process each aie.device independently.
     module.walk([&](AIE::DeviceOp device) {
-      // Step 1: Find fusable core pairs.
-      llvm::SmallVector<FusableCorePair> pairs =
-          findFusableCorePairs(device, inferredMap);
+      // Track erased cores and conduits across all fusion iterations.
+      llvm::DenseSet<mlir::Operation *> deadCores;
+      llvm::DenseSet<mlir::Operation *> deadConduits;
 
-      if (pairs.empty())
-        return;
+      // Fuse-one-then-restart: after each successful fusion, re-run
+      // findFusableCorePairs on the updated IR so chained edges (A→B→C)
+      // pick up the fused A+B core as the new producer for the B→C edge.
+      bool fusionHappened = true;
+      while (fusionHappened) {
+        fusionHappened = false;
 
-      for (FusableCorePair &pair : pairs) {
-        // Step 2: Decide intermediate routing.
-        IntermediateRoute route =
-            decideRoute(pair.intermediateConduit, pair.tile, device);
+        // Re-infer tile coordinates after each fusion (IR has changed).
+        auto inferredMap = inferAllTiles(module);
 
-        if (route == IntermediateRoute::Skip) {
-          pair.intermediateConduit.emitRemark()
-              << "conduit-fuse-core-bodies: skipping fusion — intermediate "
-                 "too large for L1 and MemTile";
-          continue;
-        }
+        // Step 1: Find fusable core pairs (re-run each iteration).
+        llvm::SmallVector<FusableCorePair> pairs =
+            findFusableCorePairs(device, inferredMap);
 
-        // Determine consumer channel name (may differ from producer
-        // channel name when matched via fusion_group).
-        std::string channelName =
-            pair.intermediateConduit.getName().str();
-        std::string consumerChannelName = channelName;
-        auto consumed = getConsumedChannels(pair.consumerCore);
-        for (const std::string &ch : consumed) {
-          if (ch == channelName)
-            break;
-          // Check fusion_group match.
-          llvm::StringMap<Create> cMap;
-          device.walk([&](Create op) { cMap[op.getName()] = op; });
-          auto consIt = cMap.find(ch);
-          if (consIt == cMap.end())
+        if (pairs.empty())
+          break;
+
+        for (FusableCorePair &pair : pairs) {
+          // Skip stale pairs where a core or conduit was already erased.
+          if (deadCores.count(pair.producerCore.getOperation()) ||
+              deadCores.count(pair.consumerCore.getOperation()) ||
+              deadConduits.count(pair.intermediateConduit.getOperation()))
             continue;
-          auto fgCons = consIt->second.getFusionGroup();
-          auto fgProd = pair.intermediateConduit.getFusionGroup();
-          if (fgProd && fgCons && !fgProd->empty() && *fgProd == *fgCons) {
-            consumerChannelName = ch;
-            break;
+
+          // Step 2: Decide intermediate routing.
+          IntermediateRoute route =
+              decideRoute(pair.intermediateConduit, pair.tile, device);
+
+          if (route == IntermediateRoute::Skip) {
+            pair.intermediateConduit.emitRemark()
+                << "conduit-fuse-core-bodies: skipping fusion — intermediate "
+                   "too large for L1 and MemTile";
+            continue;
           }
+
+          // Determine consumer channel name (may differ from producer
+          // channel name when matched via fusion_group).
+          std::string channelName =
+              pair.intermediateConduit.getName().str();
+          std::string consumerChannelName = channelName;
+          auto consumed = getConsumedChannels(pair.consumerCore);
+          for (const std::string &ch : consumed) {
+            if (ch == channelName)
+              break;
+            // Check fusion_group match.
+            llvm::StringMap<Create> cMap;
+            device.walk([&](Create op) { cMap[op.getName()] = op; });
+            auto consIt = cMap.find(ch);
+            if (consIt == cMap.end())
+              continue;
+            auto fgCons = consIt->second.getFusionGroup();
+            auto fgProd = pair.intermediateConduit.getFusionGroup();
+            if (fgProd && fgCons && !fgProd->empty() && *fgProd == *fgCons) {
+              consumerChannelName = ch;
+              break;
+            }
+          }
+
+          // Step 3: Compose core bodies.
+          if (mlir::failed(
+                  composeCoresBodies(pair, route, builder, ctx, device))) {
+            pair.producerCore.emitWarning()
+                << "conduit-fuse-core-bodies: failed to compose core bodies";
+            continue;
+          }
+
+          // Step 5: Merge link_with / link_files from consumer into producer.
+          mergeLinkWith(pair.producerCore, pair.consumerCore, ctx);
+
+          // Record dead ops before cleanup erases them.
+          deadCores.insert(pair.consumerCore.getOperation());
+          deadConduits.insert(pair.intermediateConduit.getOperation());
+
+          // Step 4: Clean up dead ops.
+          cleanUpDeadOps(pair, device, builder, consumerChannelName);
+
+          // Restart: break out of the pairs loop and re-run
+          // findFusableCorePairs on the updated IR.
+          fusionHappened = true;
+          break;
         }
-
-        // Step 3: Compose core bodies.
-        if (mlir::failed(
-                composeCoresBodies(pair, route, builder, ctx, device))) {
-          pair.producerCore.emitWarning()
-              << "conduit-fuse-core-bodies: failed to compose core bodies";
-          continue;
-        }
-
-        // Step 5: Merge link_with / link_files from consumer into producer.
-        mergeLinkWith(pair.producerCore, pair.consumerCore, ctx);
-
-        // Step 4: Clean up dead ops.
-        cleanUpDeadOps(pair, device, builder, consumerChannelName);
       }
 
       // Step 6: Preserve runtime_sequence block arguments.
