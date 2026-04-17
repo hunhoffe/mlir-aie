@@ -168,6 +168,18 @@ computeInterval(mlir::Block *block, llvm::StringRef conduitName) {
   return LiveInterval{*lo, *hi};
 }
 
+// Compute nesting depth of a block (number of ancestor operations).
+// Used to sort blocks shallowest-first for deterministic fusion ordering.
+static unsigned getBlockDepth(mlir::Block *block) {
+  unsigned depth = 0;
+  mlir::Operation *parent = block->getParentOp();
+  while (parent) {
+    ++depth;
+    parent = parent->getParentOp();
+  }
+  return depth;
+}
+
 // ---------------------------------------------------------------------------
 // Per-tile fusion state
 // ---------------------------------------------------------------------------
@@ -300,7 +312,20 @@ struct ConduitFuseChannelsPass
         // Track whether any block hosting a conduit has an scf::IfOp parent.
         llvm::StringMap<bool> nameNeedsRuntime;
 
-        for (auto &[block, items] : blockConduits) {
+        // Sort blocks by nesting depth (shallowest first) for deterministic
+        // iteration order.  The "first-block-wins" semantics of nameToGroup
+        // depend on processing order; non-deterministic DenseMap iteration
+        // causes outer-block non-overlapping intervals to be shadowed by
+        // inner-block overlapping intervals in some devices but not others.
+        llvm::SmallVector<mlir::Block *> sortedBlocks;
+        for (auto &kv : blockConduits)
+          sortedBlocks.push_back(kv.first);
+        llvm::sort(sortedBlocks, [](mlir::Block *a, mlir::Block *b) {
+          return getBlockDepth(a) < getBlockDepth(b);
+        });
+
+        for (mlir::Block *block : sortedBlocks) {
+          auto &items = blockConduits[block];
           bool inIfBlock =
               mlir::isa_and_present<mlir::scf::IfOp>(block->getParentOp());
           for (auto &[name, iv] : items) {
@@ -409,7 +434,7 @@ struct ConduitFuseChannelsPass
           return;
         for (auto consTile : tileIt->second.consumerTiles) {
           auto [col, row] = extractCoord(consTile);
-          if (col >= 0 && row == 0)
+          if (col >= 0 && (row == 0 || row == 1))
             continue;
           s2mmTileGroups[{col, row}].push_back(
               {createOp.getName().str(), createOp});
@@ -438,7 +463,17 @@ struct ConduitFuseChannelsPass
         llvm::StringMap<unsigned> nameToGroup;
         llvm::StringMap<bool> nameNeedsRuntime;
 
-        for (auto &[block, items] : blockConduits) {
+        // Sort blocks by nesting depth (shallowest first) — same fix as
+        // MM2S above for deterministic "first-block-wins" ordering.
+        llvm::SmallVector<mlir::Block *> sortedBlocks;
+        for (auto &kv : blockConduits)
+          sortedBlocks.push_back(kv.first);
+        llvm::sort(sortedBlocks, [](mlir::Block *a, mlir::Block *b) {
+          return getBlockDepth(a) < getBlockDepth(b);
+        });
+
+        for (mlir::Block *block : sortedBlocks) {
+          auto &items = blockConduits[block];
           bool inIfBlock =
               mlir::isa_and_present<mlir::scf::IfOp>(block->getParentOp());
           for (auto &[name, iv] : items) {
