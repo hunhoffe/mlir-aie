@@ -401,6 +401,10 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
                         for spatial fusion via --conduit-fuse-operators.
     - bd_repeat       : lowering annotation — BD unroll factor (Pass A → Pass C).
     - dma_repeat      : lowering annotation — whole-chain repeat count (Pass A → Pass C).
+    - producer_dimensions : optional BDDimLayoutArray — default MM2S DMA layout transform.
+                        Per-op attrs on put_memref/put_memref_async override this default.
+    - consumer_dimensions : optional BDDimLayoutArrayArray — default S2MM DMA layout transforms.
+                        Per-op attrs on get_memref/get_memref_async override this default.
 
     Example:
       conduit.create @c1 {element_type = memref<10xi32>, depth = 1 : i64}
@@ -449,7 +453,13 @@ def Conduit_Create : Conduit_Op<"create", [HasParent<"::xilinx::AIE::DeviceOp">,
                        // bd_repeat: BD-level unroll factor; effectiveBDs = depth * bd_repeat
                        OptionalAttr<I64Attr>:$bd_repeat,
                        // dma_repeat: whole-chain repeat count; DMAStartOp.repeat_count = dma_repeat - 1
-                       OptionalAttr<I64Attr>:$dma_repeat
+                       OptionalAttr<I64Attr>:$dma_repeat,
+                       // producer_dimensions: default BDDimLayout for MM2S BD chains.
+                       // Per-op attrs on put_memref/put_memref_async override this.
+                       OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions,
+                       // consumer_dimensions: default BDDimLayout for S2MM BD chains.
+                       // Per-op attrs on get_memref/get_memref_async override this.
+                       OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions
   );
   // Print as: conduit.create @sym_name { slot_elems = ..., ... }
   // sym_name is consumed by $sym_name so attr-dict omits it automatically.

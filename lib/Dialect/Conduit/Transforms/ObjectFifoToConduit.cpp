@@ -606,7 +606,9 @@ struct ObjectFifoToConduitPass
           /*consumer_rates=*/inferredCRAttr,
           /*fusion_group=*/op->getAttrOfType<mlir::StringAttr>("fusion_group"),
           /*bd_repeat=*/repeatCountAttr,
-          /*dma_repeat=*/iterCountAttr);
+          /*dma_repeat=*/iterCountAttr,
+          /*producer_dimensions=*/prodDimsAttr,
+          /*consumer_dimensions=*/consDimsAttr);
 
       // Emit producer_tile / consumer_tiles as generic attrs so that
       // downstream passes (check, infer, fuse, Pass C) can determine tile
@@ -1612,7 +1614,9 @@ struct ObjectFifoToConduitPass
           /*consumer_rates=*/nullptr,
           /*fusion_group=*/mlir::StringAttr{},
           /*bd_repeat=*/nullptr,
-          /*dma_repeat=*/nullptr);
+          /*dma_repeat=*/nullptr,
+          /*producer_dimensions=*/nullptr,
+          /*consumer_dimensions=*/nullptr);
 
       // Step 3: Emit conduit.scatter { src=@fifo, dsts=[@fifo_relay] }.
       std::string memtileStr;

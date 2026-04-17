@@ -763,7 +763,9 @@ static std::string emitMemTileRelay(FusableCorePair &pair,
       /*consumer_rates=*/nullptr,
       /*fusion_group=*/mlir::StringAttr{},
       /*bd_repeat=*/nullptr,
-      /*dma_repeat=*/nullptr);
+      /*dma_repeat=*/nullptr,
+      /*producer_dimensions=*/nullptr,
+      /*consumer_dimensions=*/nullptr);
 
   // Emit conduit.scatter { src=@channel, dsts=[@channel_relay],
   //                        memtile="tile(col,1)" }.

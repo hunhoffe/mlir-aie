@@ -479,7 +479,9 @@ struct ConduitFuseOperatorsPass
                                /*consumer_rates=*/consumerRatesAttr,
                                /*fusion_group=*/mlir::StringAttr{},
                                /*bd_repeat=*/mlir::IntegerAttr{},
-                               /*dma_repeat=*/mlir::IntegerAttr{});
+                               /*dma_repeat=*/mlir::IntegerAttr{},
+                               /*producer_dimensions=*/nullptr,
+                               /*consumer_dimensions=*/nullptr);
 
         // --- Step 6: Rename channel references in core bodies. ---
         // The GEMV core has conduit.acquire/release on @outName (the old output

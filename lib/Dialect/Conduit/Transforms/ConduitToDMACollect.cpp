@@ -129,9 +129,19 @@ void collectPhase(ConduitToDMAState &state) {
     // Note: time_multiplex_count has been removed from conduit.create.
     // Pass C infers BD chain length from putCount (Phase 1 put_memref_async
     // walk).
-    // Note: producer_dimensions/consumer_dimensions were removed from
-    // conduit.create (moved to put_memref/get_memref ops). Pass C reads
-    // them from those ops when needed.
+    // producer_dimensions / consumer_dimensions on conduit.create serve as
+    // channel-level defaults. Per-op attrs on put_memref_async /
+    // get_memref_async override these defaults (populated below in Phase 1
+    // put/get walks).
+    if (auto dims = op.getProducerDimensions())
+      info.producerDimensions =
+          mlir::cast<AIE::BDDimLayoutArrayAttr>(dims);
+    if (auto dims = op.getConsumerDimensions()) {
+      auto arrayOfArrays =
+          mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(dims);
+      for (auto consArr : arrayOfArrays.getValue())
+        info.consumerDimensions.push_back(consArr);
+    }
 
     // Cascade depth assertion: cascade conduits must have depth = 1.
     // The hardware cascade stream is a blocking register (rendezvous channel),
@@ -387,6 +397,33 @@ void collectPhase(ConduitToDMAState &state) {
       int64_t n = static_cast<int64_t>(op.getNumElems());
       if (n > it->second.numElems)
         it->second.numElems = n;
+    }
+  });
+
+  // Per-op dimension overrides: put_memref_async producer_dimensions override
+  // the conduit.create default.
+  module.walk([&](PutMemrefAsync op) {
+    if (auto dims = op.getProducerDimensions()) {
+      std::string key = state.makeConduitKey(op.getName(), op);
+      auto it = state.conduitMap.find(key);
+      if (it != state.conduitMap.end())
+        it->second.producerDimensions =
+            mlir::cast<AIE::BDDimLayoutArrayAttr>(dims);
+    }
+  });
+  // Per-op dimension overrides: get_memref_async consumer_dimensions override
+  // the conduit.create default.
+  module.walk([&](GetMemrefAsync op) {
+    if (auto dims = op.getConsumerDimensions()) {
+      std::string key = state.makeConduitKey(op.getName(), op);
+      auto it = state.conduitMap.find(key);
+      if (it != state.conduitMap.end()) {
+        auto arrayOfArrays =
+            mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(dims);
+        it->second.consumerDimensions.clear();
+        for (auto consArr : arrayOfArrays.getValue())
+          it->second.consumerDimensions.push_back(consArr);
+      }
     }
   });
 

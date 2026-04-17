@@ -728,7 +728,9 @@ struct AirChannelToConduitPass
             /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
             /*fusion_group=*/fusionGroupAttr,
             /*bd_repeat=*/mlir::IntegerAttr{},
-            /*dma_repeat=*/mlir::IntegerAttr{});
+            /*dma_repeat=*/mlir::IntegerAttr{},
+            /*producer_dimensions=*/nullptr,
+            /*consumer_dimensions=*/nullptr);
 
         channelCreateOps[name] = createOp;
 
@@ -812,7 +814,9 @@ struct AirChannelToConduitPass
                   /*consumer_rates=*/mlir::DenseI64ArrayAttr{},
                   /*fusion_group=*/fusionGroupAttr,
                   /*bd_repeat=*/mlir::IntegerAttr{},
-                  /*dma_repeat=*/mlir::IntegerAttr{});
+                  /*dma_repeat=*/mlir::IntegerAttr{},
+                  /*producer_dimensions=*/nullptr,
+                  /*consumer_dimensions=*/nullptr);
               channelCreateOps[dstName] = consCreate.getOperation();
               aliasToSourceChannel[dstName] = name;
             }
