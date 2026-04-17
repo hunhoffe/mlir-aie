@@ -1900,13 +1900,22 @@ void linkPhase(ConduitToDMAState &state) {
                   // aie.end permanently, satisfying the
                   // AIEAssignBufferDescriptorIDs assertion: "bb that's not in
                   // blockMap can only have aie.end".
-                  mlir::Block *bdTermBlock =
-                      (info.dmaRepeat > 0) ? addBlock() : nullptr;
-                  mlir::Block *newEndBlock = addBlock();
+                  // Only create terminal blocks for non-fused or first-in-group
+                  // members.  Fused non-first members must NOT create orphan
+                  // aie.end blocks — those would be found by subsequent
+                  // channels' "find LAST aie.end" scan and cause new
+                  // dma_start ops to be attached to unreachable blocks.
+                  mlir::Block *bdTermBlock = nullptr;
+                  mlir::Block *newEndBlock = nullptr;
 
                   if (isFusedNonFirst) {
-                    // Non-first fused member: no new dma_start.
+                    // Non-first fused member: no new dma_start, no terminal
+                    // blocks.  BD blocks are linked into the combined ring by
+                    // the fuse post-pass.
                   } else {
+                    bdTermBlock =
+                        (info.dmaRepeat > 0) ? addBlock() : nullptr;
+                    newEndBlock = addBlock();
                     mlir::Operation *oldEnd = endBlock->getTerminator();
                     builder.setInsertionPointToEnd(endBlock);
                     oldEnd->erase();
@@ -1956,8 +1965,10 @@ void linkPhase(ConduitToDMAState &state) {
                     builder.setInsertionPointToEnd(bdTermBlock);
                     builder.create<AIE::EndOp>(state.deviceOp.getLoc());
                   }
-                  builder.setInsertionPointToEnd(newEndBlock);
-                  builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+                  if (newEndBlock) {
+                    builder.setInsertionPointToEnd(newEndBlock);
+                    builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+                  }
 
                   if (!info.fuseGroup.empty())
                     state.conduitBDRange[name] = {bdBlocks.front(),
@@ -1986,7 +1997,12 @@ void linkPhase(ConduitToDMAState &state) {
                 llvm::SmallVector<mlir::Block *> bdBlocks;
                 for (int64_t i = 0; i < effectiveBDs; ++i)
                   bdBlocks.push_back(addBlock());
-                mlir::Block *endBlock = addBlock();
+                // Only create endBlock for non-fused or first-in-group
+                // members.  See orphan aie.end comment in existing-region
+                // path above.
+                mlir::Block *endBlock = nullptr;
+                if (!isFusedNonFirst)
+                  endBlock = addBlock();
 
                 if (!isFusedNonFirst) {
                   builder.setInsertionPointToEnd(dmaStartBlock);
@@ -2028,8 +2044,10 @@ void linkPhase(ConduitToDMAState &state) {
                         state.deviceOp.getLoc(),
                         bdBlocks[(i + 1) % effectiveBDs]);
                 }
-                builder.setInsertionPointToEnd(endBlock);
-                builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+                if (endBlock) {
+                  builder.setInsertionPointToEnd(endBlock);
+                  builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+                }
 
                 if (!info.fuseGroup.empty())
                   state.conduitBDRange[name] = {bdBlocks.front(),
@@ -2418,22 +2436,22 @@ void linkPhase(ConduitToDMAState &state) {
           // Non-first fused conduit: no dma_start, no terminal blocks.
           // BD blocks were already created above.
         } else {
-          // bdTermBlock strategy: when adding a channel to an existing DMA
-          // region (existingEndBlock != null), the "next-channel" scan finds the
-          // LAST aie.end block and replaces it with a DMAStartOp.  For finite
-          // chains (dma_repeat > 0), we need a dedicated bdTermBlock (placed
-          // BEFORE endMemBlock) whose aie.end stays permanent so the scan
-          // correctly targets only endMemBlock.  When creating a fresh DMA
-          // region (no existing channels), no scan occurs, so the last BD can
-          // point directly to endMemBlock — no extra terminal block needed.
           // Linear chain condition: either dma_repeat>0 (finite DMA task queue),
           // or putCount>1 with no dmaRepeat (N sequential puts merged by
           // --conduit-fuse-channels; annotation-free temporal multiplexing).
           isLinearChain =
               (info.dmaRepeat > 0) ||
               (info.putCount > 1 && info.dmaRepeat == 0);
-          bdTermBlock =
-              (isLinearChain && existingEndBlock) ? addMemBlock() : nullptr;
+          // bdTermBlock: create a dedicated terminal block for putCount>1
+          // linear chains (dmaRepeat==0).  In this case the last BD's
+          // next_bd targets bdTermBlock (with permanent aie.end) instead of
+          // endMemBlock.  Without this, endMemBlock's aie.end can be replaced
+          // by a subsequent channel's DMAStartOp, corrupting the BD chain.
+          // For dmaRepeat>0 chains, the last BD loops back to bdBlocks[0]
+          // (repeat_count controls termination), so no bdTermBlock is needed.
+          bdTermBlock = (info.putCount > 1 && info.dmaRepeat == 0)
+                            ? addMemBlock()
+                            : nullptr;
           endMemBlock = addMemBlock();
 
           if (existingEndBlock) {
