@@ -1,4 +1,4 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-depth-promote --conduit-materialize-buffers --conduit-to-dma --aie-assign-buffer-addresses %s | FileCheck %s
+// RUN: aie-opt --objectfifo-to-conduit --conduit-depth-promote --conduit-to-dma --aie-assign-buffer-addresses %s | FileCheck %s
 //
 // Regression test (A-1): when two join sources share the same compute producer
 // tile, the join path must allocate distinct MM2S channels (0 and 1) on that
