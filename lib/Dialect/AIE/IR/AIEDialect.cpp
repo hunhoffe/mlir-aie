@@ -521,13 +521,19 @@ LogicalResult ObjectFifoCreateOp::verify() {
     if (iterCount < 1 || iterCount > 256)
       return emitError("`iter_count` must be between 1 and 256");
 
-    // iter_count is supported on any tile (compute, MemTile, or ShimTile).
-    // The original restriction to MemTile-only is lifted: iter_count on compute
-    // tile objectfifos produces a finite BD chain (terminates with aie.end instead
-    // of looping back), which is required for multi-run benchmarking — circular BD
-    // chains leave the DMA in a stale "waiting" state that persists across kernel
-    // invocations and causes "qds_device::wait() unexpected command state" on run 2+.
-    (void)producerTile; // suppress unused warning after removing MemTile check
+    // Check that either producer or at least one consumer is a MemTile
+    bool hasMemTile = producerTile.isMemTile();
+    if (!hasMemTile) {
+      for (auto consTileVal : getConsumerTiles()) {
+        TileLike consTile = getTileLikeFromValue(consTileVal);
+        if (consTile && consTile.isMemTile()) {
+          hasMemTile = true;
+          break;
+        }
+      }
+    }
+    if (!hasMemTile)
+      return emitError("`iter_count` is currently only supported on MemTiles");
   }
 
   return success();

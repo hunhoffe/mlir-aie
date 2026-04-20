@@ -2,7 +2,7 @@
 //
 // Regression test: Pass C generates scf.if chains for buffer selection
 // in depth>1 channels. This test verifies that scf.if is used (not
-// scf.index_switch) and that the rotation counter is memref.alloca().
+// scf.index_switch) and that the rotation counter is an aie.buffer.
 //
 // The buffer selection pattern for depth=2:
 //   %idx = arith.index_cast %counter : i32 to index
@@ -14,8 +14,9 @@
 //   }
 //
 // CHECK-LABEL: module @passC_no_index_switch
+// CHECK: aie.buffer({{.*}}) {sym_name = "rotation_counter{{.*}}"} : memref<1xi32>
 // CHECK: aie.core
-// CHECK: %alloca = memref.alloca() : memref<1xi32>
+// CHECK-NOT: memref.alloca
 // CHECK: arith.cmpi eq
 // CHECK: scf.if
 // CHECK-NOT: scf.index_switch

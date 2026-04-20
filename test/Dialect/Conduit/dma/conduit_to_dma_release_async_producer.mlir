@@ -25,7 +25,7 @@
 //
 // Topology: producer tile(0,2) → consumer tile(0,4), depth=2.
 // effectiveDepth = min(2, 1+1) = 2.  Rotation counter modulus = 2.
-// Rotation counter is memref.alloca() inside the core body (stack allocation).
+// Rotation counter is an aie.buffer at device level.
 
 // CHECK-LABEL: module @release_async_producer_block2
 // CHECK:   aie.device(npu1_1col) {
@@ -42,22 +42,23 @@
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "fifo_async_cons_lock_0"
 
-// --- Producer rotation counter: memref.alloca() inside core body ---
+// --- Producer rotation counter: aie.buffer at device level ---
+// CHECK:     %[[ROTBUF:.*]] = aie.buffer(%{{.*}}tile_0_2) {sym_name = "rotation_counter_0_2"} : memref<{{[0-9]+}}xi32>
+// --- Counter init to 0 at device level ---
+// CHECK:     memref.store {{.*}}, %[[ROTBUF]][{{.*}}]
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:         %[[ALLOCA:.*]] = memref.alloca()
-// --- Counter init to 0 at top of core body ---
-// CHECK:         memref.store {{.*}}, %[[ALLOCA]][{{.*}}]
+// CHECK-NOT:   memref.alloca
 // CHECK:       scf.for
 // --- Blocking acquire: waits for free slot on Produce port ---
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
 // --- release_async: signals buffer filled ---
 // CHECK:         aie.use_lock(%[[CONS_LOCK]], Release, 1)
 // --- BLOCK-2 fix: producer rotation counter increment in release_async path (arith.andi) ---
-// CHECK:         memref.load %[[ALLOCA]]
+// CHECK:         memref.load %[[ROTBUF]]
 // CHECK:         arith.addi
 // CHECK:         %[[MASK:.*]] = arith.constant 1 : i32
 // CHECK:         arith.andi {{.*}}, %[[MASK]] : i32
-// CHECK:         memref.store {{.*}}, %[[ALLOCA]]
+// CHECK:         memref.store {{.*}}, %[[ROTBUF]]
 // CHECK:     }
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire

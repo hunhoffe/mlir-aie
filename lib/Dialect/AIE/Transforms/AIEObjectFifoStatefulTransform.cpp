@@ -973,36 +973,24 @@ struct AIEObjectFifoStatefulTransformPass
     Block *dmaBlock = builder.createBlock(endBlock);
     Block *bdBlock = builder.createBlock(endBlock);
 
-    // iter_count: if set, use DMAStartOp repeat_count = iter_count - 1 to generate
-    // a finite (non-circular) BD chain with iter_count passes through the depth BDs.
-    // Without iter_count, the chain is circular (last BD loops back to first).
-    auto iterCountAttr = op.getIterCount();
-    int dmaRepeatCount = 0; // default: circular (hardware repeat_count=0 means unlimited)
-    if (iterCountAttr.has_value())
-      dmaRepeatCount = iterCountAttr.value() - 1; // hw: 0=1 pass, N=N+1 passes
-
     // create DMA channel
     builder.setInsertionPointToStart(dmaBlock);
     DMAStartOp::create(builder, builder.getUnknownLoc(), channelDir,
-                       channelIndex, dmaRepeatCount, bdBlock, endBlock);
+                       channelIndex, /*repeatCout*/ 0, bdBlock, endBlock);
     if (lastDmaBlock != nullptr)
       lastDmaBlock->getTerminator()->setSuccessor(dmaBlock, 1);
 
-    // create Bd blocks — circular or finite depending on iter_count
-    // For finite (iter_count set): last BD points to endBlock (aie.end).
-    // For circular (default): last BD points back to bdBlock (first BD).
+    // create Bd blocks
     Block *succ;
     Block *curr = bdBlock;
     size_t elemIndex = 0;
     size_t totalBlocks = 0;
-    size_t totalBdSlots = numBlocks * (size_t)repeatCount;
     for (size_t i = 0; i < numBlocks; i++) {
       if (elemIndex >= state.buffersPerFifo[target].size())
         break;
       for (int r = 0; r < repeatCount; r++) {
-        bool isLastBd = (totalBlocks == totalBdSlots - 1);
-        if (isLastBd)
-          succ = iterCountAttr.has_value() ? endBlock : bdBlock;
+        if (totalBlocks == numBlocks * repeatCount - 1)
+          succ = bdBlock;
         else
           succ = builder.createBlock(endBlock);
 

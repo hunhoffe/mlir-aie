@@ -8,7 +8,7 @@
 //   BD block 0 uses lock_0; BD block 1 uses lock_1.
 //   Core uses rotation counter (arith.andi for power-of-2 depth) to advance through slots.
 //   Rotation counter uses arith.andi (power-of-2 fast path, not arith.remui/software divide).
-//   Rotation counter is allocated as memref.alloca() inside core body (stack allocation).
+//   Rotation counter is allocated as aie.buffer at device level.
 
 // CHECK: aie.device(xcvc1902)
 
@@ -20,10 +20,11 @@
 // CHECK: aie.lock({{.*}}) {init = 0 : i32, sym_name = "data_fifo{{.*}}lock_0"
 // CHECK: aie.lock({{.*}}) {init = 0 : i32, sym_name = "data_fifo{{.*}}lock_1"
 
-// --- Rotation counter allocated as memref.alloca() inside core body ---
+// --- Rotation counter allocated as aie.buffer at device level ---
+// CHECK: %[[ROTBUF:.*]] = aie.buffer({{.*}}) {sym_name = "rotation_counter{{.*}}"} : memref<1xi32>
+// CHECK: memref.store
 // CHECK: aie.core(
-// CHECK:   %alloca = memref.alloca() : memref<1xi32>
-// CHECK:   memref.store
+// CHECK-NOT: memref.alloca
 // CHECK: scf.for
 // CHECK: aie.use_lock(%{{.*}}, Acquire, 1)
 // CHECK: arith.index_cast

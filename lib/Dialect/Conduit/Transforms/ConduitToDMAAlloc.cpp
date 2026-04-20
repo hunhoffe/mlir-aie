@@ -20,9 +20,9 @@
 //
 // Rotation counter packing:
 //   Multiple conduits on the same tile share a single memref<N xi32> counter
-//   allocated via memref.alloc inside the core body (not aie.buffer).  A
-//   pre-scan pass counts how many counter slots each tile needs; one shared
-//   alloc is created per core body and each conduit is assigned a slot index.
+//   allocated as aie.buffer at device level (not memref.alloca in core body).
+//   A pre-scan pass counts how many counter slots each tile needs; one shared
+//   buffer is created per tile and each conduit is assigned a slot index.
 //
 //===----------------------------------------------------------------------===//
 
@@ -267,27 +267,16 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   }
 
   // Create one shared rotation counter per tile that needs N > 0 slots.
-  // Allocated as memref.alloca (stack) inside the core body entry block.
+  // Allocated as aie.buffer at device level for correct AIE2/AIE2p codegen.
   //
-  // WHY alloca (stack) instead of aie.buffer:
-  //   aie.buffer at device level creates a linker-script symbol address, but
-  //   the LLVM global variable storage is placed in the .data section at a
-  //   different address (8-byte offset from the linker symbol).  This causes
-  //   the init stores and actual load/store accesses to use inconsistent
-  //   addresses — the init stores write to the linker-script symbol address
-  //   while accesses use the .data section address.
-  //
-  //   memref.alloca allocates on the core's stack frame, which is managed
-  //   entirely by the PEANO compiler.  The alloca address is consistent
-  //   across all uses (init and accesses) because they all reference the same
-  //   LLVM alloca instruction.
-  //
-  //   AIE2 stack grows UPWARD from _sp_start_value_DM_stack.  The alloca
-  //   lands within the core's stack frame (within the 1KB stack region),
-  //   safely in local tile memory.
-  //
-  // NOTE: must be alloca (stack), not alloc (heap/malloc): AIE2 bare-metal
-  // cores do not have a heap allocator, so malloc calls fail to link.
+  // WHY aie.buffer (device level) instead of memref.alloca (stack):
+  //   memref.alloca on AIE2 causes Peano to miscompile the scf.if-based
+  //   buffer selection — the alloca address gets folded inconsistently
+  //   across init stores and runtime loads, corrupting alternating buffer
+  //   accesses (e.g., RoPE row corruption).  aie.buffer uses the proven
+  //   AIEBufferToStandard → memref.global → memref.get_global codegen path,
+  //   which places the counter at a fixed data memory address consistent
+  //   across all uses.
   for (auto &[tileVal, count] : tileSlotCount) {
     if (count <= 0)
       continue;
@@ -301,12 +290,19 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     });
     if (!coreOp)
       continue; // shim or memory tile without core — no alloc needed
-    // Insert alloca at the very start of the core body entry block.
-    mlir::Block *entryBlock = &coreOp.getBody().front();
-    mlir::OpBuilder allocBuilder(entryBlock, entryBlock->begin());
-    auto allocOp = allocBuilder.create<mlir::memref::AllocaOp>(
-        state.deviceOp.getLoc(), counterTy);
-    state.tileRotationBuf[tileVal] = allocOp.getResult();
+    // Insert aie.buffer at device level (before the core op).
+    auto tileOp = llvm::cast<AIE::TileOp>(tileVal.getDefiningOp());
+    std::string symName = "rotation_counter_" +
+                          std::to_string(tileOp.getCol()) + "_" +
+                          std::to_string(tileOp.getRow());
+    mlir::OpBuilder bufBuilder(coreOp);
+    auto bufOp = bufBuilder.create<AIE::BufferOp>(
+        state.deviceOp.getLoc(), counterTy, tileVal,
+        mlir::StringAttr::get(ctx, symName),
+        /*address=*/mlir::IntegerAttr{},
+        /*initial_value=*/mlir::ElementsAttr{},
+        /*mem_bank=*/mlir::IntegerAttr{});
+    state.tileRotationBuf[tileVal] = bufOp.getResult();
     state.tileRotationBufNextSlot[tileVal] = 0;
   }
 }
