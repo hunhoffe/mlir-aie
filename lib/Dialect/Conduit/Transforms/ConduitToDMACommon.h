@@ -276,13 +276,6 @@ struct ConduitInfo {
   // When true, buffers/locks go on the producer (or alloc) tile; no DMA.
   bool sharedMemory = false;
 
-  // External buffers (from conduit.register_external_buffers).
-  // When non-empty, the shim DMA BD chain uses these instead of allocated
-  // buffers, and internal buffer allocation for the shim tile is skipped.
-  llvm::SmallVector<mlir::Value> externalBuffers;
-  // Tile coordinate of the shim endpoint associated with externalBuffers.
-  std::pair<int64_t, int64_t> externalBufferTileCoord = {-1, -1};
-
   // Shim-tile locks for shim producer conduits (Phase 4a → Phase 5.5).
   // Populated by Phase 4a when the producer tile is a shim.
   AIE::LockOp shimProdLock;

@@ -6,10 +6,10 @@
 // (nondestructive read / distribute) pattern as reducible to standard CSDF via
 // per-edge Bilsen balance applied to each (src, dst_i) pair independently.
 //
-// Implementation note: MLIR verifies conduit.create ops before conduit.link.
+// Implementation note: MLIR verifies conduit.create ops before conduit.scatter.
 // Errors on individual conduit.create ops (imbalanced rates, undersized buffers)
-// fire via Create::verify() (M6/M7) before Link::verify() (M6-dist/M7-dist)
-// is reached.  The conduit.link M6-dist/M7-dist checks serve as a secondary
+// fire via Create::verify() (M6/M7) before Scatter::verify() (M6-dist/M7-dist)
+// is reached.  The conduit.scatter M6-dist/M7-dist checks serve as a secondary
 // pass that catches cross-conduit consistency issues when rates are present.
 //
 // Section 1: 1→3 distribute, all conduits balanced and correctly sized — PASS

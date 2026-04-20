@@ -166,7 +166,7 @@ def Conduit_Dialect : Dialect {
       (--objectfifo-to-conduit)
     - Tier 3 (memref-DMA): conduit.put_memref/get_memref and their async
       variants — AIR Channel path, produced by Pass B
-      (--air-channel-to-conduit, not yet implemented)
+      (--air-channel-to-conduit)
 
     The unifying mechanism is split token types: a !conduit.window.token from
     conduit.acquire_async (pending window grant) can be combined in

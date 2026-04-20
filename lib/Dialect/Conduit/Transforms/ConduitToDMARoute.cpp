@@ -429,20 +429,6 @@ void routePhase(ConduitToDMAState &state) {
           info.shimConsLock = lk;
         }
       }
-      // For external-buffer conduits on AIE1: allocate a shim lock for the
-      // aie.shim_dma BD chain (acquire before DMA, release after).
-      if (!isAIE2 && !info.externalBuffers.empty() &&
-          !info.noLocks) {
-        int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
-        std::string symName = name + "_lock_0";
-        AIE::LockOp lk = builder.create<AIE::LockOp>(
-            state.deviceOp.getLoc(), shimTile.getResult(), lockIdx,
-            static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        info.shimProdLock = lk;
-        info.shimConsLock = lk;
-      }
-
       // aie.shim_dma_allocation: assign next available MM2S channel on this
       // shim tile.  Multiple shim-producer conduits on the same shim tile
       // must each use a distinct MM2S channel (0, 1, ...).

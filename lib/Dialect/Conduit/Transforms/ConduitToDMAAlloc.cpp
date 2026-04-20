@@ -677,8 +677,8 @@ void allocPhase(ConduitToDMAState &state) {
           multiConsumer ? "_cons_" + std::to_string(consIdx) : "_cons";
 
       std::string consPrefix = name + bufSuffix;
-      // Allocate consumer buffers, unless --conduit-materialize-buffers already
-      // did so (pre-materialized case: info.buffers populated in Phase 1.5).
+      // Allocate consumer buffers (info.buffers populated in Phase 1.5 for
+      // pre-materialized case).
       llvm::SmallVector<AIE::BufferOp> consBuffers;
       if (!preMaterialized) {
         consBuffers =

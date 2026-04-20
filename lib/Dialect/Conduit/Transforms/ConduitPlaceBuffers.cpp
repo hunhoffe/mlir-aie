@@ -9,11 +9,11 @@
 //===----------------------------------------------------------------------===//
 //
 // --conduit-place-buffers: for each group of aie.buffer ops emitted by
-// --conduit-materialize-buffers (named <chan>_cons_buff_N), assign
+// Pass C (ConduitToDMAAlloc) (named <chan>_cons_buff_N), assign
 // mem_bank = i % numBanks so that consecutive FIFO slots land in different
 // SRAM banks.
 //
-// Runs between --conduit-materialize-buffers and --aie-assign-buffer-addresses.
+// Runs between --conduit-to-dma and --aie-assign-buffer-addresses.
 // Eliminates DMA↔core bank conflicts that degrade throughput when producer
 // and consumer access the same bank simultaneously.
 //
@@ -46,7 +46,7 @@ struct ConduitPlaceBuffersPass
     mlir::MLIRContext *ctx = module.getContext();
 
     // Group aie.buffer ops by channel name using the naming convention
-    // emitted by --conduit-materialize-buffers: "<chan>_cons_buff_<N>".
+    // emitted by Pass C (ConduitToDMAAlloc): "<chan>_cons_buff_<N>".
     // For each group, assign mem_bank = slot_index % numBanks.
     llvm::StringMap<llvm::SmallVector<AIE::BufferOp>> channelBuffers;
     module.walk([&](AIE::BufferOp bufOp) {

@@ -500,8 +500,7 @@ struct AirChannelToConduitPass
 
       // Shim endpoint tracking: for channels where put/get ops at device body
       // level reference L3 (external) buffers, record the external buffer SSA
-      // values and tile coordinates for conduit.register_external_buffers
-      // emission.
+      // values and tile coordinates.
       llvm::StringMap<llvm::SmallVector<mlir::Value>> shimExtBufs;
       llvm::StringMap<std::pair<int64_t, int64_t>> shimTileCoords;
 
@@ -634,8 +633,7 @@ struct AirChannelToConduitPass
         //   If consumer tile coordinates are available (i.e., air.channel.get
         //   ops were found inside aie.core regions), emit:
         //     - Per-consumer conduit.create aliases: @name_c0, @name_c1, ...
-        //     - conduit.link{mode="distribute", srcs=[@name],
-        //     dsts=[@name_c0,...]}
+        //     - conduit.scatter{src=@name, dsts=[@name_c0,...]}
         //   If consumer tile coords are not available (usual case — tile
         //   placement runs before or separately), emit a remark and leave
         //   consumer_tiles empty.
@@ -662,7 +660,7 @@ struct AirChannelToConduitPass
                   << " → broadcast capacity = " << broadcastCapacity
                   << "; found " << tileIt->second.size()
                   << " consumer tiles from aie.core enclosure; "
-                     "emitting conduit.link{mode=\"distribute\"}.";
+                     "emitting conduit.scatter for distribute.";
             } else {
               // No tile coords available — usual case (AIR before AIE
               // lowering).
@@ -698,7 +696,7 @@ struct AirChannelToConduitPass
                     << " → broadcast capacity = " << broadcastCapacity
                     << "; found " << tileIt->second.size()
                     << " consumer tiles from aie.core enclosure; "
-                       "emitting conduit.link{mode=\"distribute\"}.";
+                       "emitting conduit.scatter for distribute.";
               } else {
                 op->emitRemark()
                     << "air-channel-to-conduit: channel @" << name
@@ -752,7 +750,7 @@ struct AirChannelToConduitPass
         // aie.shim_dma_allocation ops.
 
         // Broadcast Step 2: if consumer tile coordinates are known, emit
-        // per-consumer conduit.create aliases and a conduit.link{distribute}.
+        // per-consumer conduit.create aliases and a conduit.scatter.
         //
         // This is only possible when air.channel.get ops appear inside aie.core
         // regions (i.e., after the air-to-aie lowering pass).  In the common

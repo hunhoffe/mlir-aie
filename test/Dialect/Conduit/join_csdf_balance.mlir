@@ -10,7 +10,7 @@
 // Create::verify() on the individual conduit.create ops.
 //
 // Section 1: 2-producer join, all conduits individually balanced — PASS
-// Section 2: destination conduit has imbalanced rates — M6-join ERROR on conduit.link
+// Section 2: destination conduit has imbalanced rates — M6-join ERROR on conduit.gather
 // Section 3: destination conduit has balanced rates but undersized buffer — M7-join ERROR
 
 // -----
@@ -56,7 +56,7 @@ func.func @join_all_balanced() {
 // Create::verify() fires first as the primary guard.
 //
 // Note: The expected-error fires on the conduit.create op for the destination,
-// not on the conduit.link, because MLIR verifies ops in order.
+// not on the conduit.gather, because MLIR verifies ops in order.
 
 aie.device(npu1) {
 conduit.create @j2_src1 {                element_type = memref<i32>,

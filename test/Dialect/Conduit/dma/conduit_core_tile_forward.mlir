@@ -1,9 +1,9 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: conduit.link with a CoreTile relay (row >= 2) must lower
+// Regression test: conduit.scatter with a CoreTile relay (row >= 2) must lower
 // without error and produce a BD-chain + two flows (commit 2455feb).
 //
-// Before the fix, Pass C hard-rejected conduit.link where the relay tile is
+// Before the fix, Pass C hard-rejected scatter/gather where the relay tile is
 // a compute tile (not a MemTile), causing 4 positive corpus tests to fail.
 // The fix adds a CoreTile relay path in linkPhase() that:
 //   1. Creates S2MM + MM2S DMA chains on the relay tile's aie.mem block.
@@ -40,7 +40,6 @@
 
 // --- No residual conduit ops ---
 // CHECK-NOT: conduit.create
-// CHECK-NOT: conduit.link
 
 module @conduit_core_tile_relay {
   aie.device(npu1_1col) {

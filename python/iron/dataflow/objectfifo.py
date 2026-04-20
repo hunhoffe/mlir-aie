@@ -46,7 +46,6 @@ class ObjectFifo(Resolvable):
         dims_from_stream_per_cons: list[Sequence[int]] | None = None,
         plio: bool = False,
         pad_dimensions: list[Sequence[int]] | None = None,
-        fusion_group: str | None = None,
     ):
         """Construct an ObjectFifo.
 
@@ -71,7 +70,6 @@ class ObjectFifo(Resolvable):
         self._dims_from_stream_per_cons = dims_from_stream_per_cons
         self._plio = plio
         self._pad_dimensions = pad_dimensions
-        self._fusion_group = fusion_group
         if name is None:
             self.name = f"of{ObjectFifo.__get_index()}"
         else:
@@ -300,7 +298,6 @@ class ObjectFifo(Resolvable):
                 plio=self._plio,
                 padDimensions=self._pad_dimensions,
                 iter_count=self._iter_count,
-                fusion_group=self._fusion_group,
             )
 
             if isinstance(self._prod.endpoint, ObjectFifoLink):

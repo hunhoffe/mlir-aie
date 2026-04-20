@@ -33,7 +33,7 @@
 // 3. For each aie.objectfifo.link:
 //      determines mode (distribute: 1 src, N dsts; join: N srcs, 1 dst)
 //      picks memtile as the relay tile (heuristic: consumer of first src)
-//      emits conduit.link {srcs, dsts, mode, memtile, offsets}
+//      emits conduit.scatter or conduit.gather as appropriate
 //
 // 4. For each aie.objectfifo.acquire (inside core bodies):
 //      emits conduit.acquire {name, count, port="Produce"|"Consume"}
@@ -410,7 +410,7 @@ struct ObjectFifoToConduitPass
   // Phase 2–4: transformFifos
   // -----------------------------------------------------------------------
   //
-  // Emit conduit.create / conduit.link / conduit.acquire /
+  // Emit conduit.create / conduit.scatter / conduit.gather / conduit.acquire /
   // conduit.subview_access / conduit.release, replacing all ObjectFIFO ops.
   // Original ops are collected in erasure vectors for later cleanup.
 
@@ -1386,9 +1386,8 @@ struct ObjectFifoToConduitPass
     for (auto op : releasesToErase)
       op.erase();
 
-    // Erase aie.objectfifo.register_external_buffers ops.
-    // These ops have no conduit equivalent now that conduit.register_buffers
-    // is deleted. Collect first to avoid walk-while-erase.
+    // Erase aie.objectfifo.register_external_buffers ops (no conduit
+    // equivalent). Collect first to avoid walk-while-erase.
     llvm::SmallVector<AIE::ObjectFifoRegisterExternalBuffersOp> extBufOps;
     module.walk([&](AIE::ObjectFifoRegisterExternalBuffersOp op) {
       extBufOps.push_back(op);

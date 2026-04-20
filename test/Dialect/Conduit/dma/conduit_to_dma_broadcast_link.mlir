@@ -2,7 +2,7 @@
 //
 // Regression test for Task #54: broadcast link distribute flow emission.
 //
-// Bug: conduit.link distribute mode with a destination conduit that has N>1
+// Bug: conduit.scatter distribute mode with a destination conduit that has N>1
 // consumer tiles (broadcast) previously emitted only 1 aie.flow (to
 // consumerTileCoords[0]).  Consumers 2..N received no flow and would deadlock
 // waiting for a lock grant that never fires.

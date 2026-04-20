@@ -466,7 +466,6 @@ class object_fifo(ObjectFifoCreateOp):
         padDimensions=None,
         disable_synchronization=None,
         iter_count=None,
-        fusion_group=None,
     ):
         self.datatype = try_convert_np_type_to_mlir_type(datatype)
         if not isinstance(consumerTiles, List):
@@ -499,8 +498,6 @@ class object_fifo(ObjectFifoCreateOp):
             initValues=initValues,
             iter_count=iter_count,
         )
-        if fusion_group is not None:
-            self.attributes["fusion_group"] = StringAttr.get(fusion_group)
 
     def acquire(self, port, num_elem):
         subview_t = ObjectFifoSubviewType.get(self.datatype)

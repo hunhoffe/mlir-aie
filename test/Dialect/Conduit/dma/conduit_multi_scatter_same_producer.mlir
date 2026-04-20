@@ -30,7 +30,6 @@
 // CHECK:     }
 
 // CHECK-NOT: conduit.create
-// CHECK-NOT: conduit.link
 
 module @multi_scatter_same_producer {
   aie.device(npu2) {

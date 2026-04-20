@@ -30,10 +30,10 @@ def ObjectFifoToConduit : Pass<"objectfifo-to-conduit", "::mlir::ModuleOp"> {
     Converts the ObjectFIFO abstraction layer into Conduit IR:
 
       aie.objectfifo @name (prod, {cons}, depth)
-        → conduit.create + conduit.annotate (producer_tile, consumer_tile_N)
+        → conduit.create (tile coords as typed attributes on the op)
 
       aie.objectfifo.link [@srcs] -> [@dsts] ([jo][do])
-        → conduit.link {srcs, dsts, mode, offsets, memtile}
+        → conduit.scatter or conduit.gather {src/srcs, dst/dsts}
 
       aie.objectfifo.acquire @name (Role, count)
         → conduit.acquire {name, count}
@@ -44,7 +44,7 @@ def ObjectFifoToConduit : Pass<"objectfifo-to-conduit", "::mlir::ModuleOp"> {
       aie.objectfifo.subview.access %sv[i]
         → conduit.subview_access {name, index}
 
-    Tile coordinate annotations are carried forward as conduit.annotate ops
+    Tile coordinates are carried as typed attributes on conduit.create ops
     so that Pass C (--conduit-to-dma) can reconstruct the hardware placement.
 
     This pass is a text-level structural transformation; it does not require
@@ -140,7 +140,7 @@ def ConduitToDMA : Pass<"conduit-to-dma", "::mlir::ModuleOp"> {
       conduit.create {name, capacity} + tile annotations
         → aie.buffer (depth-many) + aie.lock (prod + cons) per tile
 
-      conduit.link {srcs, dsts, mode, memtile, offsets}
+      conduit.scatter / conduit.gather
         → MemTile DMA BD chain: aie.dma_start, aie.dma_bd, aie.next_bd,
           aie.use_lock inside aie.memtile_dma
 
@@ -764,41 +764,6 @@ def ConduitCheckLoopBalance : Pass<"conduit-check-loop-balance", "::mlir::Module
 }
 
 //===----------------------------------------------------------------------===//
-// --conduit-materialize-buffers — emit aie.buffer ops per channel
-//===----------------------------------------------------------------------===//
-
-def ConduitMaterializeBuffers
-    : Pass<"conduit-materialize-buffers", "::mlir::ModuleOp"> {
-  let summary = "Emit aie.buffer ops for each Conduit channel";
-  let description = [{
-    Runs after --conduit-depth-promote.  For each conduit.create whose consumer
-    tile can be inferred from conduit.acquire{port=Consume} ops inside aie.core
-    bodies:
-
-      1. Computes buffer count = depth.
-      2. Emits `aie.buffer × buffer_count` on the consumer tile, named
-         `<chan>_cons_buff_<N>`.
-
-    Enables --conduit-place-buffers to set mem_bank before Pass C runs, which
-    is impossible in Pass C's single-pass buffer allocation.
-
-    Channels with no compute consumer (shim-only or DDR) are skipped.
-    Channels with depth = 0 are skipped (run --conduit-depth-promote first).
-
-    Standard pipeline position:
-      --conduit-depth-promote → --conduit-materialize-buffers
-        → [--conduit-place-buffers] → --conduit-to-dma
-        → --aie-assign-buffer-addresses
-  }];
-  let constructor =
-      "xilinx::conduit::createConduitMaterializeBuffersPass()";
-  let dependentDialects = [
-    "xilinx::conduit::ConduitDialect",
-    "xilinx::AIE::AIEDialect",
-  ];
-}
-
-//===----------------------------------------------------------------------===//
 // --conduit-place-buffers — DMA-aware mem_bank assignment
 //===----------------------------------------------------------------------===//
 
@@ -807,8 +772,8 @@ def ConduitPlaceBuffers
   let summary = "Assign mem_bank attributes on aie.buffer ops for DMA-aware "
                 "bank staggering";
   let description = [{
-    Runs between --conduit-materialize-buffers and --aie-assign-buffer-addresses.
-    For each group of aie.buffer ops emitted by --conduit-materialize-buffers
+    Runs between --conduit-to-dma and --aie-assign-buffer-addresses.
+    For each group of aie.buffer ops emitted by Pass C (ConduitToDMAAlloc)
     (named `<chan>_cons_buff_<N>`), assigns:
 
       buf[i].mem_bank = i % numBanks
@@ -817,10 +782,7 @@ def ConduitPlaceBuffers
     eliminates the DMA↔core bank conflicts that degrade throughput when
     producer and consumer access the same bank simultaneously.
 
-    Requires --conduit-materialize-buffers to have run first.
-
-    Enables the Exp A2 three-way comparison:
-      basic-sequential vs bank-aware vs conduit-place-buffers.
+    Requires --conduit-to-dma to have run first.
   }];
   let constructor = "xilinx::conduit::createConduitPlaceBuffersPass()";
   let dependentDialects = [

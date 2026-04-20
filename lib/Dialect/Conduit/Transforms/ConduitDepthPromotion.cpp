@@ -27,7 +27,7 @@
 //   0. Cascade conduit (routing_mode = "cascade") — depth is architecturally
 //      fixed at 1; hardware has no FIFO, only a blocking register.
 //   1. CSDF / cyclostatic access pattern present
-//   2. Linked conduit (appears in conduit.link srcs or dsts)
+//   2. Linked conduit (appears in conduit.scatter/conduit.gather)
 //   3. No surrounding loop (no overlap benefit without iteration)
 //   4. Passthrough-only (acquire immediately followed by release, no compute)
 //   5. Non-uniform acquire/release counts across uses

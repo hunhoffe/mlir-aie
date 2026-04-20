@@ -6,7 +6,7 @@
 // The pass promotes eligible depth-1 conduits to depth-2 (double-buffering).
 // Exclusion criteria (any one prevents promotion):
 //   1. CSDF/cyclostatic access pattern present
-//   2. Conduit appears in conduit.link srcs or dsts (linked conduit)
+//   2. Conduit appears in conduit.scatter/conduit.gather (linked conduit)
 //   3. No surrounding loop context for its acquire ops
 //   4. Passthrough-only (no compute between acquire and release)
 //   5. Non-uniform acquire/release counts
@@ -15,7 +15,7 @@
 // This test verifies:
 //   (a) "loop_fifo" — depth-1 with acquire inside scf.for + real compute:
 //       PROMOTED from depth=1,slot_elems =8 to depth=2,slot_elems =16
-//   (b) "linked_fifo" — depth-1 but referenced in conduit.link:
+//   (b) "linked_fifo" — depth-1 but referenced in conduit.scatter:
 //       NOT promoted (stays at depth=1,slot_elems =8)
 //   (c) "passthrough_fifo" — depth-1 but acquire→release with no compute:
 //       NOT promoted (passthrough-only)
@@ -42,7 +42,7 @@ aie.device(npu1) {
 conduit.create @loop_fifo {                element_type = memref<8xi32>,
                 depth = 1 : i64}
 
-// (b) Linked: depth-1 but conduit.link references it.
+// (b) Linked: depth-1 but conduit.scatter references it.
 // Pass must skip it (exclusion criterion #2).
 // expected-remark @+1 {{conduit-depth-promote: skipping 'linked_fifo' -- linked conduit}}
 conduit.create @linked_fifo {                element_type = memref<8xi32>,
