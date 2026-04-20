@@ -1088,7 +1088,7 @@ void lowerPhase(ConduitToDMAState &state) {
 
       // Task SSA values for free/await at end.
       llvm::SmallVector<mlir::Value> putTasks;
-      mlir::Value awaitTask;
+      llvm::SmallVector<mlir::Value> awaitTasks;
 
       for (unsigned i = 0; i < memrefOps.size(); ++i) {
         mlir::Operation *op = memrefOps[i];
@@ -1163,7 +1163,7 @@ void lowerPhase(ConduitToDMAState &state) {
         }
 
         if (isS2MM)
-          awaitTask = taskResult;
+          awaitTasks.push_back(taskResult);
         else
           putTasks.push_back(taskResult);
       }
@@ -1171,10 +1171,10 @@ void lowerPhase(ConduitToDMAState &state) {
       // Emit await + free at the end of the runtime_sequence body.
       builder.setInsertionPointToEnd(&rtSeq.getBody().front());
 
-      if (awaitTask) {
+      for (auto task : awaitTasks) {
         mlir::OperationState awaitState(rtSeq.getLoc(),
                                         "aiex.dma_await_task");
-        awaitState.addOperands(awaitTask);
+        awaitState.addOperands(task);
         builder.create(awaitState);
       }
 
