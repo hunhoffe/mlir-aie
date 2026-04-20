@@ -1,57 +1,69 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// Tests repeat_count=3 + iter_count=5 combined on a non-adjacent compute path.
+// Tests repeat_count=3 and iter_count=5 with depth=2 on a linked objectfifo
+// path: shim(0,0) → MemTile(0,1) → compute(0,2).
 //
-// Expected: DMAStartOp repeat_count = iter_count-1 = 4.
-// BD chain has 3 blocks (one per repeat), last BD loops back to first BD.
-// Producer lock init = depth * repeat_count = 1 * 3 = 3.
-// Consumer lock init = depth = 1.
+// Expected:
+// - MemTile link lock init = depth × repeat_count = 2 × 3 = 6
+// - MemTile MM2S: 6 BD blocks (depth × repeat_count), circular chain
+// - Consumer dma_start: repeat_count = iter_count - 1 = 4
 
 // CHECK-LABEL: module
-// CHECK:   aie.device(xcve2302) {
-// Producer lock init = depth * repeat_count = 1 * 3 = 3
-// CHECK:     aie.lock({{.*}}) {init = 3 : i32
-// Consumer tile lock init = depth = 1 (repeat_count does not multiply here;
-// the consumer FIFO has only depth slots, independent of repeat_count)
-// CHECK:     aie.lock({{.*}}) {init = 1 : i32
-// CHECK:     aie.flow
-// Producer DMA: repeat_count = iter_count - 1 = 4
-// CHECK:     aie.mem
-// CHECK:       aie.dma_start(MM2S, 0, {{.*}}, {{.*}}, repeat_count = 4)
-// 3 BD blocks (one per repeat_count)
+// CHECK:   aie.device(npu1_1col) {
+// MemTile link lock init = depth * repeat_count = 6
+// CHECK:     %[[LINK_PROD:.*]] = aie.lock({{.*}}) {init = 6 : i32, sym_name = "of_in_link_prod_lock_0"}
+// CHECK:     %[[LINK_CONS:.*]] = aie.lock({{.*}}) {init = 0 : i32, sym_name = "of_in_link_cons_lock_0"}
+// MemTile DMA
+// CHECK:     aie.memtile_dma
+// MemTile S2MM ingest (circular)
+// CHECK:       aie.dma_start(S2MM
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
-// CHECK:       aie.next_bd
-// CHECK:       aie.dma_bd
-// Last BD loops back to first BD (repeat_count controls termination)
 // CHECK:       aie.next_bd ^bb1
-// CHECK:     ^bb4:
-// CHECK:       aie.end
-// Consumer DMA also gets repeat_count = 4
+// MemTile MM2S: 6 BD blocks (2 buffers × 3 repeats), circular chain
+// CHECK:       aie.dma_start(MM2S
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// Circular: last BD loops back
+// CHECK:       aie.next_bd ^bb4
+// Consumer DMA: repeat_count = iter_count - 1 = 4
 // CHECK:     aie.mem
 // CHECK:       aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 4)
+// CHECK:       aie.dma_bd
+// CHECK:       aie.next_bd
+// CHECK:       aie.dma_bd
+// Circular: last BD loops back
+// CHECK:       aie.next_bd ^bb1
 // No residual Conduit ops
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.release
 
 module {
-  aie.device(xcve2302) {
+  aie.device(npu1_1col) {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_1 = aie.tile(0, 1)
     %tile_0_2 = aie.tile(0, 2)
-    %tile_1_3 = aie.tile(1, 3)
 
-    aie.objectfifo @of(%tile_0_2, {%tile_1_3}, 1 : i32) {repeat_count = 3 : i32, iter_count = 5 : i32}
+    aie.objectfifo @of_in(%tile_0_0, {%tile_0_1}, 2 : i32)
         : !aie.objectfifo<memref<16xi32>>
+    aie.objectfifo @of_out(%tile_0_1, {%tile_0_2}, 2 : i32) {repeat_count = 3 : i32, iter_count = 5 : i32}
+        : !aie.objectfifo<memref<16xi32>>
+    aie.objectfifo.link [@of_in] -> [@of_out]([] [0])
 
     %core_0_2 = aie.core(%tile_0_2) {
-      %0 = aie.objectfifo.acquire @of(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      aie.objectfifo.release @of(Produce, 1)
-      aie.end
-    }
-    %core_1_3 = aie.core(%tile_1_3) {
-      %0 = aie.objectfifo.acquire @of(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      aie.objectfifo.release @of(Consume, 1)
+      %0 = aie.objectfifo.acquire @of_out(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of_out(Consume, 1)
       aie.end
     }
   }

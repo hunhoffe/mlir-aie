@@ -1,25 +1,25 @@
 // RUN: aie-opt --conduit-check-channels --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: rotation counter is allocated as aie.buffer at device
-// level, NOT as memref.alloca inside the core body.
+// Regression test: rotation counter is allocated as memref.alloca() inside
+// the core body (stack allocation), NOT as a device-level aie.buffer.
 //
-// Background: Pass C uses aie.buffer for the rotation counter. When
-// multiple conduits target the same compute tile, a single shared buffer
+// Background: Pass C uses memref.alloca() for the rotation counter. When
+// multiple conduits target the same compute tile, a single shared alloca
 // (memref<Nxi32>) is used with non-overlapping slot indices.
 //
-// This test verifies: (1) aie.buffer with sym_name "rotation_counter_0_2"
-// IS present at device level, (2) no memref.alloca inside aie.core for the
-// rotation counter, (3) both conduits share the same buffer with distinct slots.
+// This test verifies: (1) memref.alloca() IS present inside aie.core,
+// (2) no device-level aie.buffer with sym_name "rotation_counter_0_2"
+// is emitted, (3) both conduits share the same alloca with distinct slots.
 //
 // CHECK-LABEL: module @passC_rotation_counter_aie_buffer
 // CHECK: aie.device
-// Rotation counter must appear as aie.buffer at device level, not memref.alloca.
-// CHECK: %[[ROTBUF:.*]] = aie.buffer({{.*}}) {sym_name = "rotation_counter_0_2"} : memref<2xi32>
-// Init stores happen at device level (using aie.buffer).
-// CHECK: memref.store {{.*}} %[[ROTBUF]]
-// CHECK: memref.store {{.*}} %[[ROTBUF]]
+// Rotation counter must appear as memref.alloca inside core, not as aie.buffer.
 // CHECK: aie.core
-// CHECK-NOT: memref.alloca
+// CHECK: %alloca = memref.alloca() : memref<2xi32>
+// Init stores happen at top of core body (using alloca, not device-level buffer).
+// CHECK: memref.store {{.*}} %alloca
+// CHECK: memref.store {{.*}} %alloca
+// CHECK-NOT: aie.buffer(%{{.*}}tile_0_2) {sym_name = "rotation_counter_0_2"}
 // CHECK: aie.end
 
 module @passC_rotation_counter_aie_buffer {

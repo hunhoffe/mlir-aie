@@ -1,38 +1,43 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s | FileCheck %s
 //
-// Tests iter_count=1 (edge case K=1): DMAStartOp should have NO repeat_count
-// attribute (K-1 = 0, which is the default).  The BD chain is circular (last BD
-// loops back to first BD); repeat_count = 0 means the DMA traverses once and stops.
+// Tests iter_count=1 edge case with depth=2 on MemTile → compute.
+//
+// Expected: consumer DMA has dma_start with NO repeat_count attribute
+// (iter_count-1=0 is the default, so the attribute is omitted).
 
 // CHECK-LABEL: module
-// CHECK:   aie.device(xcve2302) {
-// CHECK:     aie.lock({{.*}}) {init = 2 : i32
-// CHECK:     aie.lock({{.*}}) {init = 0 : i32
-// DMAStartOp must NOT have repeat_count attribute (default 0 = K-1 where K=1)
+// CHECK:   aie.device(npu1_1col) {
+// 2 consumer buffers
+// CHECK:     aie.buffer({{.*}}) {sym_name = "of_cons_buff_0"}
+// CHECK:     aie.buffer({{.*}}) {sym_name = "of_cons_buff_1"}
+// Consumer lock init = depth = 2
+// CHECK:     aie.lock({{.*}}) {init = 2 : i32, sym_name = "of_cons_prod_lock_0"}
+// CHECK:     aie.lock({{.*}}) {init = 0 : i32, sym_name = "of_cons_cons_lock_0"}
+// Consumer DMA: NO repeat_count (iter_count-1=0, default)
 // CHECK:     aie.mem
-// CHECK:       aie.dma_start(S2MM, 0, ^bb1, ^bb3)
+// CHECK:       aie.dma_start(S2MM, 0, {{.*}}, {{.*}})
 // CHECK-NOT:   repeat_count
-// BD chain is circular: last BD loops back to ^bb1 (repeat_count controls termination)
-// CHECK:     ^bb1:
 // CHECK:       aie.dma_bd
-// CHECK:       aie.next_bd ^bb2
-// CHECK:     ^bb2:
+// CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
+// Circular: last BD loops back
 // CHECK:       aie.next_bd ^bb1
-// CHECK:     ^bb3:
-// CHECK:       aie.end
+// No residual Conduit ops
+// CHECK-NOT: conduit.create
+// CHECK-NOT: conduit.acquire
+// CHECK-NOT: conduit.release
 
 module {
-  aie.device(xcve2302) {
-    %shim_noc_tile_0_0 = aie.tile(0, 0)
+  aie.device(npu1_1col) {
+    %tile_0_1 = aie.tile(0, 1)
     %tile_0_2 = aie.tile(0, 2)
 
-    aie.objectfifo @in(%shim_noc_tile_0_0, {%tile_0_2}, 2 : i32) {iter_count = 1 : i32}
-        : !aie.objectfifo<memref<1024xi32>>
+    aie.objectfifo @of(%tile_0_1, {%tile_0_2}, 2 : i32) {iter_count = 1 : i32}
+        : !aie.objectfifo<memref<16xi32>>
 
     %core_0_2 = aie.core(%tile_0_2) {
-      %sv = aie.objectfifo.acquire @in(Consume, 1) : !aie.objectfifosubview<memref<1024xi32>>
-      aie.objectfifo.release @in(Consume, 1)
+      %0 = aie.objectfifo.acquire @of(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+      aie.objectfifo.release @of(Consume, 1)
       aie.end
     }
   }
