@@ -59,6 +59,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -240,6 +241,51 @@ static void eraseRuntimeDMAOpsForName(AIE::DeviceOp device,
 }
 
 // ---------------------------------------------------------------------------
+// Helpers: block-arg-to-channel grouping for runtime sequence reconstruction.
+// ---------------------------------------------------------------------------
+
+/// A group of channel names that share the same runtime_sequence block arg.
+/// In multi-column operators, multiple per-column channels (e.g., ext_in_0,
+/// ext_in_1) map to one host buffer and therefore one block arg.
+struct ArgGroup {
+  unsigned argIndex;
+  llvm::SmallVector<std::string> channelNames;
+};
+
+/// Build arg groups from a runtime_sequence body's put/get_memref ops.
+///
+/// After --dma-task-to-conduit, the block args are SSA-dead but remain in
+/// the function signature with the correct full-buffer types.  The
+/// put/get_memref ops are ordered so that ops sharing the same host buffer
+/// (block arg) are contiguous, with the first op in each group having
+/// offsets[0] == 0.  We use this structural invariant to recover the
+/// channel-name → block-arg-index mapping.
+static llvm::SmallVector<ArgGroup>
+buildArgGroupsFromSeq(mlir::Block &seqBody) {
+  llvm::SmallVector<ArgGroup> groups;
+  for (mlir::Operation &op : seqBody) {
+    llvm::StringRef opName = op.getName().getStringRef();
+    if (opName != "conduit.put_memref" && opName != "conduit.get_memref" &&
+        opName != "conduit.put_memref_async" &&
+        opName != "conduit.get_memref_async")
+      continue;
+    auto nameAttr = op.getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+    if (!nameAttr)
+      continue;
+    auto offsetsAttr = op.getAttrOfType<mlir::DenseI64ArrayAttr>("offsets");
+    int64_t offset =
+        (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
+    if (groups.empty() || offset == 0) {
+      unsigned idx = groups.empty() ? 0 : groups.back().argIndex + 1;
+      groups.push_back({idx, {nameAttr.getValue().str()}});
+    } else {
+      groups.back().channelNames.push_back(nameAttr.getValue().str());
+    }
+  }
+  return groups;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers: sync-group-aware runtime sequence interleaving.
 // ---------------------------------------------------------------------------
 
@@ -366,27 +412,38 @@ struct ConduitFuseOperatorsPass
       // --- Step 3: Match by fusion_group attribute. ---
       // Channels with matching fusion_group values are paired for fusion.
       // Falls back to element_type matching for IR without fusion_group attrs.
+      // Each input channel is consumed at most once (1:1 pairing).
       llvm::SmallVector<std::pair<Create, Create>> matched;
-      for (Create outCh : outputChannels) {
-        auto outFG = outCh.getFusionGroup();
-        if (!outFG || outFG->empty())
-          continue;
-        for (Create inCh : inputChannels) {
-          auto inFG = inCh.getFusionGroup();
-          if (inFG && *outFG == *inFG) {
-            matched.push_back({outCh, inCh});
-            break;
+      {
+        llvm::DenseSet<mlir::Operation *> consumedInputs;
+        for (Create outCh : outputChannels) {
+          auto outFG = outCh.getFusionGroup();
+          if (!outFG || outFG->empty())
+            continue;
+          for (Create inCh : inputChannels) {
+            if (consumedInputs.contains(inCh.getOperation()))
+              continue;
+            auto inFG = inCh.getFusionGroup();
+            if (inFG && *outFG == *inFG) {
+              matched.push_back({outCh, inCh});
+              consumedInputs.insert(inCh.getOperation());
+              break;
+            }
           }
         }
       }
       // Fallback: match by element_type if no fusion_group attrs found.
       if (matched.empty()) {
+        llvm::DenseSet<mlir::Operation *> consumedInputs;
         for (Create outCh : outputChannels) {
           mlir::Type outET = outCh.getElementType();
           for (Create inCh : inputChannels) {
+            if (consumedInputs.contains(inCh.getOperation()))
+              continue;
             mlir::Type inET = inCh.getElementType();
             if (outET == inET) {
               matched.push_back({outCh, inCh});
+              consumedInputs.insert(inCh.getOperation());
               break;
             }
           }
@@ -402,6 +459,40 @@ struct ConduitFuseOperatorsPass
         continue;
       }
 
+      // --- Step 3.5: Record original block arg types and channel→arg
+      // mappings.
+      //
+      // After --dma-task-to-conduit, runtime_sequence block args are SSA-dead
+      // but retain the correct full-buffer types (e.g. memref<256xbf16>).
+      // Record these now — before any erasure — so Step 8c can reconstruct
+      // the merged block args using full-buffer types instead of per-tile
+      // num_elems.
+      llvm::SmallVector<mlir::Type> origTypesA, origTypesB;
+      llvm::SmallVector<ArgGroup> argGroupsA, argGroupsB;
+      llvm::StringSet<> erasedChannelsA, erasedChannelsB;
+      {
+        for (mlir::Operation &op : devA.getBodyRegion().front()) {
+          if (op.getName().getStringRef() == "aie.runtime_sequence" &&
+              op.getNumRegions() > 0) {
+            mlir::Block &body = op.getRegion(0).front();
+            for (auto arg : body.getArguments())
+              origTypesA.push_back(arg.getType());
+            argGroupsA = buildArgGroupsFromSeq(body);
+            break;
+          }
+        }
+        for (mlir::Operation &op : devB.getBodyRegion().front()) {
+          if (op.getName().getStringRef() == "aie.runtime_sequence" &&
+              op.getNumRegions() > 0) {
+            mlir::Block &body = op.getRegion(0).front();
+            for (auto arg : body.getArguments())
+              origTypesB.push_back(arg.getType());
+            argGroupsB = buildArgGroupsFromSeq(body);
+            break;
+          }
+        }
+      }
+
       // --- Step 4: Compute column offset for device B. ---
       int64_t colMaxA = maxColInDevice(devA);
       int64_t colOffset = colMaxA + 1; // device B's col=0 → col=colMaxA+1
@@ -415,6 +506,10 @@ struct ConduitFuseOperatorsPass
       for (auto [outCh, inCh] : matched) {
         std::string outName = outCh.getName().str();
         std::string inName = inCh.getName().str();
+
+        // Track erased channels for Step 8c block arg reconstruction.
+        erasedChannelsA.insert(outName);
+        erasedChannelsB.insert(inName);
 
         std::string fusedName =
             "fused_intermediate_" + std::to_string(fuseCount++);
@@ -798,74 +893,67 @@ struct ConduitFuseOperatorsPass
           }
         }
 
-        // --- Step 8c: Eliminate dead block args from the merged sequence.
+        // --- Step 8c: Remove dead block args for fused intermediate channels.
         //
-        // After --dma-task-to-conduit, conduit.put/get_memref ops are purely
-        // attribute-based (no SSA operands).  All runtime_sequence block args
-        // are therefore SSA-dead.  After fusion, the merged sequence carries
-        // extra block args from the intermediate channels (erased in Step 6b)
-        // and unused pass-through buffers.
+        // After --dma-task-to-conduit, all runtime_sequence block args are
+        // SSA-dead but retain the correct full-buffer types (e.g.
+        // memref<256xbf16>).  After the Phase 2 merge, the merged sequence
+        // has origTypesA.size() + origTypesB.size() block args — some of
+        // which correspond to fused-intermediate channels erased in Step 6b.
         //
-        // Reconstruct the block args to have exactly one per surviving
-        // put/get_memref op.  The type of each arg is derived from the op's
-        // num_elems attribute and the scalar element type of the referenced
-        // conduit.create.
+        // Using the channel→arg-index mapping recorded in Step 3.5, identify
+        // which original block args are fully intermediate (all channels in
+        // their group were erased) and remove them, preserving the surviving
+        // full-buffer types.
         if (seqA && seqA->getNumRegions() > 0) {
           mlir::Block &seqBody = seqA->getRegion(0).front();
 
-          // Collect surviving put/get_memref ops in body order.
-          llvm::SmallVector<mlir::Operation *> survivingOps;
-          for (mlir::Operation &op : seqBody) {
-            llvm::StringRef n = op.getName().getStringRef();
-            if (n == "conduit.put_memref" || n == "conduit.get_memref" ||
-                n == "conduit.put_memref_async" ||
-                n == "conduit.get_memref_async")
-              survivingOps.push_back(&op);
-          }
+          // Compute dead arg indices for each original sequence.
+          auto computeDeadArgs = [](
+              const llvm::SmallVector<ArgGroup> &groups,
+              const llvm::StringSet<> &erasedChannels,
+              unsigned numOrigArgs) -> llvm::DenseSet<unsigned> {
+            llvm::DenseSet<unsigned> dead;
+            // Only trust the grouping if it matches the block arg count.
+            if (groups.size() != numOrigArgs)
+              return dead;
+            for (const auto &group : groups) {
+              bool allErased = !group.channelNames.empty();
+              for (const auto &name : group.channelNames) {
+                if (!erasedChannels.contains(name)) {
+                  allErased = false;
+                  break;
+                }
+              }
+              if (allErased)
+                dead.insert(group.argIndex);
+            }
+            return dead;
+          };
 
-          // Build a name→element_type map from conduit.create ops in devA.
-          llvm::StringMap<mlir::Type> channelElemTypes;
-          devA.walk([&](Create create) {
-            channelElemTypes[create.getName()] = create.getElementType();
-          });
+          llvm::DenseSet<unsigned> deadA = computeDeadArgs(
+              argGroupsA, erasedChannelsA,
+              static_cast<unsigned>(origTypesA.size()));
+          llvm::DenseSet<unsigned> deadB = computeDeadArgs(
+              argGroupsB, erasedChannelsB,
+              static_cast<unsigned>(origTypesB.size()));
 
-          // Derive block arg types from surviving ops.
+          // Build surviving arg types: non-dead from A + non-dead from B.
           llvm::SmallVector<mlir::Type> newArgTypes;
-          bool allResolved = true;
-          for (mlir::Operation *op : survivingOps) {
-            auto nameAttr =
-                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
-            auto numElemsAttr =
-                op->getAttrOfType<mlir::IntegerAttr>("num_elems");
-            if (!nameAttr || !numElemsAttr) {
-              allResolved = false;
-              break;
-            }
-            auto it = channelElemTypes.find(nameAttr.getValue());
-            if (it == channelElemTypes.end()) {
-              allResolved = false;
-              break;
-            }
-            mlir::Type scalarType;
-            if (auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(it->second))
-              scalarType = memrefTy.getElementType();
-            if (!scalarType) {
-              allResolved = false;
-              break;
-            }
-            int64_t numElems = numElemsAttr.getInt();
-            newArgTypes.push_back(
-                mlir::MemRefType::get({numElems}, scalarType));
+          for (unsigned i = 0; i < origTypesA.size(); ++i) {
+            if (!deadA.contains(i))
+              newArgTypes.push_back(origTypesA[i]);
+          }
+          for (unsigned i = 0; i < origTypesB.size(); ++i) {
+            if (!deadB.contains(i))
+              newArgTypes.push_back(origTypesB[i]);
           }
 
-          // Only reconstruct if we resolved all types and the count differs.
-          if (allResolved &&
-              newArgTypes.size() != seqBody.getNumArguments()) {
-            // Erase existing args back-to-front (none have SSA uses).
+          // Reconstruct block args if the count changed.
+          if (newArgTypes.size() != seqBody.getNumArguments()) {
             for (int idx = static_cast<int>(seqBody.getNumArguments()) - 1;
                  idx >= 0; --idx)
               seqBody.eraseArgument(static_cast<unsigned>(idx));
-            // Add new args matching surviving ops.
             for (mlir::Type ty : newArgTypes)
               seqBody.addArgument(ty, seqA->getLoc());
           }

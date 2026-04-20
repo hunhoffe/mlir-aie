@@ -1,5 +1,4 @@
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-operators %s | FileCheck %s
-// XFAIL: *
 //
 // Regression test for Step 8c bug in --conduit-fuse-operators:
 //
