@@ -327,6 +327,11 @@ static cl::opt<bool> useConduit("use-conduit",
                                 cl::init(false),
                                 cl::cat(aieCompilerOptions));
 
+static cl::opt<bool> noConduitPlaceBuffers("no-conduit-place-buffers",
+                                           cl::desc("Disable bank-aware buffer placement in conduit pipeline"),
+                                           cl::init(false),
+                                           cl::cat(aieCompilerOptions));
+
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
                                     cl::init(false),
@@ -1465,7 +1470,9 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   if (useConduit) {
     // Conduit passes are module-level; add before device-level nesting
     std::string conduitPipeline =
-        "objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma,conduit-place-buffers";
+        "objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma";
+    if (!noConduitPlaceBuffers)
+      conduitPipeline += ",conduit-place-buffers";
     if (failed(parsePassPipeline(conduitPipeline, pm))) {
       llvm::errs() << "Error: Failed to parse conduit pipeline\n";
       return failure();
