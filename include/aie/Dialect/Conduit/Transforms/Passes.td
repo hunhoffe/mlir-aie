@@ -8,9 +8,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Declares the three Conduit transformation passes:
+// Declares the Conduit transformation passes:
 //   Pass A: --objectfifo-to-conduit  (ObjectFIFO → Conduit IR)
-//   Pass B: --air-channel-to-conduit (AIR Channel → Conduit IR)
 //   Pass C: --conduit-to-dma         (Conduit IR → aie.dma_bd / aie.lock)
 //
 //===----------------------------------------------------------------------===//
@@ -63,66 +62,6 @@ def ObjectFifoToConduit : Pass<"objectfifo-to-conduit", "::mlir::ModuleOp"> {
   let dependentDialects = [
     "xilinx::conduit::ConduitDialect",
     "xilinx::AIE::AIEDialect",
-    "::mlir::memref::MemRefDialect",
-  ];
-}
-
-//===----------------------------------------------------------------------===//
-// Pass B — AIR Channel → Conduit
-//===----------------------------------------------------------------------===//
-
-def AirChannelToConduit : Pass<"air-channel-to-conduit", "::mlir::ModuleOp"> {
-  let summary = "Lift air.channel.put/get ops into Conduit IR (Tier 3 memref-DMA ops)";
-  let description = [{
-    Converts the AIR Channel abstraction layer into Conduit IR Tier 3 ops:
-
-      air.channel @name [1, 1]
-        → conduit.create {name, slot_elems =1, element_type=<inferred>,
-                          depth=1}
-
-      air.channel.put async [%deps] @chan(%buf[offsets][sizes][strides])
-        → conduit.put_memref_async {name, num_elems, offsets, sizes, strides}
-                : !conduit.dma.token
-
-      air.channel.get async [%deps] @chan(%buf[offsets][sizes][strides])
-        → conduit.get_memref_async {name, num_elems, offsets, sizes, strides}
-                : !conduit.dma.token
-
-      air.wait_all async [%deps]  →  conduit.wait_all_async %deps
-      air.wait_all       [%deps]  →  conduit.wait_all %deps
-
-    The AIR dialect operates on generic unregistered ops when parsed via
-    --allow-unregistered-dialect.  This pass matches by op name string so it
-    does not require the AIR dialect library to be linked into aie-opt.
-
-    When `infer-rates` is true (the default), the pass automatically runs
-    --conduit-infer-rates at the end to attach producer_rates/consumer_rates
-    to conduit.create ops, enabling M6/M7 CSDF verification.  Pass
-    `--air-channel-to-conduit-infer-rates=false` to disable.
-
-    Known limitations:
-    - Only scalar [1,1] channels are handled (Task #32 established that
-      SPMD specialization always produces [1,1] before lowering).
-    - Channel size/shape information is extracted from the first put/get
-      memref operand type; if no put/get is found, capacity defaults to 1.
-    - The air.async.token → !conduit.dma.token mapping relies on SSA
-      value threading; all users of the old token must be updated.
-  }];
-
-  let constructor = "xilinx::conduit::createAirChannelToConduitPass()";
-
-  let options = [
-    Option<"inferRates", "infer-rates", "bool", /*default=*/"false",
-           "Run --conduit-infer-rates automatically at the end of the pass "
-           "to attach CSDF producer_rates/consumer_rates to conduit.create "
-           "ops, enabling M6/M7 verification. Default is false because "
-           "air.channel slot_elems (broadcast fan-out) does not match the CSDF "
-           "buffer-slot semantics that M7 checks; enabling rates on most "
-           "air.channel programs triggers spurious M7 failures.">,
-  ];
-
-  let dependentDialects = [
-    "xilinx::conduit::ConduitDialect",
     "::mlir::memref::MemRefDialect",
   ];
 }
@@ -561,44 +500,6 @@ def ConduitInferRates : Pass<"conduit-infer-rates", "::mlir::ModuleOp"> {
     "xilinx::conduit::ConduitDialect",
     "xilinx::AIE::AIEDialect",
   ];
-}
-
-//===----------------------------------------------------------------------===//
-// Air Channel Index Flattener — air-channel-flatten-indices
-//===----------------------------------------------------------------------===//
-
-def AirChannelIndexFlattener : Pass<"air-channel-flatten-indices", "::mlir::ModuleOp"> {
-  let summary = "Flatten multi-dimensional air.channel indices to scalar channels";
-  let description = [{
-    Rewrites multi-dimensional air.channel declarations and their put/get ops
-    to use scalar channels.
-
-    air.channel @foo [M, N] declares M×N independent channels.  SPMD
-    specialization (air-specialize-channel-broadcast) is supposed to reduce
-    these to [1,1] before Pass B runs, but for programs that still carry
-    multi-dimensional channels, this pass performs the flattening:
-
-      air.channel @foo [M, N]
-        → M×N air.channel declarations @foo_0_0, @foo_0_1, ..., @foo_{M-1}_{N-1}
-
-      air.channel.put @foo[%c0, %c1]  (with arith.constant indices)
-        → air.channel.put @foo_0_1
-
-      air.channel.get @foo[%ci, %cj]  (with arith.constant indices)
-        → air.channel.get @foo_{i}_{j}
-
-    Dynamic indices (loop induction variables, block arguments, etc.) cause a
-    hard error because the destination channel cannot be determined statically.
-
-    This pass is a prerequisite for --air-channel-to-conduit when multi-
-    dimensional channels are present.  It should run BEFORE Pass B.
-
-    Run with:  aie-opt --air-channel-flatten-indices <input.mlir>
-  }];
-
-  let constructor = "xilinx::conduit::createAirChannelIndexFlattenerPass()";
-
-  let dependentDialects = [];
 }
 
 //===----------------------------------------------------------------------===//
