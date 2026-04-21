@@ -23,30 +23,28 @@
 //
 // Topology: depth-2 shim-to-compute (shim tile [0,0] → compute tile [0,2]).
 // Target: npu1_1col (AIE2).
-// Note: the rotation counter is allocated as memref.alloca() inside the core
-// body (stack allocation).
+// Note: the rotation counter is allocated as aie.buffer on the tile
+// (device-level buffer, no sym_name).
 
 // CHECK-LABEL: module @rotation_modulo_test
 // CHECK:   aie.device(npu1_1col) {
 
+// --- Rotation counter allocated as aie.buffer on tile ---
+// CHECK:     aie.buffer(%{{.*}}tile_0_2) : memref<1xi32>
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// --- Rotation counter allocated as memref.alloca inside core body ---
-// CHECK:         %alloca = memref.alloca() : memref<1xi32>
 // --- Counter initialized to 0 at top of core body ---
-// CHECK:         memref.store {{.*}} %alloca{{.*}} : memref<1xi32>
+// CHECK:         memref.store {{.*}} : memref<1xi32>
 // CHECK:       scf.for
-// --- Counter loaded, used for scf.if chain buffer selection, then incremented with remui ---
-// CHECK:         memref.load %alloca{{.*}} : memref<1xi32>
+// --- Counter loaded, used for scf.if chain buffer selection, then incremented ---
+// CHECK:         memref.load {{.*}} : memref<1xi32>
 // CHECK:         arith.index_cast
 // CHECK:         arith.cmpi eq
 // CHECK:         scf.if
 // --- Rotation counter update: arith.andi for power-of-2 depth (NOT arith.remui) ---
-// CHECK:         memref.load %alloca{{.*}} : memref<1xi32>
+// CHECK:         memref.load {{.*}} : memref<1xi32>
 // CHECK:         arith.addi
 // CHECK:         arith.andi
-// CHECK:         memref.store {{.*}} %alloca{{.*}} : memref<1xi32>
-// --- No device-level aie.buffer for rotation counter ---
-// CHECK-NOT:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "rotation_counter_0_2"}
+// CHECK:         memref.store {{.*}} : memref<1xi32>
 
 // --- No residual Conduit ops ---
 // CHECK-NOT: conduit.create

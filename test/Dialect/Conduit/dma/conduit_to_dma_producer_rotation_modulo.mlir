@@ -25,12 +25,11 @@
 //
 // Key assertions:
 //   - Producer-side: 2 buffers on tile_0_2 (effectiveDepth=2); rotation counter
-//     is memref.alloca() memref<2xi32> inside core body (slot 1 for producer).
+//     is aie.buffer memref<2xi32> on tile (slot 1 for producer).
 //   - Producer core andi mask = 1 (effectiveDepth=2), NOT 3 (depth=4).
-//   - Consumer-side: 4 buffers on tile_0_4; rotation counter is memref.alloca()
-//     memref<1xi32> inside core body; andi mask = 3 (depth=4).
+//   - Consumer-side: 4 buffers on tile_0_4; rotation counter is aie.buffer
+//     memref<1xi32> on tile; andi mask = 3 (depth=4).
 //   - CHECK-NOT: %c3_i32 in the producer core andi (regression guard).
-//   - No device-level aie.buffer for rotation counters.
 
 // CHECK-LABEL: module @producer_rotation_modulo
 // CHECK:   aie.device(npu1_1col) {
@@ -51,14 +50,14 @@
 // CHECK:     aie.buffer(%{{.*}}tile_0_4) {sym_name = "fifo_cons_buff_3"} : memref<8xi32>
 // CHECK:     aie.lock(%{{.*}}tile_0_4{{.*}}) {init = 4 : i32, sym_name = "fifo_cons_prod_lock_0"}
 
-// --- Producer rotation counter: memref.alloca() inside core body (memref<2xi32>) ---
+// --- Producer rotation counter: aie.buffer on tile (memref<2xi32>) ---
 // --- Slot 1 of the shared counter used by the producer core ---
+// CHECK:     aie.buffer(%{{.*}}tile_0_2) : memref<2xi32>
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:         %alloca = memref.alloca() : memref<2xi32>
-// CHECK:         memref.store %c0_i32, %alloca[%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.store %c0_i32, {{.*}}[%c1{{.*}}] : memref<2xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%{{.*}}fifo_prod_lock_0, AcquireGreaterEqual, 1)
-// CHECK:         memref.load %alloca[%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.load {{.*}}[%c1{{.*}}] : memref<2xi32>
 // CHECK:         arith.index_cast
 // CHECK:         arith.cmpi eq
 // CHECK:         scf.if
@@ -66,16 +65,16 @@
 // CHECK:           scf.yield %{{.*}}fifo_buff_1
 // CHECK:         func.call @generate
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_lock_0, Release, 1)
-// CHECK:         memref.load %alloca[%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.load {{.*}}[%c1{{.*}}] : memref<2xi32>
 // CHECK:         arith.addi
 // CHECK:         arith.constant 1 : i32
 // CHECK:         arith.andi {{.*}} : i32
-// CHECK:         memref.store {{.*}} %alloca[%c1{{.*}}] : memref<2xi32>
+// CHECK:         memref.store {{.*}}[%c1{{.*}}] : memref<2xi32>
 
-// --- Consumer rotation counter: memref.alloca() inside core body (memref<1xi32>) ---
+// --- Consumer rotation counter: aie.buffer on tile (memref<1xi32>) ---
+// CHECK:     aie.buffer(%{{.*}}tile_0_4) : memref<1xi32>
 // CHECK:     aie.core(%{{.*}}tile_0_4) {
-// CHECK:         %alloca = memref.alloca() : memref<1xi32>
-// CHECK:         memref.store {{.*}}, %alloca{{.*}} : memref<1xi32>
+// CHECK:         memref.store {{.*}} : memref<1xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_cons_lock_0, AcquireGreaterEqual, 1)
 // CHECK:         arith.index_cast

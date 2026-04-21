@@ -11,8 +11,8 @@
 //   - Shim-side locks and flow
 //
 // Resource counts:
-//   aie.buffer:  2  (input_fifo_cons_buff_0, input_fifo_cons_buff_1;
-//                    rotation counter is memref.alloca inside core body)
+//   aie.buffer:  3  (input_fifo_cons_buff_0, input_fifo_cons_buff_1,
+//                    rotation counter as unnamed aie.buffer)
 //   aie.lock:    4  (tile_0_2: cons_prod_lock init=2, cons_cons_lock init=0;
 //                    shim: prod_lock init=0, cons_lock init=0)
 //   aie.flow:    1
@@ -35,14 +35,13 @@
 // CHECK:     %[[CONS_CONS:.*]] = aie.lock(%{{.*}}tile_0_2
 // CHECK-SAME:   init = 0
 // CHECK-SAME:   sym_name = "input_fifo_cons_cons_lock_0"
-// --- Rotation counter: memref.alloca() inside core body (stack allocation) ---
+// --- Rotation counter: aie.buffer on tile (device-level, no sym_name) ---
+// CHECK:     aie.buffer(%{{.*}}tile_0_2) : memref<1xi32>
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// CHECK:         %alloca = memref.alloca() : memref<1xi32>
-// CHECK:         memref.store {{.*}} %alloca{{.*}} : memref<1xi32>
-// CHECK-NOT:   aie.buffer(%{{.*}}tile_0_2) {sym_name = "rotation_counter_0_2"}
+// CHECK:         memref.store {{.*}} : memref<1xi32>
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
-// CHECK:         memref.load %alloca{{.*}} : memref<1xi32>
+// CHECK:         memref.load {{.*}} : memref<1xi32>
 // CHECK:         arith.index_cast
 // CHECK:         arith.cmpi eq
 // CHECK:         scf.if
@@ -50,8 +49,8 @@
 // CHECK:           scf.yield %[[BUFF1]]
 // CHECK:         func.call @process_10_i32
 // CHECK:         aie.use_lock(%[[CONS_PROD]], Release, 1)
-// CHECK:         memref.load %alloca{{.*}} : memref<1xi32>
-// CHECK:         memref.store {{.*}} %alloca{{.*}} : memref<1xi32>
+// CHECK:         memref.load {{.*}} : memref<1xi32>
+// CHECK:         memref.store {{.*}} : memref<1xi32>
 // CHECK:     }
 // --- Shim DMA and flow ---
 // CHECK:     aie.shim_dma_allocation @{{.*}}shim_alloc

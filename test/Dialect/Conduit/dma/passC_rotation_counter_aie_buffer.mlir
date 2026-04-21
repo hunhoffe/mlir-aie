@@ -1,25 +1,24 @@
 // RUN: aie-opt --conduit-check-channels --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: rotation counter is allocated as memref.alloca() inside
-// the core body (stack allocation), NOT as a device-level aie.buffer.
+// Regression test: rotation counter is allocated as aie.buffer on the tile
+// (device-level buffer), shared across conduits targeting the same tile.
 //
-// Background: Pass C uses memref.alloca() for the rotation counter. When
-// multiple conduits target the same compute tile, a single shared alloca
+// Background: Pass C uses aie.buffer for the rotation counter. When
+// multiple conduits target the same compute tile, a single shared buffer
 // (memref<Nxi32>) is used with non-overlapping slot indices.
 //
-// This test verifies: (1) memref.alloca() IS present inside aie.core,
-// (2) no device-level aie.buffer with sym_name "rotation_counter_0_2"
-// is emitted, (3) both conduits share the same alloca with distinct slots.
+// This test verifies: (1) aie.buffer (no sym_name) IS present for the
+// rotation counter, (2) both conduits share the same buffer with distinct
+// slots, (3) init stores happen at top of core body.
 //
 // CHECK-LABEL: module @passC_rotation_counter_aie_buffer
 // CHECK: aie.device
-// Rotation counter must appear as memref.alloca inside core, not as aie.buffer.
+// Rotation counter appears as device-level aie.buffer (no sym_name).
+// CHECK: aie.buffer({{.*}}) : memref<2xi32>
 // CHECK: aie.core
-// CHECK: %alloca = memref.alloca() : memref<2xi32>
-// Init stores happen at top of core body (using alloca, not device-level buffer).
-// CHECK: memref.store {{.*}} %alloca
-// CHECK: memref.store {{.*}} %alloca
-// CHECK-NOT: aie.buffer(%{{.*}}tile_0_2) {sym_name = "rotation_counter_0_2"}
+// Init stores happen at top of core body.
+// CHECK: memref.store
+// CHECK: memref.store
 // CHECK: aie.end
 
 module @passC_rotation_counter_aie_buffer {

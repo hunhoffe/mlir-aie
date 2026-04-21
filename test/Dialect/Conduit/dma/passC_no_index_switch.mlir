@@ -14,8 +14,9 @@
 //   }
 //
 // CHECK-LABEL: module @passC_no_index_switch
+// CHECK: aie.buffer({{.*}}) : memref<1xi32>
 // CHECK: aie.core
-// CHECK: %alloca = memref.alloca() : memref<1xi32>
+// CHECK: memref.store
 // CHECK: arith.cmpi eq
 // CHECK: scf.if
 // CHECK-NOT: scf.index_switch

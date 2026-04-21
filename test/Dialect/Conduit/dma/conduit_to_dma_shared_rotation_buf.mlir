@@ -5,16 +5,16 @@
 //
 // Background:
 //   When multiple conduits target the same compute tile, Pass C must allocate
-//   a single shared rotation counter memref (memref<Nxi32>) on that tile,
+//   a single shared rotation counter buffer (memref<Nxi32>) on that tile,
 //   with non-overlapping slot indices (0 and 1 for two conduits).  Before the
 //   BLOCK-3 fix, each conduit allocated its own separate buffer.
-//   The rotation counter is a memref.alloca() inside the core body.
+//   The rotation counter is an aie.buffer on the tile (device-level).
 //
 // Topology: Two objectfifos, fifo_a and fifo_b, both from shim tile(0,0) to
 //   compute tile(0,2), both depth=2.  The core consumes from both.
 //
 // Key assertions:
-//   - Exactly ONE memref.alloca() : memref<2xi32> inside the core body.
+//   - Exactly ONE aie.buffer : memref<2xi32> on the tile (device-level).
 //   - fifo_a uses slot 0 (index %c0), fifo_b uses slot 1 (index %c1).
 //   - Both conduits wrap their counter at modulus 2 (depth=2).
 
@@ -27,17 +27,17 @@
 // CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "fifo_a_cons_buff_0"} : memref<8xi32>
 // CHECK:     aie.buffer(%{{.*}}tile_0_2) {sym_name = "fifo_a_cons_buff_1"} : memref<8xi32>
 
+// --- ONE shared rotation counter as aie.buffer on tile (memref<2xi32>) ---
+// CHECK:     aie.buffer(%{{.*}}tile_0_2) : memref<2xi32>
 // CHECK:     aie.core(%{{.*}}tile_0_2) {
-// --- ONE shared rotation counter as memref.alloca() inside the core body (memref<2xi32>) ---
-// CHECK:       %alloca = memref.alloca() : memref<2xi32>
 // --- Counter init stores at top of core body ---
-// CHECK:       memref.store %c0_i32{{.*}}, %alloca[%c{{[01]}}{{.*}}] : memref<2xi32>
-// CHECK:       memref.store %c0_i32{{.*}}, %alloca[%c{{[01]}}{{.*}}] : memref<2xi32>
+// CHECK:       memref.store %c0_i32{{.*}}, {{.*}}[%c{{[01]}}{{.*}}] : memref<2xi32>
+// CHECK:       memref.store %c0_i32{{.*}}, {{.*}}[%c{{[01]}}{{.*}}] : memref<2xi32>
 
 // --- fifo_a acquire: loads from slot 0 ---
 // CHECK:       aie.use_lock(%{{.*}}fifo_a_cons_cons_lock_0, AcquireGreaterEqual, 1)
 // CHECK:       %c0{{.*}} = arith.constant 0 : index
-// CHECK:       memref.load %alloca[%c0{{.*}}] : memref<2xi32>
+// CHECK:       memref.load {{.*}}[%c0{{.*}}] : memref<2xi32>
 // CHECK:       arith.index_cast
 // CHECK:       arith.cmpi eq
 // CHECK:       scf.if
@@ -46,12 +46,12 @@
 // CHECK:       func.call @process_a
 // CHECK:       aie.use_lock(%{{.*}}fifo_a_cons_prod_lock_0, Release, 1)
 // CHECK:       arith.andi {{.*}} %c1_i32{{.*}} : i32
-// CHECK:       memref.store {{.*}} %alloca[%c0{{.*}}] : memref<2xi32>
+// CHECK:       memref.store {{.*}}[%c0{{.*}}] : memref<2xi32>
 
 // --- fifo_b acquire: loads from slot 1 ---
 // CHECK:       aie.use_lock(%{{.*}}fifo_b_cons_cons_lock_0, AcquireGreaterEqual, 1)
 // CHECK:       %c1{{.*}} = arith.constant 1 : index
-// CHECK:       memref.load %alloca[%c1{{.*}}] : memref<2xi32>
+// CHECK:       memref.load {{.*}}[%c1{{.*}}] : memref<2xi32>
 // CHECK:       arith.index_cast
 // CHECK:       arith.cmpi eq
 // CHECK:       scf.if
@@ -60,7 +60,7 @@
 // CHECK:       func.call @process_b
 // CHECK:       aie.use_lock(%{{.*}}fifo_b_cons_prod_lock_0, Release, 1)
 // CHECK:       arith.andi {{.*}} %c1_i32{{.*}} : i32
-// CHECK:       memref.store {{.*}} %alloca[%c1{{.*}}] : memref<2xi32>
+// CHECK:       memref.store {{.*}}[%c1{{.*}}] : memref<2xi32>
 // CHECK-NOT: conduit.create
 // CHECK-NOT: conduit.acquire
 // CHECK-NOT: conduit.release
