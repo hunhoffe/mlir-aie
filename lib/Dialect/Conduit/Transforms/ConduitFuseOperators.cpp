@@ -137,7 +137,8 @@ static bool isOutputChannel(Create op,
   // No inferred consumer tiles — assume no compute consumers.
 
   // Check consumer is shim (output channels exit to LPDDR5 via shim DMA).
-  bool hasShimConsumer = tileIt != inferredMap.end() && !tileIt->second.shimConsumerTiles.empty();
+  bool hasShimConsumer =
+      tileIt != inferredMap.end() && !tileIt->second.shimConsumerTiles.empty();
 
   return noComputeConsumers && hasShimConsumer;
 }
@@ -262,8 +263,7 @@ struct ArgGroup {
 /// (block arg) are contiguous, with the first op in each group having
 /// offsets[0] == 0.  We use this structural invariant to recover the
 /// channel-name → block-arg-index mapping.
-static llvm::SmallVector<ArgGroup>
-buildArgGroupsFromSeq(mlir::Block &seqBody) {
+static llvm::SmallVector<ArgGroup> buildArgGroupsFromSeq(mlir::Block &seqBody) {
   llvm::SmallVector<ArgGroup> groups;
   for (mlir::Operation &op : seqBody) {
     llvm::StringRef opName = op.getName().getStringRef();
@@ -275,8 +275,7 @@ buildArgGroupsFromSeq(mlir::Block &seqBody) {
     if (!nameAttr)
       continue;
     auto offsetsAttr = op.getAttrOfType<mlir::DenseI64ArrayAttr>("offsets");
-    int64_t offset =
-        (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
+    int64_t offset = (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
 
     // Compute extent = offset + num_elems for this op.
     auto numElemsAttr = op.getAttrOfType<mlir::IntegerAttr>("num_elems");
@@ -627,8 +626,7 @@ struct ConduitFuseOperatorsPass
                 opName != "conduit.put_memref_async" &&
                 opName != "conduit.get_memref_async")
               return;
-            auto nameAttr =
-                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+            auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
             if (nameAttr && nameAttr.getValue() == fusedName)
               toErase.push_back(op);
           });
@@ -659,8 +657,7 @@ struct ConduitFuseOperatorsPass
         using Key = std::pair<mlir::Value, int>;
         llvm::DenseMap<Key, llvm::SmallVector<AIE::ShimDMAAllocationOp>> groups;
         device.walk([&](AIE::ShimDMAAllocationOp alloc) {
-          Key k = {alloc.getTile(),
-                   static_cast<int>(alloc.getChannelDir())};
+          Key k = {alloc.getTile(), static_cast<int>(alloc.getChannelDir())};
           groups[k].push_back(alloc);
         });
         for (auto &[key, allocs] : groups) {
@@ -670,8 +667,7 @@ struct ConduitFuseOperatorsPass
             return a.getChannelIndex() < b.getChannelIndex();
           });
           for (unsigned idx = 0; idx < allocs.size(); ++idx) {
-            if (allocs[idx].getChannelIndex() !=
-                static_cast<int64_t>(idx))
+            if (allocs[idx].getChannelIndex() != static_cast<int64_t>(idx))
               allocs[idx].setChannelIndex(static_cast<int64_t>(idx));
           }
         }
@@ -918,10 +914,10 @@ struct ConduitFuseOperatorsPass
           mlir::Block &seqBody = seqA->getRegion(0).front();
 
           // Compute dead arg indices for each original sequence.
-          auto computeDeadArgs = [](
-              const llvm::SmallVector<ArgGroup> &groups,
-              const llvm::StringSet<> &erasedChannels,
-              unsigned numOrigArgs) -> llvm::DenseSet<unsigned> {
+          auto computeDeadArgs =
+              [](const llvm::SmallVector<ArgGroup> &groups,
+                 const llvm::StringSet<> &erasedChannels,
+                 unsigned numOrigArgs) -> llvm::DenseSet<unsigned> {
             llvm::DenseSet<unsigned> dead;
             // Only trust the grouping if it matches the block arg count.
             if (groups.size() != numOrigArgs)
@@ -940,24 +936,22 @@ struct ConduitFuseOperatorsPass
             return dead;
           };
 
-          llvm::DenseSet<unsigned> deadA = computeDeadArgs(
-              argGroupsA, erasedChannelsA,
-              static_cast<unsigned>(origTypesA.size()));
-          llvm::DenseSet<unsigned> deadB = computeDeadArgs(
-              argGroupsB, erasedChannelsB,
-              static_cast<unsigned>(origTypesB.size()));
+          llvm::DenseSet<unsigned> deadA =
+              computeDeadArgs(argGroupsA, erasedChannelsA,
+                              static_cast<unsigned>(origTypesA.size()));
+          llvm::DenseSet<unsigned> deadB =
+              computeDeadArgs(argGroupsB, erasedChannelsB,
+                              static_cast<unsigned>(origTypesB.size()));
 
           // Build surviving arg types: non-dead from A + non-dead from B.
           // Use computed max extents from buildArgGroupsFromSeq() to
           // reconstruct full-buffer types, fixing the per-tile arg type bug.
           auto computeFullBufferType =
-              [](unsigned i,
-                 const llvm::SmallVector<ArgGroup> &groups,
+              [](unsigned i, const llvm::SmallVector<ArgGroup> &groups,
                  const llvm::SmallVector<mlir::Type> &origTypes) -> mlir::Type {
             if (i < groups.size() && groups[i].maxExtent > 0 &&
                 i < origTypes.size()) {
-              if (auto memTy =
-                      mlir::dyn_cast<mlir::MemRefType>(origTypes[i])) {
+              if (auto memTy = mlir::dyn_cast<mlir::MemRefType>(origTypes[i])) {
                 return mlir::MemRefType::get({groups[i].maxExtent},
                                              memTy.getElementType());
               }

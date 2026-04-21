@@ -332,8 +332,7 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
       // Only act on channels with dma_channel_group and no producer yet.
       if (entry.producerTile)
         return;
-      if (!createOp->getAttrOfType<mlir::StringAttr>(
-              "dma_channel_group"))
+      if (!createOp->getAttrOfType<mlir::StringAttr>("dma_channel_group"))
         return;
 
       // Filter out MemTiles already used as consumer or relay for this channel.

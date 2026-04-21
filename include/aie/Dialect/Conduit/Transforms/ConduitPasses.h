@@ -145,8 +145,8 @@ std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitPlaceBuffersPass();
 
 /// DMA task → Conduit: convert aiex.dma_configure_task_for / dma_start_task /
-/// dma_await_task / dma_free_task in aie.runtime_sequence into conduit.put_memref
-/// or conduit.get_memref ops.
+/// dma_await_task / dma_free_task in aie.runtime_sequence into
+/// conduit.put_memref or conduit.get_memref ops.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitDmaTaskToConduitPass();
 

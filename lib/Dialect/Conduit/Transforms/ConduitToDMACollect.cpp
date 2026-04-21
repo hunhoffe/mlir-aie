@@ -134,11 +134,9 @@ void collectPhase(ConduitToDMAState &state) {
     // get_memref_async override these defaults (populated below in Phase 1
     // put/get walks).
     if (auto dims = op.getProducerDimensions())
-      info.producerDimensions =
-          mlir::cast<AIE::BDDimLayoutArrayAttr>(*dims);
+      info.producerDimensions = mlir::cast<AIE::BDDimLayoutArrayAttr>(*dims);
     if (auto dims = op.getConsumerDimensions()) {
-      auto arrayOfArrays =
-          mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(*dims);
+      auto arrayOfArrays = mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(*dims);
       for (auto consArr : arrayOfArrays.getValue())
         info.consumerDimensions.push_back(consArr);
     }
@@ -231,8 +229,8 @@ void collectPhase(ConduitToDMAState &state) {
         }
       }
     } else {
-      for (int devIdx = 0;
-           devIdx < static_cast<int>(state.deviceOps.size()); ++devIdx) {
+      for (int devIdx = 0; devIdx < static_cast<int>(state.deviceOps.size());
+           ++devIdx) {
         AIE::DeviceOp dev = state.deviceOps[devIdx];
         auto inferredMap = inferAllTiles(dev);
 
@@ -418,8 +416,7 @@ void collectPhase(ConduitToDMAState &state) {
       std::string key = state.makeConduitKey(op.getName(), op);
       auto it = state.conduitMap.find(key);
       if (it != state.conduitMap.end()) {
-        auto arrayOfArrays =
-            mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(*dims);
+        auto arrayOfArrays = mlir::cast<AIE::BDDimLayoutArrayArrayAttr>(*dims);
         it->second.consumerDimensions.clear();
         for (auto consArr : arrayOfArrays.getValue())
           it->second.consumerDimensions.push_back(consArr);
@@ -529,7 +526,6 @@ void collectPhase(ConduitToDMAState &state) {
         info.maxProduceAcquire = prodIt->second;
     }
   }
-
 }
 
 } // namespace xilinx::conduit

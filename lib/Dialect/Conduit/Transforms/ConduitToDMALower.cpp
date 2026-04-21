@@ -9,10 +9,10 @@
 //===----------------------------------------------------------------------===//
 //
 // Phase 6: Lower conduit.acquire/release → aie.use_lock.
-//   Step 1: SubviewAccess → buffer replacement (static or dynamic index_switch).
-//   Step 2: Release → use_lock + counter increment (collect for deferred
-//   erase). Step 3: Erase Release ops. Step 4: Acquire → use_lock + counter
-//   init; erase.
+//   Step 1: SubviewAccess → buffer replacement (static or dynamic
+//   index_switch). Step 2: Release → use_lock + counter increment (collect for
+//   deferred erase). Step 3: Erase Release ops. Step 4: Acquire → use_lock +
+//   counter init; erase.
 //
 // Phase 7: Erase remaining Conduit ops (create, wait, wait_all_async).
 //
@@ -153,27 +153,23 @@ void lowerPhase(ConduitToDMAState &state) {
               llvm::SmallVector<int64_t, 4> caseValues;
               for (int64_t i = 0; i < numBufs; ++i)
                 caseValues.push_back(i);
-              auto cases =
-                  mlir::DenseI64ArrayAttr::get(ctx, caseValues);
+              auto cases = mlir::DenseI64ArrayAttr::get(ctx, caseValues);
               auto switchOp = mlir::scf::IndexSwitchOp::create(
                   builder, loc, mlir::TypeRange({bufTy}), absIdx, cases,
                   static_cast<unsigned>(numBufs));
               // Default case: yield buf[(idx % numBufs)].
               builder.createBlock(&switchOp.getDefaultRegion());
-              builder.setInsertionPointToStart(
-                  &switchOp.getDefaultBlock());
+              builder.setInsertionPointToStart(&switchOp.getDefaultBlock());
               builder.create<mlir::scf::YieldOp>(
                   loc, (*tileBuffers)[bufIdx].getResult());
               // Case regions: case i yields buf[(idx + i) % numBufs].
               for (int64_t i = 0; i < numBufs; ++i) {
                 builder.createBlock(&switchOp.getCaseRegions()[i]);
-                builder.setInsertionPoint(
-                    &switchOp.getCaseBlock(i),
-                    switchOp.getCaseBlock(i).begin());
+                builder.setInsertionPoint(&switchOp.getCaseBlock(i),
+                                          switchOp.getCaseBlock(i).begin());
                 int64_t bufferToAccess = (idx + i) % numBufs;
                 builder.create<mlir::scf::YieldOp>(
-                    loc,
-                    (*tileBuffers)[bufferToAccess].getResult());
+                    loc, (*tileBuffers)[bufferToAccess].getResult());
               }
 
               op.getResult().replaceAllUsesWith(switchOp.getResult(0));
@@ -714,8 +710,7 @@ void lowerPhase(ConduitToDMAState &state) {
         auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
         int64_t col = static_cast<int64_t>(coreTileOp.getCol());
         int64_t row = static_cast<int64_t>(coreTileOp.getRow());
-        auto ctrKey =
-            std::make_tuple(conduitName.str(), col, row, false);
+        auto ctrKey = std::make_tuple(conduitName.str(), col, row, false);
         if (!counterInitialized.count(ctrKey)) {
           counterInitialized.insert(ctrKey);
           mlir::OpBuilder initBuilder(ctx);
@@ -728,8 +723,8 @@ void lowerPhase(ConduitToDMAState &state) {
               mlir::arith::ConstantIntOp::create(initBuilder, loc, i32Ty, 0);
           int64_t rotationBufSlot = resolved.rotationBufSlot;
           mlir::Value slotIdx =
-              initBuilder.create<mlir::arith::ConstantIndexOp>(
-                  loc, rotationBufSlot);
+              initBuilder.create<mlir::arith::ConstantIndexOp>(loc,
+                                                               rotationBufSlot);
           initBuilder.create<mlir::memref::StoreOp>(
               loc, zero, resolvedRotationBuf, mlir::ValueRange{slotIdx});
         }
@@ -742,8 +737,7 @@ void lowerPhase(ConduitToDMAState &state) {
         auto coreTileOp = coreTileVal.getDefiningOp<AIE::TileOp>();
         int64_t col = static_cast<int64_t>(coreTileOp.getCol());
         int64_t row = static_cast<int64_t>(coreTileOp.getRow());
-        auto ctrKey =
-            std::make_tuple(conduitName.str(), col, row, true);
+        auto ctrKey = std::make_tuple(conduitName.str(), col, row, true);
         if (!counterInitialized.count(ctrKey)) {
           counterInitialized.insert(ctrKey);
           mlir::OpBuilder initBuilder(ctx);
@@ -758,9 +752,9 @@ void lowerPhase(ConduitToDMAState &state) {
           mlir::Value slotIdx =
               initBuilder.create<mlir::arith::ConstantIndexOp>(
                   loc, producerRotationBufSlot);
-          initBuilder.create<mlir::memref::StoreOp>(
-              loc, zero, resolvedProducerRotationBuf,
-              mlir::ValueRange{slotIdx});
+          initBuilder.create<mlir::memref::StoreOp>(loc, zero,
+                                                    resolvedProducerRotationBuf,
+                                                    mlir::ValueRange{slotIdx});
         }
       }
     }
@@ -1032,11 +1026,12 @@ void lowerPhase(ConduitToDMAState &state) {
   // Step 8g: Lower conduit.put_memref / get_memref inside
   // aie.runtime_sequence → aiex.dma_configure_task_for + dma_start/await/free.
   //
-  // This is the reverse of --dma-task-to-conduit. After --conduit-fuse-operators
-  // merges runtime_sequences and eliminates dead block args, there may be
-  // more put/get ops than block args (multiple per-column ops share one
-  // full-buffer block arg).  Ops are mapped to block args via arg groups:
-  // contiguous ops starting with offsets[0]==0 form a group sharing one arg.
+  // This is the reverse of --dma-task-to-conduit. After
+  // --conduit-fuse-operators merges runtime_sequences and eliminates dead block
+  // args, there may be more put/get ops than block args (multiple per-column
+  // ops share one full-buffer block arg).  Ops are mapped to block args via arg
+  // groups: contiguous ops starting with offsets[0]==0 form a group sharing one
+  // arg.
   //
   // Mapping:
   //   conduit.put_memref {name=@chan} → aiex.dma_configure_task_for
@@ -1052,8 +1047,8 @@ void lowerPhase(ConduitToDMAState &state) {
     llvm::StringMap<AIE::DMAChannelDir> conduitToDir;
     module.walk([&](AIE::ShimDMAAllocationOp alloc) {
       llvm::StringRef conduitName;
-      if (auto cc = alloc->getAttrOfType<mlir::FlatSymbolRefAttr>(
-              "conduit_channel"))
+      if (auto cc =
+              alloc->getAttrOfType<mlir::FlatSymbolRefAttr>("conduit_channel"))
         conduitName = cc.getValue();
       else {
         // Fallback: strip _shim_alloc suffix.
@@ -1089,8 +1084,7 @@ void lowerPhase(ConduitToDMAState &state) {
         bool firstGroup = true;
         for (unsigned i = 0; i < memrefOps.size(); ++i) {
           auto offsetsAttr =
-              memrefOps[i]->getAttrOfType<mlir::DenseI64ArrayAttr>(
-                  "offsets");
+              memrefOps[i]->getAttrOfType<mlir::DenseI64ArrayAttr>("offsets");
           int64_t offset =
               (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
           if (offset == 0 && !firstGroup)
@@ -1116,8 +1110,7 @@ void lowerPhase(ConduitToDMAState &state) {
           continue;
 
         std::string allocSym = allocIt->second;
-        bool isS2MM =
-            (conduitToDir[conduitName] == AIE::DMAChannelDir::S2MM);
+        bool isS2MM = (conduitToDir[conduitName] == AIE::DMAChannelDir::S2MM);
 
         // Resolve block arg via arg group mapping, not positional index.
         unsigned argIdx = opToArgIndex[i];
@@ -1137,22 +1130,19 @@ void lowerPhase(ConduitToDMAState &state) {
 
         // Get BDDimLayout dimensions (put_memref carries producer_dimensions).
         AIE::BDDimLayoutArrayAttr dims;
-        if (auto dimsAttr =
-                op->getAttrOfType<AIE::BDDimLayoutArrayAttr>(
-                    "producer_dimensions"))
+        if (auto dimsAttr = op->getAttrOfType<AIE::BDDimLayoutArrayAttr>(
+                "producer_dimensions"))
           dims = dimsAttr;
 
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
         // Build aiex.dma_configure_task_for.
-        mlir::OperationState configState(loc,
-                                         "aiex.dma_configure_task_for");
-        configState.addAttribute(
-            "alloc", mlir::FlatSymbolRefAttr::get(ctx, allocSym));
+        mlir::OperationState configState(loc, "aiex.dma_configure_task_for");
+        configState.addAttribute("alloc",
+                                 mlir::FlatSymbolRefAttr::get(ctx, allocSym));
         if (isS2MM)
-          configState.addAttribute("issue_token",
-                                   builder.getBoolAttr(true));
+          configState.addAttribute("issue_token", builder.getBoolAttr(true));
         configState.addTypes(indexTy);
         configState.addRegion();
         mlir::Operation *configOp = builder.create(configState);
@@ -1164,16 +1154,13 @@ void lowerPhase(ConduitToDMAState &state) {
         builder.setInsertionPointToEnd(bdBlock);
 
         if (dims && !dims.getValue().empty())
-          builder.create<AIE::DMABDOp>(
-              loc, bufArg, bdOffset,
-              static_cast<int>(numElems), dims);
+          builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
+                                       static_cast<int>(numElems), dims);
         else
-          builder.create<AIE::DMABDOp>(
-              loc, bufArg, bdOffset,
-              static_cast<int>(numElems));
+          builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
+                                       static_cast<int>(numElems));
         // Set burst_length = 0 on the dma_bd.
-        bdBlock->back().setAttr("burst_length",
-                                builder.getI32IntegerAttr(0));
+        bdBlock->back().setAttr("burst_length", builder.getI32IntegerAttr(0));
         builder.create<AIE::EndOp>(loc);
 
         // Emit aiex.dma_start_task(%task).
@@ -1195,16 +1182,14 @@ void lowerPhase(ConduitToDMAState &state) {
       builder.setInsertionPointToEnd(&rtSeq.getBody().front());
 
       for (auto task : awaitTasks) {
-        mlir::OperationState awaitState(rtSeq.getLoc(),
-                                        "aiex.dma_await_task");
+        mlir::OperationState awaitState(rtSeq.getLoc(), "aiex.dma_await_task");
         awaitState.addOperands(task);
         builder.create(awaitState);
       }
 
       // Free put tasks in reverse order.
       for (auto task : llvm::reverse(putTasks)) {
-        mlir::OperationState freeState(rtSeq.getLoc(),
-                                       "aiex.dma_free_task");
+        mlir::OperationState freeState(rtSeq.getLoc(), "aiex.dma_free_task");
         freeState.addOperands(task);
         builder.create(freeState);
       }

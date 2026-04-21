@@ -539,8 +539,8 @@ struct ConduitToDMAState {
   // packet-muxed channels (e.g., flash attention Q+K+V → 1 lock pair instead
   // of 3).  Populated alongside pktTileS2MMChannel; consumed by Phase 5.5 BD
   // chain generation (via info.consumerTileLocks overwrite).
-  llvm::DenseMap<mlir::Value,
-                 std::pair<mlir::Value, mlir::Value>> pktTileS2MMLock;
+  llvm::DenseMap<mlir::Value, std::pair<mlir::Value, mlir::Value>>
+      pktTileS2MMLock;
 
   // Pre-computed used DMA channels per tile (populated before Phase 5.5).
   llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedMM2SChannels;
@@ -631,8 +631,7 @@ struct ConduitToDMAState {
   /// Device-aware conduit lookup.  Builds a device-qualified key from
   /// the channel name and the context op's enclosing aie.device, then
   /// falls back to the unqualified name for single-device compatibility.
-  ConduitInfo *lookupConduit(mlir::StringRef name,
-                             mlir::Operation *contextOp);
+  ConduitInfo *lookupConduit(mlir::StringRef name, mlir::Operation *contextOp);
 
   /// Emit DMA BD block content into an existing block:
   ///   1. UseLockOp (acquire) — skipped if acqLock is null

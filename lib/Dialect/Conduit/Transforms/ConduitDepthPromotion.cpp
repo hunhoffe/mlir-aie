@@ -327,7 +327,8 @@ struct ConduitDepthPromotePass
       // for channels outside aie.core (e.g. in func.func or hand-written IR).
       llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
       auto tileIt = inferredMap.find(op.getName().str());
-      if (tileIt != inferredMap.end() && !tileIt->second.consumerTiles.empty()) {
+      if (tileIt != inferredMap.end() &&
+          !tileIt->second.consumerTiles.empty()) {
         for (mlir::Value tv : tileIt->second.consumerTiles) {
           auto [col, row] = extractCoord(tv);
           if (col >= 0)

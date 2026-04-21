@@ -83,12 +83,11 @@ static mlir::FlatSymbolRefAttr getAllocAttr(mlir::Operation *op) {
 // Strips trivial leading dimensions (size==1, stride==0) to produce a
 // compact representation.  The dma_bd scalar offset becomes offsets[0].
 // ---------------------------------------------------------------------------
-static void
-dimsToOffsetsStrides(int32_t bdOffset, int64_t len,
-                     AIE::BDDimLayoutArrayAttr dimensions,
-                     llvm::SmallVectorImpl<int64_t> &offsets,
-                     llvm::SmallVectorImpl<int64_t> &sizes,
-                     llvm::SmallVectorImpl<int64_t> &strides) {
+static void dimsToOffsetsStrides(int32_t bdOffset, int64_t len,
+                                 AIE::BDDimLayoutArrayAttr dimensions,
+                                 llvm::SmallVectorImpl<int64_t> &offsets,
+                                 llvm::SmallVectorImpl<int64_t> &sizes,
+                                 llvm::SmallVectorImpl<int64_t> &strides) {
   if (dimensions && !dimensions.empty()) {
     // Strip trivial leading dims (size=1, stride=0).
     bool nonTrivialSeen = false;
@@ -143,9 +142,9 @@ private:
     device.walk([&](AIE::ShimDMAAllocationOp alloc) {
       auto conduitChannelAttr =
           alloc->getAttrOfType<mlir::FlatSymbolRefAttr>("conduit_channel");
-      llvm::StringRef conduitName =
-          conduitChannelAttr ? conduitChannelAttr.getValue()
-                             : alloc.getSymName();
+      llvm::StringRef conduitName = conduitChannelAttr
+                                        ? conduitChannelAttr.getValue()
+                                        : alloc.getSymName();
       allocMap[alloc.getSymName()] = {alloc.getChannelDir(), conduitName};
     });
 
@@ -158,10 +157,9 @@ private:
     });
   }
 
-  void processRuntimeSequence(
-      AIE::RuntimeSequenceOp rtSeq,
-      const llvm::StringMap<ShimAllocInfo> &allocMap,
-      mlir::OpBuilder &builder) {
+  void processRuntimeSequence(AIE::RuntimeSequenceOp rtSeq,
+                              const llvm::StringMap<ShimAllocInfo> &allocMap,
+                              mlir::OpBuilder &builder) {
 
     mlir::MLIRContext *ctx = rtSeq.getContext();
 
@@ -207,7 +205,8 @@ private:
 
         // Build offsets/sizes/strides from dimensions.
         llvm::SmallVector<int64_t> offsets, sizes, strides;
-        dimsToOffsetsStrides(bdOffset, len, dimensions, offsets, sizes, strides);
+        dimsToOffsetsStrides(bdOffset, len, dimensions, offsets, sizes,
+                             strides);
 
         // Emit conduit.put_memref or conduit.get_memref.
         builder.setInsertionPoint(op);
@@ -222,8 +221,7 @@ private:
           // MM2S: shim sends data into the conduit → put_memref.
           // Pass through the BDDimLayout as producer_dimensions.
           PutMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
-                            offsetsAttr, sizesAttr, stridesAttr,
-                            dimensions);
+                            offsetsAttr, sizesAttr, stridesAttr, dimensions);
         } else {
           // S2MM: shim receives data from the conduit → get_memref.
           GetMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,

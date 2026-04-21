@@ -21,7 +21,8 @@
 //   3. Composes the two core bodies into a single aie.core body by cloning
 //      Core B's loop body into Core A after the intermediate produce/release.
 //   4. Replaces intermediate conduit.acquire/release/subview_access ops with
-//      direct memref.alloc references (L1) or relay buffer references (MemTile).
+//      direct memref.alloc references (L1) or relay buffer references
+//      (MemTile).
 //   5. Deletes the intermediate conduit.create, dead Core B, and associated
 //      runtime sequence DMA ops.
 //
@@ -124,7 +125,7 @@ static void dedupTileOps(AIE::DeviceOp device) {
 /// pair into a single channel so that findFusableCorePairs can detect the
 /// cross-device pair as a same-device pair.
 static void mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
-                                  mlir::MLIRContext *ctx) {
+                                 mlir::MLIRContext *ctx) {
   // --- Find the matching fusion_group channel pair. ---
   Create producerChannel = nullptr;
   Create consumerChannel = nullptr;
@@ -374,7 +375,7 @@ static void mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
 /// Pre-process: merge cross-device fusion_group connections into single
 /// devices so that findFusableCorePairs can detect them.
 static void mergeDevicesForFusion(mlir::ModuleOp module,
-                                   mlir::MLIRContext *ctx) {
+                                  mlir::MLIRContext *ctx) {
   bool merged = true;
   while (merged) {
     merged = false;
@@ -422,8 +423,7 @@ enum class IntermediateRoute {
 // ---------------------------------------------------------------------------
 
 /// Collect all conduit channel names that a core produces into (Produce port).
-static llvm::SmallVector<std::string>
-getProducedChannels(AIE::CoreOp core) {
+static llvm::SmallVector<std::string> getProducedChannels(AIE::CoreOp core) {
   llvm::StringSet<> seen;
   llvm::SmallVector<std::string> channels;
   core.walk([&](Acquire acqOp) {
@@ -444,8 +444,7 @@ getProducedChannels(AIE::CoreOp core) {
 }
 
 /// Collect all conduit channel names that a core consumes from (Consume port).
-static llvm::SmallVector<std::string>
-getConsumedChannels(AIE::CoreOp core) {
+static llvm::SmallVector<std::string> getConsumedChannels(AIE::CoreOp core) {
   llvm::StringSet<> seen;
   llvm::SmallVector<std::string> channels;
   core.walk([&](Acquire acqOp) {
@@ -560,9 +559,8 @@ findFusableCorePairs(AIE::DeviceOp device,
 
   // Build a name→Create map for conduit.create ops.
   llvm::StringMap<Create> createMap;
-  device.walk([&](Create createOp) {
-    createMap[createOp.getName()] = createOp;
-  });
+  device.walk(
+      [&](Create createOp) { createMap[createOp.getName()] = createOp; });
 
   // Build a fusion_group→Create map for cross-device channel matching.
   llvm::StringMap<llvm::SmallVector<Create>> fusionGroupMap;
@@ -620,8 +618,7 @@ findFusableCorePairs(AIE::DeviceOp device,
               continue;
 
             // Check the intermediate has only one consumer (no broadcast).
-            std::string intermediateName =
-                intermediateConduit.getName().str();
+            std::string intermediateName = intermediateConduit.getName().str();
             auto inferIt = inferredMap.find(intermediateName);
             if (inferIt != inferredMap.end()) {
               if (inferIt->second.consumerTiles.size() > 1)
@@ -704,9 +701,8 @@ static int64_t estimateAvailableL1(mlir::Value tile, AIE::DeviceOp device) {
 }
 
 /// Decide the routing for the intermediate buffer.
-static IntermediateRoute
-decideRoute(Create intermediateConduit, mlir::Value tile,
-            AIE::DeviceOp device) {
+static IntermediateRoute decideRoute(Create intermediateConduit,
+                                     mlir::Value tile, AIE::DeviceOp device) {
   int64_t intermediateSize = computeIntermediateSize(intermediateConduit);
   int64_t availableL1 = estimateAvailableL1(tile, device);
 
@@ -738,10 +734,9 @@ static mlir::Block &getCoreBodyBlock(AIE::CoreOp core) {
 
 /// Emit the conduit.create relay channel and conduit.scatter op for MemTile
 /// relay routing. Returns the relay channel name.
-static std::string emitMemTileRelay(FusableCorePair &pair,
-                                     AIE::DeviceOp device,
-                                     mlir::OpBuilder &builder,
-                                     mlir::MLIRContext *ctx) {
+static std::string emitMemTileRelay(FusableCorePair &pair, AIE::DeviceOp device,
+                                    mlir::OpBuilder &builder,
+                                    mlir::MLIRContext *ctx) {
   Create intermediateConduit = pair.intermediateConduit;
   std::string channelName = intermediateConduit.getName().str();
   std::string relayName = channelName + "_relay";
@@ -753,19 +748,19 @@ static std::string emitMemTileRelay(FusableCorePair &pair,
 
   // Create relay conduit.create with same characteristics as intermediate.
   builder.setInsertionPointAfter(intermediateConduit);
-  builder.create<Create>(
-      intermediateConduit.getLoc(), mlir::StringAttr::get(ctx, relayName),
-      intermediateConduit.getElementTypeAttr(),
-      intermediateConduit.getDepthAttr(),
-      /*routing_mode=*/RoutingModeAttr{},
-      /*sync_mode=*/SyncModeAttr{},
-      /*producer_rates=*/nullptr,
-      /*consumer_rates=*/nullptr,
-      /*fusion_group=*/mlir::StringAttr{},
-      /*bd_repeat=*/nullptr,
-      /*dma_repeat=*/nullptr,
-      /*producer_dimensions=*/nullptr,
-      /*consumer_dimensions=*/nullptr);
+  builder.create<Create>(intermediateConduit.getLoc(),
+                         mlir::StringAttr::get(ctx, relayName),
+                         intermediateConduit.getElementTypeAttr(),
+                         intermediateConduit.getDepthAttr(),
+                         /*routing_mode=*/RoutingModeAttr{},
+                         /*sync_mode=*/SyncModeAttr{},
+                         /*producer_rates=*/nullptr,
+                         /*consumer_rates=*/nullptr,
+                         /*fusion_group=*/mlir::StringAttr{},
+                         /*bd_repeat=*/nullptr,
+                         /*dma_repeat=*/nullptr,
+                         /*producer_dimensions=*/nullptr,
+                         /*consumer_dimensions=*/nullptr);
 
   // Emit conduit.scatter { src=@channel, dsts=[@channel_relay],
   //                        memtile="tile(col,1)" }.
@@ -776,8 +771,8 @@ static std::string emitMemTileRelay(FusableCorePair &pair,
   }
   mlir::FlatSymbolRefAttr srcRef =
       mlir::FlatSymbolRefAttr::get(ctx, channelName);
-  mlir::ArrayAttr dstsArr = mlir::ArrayAttr::get(
-      ctx, {mlir::FlatSymbolRefAttr::get(ctx, relayName)});
+  mlir::ArrayAttr dstsArr =
+      mlir::ArrayAttr::get(ctx, {mlir::FlatSymbolRefAttr::get(ctx, relayName)});
   mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
   builder.create<ScatterOp>(intermediateConduit.getLoc(), srcRef, dstsArr,
                             memtileAttr, /*offsets=*/nullptr);
@@ -788,10 +783,11 @@ static std::string emitMemTileRelay(FusableCorePair &pair,
 /// Compose the consumer core body into the producer core body, replacing
 /// intermediate conduit ops with direct memref references (L1) or renaming
 /// consumer-side references to the relay channel (MemTile).
-static mlir::LogicalResult composeCoresBodies(
-    FusableCorePair &pair, IntermediateRoute route,
-    mlir::OpBuilder &builder, mlir::MLIRContext *ctx,
-    AIE::DeviceOp device) {
+static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
+                                              IntermediateRoute route,
+                                              mlir::OpBuilder &builder,
+                                              mlir::MLIRContext *ctx,
+                                              AIE::DeviceOp device) {
 
   if (route == IntermediateRoute::Skip)
     return mlir::failure();
@@ -854,7 +850,7 @@ static mlir::LogicalResult composeCoresBodies(
   // Step B: Route-specific setup.
   // ---------------------------------------------------------------
   mlir::Block &producerBlock = getCoreBodyBlock(producerCore);
-  mlir::Value allocVal; // L1 route only.
+  mlir::Value allocVal;  // L1 route only.
   std::string relayName; // MemTile route only.
 
   if (route == IntermediateRoute::L1) {
@@ -939,8 +935,7 @@ static mlir::LogicalResult composeCoresBodies(
       mapping.map(consumerFor.getInductionVar(),
                   enclosingFor.getInductionVar());
     } else if (producerFor) {
-      mapping.map(consumerFor.getInductionVar(),
-                  producerFor.getInductionVar());
+      mapping.map(consumerFor.getInductionVar(), producerFor.getInductionVar());
     }
   }
 
@@ -957,8 +952,8 @@ static mlir::LogicalResult composeCoresBodies(
         // If defined outside the for body and not already in the mapping,
         // clone it into the producer.
         if (!consumerFor->isProperAncestor(defOp) &&
-            defOp != consumerFor.getOperation() &&
-            !mapping.contains(operand) && alreadyCloned.insert(defOp).second) {
+            defOp != consumerFor.getOperation() && !mapping.contains(operand) &&
+            alreadyCloned.insert(defOp).second) {
           builder.clone(*defOp, mapping);
         }
       }
@@ -1047,8 +1042,8 @@ static mlir::LogicalResult composeCoresBodies(
 /// the op without that operand. If no operands remain, erase the op entirely
 /// (and recursively handle wait_all_async's own token users).
 static void removeTokenFromWaitOp(mlir::Operation *waitOp,
-                                   mlir::Value deadToken,
-                                   mlir::OpBuilder &builder) {
+                                  mlir::Value deadToken,
+                                  mlir::OpBuilder &builder) {
   // Collect surviving operands.
   llvm::SmallVector<mlir::Value> surviving;
   for (mlir::Value tok : waitOp->getOperands()) {
@@ -1063,7 +1058,7 @@ static void removeTokenFromWaitOp(mlir::Operation *waitOp,
       mlir::Value resultToken = waitOp->getResult(0);
       // Recursively remove from downstream waits.
       llvm::SmallVector<mlir::Operation *> users(resultToken.getUsers().begin(),
-                                                  resultToken.getUsers().end());
+                                                 resultToken.getUsers().end());
       for (mlir::Operation *user : users)
         removeTokenFromWaitOp(user, resultToken, builder);
     }
@@ -1091,7 +1086,7 @@ static void removeTokenFromWaitOp(mlir::Operation *waitOp,
 /// Safely erase a put_memref_async or get_memref_async op by first handling
 /// any downstream wait_all / wait_all_async consumers of its token result.
 static void safeEraseAsyncOp(mlir::Operation *asyncOp,
-                              mlir::OpBuilder &builder) {
+                             mlir::OpBuilder &builder) {
   if (asyncOp->getNumResults() == 0) {
     asyncOp->erase();
     return;
@@ -1099,7 +1094,7 @@ static void safeEraseAsyncOp(mlir::Operation *asyncOp,
 
   mlir::Value token = asyncOp->getResult(0);
   llvm::SmallVector<mlir::Operation *> users(token.getUsers().begin(),
-                                              token.getUsers().end());
+                                             token.getUsers().end());
   for (mlir::Operation *user : users)
     removeTokenFromWaitOp(user, token, builder);
 
@@ -1110,8 +1105,8 @@ static void safeEraseAsyncOp(mlir::Operation *asyncOp,
 /// runtime sequence and shim DMA ops. Also cleans up the consumer channel
 /// (different name) if the pair was matched via fusion_group.
 static void cleanUpDeadOps(FusableCorePair &pair, AIE::DeviceOp device,
-                            mlir::OpBuilder &builder,
-                            const std::string &consumerChannelName) {
+                           mlir::OpBuilder &builder,
+                           const std::string &consumerChannelName) {
   std::string channelName = pair.intermediateConduit.getName().str();
 
   // Collect both channel names to clean up (may be the same).
@@ -1312,8 +1307,7 @@ struct ConduitFuseCoreBodyPass
 
           // Determine consumer channel name (may differ from producer
           // channel name when matched via fusion_group).
-          std::string channelName =
-              pair.intermediateConduit.getName().str();
+          std::string channelName = pair.intermediateConduit.getName().str();
           std::string consumerChannelName = channelName;
           auto consumed = getConsumedChannels(pair.consumerCore);
           for (const std::string &ch : consumed) {

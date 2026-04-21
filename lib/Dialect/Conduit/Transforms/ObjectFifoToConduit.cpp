@@ -1050,8 +1050,7 @@ struct ObjectFifoToConduitPass
               // Scalar element type (e.g., i32 from memref<1xi32>).
               mlir::Type elemTy = elemType.getElementType();
               auto getCascOp = builder.create<AIE::GetCascadeOp>(
-                  loc, elemTy,
-                  mlir::FlatSymbolRefAttr::get(ctx, name));
+                  loc, elemTy, mlir::FlatSymbolRefAttr::get(ctx, name));
               mlir::Value cascVal =
                   getCascOp.getCascadeValue(); // scalar i32/vector
 
@@ -1268,8 +1267,7 @@ struct ObjectFifoToConduitPass
               if (storedVal) {
                 builder.setInsertionPoint(op);
                 builder.create<AIE::PutCascadeOp>(
-                    loc, storedVal,
-                    mlir::FlatSymbolRefAttr::get(ctx, name));
+                    loc, storedVal, mlir::FlatSymbolRefAttr::get(ctx, name));
               } else {
                 op->emitWarning("objectfifo-to-conduit: cascade Produce '")
                     << name

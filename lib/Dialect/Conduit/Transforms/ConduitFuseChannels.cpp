@@ -362,8 +362,7 @@ struct ConduitFuseChannelsPass
             if (!mlir::isa<PutMemref, GetMemref, PutMemrefAsync,
                            GetMemrefAsync>(op))
               return;
-            auto nameAttr =
-                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+            auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
             if (nameAttr && nameAttr.getValue() == ci.name)
               hasTier3 = true;
           });
@@ -508,8 +507,7 @@ struct ConduitFuseChannelsPass
             if (!mlir::isa<PutMemref, GetMemref, PutMemrefAsync,
                            GetMemrefAsync>(op))
               return;
-            auto nameAttr =
-                op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
+            auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
             if (nameAttr && nameAttr.getValue() == ci.name)
               hasTier3 = true;
           });

@@ -28,7 +28,7 @@ def build_graph(max_cols, max_rows, target_model):
                         this_switchbox,
                         southern_neighbor,
                         bundle=WireBundle.South,
-                        slot_elems =max_capacity,
+                        slot_elems=max_capacity,
                     )
                 # Get the number of incoming connections on the south side - incoming
                 # because they correspond to connections on the southside that are then
@@ -41,7 +41,7 @@ def build_graph(max_cols, max_rows, target_model):
                         southern_neighbor,
                         this_switchbox,
                         bundle=WireBundle.North,
-                        slot_elems =max_capacity,
+                        slot_elems=max_capacity,
                     )
             if c > 0:
                 western_neighbor = Switchbox(c - 1, r)
@@ -52,7 +52,7 @@ def build_graph(max_cols, max_rows, target_model):
                         western_neighbor,
                         this_switchbox,
                         bundle=WireBundle.East,
-                        slot_elems =max_capacity,
+                        slot_elems=max_capacity,
                     )
                 if max_capacity := target_model.get_num_dest_switchbox_connections(
                     c, r, WireBundle.West
@@ -61,7 +61,7 @@ def build_graph(max_cols, max_rows, target_model):
                         this_switchbox,
                         western_neighbor,
                         bundle=WireBundle.West,
-                        slot_elems =max_capacity,
+                        slot_elems=max_capacity,
                     )
 
     return DG

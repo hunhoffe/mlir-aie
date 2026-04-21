@@ -322,11 +322,11 @@ static cl::opt<bool> packetSwObjFifos("packet-sw-objFifos",
                                       cl::init(false),
                                       cl::cat(aieCompilerOptions));
 
-static cl::opt<bool> useConduit("use-conduit",
-                                cl::desc("Use Conduit IR lowering instead of objectFifo stateful transform"),
-                                cl::init(false),
-                                cl::cat(aieCompilerOptions));
-
+static cl::opt<bool> useConduit(
+    "use-conduit",
+    cl::desc(
+        "Use Conduit IR lowering instead of objectFifo stateful transform"),
+    cl::init(false), cl::cat(aieCompilerOptions));
 
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
@@ -4540,9 +4540,10 @@ generateFullElfArtifact(ArrayRef<DeviceElfInfo> deviceInfos,
     for (int i = 0; i < info.argCount; ++i) {
       uint64_t offset = static_cast<uint64_t>(i) * 8;
       std::string offsetHex = llvm::formatv("0x{0}", llvm::utohexstr(offset));
-      arguments.push_back(llvm::json::Object{{"name", ("arg_" + Twine(i)).str()},
-                                             {"type", "char *"},
-                                             {"offset", offsetHex}});
+      arguments.push_back(
+          llvm::json::Object{{"name", ("arg_" + Twine(i)).str()},
+                             {"type", "char *"},
+                             {"offset", offsetHex}});
     }
 
     // PDIs - list ALL device PDIs in each kernel entry (matching Python driver

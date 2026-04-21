@@ -294,71 +294,75 @@ static Create findConduitCreateByName(mlir::Operation *anchor,
       if (auto d = getDepth()) {
         if (*d > 0) {
           hasResolvedDepth = true;
-          if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(getElementType())) {
+          if (auto shaped =
+                  mlir::dyn_cast<mlir::ShapedType>(getElementType())) {
             slot_elems = static_cast<int64_t>(*d);
             for (int64_t dim : shaped.getShape()) {
-              if (mlir::ShapedType::isDynamic(dim)) { slot_elems = 0; break; }
+              if (mlir::ShapedType::isDynamic(dim)) {
+                slot_elems = 0;
+                break;
+              }
               slot_elems *= dim;
             }
           }
         }
       }
       if (hasResolvedDepth) {
-      // Compute gcd(plen, clen) via Euclid's algorithm.
-      int64_t a = plen, b = clen;
-      while (b) {
-        int64_t tmp = b;
-        b = a % b;
-        a = tmp;
-      }
-      int64_t g = a;
-      int64_t clenOverG = clen / g; // exact: g divides clen by construction
-      constexpr int64_t kMaxSimSteps = 1024;
-      // Overflow guard: plen * clenOverG must not overflow int64_t and must be
-      // within the simulation cap before we compute hyperPeriod.
-      // Since kMaxSimSteps == 1024 and plen >= 1, the product overflows only
-      // when clenOverG > INT64_MAX / plen.  We conservatively skip simulation
-      // if either factor exceeds kMaxSimSteps (the product would then exceed
-      // the cap regardless).
-      if (plen > kMaxSimSteps || clenOverG > kMaxSimSteps / plen) {
-        emitWarning("M7: CSDF hyper-period exceeds simulation cap (")
-            << kMaxSimSteps << " steps); buffer capacity check skipped";
-      } else {
-        int64_t hyperPeriod = plen * clenOverG;
-        if (hyperPeriod > kMaxSimSteps) {
+        // Compute gcd(plen, clen) via Euclid's algorithm.
+        int64_t a = plen, b = clen;
+        while (b) {
+          int64_t tmp = b;
+          b = a % b;
+          a = tmp;
+        }
+        int64_t g = a;
+        int64_t clenOverG = clen / g; // exact: g divides clen by construction
+        constexpr int64_t kMaxSimSteps = 1024;
+        // Overflow guard: plen * clenOverG must not overflow int64_t and must
+        // be within the simulation cap before we compute hyperPeriod. Since
+        // kMaxSimSteps == 1024 and plen >= 1, the product overflows only when
+        // clenOverG > INT64_MAX / plen.  We conservatively skip simulation if
+        // either factor exceeds kMaxSimSteps (the product would then exceed the
+        // cap regardless).
+        if (plen > kMaxSimSteps || clenOverG > kMaxSimSteps / plen) {
           emitWarning("M7: CSDF hyper-period exceeds simulation cap (")
               << kMaxSimSteps << " steps); buffer capacity check skipped";
         } else {
-          int64_t occupancy = 0;
-          int64_t peakOccupancy = 0;
-          for (int64_t t = 0; t < hyperPeriod; ++t) {
-            // Producer fires: add P[t mod q] tokens.
-            occupancy += pRates[static_cast<size_t>(t % plen)];
-            if (occupancy > peakOccupancy)
-              peakOccupancy = occupancy;
-            // Consumer fires: remove C[t mod r] tokens.
-            occupancy -= cRates[static_cast<size_t>(t % clen)];
-            if (occupancy < 0) {
-              // Momentary underflow in produce-before-consume interleaving.
-              // See comment above: this is a warning, not an error.
-              emitWarning(
-                  "M7: CSDF hyper-period simulation: momentary underflow "
-                  "at step ")
-                  << t << " (occupancy=" << occupancy
-                  << "); hardware BD scheduling may differ from "
-                     "produce-before-consume simulation order";
-              occupancy = 0; // reset to prevent cascading underflow reports
+          int64_t hyperPeriod = plen * clenOverG;
+          if (hyperPeriod > kMaxSimSteps) {
+            emitWarning("M7: CSDF hyper-period exceeds simulation cap (")
+                << kMaxSimSteps << " steps); buffer capacity check skipped";
+          } else {
+            int64_t occupancy = 0;
+            int64_t peakOccupancy = 0;
+            for (int64_t t = 0; t < hyperPeriod; ++t) {
+              // Producer fires: add P[t mod q] tokens.
+              occupancy += pRates[static_cast<size_t>(t % plen)];
+              if (occupancy > peakOccupancy)
+                peakOccupancy = occupancy;
+              // Consumer fires: remove C[t mod r] tokens.
+              occupancy -= cRates[static_cast<size_t>(t % clen)];
+              if (occupancy < 0) {
+                // Momentary underflow in produce-before-consume interleaving.
+                // See comment above: this is a warning, not an error.
+                emitWarning(
+                    "M7: CSDF hyper-period simulation: momentary underflow "
+                    "at step ")
+                    << t << " (occupancy=" << occupancy
+                    << "); hardware BD scheduling may differ from "
+                       "produce-before-consume simulation order";
+                occupancy = 0; // reset to prevent cascading underflow reports
+              }
             }
+            if (peakOccupancy > slot_elems)
+              return emitOpError("M7: CSDF buffer capacity insufficient: "
+                                 "peak token occupancy over one hyper-period=")
+                     << peakOccupancy << " exceeds slot_elems =" << slot_elems
+                     << " (producer_rates=" << psum << "/phase, "
+                     << "consumer_rates=" << csum << "/phase, "
+                     << "hyper-period=" << hyperPeriod << " steps)";
           }
-          if (peakOccupancy > slot_elems)
-            return emitOpError("M7: CSDF buffer capacity insufficient: "
-                               "peak token occupancy over one hyper-period=")
-                   << peakOccupancy << " exceeds slot_elems =" << slot_elems
-                   << " (producer_rates=" << psum << "/phase, "
-                   << "consumer_rates=" << csum << "/phase, "
-                   << "hyper-period=" << hyperPeriod << " steps)";
         }
-      }
       } // end if (hasResolvedDepth)
     }
   }
@@ -686,8 +690,8 @@ static ::mlir::LogicalResult checkTokenOperandTypes(mlir::Operation *op,
       // Single release count <= acquire count.
       if (getCount() > acqOp.getCount())
         return emitOpError("release count (")
-               << getCount() << ") exceeds acquire count ("
-               << acqOp.getCount() << ")";
+               << getCount() << ") exceeds acquire count (" << acqOp.getCount()
+               << ")";
     } else if (auto waitOp = mlir::dyn_cast<WaitWindow>(defOp)) {
       // Trace through wait_window → acquire_async for port and count.
       if (auto acqAsyncOp = waitOp.getToken().getDefiningOp<AcquireAsync>()) {
@@ -720,11 +724,9 @@ static ::mlir::LogicalResult checkTokenOperandTypes(mlir::Operation *op,
 /// Shared verifier logic for put_memref and get_memref.
 /// Both ops have identical structural attributes: name, num_elems, offsets,
 /// sizes, strides.
-static ::mlir::LogicalResult
-verifyMemrefDmaOp(mlir::Operation *op, int64_t numElems,
-                  llvm::ArrayRef<int64_t> offsets,
-                  llvm::ArrayRef<int64_t> sizes,
-                  llvm::ArrayRef<int64_t> strides) {
+static ::mlir::LogicalResult verifyMemrefDmaOp(
+    mlir::Operation *op, int64_t numElems, llvm::ArrayRef<int64_t> offsets,
+    llvm::ArrayRef<int64_t> sizes, llvm::ArrayRef<int64_t> strides) {
   // 1. num_elems > 0.
   if (numElems <= 0)
     return op->emitOpError("num_elems must be > 0, got ") << numElems;
@@ -795,8 +797,8 @@ parseTileCoordForVerifier(llvm::StringRef s) {
   return {col, row};
 }
 
-static ::mlir::LogicalResult
-verifyMemtileStr(mlir::Operation *op, llvm::StringRef memtile) {
+static ::mlir::LogicalResult verifyMemtileStr(mlir::Operation *op,
+                                              llvm::StringRef memtile) {
   if (parseTileCoordForVerifier(memtile).first == -1)
     return op->emitOpError(
                "memtile attribute must be of the form 'tile(col,row)', got '")
@@ -872,7 +874,6 @@ verifyMemtileStr(mlir::Operation *op, llvm::StringRef memtile) {
     return ::mlir::failure();
   return ::mlir::success();
 }
-
 
 //===----------------------------------------------------------------------===//
 // Conduit ops — generated op definitions

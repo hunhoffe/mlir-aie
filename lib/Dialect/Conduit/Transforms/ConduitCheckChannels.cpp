@@ -248,8 +248,8 @@ struct ConduitCheckChannelsPass
       // Check for fusion annotation (set by --conduit-fuse-channels).
       // Conduits in the same group share one hardware channel.
       std::string channelId = name;
-      if (auto groupAttr = createOp->getAttrOfType<mlir::StringAttr>(
-              "dma_channel_group"))
+      if (auto groupAttr =
+              createOp->getAttrOfType<mlir::StringAttr>("dma_channel_group"))
         channelId = groupAttr.getValue().str();
 
       auto tileIt = inferredMap.find(name);

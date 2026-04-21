@@ -181,10 +181,9 @@ mlir::Location ConduitToDMAState::getLocForTile(mlir::Value tileVal) {
 }
 
 AIE::DeviceOp ConduitToDMAState::getDeviceForTile(int64_t col,
-                                                   int64_t row) const {
+                                                  int64_t row) const {
   // Multi-device: use active device index.
-  if (activeDevIdx >= 0 &&
-      activeDevIdx < static_cast<int>(deviceOps.size()))
+  if (activeDevIdx >= 0 && activeDevIdx < static_cast<int>(deviceOps.size()))
     return deviceOps[activeDevIdx];
   auto cacheIt = tileCache.find({col, row});
   if (cacheIt == tileCache.end())
@@ -237,9 +236,8 @@ void ConduitToDMAState::switchDeviceForTile(int64_t col, int64_t row) {
 }
 
 void ConduitToDMAState::emitFlow(std::optional<RoutingMode> routingMode,
-                                 mlir::Value srcTile,
-                                 AIE::WireBundle srcBundle, int32_t srcChan,
-                                 mlir::Value dstTile,
+                                 mlir::Value srcTile, AIE::WireBundle srcBundle,
+                                 int32_t srcChan, mlir::Value dstTile,
                                  AIE::WireBundle dstBundle, int32_t dstChan) {
   // Use the loc from the device that owns srcTile so that multi-device
   // modules assign correct source locations to emitted flow ops.
@@ -258,10 +256,10 @@ void ConduitToDMAState::emitFlow(std::optional<RoutingMode> routingMode,
       passFailed = true;
       return;
     }
-    auto pktFlow = builder->create<AIE::PacketFlowOp>(
-        loc, static_cast<int8_t>(*pktID),
-        /*keep_pkt_header=*/mlir::BoolAttr{},
-        /*priority_route=*/mlir::BoolAttr{});
+    auto pktFlow =
+        builder->create<AIE::PacketFlowOp>(loc, static_cast<int8_t>(*pktID),
+                                           /*keep_pkt_header=*/mlir::BoolAttr{},
+                                           /*priority_route=*/mlir::BoolAttr{});
     mlir::Region &region = pktFlow.getPorts();
     mlir::Block *block = builder->createBlock(&region);
     builder->setInsertionPointToStart(block);
@@ -278,9 +276,8 @@ void ConduitToDMAState::emitFlow(std::optional<RoutingMode> routingMode,
 }
 
 ConduitToDMAState::AllocatedLocks
-ConduitToDMAState::allocateLockPair(mlir::Value tileVal,
-                                    llvm::StringRef prefix, int64_t depth,
-                                    int64_t prodInit) {
+ConduitToDMAState::allocateLockPair(mlir::Value tileVal, llvm::StringRef prefix,
+                                    int64_t depth, int64_t prodInit) {
   if (prodInit < 0)
     prodInit = depth;
   // Use the loc from the device that owns tileVal for correct multi-device
@@ -297,21 +294,18 @@ ConduitToDMAState::allocateLockPair(mlir::Value tileVal,
     auto tileOp = tileVal.getDefiningOp<AIE::TileOp>();
     if (tileOp) {
       uint32_t maxLocks = targetModel->getNumLocks(
-          static_cast<int>(tileOp.getCol()),
-          static_cast<int>(tileOp.getRow()));
+          static_cast<int>(tileOp.getCol()), static_cast<int>(tileOp.getRow()));
       int locksNeeded = isAIE2Plus() ? 2 : static_cast<int>(depth);
-      int currentUsed = lockIdCounter.count(tileVal)
-                            ? lockIdCounter[tileVal]
-                            : 0;
+      int currentUsed =
+          lockIdCounter.count(tileVal) ? lockIdCounter[tileVal] : 0;
       if (currentUsed + locksNeeded > static_cast<int>(maxLocks)) {
         module.emitError(
             llvm::Twine("conduit-to-dma: lock ID exhausted on tile (") +
-            llvm::Twine(tileOp.getCol()) + "," +
-            llvm::Twine(tileOp.getRow()) + "): need " +
-            llvm::Twine(locksNeeded) + " locks for '" + prefix +
+            llvm::Twine(tileOp.getCol()) + "," + llvm::Twine(tileOp.getRow()) +
+            "): need " + llvm::Twine(locksNeeded) + " locks for '" + prefix +
             "' but only " +
-            llvm::Twine(static_cast<int>(maxLocks) - currentUsed) +
-            " of " + llvm::Twine(maxLocks) + " remain");
+            llvm::Twine(static_cast<int>(maxLocks) - currentUsed) + " of " +
+            llvm::Twine(maxLocks) + " remain");
         passFailed = true;
         return locks;
       }
@@ -322,8 +316,8 @@ ConduitToDMAState::allocateLockPair(mlir::Value tileVal,
     {
       int lockIdx = lockIdCounter[tileVal]++;
       std::string symName = (prefix + "_prod_lock_0").str();
-      AIE::LockOp lk = builder->create<AIE::LockOp>(
-          loc, tileVal, lockIdx, static_cast<int>(prodInit));
+      AIE::LockOp lk = builder->create<AIE::LockOp>(loc, tileVal, lockIdx,
+                                                    static_cast<int>(prodInit));
       lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
       locks.prodLock = lk;
     }
@@ -352,11 +346,12 @@ ConduitToDMAState::allocateLockPair(mlir::Value tileVal,
   return locks;
 }
 
-void ConduitToDMAState::emitBDBlock(
-    mlir::Location loc, mlir::Block *block, mlir::Value acqLock,
-    int32_t acqVal, mlir::Value buffer, int64_t offset, int64_t len,
-    mlir::Value relLock, int32_t relVal, AIE::BDDimLayoutArrayAttr dims,
-    int pktID) {
+void ConduitToDMAState::emitBDBlock(mlir::Location loc, mlir::Block *block,
+                                    mlir::Value acqLock, int32_t acqVal,
+                                    mlir::Value buffer, int64_t offset,
+                                    int64_t len, mlir::Value relLock,
+                                    int32_t relVal,
+                                    AIE::BDDimLayoutArrayAttr dims, int pktID) {
   if (!buffer) {
     mlir::emitError(loc,
                     "conduit-to-dma: emitBDBlock called with null buffer — "
@@ -382,9 +377,8 @@ void ConduitToDMAState::emitBDBlock(
 }
 
 llvm::SmallVector<AIE::BufferOp>
-ConduitToDMAState::allocateBuffers(mlir::Value tileVal,
-                                   llvm::StringRef prefix, mlir::Type bufTy,
-                                   int64_t count) {
+ConduitToDMAState::allocateBuffers(mlir::Value tileVal, llvm::StringRef prefix,
+                                   mlir::Type bufTy, int64_t count) {
   llvm::SmallVector<AIE::BufferOp> bufs;
   for (int64_t i = 0; i < count; ++i) {
     std::string symName = (prefix + "_buff_" + llvm::Twine(i)).str();
@@ -399,8 +393,9 @@ ConduitToDMAState::allocateBuffers(mlir::Value tileVal,
   return bufs;
 }
 
-std::string ConduitToDMAState::makeConduitKey(llvm::StringRef name,
-                                              mlir::Operation *contextOp) const {
+std::string
+ConduitToDMAState::makeConduitKey(llvm::StringRef name,
+                                  mlir::Operation *contextOp) const {
   if (!isMultiDevice())
     return name.str();
   auto dev = contextOp->getParentOfType<AIE::DeviceOp>();

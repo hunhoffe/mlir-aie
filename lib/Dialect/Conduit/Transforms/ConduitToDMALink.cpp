@@ -470,9 +470,9 @@ void linkPhase(ConduitToDMAState &state) {
                          : srcInfo.buffers;
 
     int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
-    // perBufLen: number of elements per physical buffer for this source conduit.
-    // Prefer numElems (from put_memref_async descriptors), then derive from
-    // elemType (e.g. memref<48xi32> → 48), otherwise fall back to 1.
+    // perBufLen: number of elements per physical buffer for this source
+    // conduit. Prefer numElems (from put_memref_async descriptors), then derive
+    // from elemType (e.g. memref<48xi32> → 48), otherwise fall back to 1.
     int64_t perBufLen = 1;
     if (srcInfo.numElems > 0) {
       perBufLen = srcInfo.numElems;
@@ -518,8 +518,7 @@ void linkPhase(ConduitToDMAState &state) {
               mlir::cast<mlir::FlatSymbolRefAttr>(dsts[sliceIdx])
                   .getValue()
                   .str();
-          if (ConduitInfo *dstInfoR =
-                  state.lookupConduit(dstNameR, linkOp.op))
+          if (ConduitInfo *dstInfoR = state.lookupConduit(dstNameR, linkOp.op))
             if (dstInfoR->bdRepeat > 1)
               dstRepeat = dstInfoR->bdRepeat;
         }
@@ -841,8 +840,8 @@ void linkPhase(ConduitToDMAState &state) {
             } else if (!s2mmGrp.empty()) {
               auto &locks = dstInfo->consumerTileLocks[consTileVal];
               if (locks.first && locks.second) {
-                state.pktTileS2MMLock[consTileVal] = {
-                    locks.first.getResult(), locks.second.getResult()};
+                state.pktTileS2MMLock[consTileVal] = {locks.first.getResult(),
+                                                      locks.second.getResult()};
               }
             }
 
@@ -894,8 +893,7 @@ void linkPhase(ConduitToDMAState &state) {
               // channel 0.  Record in conduitMM2SChannel so Phase 5.5a BD
               // chain generation uses the same channel, and in
               // preUsedMM2SChannels so other phases avoid conflicts.
-              srcPort =
-                  state.tileNextMM2SChannel[srcProdTile.getResult()]++;
+              srcPort = state.tileNextMM2SChannel[srcProdTile.getResult()]++;
               state.conduitMM2SChannel[srcName] = srcPort;
               state.preUsedMM2SChannels[srcProdTile.getResult()].insert(
                   srcPort);
@@ -1248,8 +1246,7 @@ void linkPhase(ConduitToDMAState &state) {
               mlir::cast<mlir::FlatSymbolRefAttr>(dsts[dstIdx])
                   .getValue()
                   .str();
-          if (ConduitInfo *dstInfo =
-                  state.lookupConduit(dstName2, linkOp.op)) {
+          if (ConduitInfo *dstInfo = state.lookupConduit(dstName2, linkOp.op)) {
             dstProdDims = dstInfo->producerDimensions;
             if (dstInfo->bdRepeat > 1)
               mm2sDstRepeat = dstInfo->bdRepeat;
@@ -1485,8 +1482,7 @@ void linkPhase(ConduitToDMAState &state) {
         state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], acqLock,
                           state.lockAcqValue(Port::Consume, 1),
                           prodBufs[i % prodBufs.size()].getResult(), 0,
-                          perBufLen, relLock,
-                          state.lockRelValue(Port::Consume),
+                          perBufLen, relLock, state.lockRelValue(Port::Consume),
                           info.producerDimensions);
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % nBufs]);
@@ -1525,8 +1521,7 @@ void linkPhase(ConduitToDMAState &state) {
         state.emitBDBlock(state.deviceOp.getLoc(), bdBlocks[i], acqLock,
                           state.lockAcqValue(Port::Consume, 1),
                           prodBufs[i % prodBufs.size()].getResult(), 0,
-                          perBufLen, relLock,
-                          state.lockRelValue(Port::Consume),
+                          perBufLen, relLock, state.lockRelValue(Port::Consume),
                           info.producerDimensions);
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % nBufs]);
@@ -1800,8 +1795,8 @@ void linkPhase(ConduitToDMAState &state) {
 
               bool isFusedNonFirst = false;
               if (!info.fuseGroup.empty()) {
-                std::string qFG = state.qualifyFuseGroup(info.fuseGroup,
-                                                          info.deviceIndex);
+                std::string qFG =
+                    state.qualifyFuseGroup(info.fuseGroup, info.deviceIndex);
                 auto &members = state.fuseGroupMembers[qFG];
                 isFusedNonFirst = (!members.empty() && members.front() != name);
               }
@@ -1863,8 +1858,7 @@ void linkPhase(ConduitToDMAState &state) {
                     // blocks.  BD blocks are linked into the combined ring by
                     // the fuse post-pass.
                   } else {
-                    bdTermBlock =
-                        (info.dmaRepeat > 0) ? addBlock() : nullptr;
+                    bdTermBlock = (info.dmaRepeat > 0) ? addBlock() : nullptr;
                     newEndBlock = addBlock();
                     mlir::Operation *oldEnd = endBlock->getTerminator();
                     builder.setInsertionPointToEnd(endBlock);
@@ -2137,8 +2131,7 @@ void linkPhase(ConduitToDMAState &state) {
             // Case B is always a compute tile — chain must be circular
             // (infinite cycling with repeat_count=0).
             builder.create<AIE::NextBDOp>(
-                state.deviceOp.getLoc(),
-                bdBlocks[(i + 1) % caseBEffectiveBDs]);
+                state.deviceOp.getLoc(), bdBlocks[(i + 1) % caseBEffectiveBDs]);
           }
           builder.setInsertionPointToEnd(newEndBlock);
           builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -2212,8 +2205,8 @@ void linkPhase(ConduitToDMAState &state) {
               0, perBufLen, blockRelVal, state.lockRelValue(Port::Consume));
           // Case B is always a compute tile — chain must be circular
           // (infinite cycling with repeat_count=0).
-          builder.create<AIE::NextBDOp>(
-              state.deviceOp.getLoc(), bdBlocks[(i + 1) % caseBEffectiveBDs]);
+          builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
+                                        bdBlocks[(i + 1) % caseBEffectiveBDs]);
         }
         builder.setInsertionPointToEnd(endMemBlock);
         builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -2323,8 +2316,9 @@ void linkPhase(ConduitToDMAState &state) {
 
         // Detect packet-muxed S2MM channels: when multiple conduits share the
         // same S2MM port on a consumer tile (via pktTileS2MMChannel), only the
-        // first conduit emits a dma_start.  Subsequent conduits append BD blocks
-        // and the post-pass links all BD chains into a single combined ring.
+        // first conduit emits a dma_start.  Subsequent conduits append BD
+        // blocks and the post-pass links all BD chains into a single combined
+        // ring.
         bool isS2MMPktNonFirst = false;
         std::string s2mmPktGroupLabel;
         {
@@ -2339,7 +2333,8 @@ void linkPhase(ConduitToDMAState &state) {
             } else {
               s2mmPktGroupLabel = state.qualifyFuseGroup(
                   "pkt_s2mm__" + std::to_string(consCol) + "_" +
-                  std::to_string(consRow) + "_ch" + std::to_string(s2mmChannel),
+                      std::to_string(consRow) + "_ch" +
+                      std::to_string(s2mmChannel),
                   info.deviceIndex);
               chanMap[s2mmChannel] = s2mmPktGroupLabel;
             }
@@ -2363,10 +2358,9 @@ void linkPhase(ConduitToDMAState &state) {
         // AIE compute tile DMAs must cycle infinitely (repeat_count=0)
         // — the core controls lifetime.  Only MemTile DMAs use finite
         // repeat_count from dma_repeat.
-        int32_t dmaRepeatCount =
-            (info.dmaRepeat > 0 && consIsMemTile)
-                ? static_cast<int32_t>(info.dmaRepeat - 1)
-                : 0;
+        int32_t dmaRepeatCount = (info.dmaRepeat > 0 && consIsMemTile)
+                                     ? static_cast<int32_t>(info.dmaRepeat - 1)
+                                     : 0;
 
         llvm::SmallVector<mlir::Block *> bdBlocks;
         for (int64_t i = 0; i < nBufs; ++i)
@@ -2385,12 +2379,12 @@ void linkPhase(ConduitToDMAState &state) {
           // Non-first fused conduit: no dma_start, no terminal blocks.
           // BD blocks were already created above.
         } else {
-          // Linear chain condition: either dma_repeat>0 (finite DMA task queue),
-          // or putCount>1 with no dmaRepeat (N sequential puts merged by
+          // Linear chain condition: either dma_repeat>0 (finite DMA task
+          // queue), or putCount>1 with no dmaRepeat (N sequential puts merged
+          // by
           // --conduit-fuse-channels; annotation-free temporal multiplexing).
-          isLinearChain =
-              (info.dmaRepeat > 0) ||
-              (info.putCount > 1 && info.dmaRepeat == 0);
+          isLinearChain = (info.dmaRepeat > 0) ||
+                          (info.putCount > 1 && info.dmaRepeat == 0);
           // bdTermBlock: create a dedicated terminal block for putCount>1
           // linear chains (dmaRepeat==0).  In this case the last BD's
           // next_bd targets bdTermBlock (with permanent aie.end) instead of
@@ -2454,8 +2448,7 @@ void linkPhase(ConduitToDMAState &state) {
           // or endMemBlock.
           bool isLast = (i == nBufs - 1) && isLinearChain;
           if (isLast && info.dmaRepeat > 0)
-            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                          bdBlocks[0]);
+            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), bdBlocks[0]);
           else if (isLast)
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdTermBlock ? bdTermBlock
@@ -2475,18 +2468,16 @@ void linkPhase(ConduitToDMAState &state) {
 
         // Record BD range for packet-muxed S2MM chain fusion.
         if (!s2mmPktGroupLabel.empty()) {
-          std::string bdKey =
-              name + "__s2mm_" + std::to_string(consIdx);
+          std::string bdKey = name + "__s2mm_" + std::to_string(consIdx);
           state.conduitBDRange[bdKey] = {bdBlocks.front(), bdBlocks.back()};
           state.fuseGroupMembers[s2mmPktGroupLabel].push_back(bdKey);
         }
 
         // Record BD range for circuit-mode S2MM fuse-group chain fusion.
         if (!info.fuseGroupS2MM.empty()) {
-          std::string bdKey =
-              name + "__s2mm_" + std::to_string(consIdx);
-          std::string qS2MM = state.qualifyFuseGroup(info.fuseGroupS2MM,
-                                                      info.deviceIndex);
+          std::string bdKey = name + "__s2mm_" + std::to_string(consIdx);
+          std::string qS2MM =
+              state.qualifyFuseGroup(info.fuseGroupS2MM, info.deviceIndex);
           state.conduitBDRange[bdKey] = {bdBlocks.front(), bdBlocks.back()};
           state.fuseGroupMembers[qS2MM].push_back(bdKey);
         }

@@ -121,9 +121,8 @@ struct AIECheckCascadePairingPass
     // -----------------------------------------------------------------------
     for (auto &[tileval, putOp] : tileToPutOp) {
       if (!sourceToFlow.count(tileval)) {
-        putOp.emitError(
-            "'aie.put_cascade' in core body has no corresponding "
-            "'aie.cascade_flow' naming this tile as source");
+        putOp.emitError("'aie.put_cascade' in core body has no corresponding "
+                        "'aie.cascade_flow' naming this tile as source");
         failed = true;
       }
     }

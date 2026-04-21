@@ -246,7 +246,7 @@ static bool tryPacketFallback(ConduitToDMAState &state,
     auto &locks = info.consumerTileLocks[consTileVal];
     if (locks.first && locks.second) {
       state.pktTileS2MMLock[consTileVal] = {locks.first.getResult(),
-                                             locks.second.getResult()};
+                                            locks.second.getResult()};
     }
   }
 
@@ -467,8 +467,8 @@ void routePhase(ConduitToDMAState &state) {
         // in the same fuse group already allocated one on this tile.
         int32_t s2mmCh;
         if (!info.fuseGroupS2MM.empty()) {
-          std::string qS2MM = state.qualifyFuseGroup(info.fuseGroupS2MM,
-                                                      info.deviceIndex);
+          std::string qS2MM =
+              state.qualifyFuseGroup(info.fuseGroupS2MM, info.deviceIndex);
           auto it = state.fuseGroupS2MMChannel.find(qS2MM);
           if (it != state.fuseGroupS2MMChannel.end()) {
             s2mmCh = it->second;
@@ -512,8 +512,8 @@ void routePhase(ConduitToDMAState &state) {
             state.deviceOp.emitError(
                 llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
                             "tile (") +
-                llvm::Twine(consCol) + "," + llvm::Twine(consRow) +
-                "): all " + llvm::Twine(maxS2MM_4a) + " channels in use");
+                llvm::Twine(consCol) + "," + llvm::Twine(consRow) + "): all " +
+                llvm::Twine(maxS2MM_4a) + " channels in use");
             state.passFailed = true;
             return;
           }
@@ -709,7 +709,7 @@ void routePhase(ConduitToDMAState &state) {
   //   3. Storing the block start; the main loop draws sequential IDs from it.
   // -----------------------------------------------------------------------
   llvm::StringMap<uint8_t> fuseGroupPacketIDBase;  // qFG → start ID
-  llvm::StringMap<unsigned> fuseGroupPacketIDNext;  // qFG → next member index
+  llvm::StringMap<unsigned> fuseGroupPacketIDNext; // qFG → next member index
   {
     // Step 1: count packet channels per qualified fuse group.
     llvm::StringMap<unsigned> fuseGroupPacketCount;
@@ -766,327 +766,354 @@ void routePhase(ConduitToDMAState &state) {
   // flow before its packet-mode fuse group partner records the dedup
   // FlowKey, causing both packet_flow AND aie.flow for the same ports.
   for (int flowPass = 0; flowPass < 2; ++flowPass) {
-  for (auto &[name, info] : state.conduitMap) {
-    // Multi-device: ensure tile lookups target the correct device.
-    if (state.isMultiDevice())
-      state.switchToDeviceIndex(info.deviceIndex);
+    for (auto &[name, info] : state.conduitMap) {
+      // Multi-device: ensure tile lookups target the correct device.
+      if (state.isMultiDevice())
+        state.switchToDeviceIndex(info.deviceIndex);
 
-    // Pass 0: only packet conduits.  Pass 1: everything else.
-    if (flowPass == 0 && info.routingMode != RoutingMode::Packet) continue;
-    if (flowPass == 1 && info.routingMode == RoutingMode::Packet) continue;
+      // Pass 0: only packet conduits.  Pass 1: everything else.
+      if (flowPass == 0 && info.routingMode != RoutingMode::Packet)
+        continue;
+      if (flowPass == 1 && info.routingMode == RoutingMode::Packet)
+        continue;
 
-    if (info.routingMode == RoutingMode::Cascade)
-      continue;
-    if (info.sharedMemory)
-      continue;
-    if (state.linkSrcNamesEarly.count(name) ||
-        state.linkJoinSrcNames.count(name))
-      continue;
-    // Link destinations: flows are emitted by linkPhase() — skip here to
-    // avoid duplicate flows.
-    if (state.linkDstNames.count(name))
-      continue;
-    auto [prodCol, prodRow] = info.producerTileCoord;
-    if (prodCol < 0 || prodRow == 0)
-      continue;
-    if (info.consumerTileCoords.empty())
-      continue;
+      if (info.routingMode == RoutingMode::Cascade)
+        continue;
+      if (info.sharedMemory)
+        continue;
+      if (state.linkSrcNamesEarly.count(name) ||
+          state.linkJoinSrcNames.count(name))
+        continue;
+      // Link destinations: flows are emitted by linkPhase() — skip here to
+      // avoid duplicate flows.
+      if (state.linkDstNames.count(name))
+        continue;
+      auto [prodCol, prodRow] = info.producerTileCoord;
+      if (prodCol < 0 || prodRow == 0)
+        continue;
+      if (info.consumerTileCoords.empty())
+        continue;
 
-    AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
-    if (!prodTile)
-      continue;
-    mlir::Value prodTileVal = prodTile.getResult();
+      AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
+      if (!prodTile)
+        continue;
+      mlir::Value prodTileVal = prodTile.getResult();
 
-    if (!info.consumerTileBuffers.count(prodTileVal))
-      continue;
+      if (!info.consumerTileBuffers.count(prodTileVal))
+        continue;
 
-    builder.setInsertionPoint(state.deviceBody->getTerminator());
+      builder.setInsertionPoint(state.deviceBody->getTerminator());
 
-    // ---- Determine hardware MM2S channel count for this tile. ----
-    // Used by the mode=any exhaustion check (Step 3.5).
-    uint32_t maxMM2S = 2; // hardware default: 2 MM2S per compute tile
-    if (state.targetModel)
-      maxMM2S = state.targetModel->getNumSourceSwitchboxConnections(
-          static_cast<int>(prodCol), static_cast<int>(prodRow),
-          AIE::WireBundle::DMA);
+      // ---- Determine hardware MM2S channel count for this tile. ----
+      // Used by the mode=any exhaustion check (Step 3.5).
+      uint32_t maxMM2S = 2; // hardware default: 2 MM2S per compute tile
+      if (state.targetModel)
+        maxMM2S = state.targetModel->getNumSourceSwitchboxConnections(
+            static_cast<int>(prodCol), static_cast<int>(prodRow),
+            AIE::WireBundle::DMA);
 
-    // ---- Assign MM2S channel (fused groups share a channel). ----
-    // Check if Phase 4b already assigned an MM2S channel for this conduit
-    // (happens when the conduit has both compute and shim consumers — the
-    // shim consumer flow and the compute consumer flow share the same
-    // producer-side MM2S channel as a hardware broadcast).
-    int32_t mm2sChannel = -1;
-    bool usedPacketFallback = false;
-    {
-      auto existingIt = state.conduitMM2SChannel.find(name);
-      if (existingIt != state.conduitMM2SChannel.end()) {
-        mm2sChannel = existingIt->second;
-      }
-    }
-
-    if (mm2sChannel >= 0) {
-      // Already assigned by Phase 4b — reuse (broadcast from same MM2S port).
-    } else if (!info.fuseGroup.empty()) {
-      std::string qFG = state.qualifyFuseGroup(info.fuseGroup,
-                                                info.deviceIndex);
-      auto it = state.fuseGroupMM2SChannel.find(qFG);
-      if (it != state.fuseGroupMM2SChannel.end()) {
-        mm2sChannel = it->second;
-      } else {
-        mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
-        state.fuseGroupMM2SChannel[qFG] = mm2sChannel;
-      }
-      state.fuseGroupMembers[qFG].push_back(name);
-      state.conduitMM2SChannel[name] = mm2sChannel;
-    } else if (!info.routingMode.has_value()) {
-      // mode=any: check whether a circuit DMA channel is available.
-      int32_t nextCh = state.tileNextMM2SChannel.count(prodTileVal)
-                           ? state.tileNextMM2SChannel[prodTileVal]
-                           : 0;
-      if (static_cast<uint32_t>(nextCh) < maxMM2S) {
-        // A free circuit-mode channel exists — use it.
-        mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
-        state.conduitMM2SChannel[name] = mm2sChannel;
-      } else {
-        // Circuit DMA exhausted; flag that Step 3.5 handles emission below.
-        usedPacketFallback = true;
-      }
-    } else {
-      // Check if a circuit DMA channel is available before allocating.
-      // If exhausted, fall back to packet-switched DMA for non-cascade/
-      // non-shared-memory channels (extends the mode=any fallback).
-      int32_t nextCh = state.tileNextMM2SChannel.count(prodTileVal)
-                           ? state.tileNextMM2SChannel[prodTileVal]
-                           : 0;
-      if (static_cast<uint32_t>(nextCh) < maxMM2S) {
-        mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
-        state.conduitMM2SChannel[name] = mm2sChannel;
-        // Track packet-mode channel designation for Step 3.5c.
-        if (info.routingMode == RoutingMode::Packet && prodTile) {
-          auto key = std::make_pair(prodTile.getOperation(),
-                                    static_cast<int>(mm2sChannel));
-          state.pktChannelState.isPacketChannel[key] = true;
-          // NOTE: usedPacketFallback is NOT set here; explicit packet-mode
-          // broadcast is handled below (single multi-dest packet flow).
-        }
-      } else if (info.routingMode != RoutingMode::Cascade &&
-                 info.routingMode != RoutingMode::SharedMemory &&
-                 info.routingMode != RoutingMode::Stream) {
-        // Circuit DMA exhausted on producer tile — fall back to
-        // packet-switched DMA regardless of explicit routing_mode.
-        // tryPacketFallback (Step 3.5c) will reuse an existing
-        // packet-designated MM2S channel if one exists.
-        usedPacketFallback = true;
-      } else {
-        // Cascade/shared_memory/stream cannot use packet fallback.
-        mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
-        state.conduitMM2SChannel[name] = mm2sChannel;
-      }
-    }
-
-    // ---- Explicit packet-mode broadcast: single multi-dest flow. ----
-    // For routing_mode="packet", emit one aie.packet_flow with all consumer
-    // destinations and a single packet ID.  The switchbox hardware broadcasts
-    // each packet to all destinations.  This matches the oracle's behavior
-    // (AIEObjectFifoStatefulTransform) where one bdPacket ID is used for all
-    // producer MM2S BDs and one packet_flow carries multiple packet_dest ops.
-    if (info.routingMode == RoutingMode::Packet && mm2sChannel >= 0 &&
-        !info.consumerTileCoords.empty()) {
-      if (!state.packetIDAllocator) {
-        state.module.emitError(
-            "internal error: packetIDAllocator not initialized");
-        state.passFailed = true;
-        return;
-      }
-      // Use pre-allocated aligned block ID if this channel belongs to a fuse
-      // group with multiple packet members; otherwise fall back to sequential.
-      std::optional<uint8_t> pktID;
-      std::string qFG;
-      if (!info.fuseGroup.empty()) {
-        qFG = state.qualifyFuseGroup(info.fuseGroup, info.deviceIndex);
-        auto baseIt = fuseGroupPacketIDBase.find(qFG);
-        if (baseIt != fuseGroupPacketIDBase.end()) {
-          unsigned idx = fuseGroupPacketIDNext[qFG]++;
-          pktID = static_cast<uint8_t>(baseIt->second + idx);
+      // ---- Assign MM2S channel (fused groups share a channel). ----
+      // Check if Phase 4b already assigned an MM2S channel for this conduit
+      // (happens when the conduit has both compute and shim consumers — the
+      // shim consumer flow and the compute consumer flow share the same
+      // producer-side MM2S channel as a hardware broadcast).
+      int32_t mm2sChannel = -1;
+      bool usedPacketFallback = false;
+      {
+        auto existingIt = state.conduitMM2SChannel.find(name);
+        if (existingIt != state.conduitMM2SChannel.end()) {
+          mm2sChannel = existingIt->second;
         }
       }
-      if (!pktID) {
-        mlir::Value pktDomain = state.getMemTileDomain(prodTileVal);
-        pktID = state.packetIDAllocator->allocate(pktDomain);
-      }
-      if (!pktID) {
-        state.passFailed = true;
-        return;
-      }
-      state.conduitPacketID[name] = *pktID;
 
-      auto pktFlow = builder.create<AIE::PacketFlowOp>(
-          state.deviceOp.getLoc(), static_cast<int8_t>(*pktID),
-          /*keep_pkt_header=*/mlir::BoolAttr{},
-          /*priority_route=*/mlir::BoolAttr{});
-      mlir::Region &region = pktFlow.getPorts();
-      mlir::Block *pktBlock = builder.createBlock(&region);
-      builder.setInsertionPointToStart(pktBlock);
-      builder.create<AIE::PacketSourceOp>(state.deviceOp.getLoc(), prodTileVal,
-                                          AIE::WireBundle::DMA,
-                                          static_cast<int32_t>(mm2sChannel));
+      if (mm2sChannel >= 0) {
+        // Already assigned by Phase 4b — reuse (broadcast from same MM2S port).
+      } else if (!info.fuseGroup.empty()) {
+        std::string qFG =
+            state.qualifyFuseGroup(info.fuseGroup, info.deviceIndex);
+        auto it = state.fuseGroupMM2SChannel.find(qFG);
+        if (it != state.fuseGroupMM2SChannel.end()) {
+          mm2sChannel = it->second;
+        } else {
+          mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
+          state.fuseGroupMM2SChannel[qFG] = mm2sChannel;
+        }
+        state.fuseGroupMembers[qFG].push_back(name);
+        state.conduitMM2SChannel[name] = mm2sChannel;
+      } else if (!info.routingMode.has_value()) {
+        // mode=any: check whether a circuit DMA channel is available.
+        int32_t nextCh = state.tileNextMM2SChannel.count(prodTileVal)
+                             ? state.tileNextMM2SChannel[prodTileVal]
+                             : 0;
+        if (static_cast<uint32_t>(nextCh) < maxMM2S) {
+          // A free circuit-mode channel exists — use it.
+          mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
+          state.conduitMM2SChannel[name] = mm2sChannel;
+        } else {
+          // Circuit DMA exhausted; flag that Step 3.5 handles emission below.
+          usedPacketFallback = true;
+        }
+      } else {
+        // Check if a circuit DMA channel is available before allocating.
+        // If exhausted, fall back to packet-switched DMA for non-cascade/
+        // non-shared-memory channels (extends the mode=any fallback).
+        int32_t nextCh = state.tileNextMM2SChannel.count(prodTileVal)
+                             ? state.tileNextMM2SChannel[prodTileVal]
+                             : 0;
+        if (static_cast<uint32_t>(nextCh) < maxMM2S) {
+          mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
+          state.conduitMM2SChannel[name] = mm2sChannel;
+          // Track packet-mode channel designation for Step 3.5c.
+          if (info.routingMode == RoutingMode::Packet && prodTile) {
+            auto key = std::make_pair(prodTile.getOperation(),
+                                      static_cast<int>(mm2sChannel));
+            state.pktChannelState.isPacketChannel[key] = true;
+            // NOTE: usedPacketFallback is NOT set here; explicit packet-mode
+            // broadcast is handled below (single multi-dest packet flow).
+          }
+        } else if (info.routingMode != RoutingMode::Cascade &&
+                   info.routingMode != RoutingMode::SharedMemory &&
+                   info.routingMode != RoutingMode::Stream) {
+          // Circuit DMA exhausted on producer tile — fall back to
+          // packet-switched DMA regardless of explicit routing_mode.
+          // tryPacketFallback (Step 3.5c) will reuse an existing
+          // packet-designated MM2S channel if one exists.
+          usedPacketFallback = true;
+        } else {
+          // Cascade/shared_memory/stream cannot use packet fallback.
+          mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
+          state.conduitMM2SChannel[name] = mm2sChannel;
+        }
+      }
 
+      // ---- Explicit packet-mode broadcast: single multi-dest flow. ----
+      // For routing_mode="packet", emit one aie.packet_flow with all consumer
+      // destinations and a single packet ID.  The switchbox hardware broadcasts
+      // each packet to all destinations.  This matches the oracle's behavior
+      // (AIEObjectFifoStatefulTransform) where one bdPacket ID is used for all
+      // producer MM2S BDs and one packet_flow carries multiple packet_dest ops.
+      if (info.routingMode == RoutingMode::Packet && mm2sChannel >= 0 &&
+          !info.consumerTileCoords.empty()) {
+        if (!state.packetIDAllocator) {
+          state.module.emitError(
+              "internal error: packetIDAllocator not initialized");
+          state.passFailed = true;
+          return;
+        }
+        // Use pre-allocated aligned block ID if this channel belongs to a fuse
+        // group with multiple packet members; otherwise fall back to
+        // sequential.
+        std::optional<uint8_t> pktID;
+        std::string qFG;
+        if (!info.fuseGroup.empty()) {
+          qFG = state.qualifyFuseGroup(info.fuseGroup, info.deviceIndex);
+          auto baseIt = fuseGroupPacketIDBase.find(qFG);
+          if (baseIt != fuseGroupPacketIDBase.end()) {
+            unsigned idx = fuseGroupPacketIDNext[qFG]++;
+            pktID = static_cast<uint8_t>(baseIt->second + idx);
+          }
+        }
+        if (!pktID) {
+          mlir::Value pktDomain = state.getMemTileDomain(prodTileVal);
+          pktID = state.packetIDAllocator->allocate(pktDomain);
+        }
+        if (!pktID) {
+          state.passFailed = true;
+          return;
+        }
+        state.conduitPacketID[name] = *pktID;
+
+        auto pktFlow = builder.create<AIE::PacketFlowOp>(
+            state.deviceOp.getLoc(), static_cast<int8_t>(*pktID),
+            /*keep_pkt_header=*/mlir::BoolAttr{},
+            /*priority_route=*/mlir::BoolAttr{});
+        mlir::Region &region = pktFlow.getPorts();
+        mlir::Block *pktBlock = builder.createBlock(&region);
+        builder.setInsertionPointToStart(pktBlock);
+        builder.create<AIE::PacketSourceOp>(state.deviceOp.getLoc(),
+                                            prodTileVal, AIE::WireBundle::DMA,
+                                            static_cast<int32_t>(mm2sChannel));
+
+        for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
+             ++consIdx) {
+          auto [consCol, consRow] = info.consumerTileCoords[consIdx];
+          if (consRow == 0)
+            continue;
+
+          AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
+          if (!consTile)
+            continue;
+          mlir::Value consTileVal = consTile.getResult();
+
+          // Allocate S2MM channel on the consumer tile.
+          // Only share S2MM ports between packet channels that have the same
+          // dma_channel_group.  Independent packet channels (no group) get
+          // separate S2MM ports to prevent data crossover (e.g., Q/K vs V in
+          // flash attention — same tile, different data).
+          // Effective group key: dma_channel_group_s2mm if set, else
+          // dma_channel_group.
+          std::string s2mmGrp = state.qualifyFuseGroup(
+              !info.fuseGroupS2MM.empty() ? info.fuseGroupS2MM : info.fuseGroup,
+              info.deviceIndex);
+          int32_t s2mmChannel;
+          bool s2mmShared = false;
+          if (!s2mmGrp.empty()) {
+            auto it = state.fuseGroupS2MMChannel.find(s2mmGrp);
+            if (it != state.fuseGroupS2MMChannel.end()) {
+              s2mmChannel = it->second;
+              s2mmShared = true;
+            }
+          }
+          if (!s2mmShared) {
+            uint32_t maxS2MM_pkt = 2;
+            if (state.targetModel)
+              maxS2MM_pkt = state.targetModel->getNumDestSwitchboxConnections(
+                  static_cast<int>(consCol), static_cast<int>(consRow),
+                  AIE::WireBundle::DMA);
+            int32_t nextS2MM_pkt = state.tileNextS2MMChannel.count(consTileVal)
+                                       ? state.tileNextS2MMChannel[consTileVal]
+                                       : 0;
+            if (static_cast<uint32_t>(nextS2MM_pkt) >= maxS2MM_pkt) {
+              state.deviceOp.emitError(
+                  llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
+                              "tile (") +
+                  llvm::Twine(consCol) + "," + llvm::Twine(consRow) +
+                  "): all " + llvm::Twine(maxS2MM_pkt) + " channels in use");
+              state.passFailed = true;
+              return;
+            }
+            s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
+            if (!s2mmGrp.empty())
+              state.fuseGroupS2MMChannel[s2mmGrp] = s2mmChannel;
+          }
+          state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
+
+          // Lock sharing: only share locks when channels share an S2MM port
+          // (same dma_channel_group).  Independent channels use separate locks.
+          if (s2mmShared) {
+            auto lockIt = state.pktTileS2MMLock.find(consTileVal);
+            if (lockIt != state.pktTileS2MMLock.end()) {
+              info.consumerTileLocks[consTileVal] = {
+                  lockIt->second.first.getDefiningOp<AIE::LockOp>(),
+                  lockIt->second.second.getDefiningOp<AIE::LockOp>()};
+            }
+          } else if (!s2mmGrp.empty()) {
+            // First in group: record locks for future group members.
+            auto &locks = info.consumerTileLocks[consTileVal];
+            if (locks.first && locks.second) {
+              state.pktTileS2MMLock[consTileVal] = {locks.first.getResult(),
+                                                    locks.second.getResult()};
+            }
+          }
+
+          builder.create<AIE::PacketDestOp>(state.deviceOp.getLoc(),
+                                            consTileVal, AIE::WireBundle::DMA,
+                                            static_cast<int32_t>(s2mmChannel));
+
+          // Record the emitted port pair so that fuse group partners sharing
+          // the same MM2S+S2MM ports do not emit a duplicate circuit flow.
+          FlowKey fk{prodTileVal.getAsOpaquePointer(), mm2sChannel,
+                     consTileVal.getAsOpaquePointer(), s2mmChannel};
+          emittedFlowPorts.insert(fk);
+        }
+
+        builder.create<AIE::EndOp>(state.deviceOp.getLoc());
+        builder.setInsertionPointAfter(pktFlow);
+        continue; // skip per-consumer circuit/fallback flow loop
+      }
+
+      // ---- Emit flows per consumer. ----
       for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
            ++consIdx) {
         auto [consCol, consRow] = info.consumerTileCoords[consIdx];
         if (consRow == 0)
           continue;
 
+        // For single-consumer conduits, adjacent tiles use shared memory
+        // (Phase 3c) — no DMA flow needed.  For broadcast (multi-consumer),
+        // Phase 3c is skipped; all consumers use DMA, so flows are needed
+        // for every consumer regardless of adjacency.
+        // Exception: forceDMA forces DMA even for adjacent tiles.
+        // Also: when shim consumers exist, the producer needs DMA MM2S
+        // regardless (to reach the shim tile via the switchbox network),
+        // so the compute consumer flow must also be emitted.
+        if (!info.forceDMA && info.consumerTileCoords.size() == 1 &&
+            info.shimConsumerTileCoords.empty()) {
+          bool explicitSharedMem =
+              (info.routingMode == RoutingMode::SharedMemory);
+          bool rightAdj = state.targetModel->isLegalMemAffinity(
+              prodCol, prodRow, consCol, consRow);
+          bool leftAdj = state.targetModel->isLegalMemAffinity(
+              consCol, consRow, prodCol, prodRow);
+          if (explicitSharedMem || rightAdj || leftAdj)
+            continue;
+        }
+
         AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
         if (!consTile)
           continue;
+
         mlir::Value consTileVal = consTile.getResult();
 
-        // Allocate S2MM channel on the consumer tile.
-        // Only share S2MM ports between packet channels that have the same
-        // dma_channel_group.  Independent packet channels (no group) get
-        // separate S2MM ports to prevent data crossover (e.g., Q/K vs V in
-        // flash attention — same tile, different data).
-        // Effective group key: dma_channel_group_s2mm if set, else
-        // dma_channel_group.
-        std::string s2mmGrp = state.qualifyFuseGroup(
-            !info.fuseGroupS2MM.empty() ? info.fuseGroupS2MM
-                                        : info.fuseGroup,
-            info.deviceIndex);
-        int32_t s2mmChannel;
-        bool s2mmShared = false;
-        if (!s2mmGrp.empty()) {
-          auto it = state.fuseGroupS2MMChannel.find(s2mmGrp);
-          if (it != state.fuseGroupS2MMChannel.end()) {
-            s2mmChannel = it->second;
-            s2mmShared = true;
-          }
-        }
-        if (!s2mmShared) {
-          uint32_t maxS2MM_pkt = 2;
-          if (state.targetModel)
-            maxS2MM_pkt = state.targetModel->getNumDestSwitchboxConnections(
-                static_cast<int>(consCol), static_cast<int>(consRow),
-                AIE::WireBundle::DMA);
-          int32_t nextS2MM_pkt = state.tileNextS2MMChannel.count(consTileVal)
-                                     ? state.tileNextS2MMChannel[consTileVal]
-                                     : 0;
-          if (static_cast<uint32_t>(nextS2MM_pkt) >= maxS2MM_pkt) {
+        if (usedPacketFallback) {
+          // Step 3.5: attempt packet DMA fallback.
+          bool ok = tryPacketFallback(state, name, info, prodTileVal, prodCol,
+                                      prodRow, consTileVal, consCol, consRow,
+                                      consIdx);
+          if (!ok) {
+            // Step 4: all modes exhausted — emit a hard error.
             state.deviceOp.emitError(
-                llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
-                            "tile (") +
-                llvm::Twine(consCol) + "," + llvm::Twine(consRow) +
-                "): all " + llvm::Twine(maxS2MM_pkt) + " channels in use");
+                llvm::Twine("conduit-to-dma: no DMA resources available for "
+                            "conduit '") +
+                name + "': circuit DMA MM2S channels exhausted on tile (" +
+                llvm::Twine(prodCol) + "," + llvm::Twine(prodRow) +
+                ") and packet DMA fallback is also ineligible "
+                "(check BD budget, lock budget, and packet flow ID budget)");
+            // B-3 fix: return immediately so the outer conduit loop does not
+            // continue processing subsequent conduits with broken state after
+            // both circuit DMA and packet fallback have been exhausted.
             state.passFailed = true;
             return;
           }
-          s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
-          if (!s2mmGrp.empty())
-            state.fuseGroupS2MMChannel[s2mmGrp] = s2mmChannel;
-        }
-        state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
-
-        // Lock sharing: only share locks when channels share an S2MM port
-        // (same dma_channel_group).  Independent channels use separate locks.
-        if (s2mmShared) {
-          auto lockIt = state.pktTileS2MMLock.find(consTileVal);
-          if (lockIt != state.pktTileS2MMLock.end()) {
-            info.consumerTileLocks[consTileVal] = {
-                lockIt->second.first.getDefiningOp<AIE::LockOp>(),
-                lockIt->second.second.getDefiningOp<AIE::LockOp>()};
-          }
-        } else if (!s2mmGrp.empty()) {
-          // First in group: record locks for future group members.
-          auto &locks = info.consumerTileLocks[consTileVal];
-          if (locks.first && locks.second) {
-            state.pktTileS2MMLock[consTileVal] = {locks.first.getResult(),
-                                                   locks.second.getResult()};
-          }
-        }
-
-        builder.create<AIE::PacketDestOp>(state.deviceOp.getLoc(), consTileVal,
-                                          AIE::WireBundle::DMA,
-                                          static_cast<int32_t>(s2mmChannel));
-
-        // Record the emitted port pair so that fuse group partners sharing
-        // the same MM2S+S2MM ports do not emit a duplicate circuit flow.
-        FlowKey fk{prodTileVal.getAsOpaquePointer(), mm2sChannel,
-                   consTileVal.getAsOpaquePointer(), s2mmChannel};
-        emittedFlowPorts.insert(fk);
-      }
-
-      builder.create<AIE::EndOp>(state.deviceOp.getLoc());
-      builder.setInsertionPointAfter(pktFlow);
-      continue; // skip per-consumer circuit/fallback flow loop
-    }
-
-    // ---- Emit flows per consumer. ----
-    for (unsigned consIdx = 0; consIdx < info.consumerTileCoords.size();
-         ++consIdx) {
-      auto [consCol, consRow] = info.consumerTileCoords[consIdx];
-      if (consRow == 0)
-        continue;
-
-      // For single-consumer conduits, adjacent tiles use shared memory
-      // (Phase 3c) — no DMA flow needed.  For broadcast (multi-consumer),
-      // Phase 3c is skipped; all consumers use DMA, so flows are needed
-      // for every consumer regardless of adjacency.
-      // Exception: forceDMA forces DMA even for adjacent tiles.
-      // Also: when shim consumers exist, the producer needs DMA MM2S
-      // regardless (to reach the shim tile via the switchbox network),
-      // so the compute consumer flow must also be emitted.
-      if (!info.forceDMA && info.consumerTileCoords.size() == 1 &&
-          info.shimConsumerTileCoords.empty()) {
-        bool explicitSharedMem = (info.routingMode == RoutingMode::SharedMemory);
-        bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
-                                                              consCol, consRow);
-        bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
-                                                             prodCol, prodRow);
-        if (explicitSharedMem || rightAdj || leftAdj)
+          // tryPacketFallback records conduitMM2SChannel and
+          // conduitConsS2MMChannel internally; skip the circuit path below.
           continue;
-      }
-
-      AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
-      if (!consTile)
-        continue;
-
-      mlir::Value consTileVal = consTile.getResult();
-
-      if (usedPacketFallback) {
-        // Step 3.5: attempt packet DMA fallback.
-        bool ok =
-            tryPacketFallback(state, name, info, prodTileVal, prodCol, prodRow,
-                              consTileVal, consCol, consRow, consIdx);
-        if (!ok) {
-          // Step 4: all modes exhausted — emit a hard error.
-          state.deviceOp.emitError(
-              llvm::Twine("conduit-to-dma: no DMA resources available for "
-                          "conduit '") +
-              name + "': circuit DMA MM2S channels exhausted on tile (" +
-              llvm::Twine(prodCol) + "," + llvm::Twine(prodRow) +
-              ") and packet DMA fallback is also ineligible "
-              "(check BD budget, lock budget, and packet flow ID budget)");
-          // B-3 fix: return immediately so the outer conduit loop does not
-          // continue processing subsequent conduits with broken state after
-          // both circuit DMA and packet fallback have been exhausted.
-          state.passFailed = true;
-          return;
         }
-        // tryPacketFallback records conduitMM2SChannel and
-        // conduitConsS2MMChannel internally; skip the circuit path below.
-        continue;
-      }
 
-      // S2MM fuse group: reuse existing S2MM channel if another conduit
-      // in the same fuse group already allocated one on this tile.
-      int32_t s2mmChannel;
-      if (!info.fuseGroupS2MM.empty()) {
-        std::string qS2MM = state.qualifyFuseGroup(info.fuseGroupS2MM,
-                                                    info.deviceIndex);
-        auto it = state.fuseGroupS2MMChannel.find(qS2MM);
-        if (it != state.fuseGroupS2MMChannel.end()) {
-          s2mmChannel = it->second;
+        // S2MM fuse group: reuse existing S2MM channel if another conduit
+        // in the same fuse group already allocated one on this tile.
+        int32_t s2mmChannel;
+        if (!info.fuseGroupS2MM.empty()) {
+          std::string qS2MM =
+              state.qualifyFuseGroup(info.fuseGroupS2MM, info.deviceIndex);
+          auto it = state.fuseGroupS2MMChannel.find(qS2MM);
+          if (it != state.fuseGroupS2MMChannel.end()) {
+            s2mmChannel = it->second;
+          } else {
+            uint32_t maxS2MM_4c = 2;
+            if (state.targetModel)
+              maxS2MM_4c = state.targetModel->getNumDestSwitchboxConnections(
+                  static_cast<int>(consCol), static_cast<int>(consRow),
+                  AIE::WireBundle::DMA);
+            int32_t nextS2MM_4c = state.tileNextS2MMChannel.count(consTileVal)
+                                      ? state.tileNextS2MMChannel[consTileVal]
+                                      : 0;
+            if (static_cast<uint32_t>(nextS2MM_4c) >= maxS2MM_4c) {
+              state.deviceOp.emitError(
+                  llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
+                              "tile (") +
+                  llvm::Twine(consCol) + "," + llvm::Twine(consRow) +
+                  "): all " + llvm::Twine(maxS2MM_4c) + " channels in use");
+              state.passFailed = true;
+              return;
+            }
+            s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
+            state.fuseGroupS2MMChannel[qS2MM] = s2mmChannel;
+          }
+          std::string bdKey = name + "__s2mm_" + std::to_string(consIdx);
+          state.fuseGroupMembers[qS2MM].push_back(bdKey);
         } else {
+          // Bounds-check S2MM channels on the consumer tile.
           uint32_t maxS2MM_4c = 2;
           if (state.targetModel)
             maxS2MM_4c = state.targetModel->getNumDestSwitchboxConnections(
@@ -1099,54 +1126,30 @@ void routePhase(ConduitToDMAState &state) {
             state.deviceOp.emitError(
                 llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
                             "tile (") +
-                llvm::Twine(consCol) + "," + llvm::Twine(consRow) +
-                "): all " + llvm::Twine(maxS2MM_4c) + " channels in use");
+                llvm::Twine(consCol) + "," + llvm::Twine(consRow) + "): all " +
+                llvm::Twine(maxS2MM_4c) + " channels in use");
             state.passFailed = true;
             return;
           }
           s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
-          state.fuseGroupS2MMChannel[qS2MM] = s2mmChannel;
         }
-        std::string bdKey = name + "__s2mm_" + std::to_string(consIdx);
-        state.fuseGroupMembers[qS2MM].push_back(bdKey);
-      } else {
-        // Bounds-check S2MM channels on the consumer tile.
-        uint32_t maxS2MM_4c = 2;
-        if (state.targetModel)
-          maxS2MM_4c = state.targetModel->getNumDestSwitchboxConnections(
-              static_cast<int>(consCol), static_cast<int>(consRow),
-              AIE::WireBundle::DMA);
-        int32_t nextS2MM_4c = state.tileNextS2MMChannel.count(consTileVal)
-                                  ? state.tileNextS2MMChannel[consTileVal]
-                                  : 0;
-        if (static_cast<uint32_t>(nextS2MM_4c) >= maxS2MM_4c) {
-          state.deviceOp.emitError(
-              llvm::Twine("conduit-to-dma: S2MM DMA channel exhausted on "
-                          "tile (") +
-              llvm::Twine(consCol) + "," + llvm::Twine(consRow) +
-              "): all " + llvm::Twine(maxS2MM_4c) + " channels in use");
-          state.passFailed = true;
-          return;
-        }
-        s2mmChannel = state.tileNextS2MMChannel[consTileVal]++;
+        state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
+
+        // Deduplicate: skip if the same source→dest port pair was already
+        // emitted by the packet broadcast path or a fuse group partner.
+        // This prevents duplicate packet_flow + aie.flow for the same ports
+        // when MM2S fuse group members share the same consumer S2MM channel.
+        FlowKey fk{prodTileVal.getAsOpaquePointer(), mm2sChannel,
+                   consTileVal.getAsOpaquePointer(), s2mmChannel};
+        if (emittedFlowPorts.count(fk))
+          continue;
+        emittedFlowPorts.insert(fk);
+
+        state.emitFlow(info.routingMode, prodTileVal, AIE::WireBundle::DMA,
+                       mm2sChannel, consTileVal, AIE::WireBundle::DMA,
+                       s2mmChannel);
       }
-      state.conduitConsS2MMChannel[{name, consIdx}] = s2mmChannel;
-
-      // Deduplicate: skip if the same source→dest port pair was already
-      // emitted by the packet broadcast path or a fuse group partner.
-      // This prevents duplicate packet_flow + aie.flow for the same ports
-      // when MM2S fuse group members share the same consumer S2MM channel.
-      FlowKey fk{prodTileVal.getAsOpaquePointer(), mm2sChannel,
-                 consTileVal.getAsOpaquePointer(), s2mmChannel};
-      if (emittedFlowPorts.count(fk))
-        continue;
-      emittedFlowPorts.insert(fk);
-
-      state.emitFlow(info.routingMode, prodTileVal, AIE::WireBundle::DMA,
-                     mm2sChannel, consTileVal, AIE::WireBundle::DMA,
-                     s2mmChannel);
     }
-  }
   } // end flowPass two-pass loop
 
   // -----------------------------------------------------------------------

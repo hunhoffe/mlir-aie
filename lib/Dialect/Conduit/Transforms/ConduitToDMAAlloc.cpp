@@ -134,7 +134,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        bool explicitSharedMem = (info.routingMode == RoutingMode::SharedMemory);
+        bool explicitSharedMem =
+            (info.routingMode == RoutingMode::SharedMemory);
         if (explicitSharedMem || rightShared || leftShared) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
@@ -473,7 +474,8 @@ void allocPhase(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        bool explicitSharedMem = (info.routingMode == RoutingMode::SharedMemory);
+        bool explicitSharedMem =
+            (info.routingMode == RoutingMode::SharedMemory);
         if (explicitSharedMem || rightShared || leftShared) {
           info.sharedMemory = true;
 
@@ -496,7 +498,8 @@ void allocPhase(ConduitToDMAState &state) {
                                             mlir::IntegerType::get(ctx, 32));
             }
 
-            // Multi-device: allocate into the device that owns the producer tile.
+            // Multi-device: allocate into the device that owns the producer
+            // tile.
             state.switchDeviceForTile(prodCol, prodRow);
 
             if (state.insertAfterTile)
@@ -650,8 +653,8 @@ void allocPhase(ConduitToDMAState &state) {
       // not the MemTile relay's buffering.  The relay uses a repeating BD
       // chain whose buffer count is the conduit depth, not putCount.
       int64_t consNBufs = nBufs;
-      if (targetModel.isMemTile(consCol, consRow) &&
-          info.putCount > 1 && info.dmaRepeat == 0) {
+      if (targetModel.isMemTile(consCol, consRow) && info.putCount > 1 &&
+          info.dmaRepeat == 0) {
         consNBufs = depth;
       }
 
@@ -747,8 +750,8 @@ void allocPhase(ConduitToDMAState &state) {
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.noLocks) {
         int64_t prodInit = consNBufs;
-        auto consLocks =
-            state.allocateLockPair(consTileVal, consPrefix, consNBufs, prodInit);
+        auto consLocks = state.allocateLockPair(consTileVal, consPrefix,
+                                                consNBufs, prodInit);
         thisProdLock = consLocks.prodLock;
         thisConsLock = consLocks.consLock;
         if (consIdx == 0) {

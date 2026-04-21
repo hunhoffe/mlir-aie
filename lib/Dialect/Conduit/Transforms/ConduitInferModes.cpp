@@ -243,8 +243,8 @@ struct ConduitInferModesPass
                                            consRow) ||
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         if (adj) {
-          op.setRoutingModeAttr(
-              RoutingModeAttr::get(module.getContext(), RoutingMode::SharedMemory));
+          op.setRoutingModeAttr(RoutingModeAttr::get(
+              module.getContext(), RoutingMode::SharedMemory));
           continue;
         }
       }
@@ -305,8 +305,7 @@ struct ConduitInferModesPass
       // Circuit DMA is exhausted on this tile.  If packet IDs remain, assign
       // Packet.  Each packet assignment per consumer tile costs one packet ID.
       // -----------------------------------------------------------------------
-      unsigned numConsumers = consCoords.empty() ? 1
-                                                   : consCoords.size();
+      unsigned numConsumers = consCoords.empty() ? 1 : consCoords.size();
       if (pktBudget >= numConsumers) {
         pktBudget -= static_cast<uint8_t>(numConsumers);
         op.setRoutingModeAttr(

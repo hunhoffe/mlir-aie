@@ -327,21 +327,21 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
         // get link_with propagated to every aie.core, not just device 0.
         for (auto dev : state.deviceOps)
           dev.walk([&](AIE::CoreOp coreOp) {
-          // Skip cores that already have link_with or link_files set.
-          if (coreOp.getLinkWith() || coreOp.getLinkFiles())
-            return;
-          // Check if any func.call inside this core references a function
-          // with link_with.
-          std::string linkWithValue;
-          coreOp.walk([&](mlir::func::CallOp callOp) {
-            auto it = funcLinkWith.find(callOp.getCallee());
-            if (it != funcLinkWith.end() && linkWithValue.empty())
-              linkWithValue = it->second;
+            // Skip cores that already have link_with or link_files set.
+            if (coreOp.getLinkWith() || coreOp.getLinkFiles())
+              return;
+            // Check if any func.call inside this core references a function
+            // with link_with.
+            std::string linkWithValue;
+            coreOp.walk([&](mlir::func::CallOp callOp) {
+              auto it = funcLinkWith.find(callOp.getCallee());
+              if (it != funcLinkWith.end() && linkWithValue.empty())
+                linkWithValue = it->second;
+            });
+            if (!linkWithValue.empty())
+              coreOp.setLinkWithAttr(
+                  mlir::StringAttr::get(module.getContext(), linkWithValue));
           });
-          if (!linkWithValue.empty())
-            coreOp.setLinkWithAttr(
-                mlir::StringAttr::get(module.getContext(), linkWithValue));
-        });
       }
     }
   }
