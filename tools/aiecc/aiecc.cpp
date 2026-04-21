@@ -1465,7 +1465,7 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   if (useConduit) {
     // Conduit passes are module-level; add before device-level nesting
     std::string conduitPipeline =
-        "objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma";
+        "objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma,conduit-place-buffers";
     if (failed(parsePassPipeline(conduitPipeline, pm))) {
       llvm::errs() << "Error: Failed to parse conduit pipeline\n";
       return failure();
