@@ -71,22 +71,7 @@ struct PacketIDAllocator {
   explicit PacketIDAllocator(mlir::ModuleOp mod, uint8_t lim = 32)
       : module(mod), limit(lim) {}
 
-  std::optional<uint8_t> allocate(mlir::Value domain) {
-    uint8_t &next = nextPerDomain[domain];
-    // Start from 1: packet ID 0 can false-match aie.rule {mask=28, value=0},
-    // causing xclbin generation failures. Hardware supports 0-31 per domain;
-    // reserving ID 0 leaves 31 usable IDs — sufficient for all current designs.
-    if (next == 0)
-      next = 1;
-    if (next >= limit) {
-      module.emitError(
-          "packet flow ID exhausted in MemTile domain: design requires "
-          "more than ")
-          << (unsigned)(limit - 1) << " distinct packet flows per MemTile";
-      return std::nullopt;
-    }
-    return next++;
-  }
+  std::optional<uint8_t> allocate(mlir::Value domain);
 
   // Allocate a power-of-2-aligned block of `count` consecutive packet IDs.
   //
@@ -104,36 +89,7 @@ struct PacketIDAllocator {
   //
   // Returns the starting ID of the block.  Individual members are at
   // startID, startID+1, ..., startID+count-1.
-  std::optional<uint8_t> allocateBlock(mlir::Value domain, unsigned count) {
-    if (count == 0)
-      return std::nullopt;
-    // Single ID: use the normal sequential allocator.
-    if (count == 1)
-      return allocate(domain);
-    uint8_t &next = nextPerDomain[domain];
-    if (next == 0)
-      next = 1;
-    // Compute P = next power of 2 >= count.
-    unsigned p = 1;
-    while (p < count)
-      p <<= 1;
-    // Align `next` up to the next multiple of P.
-    uint8_t aligned = static_cast<uint8_t>(((next + p - 1) / p) * p);
-    // If aligned is 0 due to wraparound, bump to p.
-    if (aligned == 0)
-      aligned = static_cast<uint8_t>(p);
-    if (static_cast<unsigned>(aligned) + count > limit) {
-      module.emitError(
-          "packet flow ID exhausted in MemTile domain: need aligned block of ")
-          << count << " IDs (aligned to " << p
-          << ") but only " << (unsigned)(limit - next) << " IDs remain";
-      return std::nullopt;
-    }
-    uint8_t startID = aligned;
-    // Reserve the full power-of-2 block so unused slots are not reused.
-    next = aligned + static_cast<uint8_t>(p);
-    return startID;
-  }
+  std::optional<uint8_t> allocateBlock(mlir::Value domain, unsigned count);
 
   uint8_t remaining(mlir::Value domain) const {
     auto it = nextPerDomain.find(domain);
@@ -396,57 +352,7 @@ struct ConduitInfo {
   // Resolve per-tile locks, buffers, and rotation counters for an op
   // inside a CoreOp.  Walks the parent chain to find the enclosing CoreOp,
   // then looks up per-tile overrides in consumerTileLocks/Buffers/RotationBufs.
-  ResolvedTileResources resolveForTile(mlir::Operation *op) {
-    ResolvedTileResources res;
-    res.prodLock = prodLock;
-    res.consLock = consLock;
-    res.buffers = &buffers;
-    res.rotationBuf = rotationBuf;
-    res.rotationBufSlot = rotationBufSlot;
-    res.producerRotationBuf = producerRotationBuf;
-    res.producerRotationBufSlot = producerRotationBufSlot;
-
-    // B-11: Walk up the parent chain to find the enclosing CoreOp.
-    // Stop at DeviceOp (sentinel) — ops placed directly inside aie.device
-    // (but outside aie.core) are not core-body ops and have no per-tile
-    // resources in the resolved form.  Without this sentinel, the walk would
-    // continue past DeviceOp into ModuleOp and then nullptr, which is harmless
-    // but wasteful and could mask future issues if non-device ancestors exist.
-    res.coreOp = op->getParentOp();
-    while (res.coreOp && !mlir::isa<AIE::CoreOp>(res.coreOp)) {
-      if (mlir::isa<AIE::DeviceOp>(res.coreOp)) {
-        // Op is inside the device but not inside any core — no CoreOp found.
-        res.coreOp = nullptr;
-        break;
-      }
-      res.coreOp = res.coreOp->getParentOp();
-    }
-    if (!res.coreOp)
-      return res;
-
-    mlir::Value coreTile = mlir::cast<AIE::CoreOp>(res.coreOp).getTile();
-    auto lockIt = consumerTileLocks.find(coreTile);
-    if (lockIt != consumerTileLocks.end()) {
-      res.prodLock = lockIt->second.first;
-      res.consLock = lockIt->second.second;
-    }
-    auto bufIt = consumerTileBuffers.find(coreTile);
-    if (bufIt != consumerTileBuffers.end())
-      res.buffers = &bufIt->second;
-    auto rotIt = consumerTileRotationBufs.find(coreTile);
-    if (rotIt != consumerTileRotationBufs.end())
-      res.rotationBuf = rotIt->second;
-    auto rotSlotIt = consumerTileRotationBufSlots.find(coreTile);
-    if (rotSlotIt != consumerTileRotationBufSlots.end())
-      res.rotationBufSlot = rotSlotIt->second;
-    auto prodRotIt = producerTileRotationBufs.find(coreTile);
-    if (prodRotIt != producerTileRotationBufs.end())
-      res.producerRotationBuf = prodRotIt->second;
-    auto prodRotSlotIt = producerTileRotationBufSlots.find(coreTile);
-    if (prodRotSlotIt != producerTileRotationBufSlots.end())
-      res.producerRotationBufSlot = prodRotSlotIt->second;
-    return res;
-  }
+  ResolvedTileResources resolveForTile(mlir::Operation *op);
 };
 
 // ---------------------------------------------------------------------------
@@ -488,22 +394,7 @@ struct ConduitToDMAState {
   // Otherwise, looks up the MemTile in the same column (row=1).
   // Falls back to the tile itself if no MemTile is found (e.g., single-row
   // designs or architectures without MemTiles).
-  mlir::Value getMemTileDomain(mlir::Value tileVal) {
-    auto tileOp = tileVal.getDefiningOp<AIE::TileOp>();
-    if (!tileOp)
-      return tileVal;
-    int col = static_cast<int>(tileOp.getCol());
-    int row = static_cast<int>(tileOp.getRow());
-    // If this tile is already a MemTile, use it directly.
-    if (targetModel && targetModel->isMemTile(col, row))
-      return tileVal;
-    // Look up the MemTile at (col, 1) in the tile cache.
-    AIE::TileOp memTile = lookupTileByCoord(col, 1);
-    if (memTile)
-      return memTile.getResult();
-    // No MemTile found — fall back to the tile itself as domain key.
-    return tileVal;
-  }
+  mlir::Value getMemTileDomain(mlir::Value tileVal);
 
   // Multi-device support: true when the module contains >1 aie.device.
   bool isMultiDevice() const { return deviceOps.size() > 1; }
@@ -521,14 +412,7 @@ struct ConduitToDMAState {
   // Multi-device: returns "name__dN" to prevent cross-device overwrites.
   // Uses "__d" separator which is valid in MLIR symbol names (unlike "#").
   std::string makeConduitKey(llvm::StringRef name,
-                             mlir::Operation *contextOp) const {
-    if (!isMultiDevice())
-      return name.str();
-    auto dev = contextOp->getParentOfType<AIE::DeviceOp>();
-    if (!dev)
-      return name.str();
-    return name.str() + "__d" + std::to_string(getDeviceIndex(dev));
-  }
+                             mlir::Operation *contextOp) const;
 
   // Build a device-qualified fuse group key.
   // Single-device: returns the group label as-is.
@@ -688,106 +572,30 @@ struct ConduitToDMAState {
     return lookupTileByCoord(col, row);
   }
 
-  AIE::TileOp lookupTileByCoord(int64_t col, int64_t row) {
-    // Multi-device: use per-device cache to avoid cross-device collisions.
-    if (activeDevIdx >= 0 &&
-        activeDevIdx < static_cast<int>(perDevTileCache.size())) {
-      auto &devCache = perDevTileCache[activeDevIdx];
-      auto it = devCache.find({col, row});
-      if (it != devCache.end())
-        return it->second;
-      return {};
-    }
-    // Single-device fallback: global cache.
-    auto it = tileCache.find({col, row});
-    if (it == tileCache.end())
-      return {};
-    return it->second;
-  }
+  AIE::TileOp lookupTileByCoord(int64_t col, int64_t row);
 
   // Return the Location from the DeviceOp that owns the tile produced by
   // tileVal, falling back to deviceOp.getLoc() if the tile is not found.
   // Use this instead of deviceOp.getLoc() when emitting ops that belong to
   // a tile in a secondary device of a multi-device module.
-  mlir::Location getLocForTile(mlir::Value tileVal) {
-    if (!tileVal)
-      return deviceOp.getLoc();
-    AIE::TileOp tileOp = tileVal.getDefiningOp<AIE::TileOp>();
-    if (!tileOp)
-      return deviceOp.getLoc();
-    int64_t col = static_cast<int64_t>(tileOp.getCol());
-    int64_t row = static_cast<int64_t>(tileOp.getRow());
-    AIE::DeviceOp dev = getDeviceForTile(col, row);
-    if (!dev)
-      return deviceOp.getLoc();
-    return dev.getLoc();
-  }
+  mlir::Location getLocForTile(mlir::Value tileVal);
 
   // Return the DeviceOp that owns the tile at (col, row), or null if not found.
   // Used by multi-device Pass C to select the correct DeviceOp body for
   // op insertion when emitting locks, buffers, and flows.
-  AIE::DeviceOp getDeviceForTile(int64_t col, int64_t row) const {
-    // Multi-device: use active device index.
-    if (activeDevIdx >= 0 &&
-        activeDevIdx < static_cast<int>(deviceOps.size()))
-      return deviceOps[activeDevIdx];
-    auto cacheIt = tileCache.find({col, row});
-    if (cacheIt == tileCache.end())
-      return {};
-    AIE::TileOp tile = cacheIt->second;
-    // Walk parent chain: tile → DeviceOp.
-    mlir::Operation *parent = tile->getParentOp();
-    while (parent) {
-      if (auto dev = mlir::dyn_cast<AIE::DeviceOp>(parent))
-        return dev;
-      parent = parent->getParentOp();
-    }
-    return {};
-  }
+  AIE::DeviceOp getDeviceForTile(int64_t col, int64_t row) const;
 
   // Switch the active device context to the device at the given index
   // in deviceOps.  Updates activeDevIdx, deviceBody, and insertAfterTile.
   // Call this at the start of each conduitMap loop iteration to ensure
   // lookupTileByCoord returns tiles from the correct device.
-  void switchToDeviceIndex(int devIdx) {
-    if (devIdx < 0 || devIdx >= static_cast<int>(deviceOps.size()))
-      return;
-    activeDevIdx = devIdx;
-    AIE::DeviceOp dev = deviceOps[devIdx];
-    mlir::Block *body = &dev.getBodyRegion().front();
-    if (body == deviceBody)
-      return; // already pointing at the correct device
-    deviceBody = body;
-    insertAfterTile = nullptr;
-    for (mlir::Operation &op : *deviceBody) {
-      if (mlir::isa<AIE::TileOp>(op))
-        insertAfterTile = &op;
-    }
-  }
+  void switchToDeviceIndex(int devIdx);
 
   // Update state.deviceBody and state.insertAfterTile to point to the correct
   // DeviceOp for the tile at (col, row).  Call this before allocating
   // aie.buffer / aie.lock ops for a tile in a multi-device module.
   // No-op if the tile is not found or already in the active device.
-  void switchDeviceForTile(int64_t col, int64_t row) {
-    // Multi-device: use activeDevIdx (already set by switchToDeviceIndex).
-    if (activeDevIdx >= 0) {
-      switchToDeviceIndex(activeDevIdx);
-      return;
-    }
-    AIE::DeviceOp dev = getDeviceForTile(col, row);
-    if (!dev)
-      return;
-    mlir::Block *body = &dev.getBodyRegion().front();
-    if (body == deviceBody)
-      return; // already pointing at the correct device
-    deviceBody = body;
-    insertAfterTile = nullptr;
-    for (mlir::Operation &op : *deviceBody) {
-      if (mlir::isa<AIE::TileOp>(op))
-        insertAfterTile = &op;
-    }
-  }
+  void switchDeviceForTile(int64_t col, int64_t row);
 
   // Emit a circuit or packet flow between two tiles.
   // For packet flows, the packet ID is allocated from packetIDAllocator.
@@ -795,42 +603,7 @@ struct ConduitToDMAState {
   // emitted (the error is reported by the allocator on the module op).
   void emitFlow(std::optional<RoutingMode> routingMode, mlir::Value srcTile,
                 AIE::WireBundle srcBundle, int32_t srcChan, mlir::Value dstTile,
-                AIE::WireBundle dstBundle, int32_t dstChan) {
-    // Use the loc from the device that owns srcTile so that multi-device
-    // modules assign correct source locations to emitted flow ops.
-    mlir::Location loc = getLocForTile(srcTile);
-    if (routingMode == RoutingMode::Packet) {
-      // Allocate a packet flow ID; fail gracefully if budget is exhausted.
-      if (!packetIDAllocator) {
-        module.emitError("internal error: packetIDAllocator not initialized "
-                         "before emitFlow");
-        passFailed = true;
-        return;
-      }
-      mlir::Value domain = getMemTileDomain(srcTile);
-      std::optional<uint8_t> pktID = packetIDAllocator->allocate(domain);
-      if (!pktID) {
-        passFailed = true;
-        return;
-      }
-      auto pktFlow = builder->create<AIE::PacketFlowOp>(
-          loc, static_cast<int8_t>(*pktID),
-          /*keep_pkt_header=*/mlir::BoolAttr{},
-          /*priority_route=*/mlir::BoolAttr{});
-      mlir::Region &region = pktFlow.getPorts();
-      mlir::Block *block = builder->createBlock(&region);
-      builder->setInsertionPointToStart(block);
-      builder->create<AIE::PacketSourceOp>(loc, srcTile, srcBundle,
-                                           static_cast<int32_t>(srcChan));
-      builder->create<AIE::PacketDestOp>(loc, dstTile, dstBundle,
-                                         static_cast<int32_t>(dstChan));
-      builder->create<AIE::EndOp>(loc);
-      builder->setInsertionPointAfter(pktFlow);
-    } else {
-      builder->create<AIE::FlowOp>(loc, srcTile, srcBundle, srcChan, dstTile,
-                                   dstBundle, dstChan);
-    }
-  }
+                AIE::WireBundle dstBundle, int32_t dstChan);
 
   // Result of allocating a lock pair (AIE2) or per-slot locks (AIE1).
   struct AllocatedLocks {
@@ -845,77 +618,7 @@ struct ConduitToDMAState {
   //   scaling.
   // AIE1: emits depth-many per-slot locks (init=0); prod=cons=locks[0].
   AllocatedLocks allocateLockPair(mlir::Value tileVal, llvm::StringRef prefix,
-                                  int64_t depth, int64_t prodInit = -1) {
-    if (prodInit < 0)
-      prodInit = depth;
-    // Use the loc from the device that owns tileVal for correct multi-device
-    // source location attribution on emitted lock ops.
-    mlir::Location loc = getLocForTile(tileVal);
-    AllocatedLocks locks;
-
-    // Check lock ID budget before allocation. The hardware has a finite
-    // number of lock IDs per tile (e.g., 16 on AIE2 compute tiles, 64 on
-    // MemTiles). Exceeding this limit produces a verifier error:
-    //   "aie.lock op lock assigned invalid id (maximum is N)"
-    // Emit a diagnostic and set passFailed here so the error is actionable.
-    if (targetModel) {
-      auto tileOp = tileVal.getDefiningOp<AIE::TileOp>();
-      if (tileOp) {
-        uint32_t maxLocks = targetModel->getNumLocks(
-            static_cast<int>(tileOp.getCol()),
-            static_cast<int>(tileOp.getRow()));
-        int locksNeeded = isAIE2Plus() ? 2 : static_cast<int>(depth);
-        int currentUsed = lockIdCounter.count(tileVal)
-                              ? lockIdCounter[tileVal]
-                              : 0;
-        if (currentUsed + locksNeeded > static_cast<int>(maxLocks)) {
-          module.emitError(
-              llvm::Twine("conduit-to-dma: lock ID exhausted on tile (") +
-              llvm::Twine(tileOp.getCol()) + "," +
-              llvm::Twine(tileOp.getRow()) + "): need " +
-              llvm::Twine(locksNeeded) + " locks for '" + prefix +
-              "' but only " +
-              llvm::Twine(static_cast<int>(maxLocks) - currentUsed) +
-              " of " + llvm::Twine(maxLocks) + " remain");
-          passFailed = true;
-          return locks;
-        }
-      }
-    }
-
-    if (isAIE2Plus()) {
-      {
-        int lockIdx = lockIdCounter[tileVal]++;
-        std::string symName = (prefix + "_prod_lock_0").str();
-        AIE::LockOp lk = builder->create<AIE::LockOp>(
-            loc, tileVal, lockIdx, static_cast<int>(prodInit));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        locks.prodLock = lk;
-      }
-      {
-        int lockIdx = lockIdCounter[tileVal]++;
-        std::string symName = (prefix + "_cons_lock_0").str();
-        AIE::LockOp lk = builder->create<AIE::LockOp>(loc, tileVal, lockIdx,
-                                                      static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        locks.consLock = lk;
-      }
-    } else {
-      for (int64_t i = 0; i < depth; ++i) {
-        int lockIdx = lockIdCounter[tileVal]++;
-        std::string symName = (prefix + "_lock_" + llvm::Twine(i)).str();
-        AIE::LockOp lk = builder->create<AIE::LockOp>(loc, tileVal, lockIdx,
-                                                      static_cast<int>(0));
-        lk.setSymNameAttr(mlir::StringAttr::get(ctx, symName));
-        locks.aie1Locks.push_back(lk);
-      }
-      if (!locks.aie1Locks.empty()) {
-        locks.prodLock = locks.aie1Locks[0];
-        locks.consLock = locks.aie1Locks[0];
-      }
-    }
-    return locks;
-  }
+                                  int64_t depth, int64_t prodInit = -1);
 
   /// Look up a conduit by name in the conduitMap.
   /// Returns nullptr if not found.
@@ -930,16 +633,7 @@ struct ConduitToDMAState {
   /// the channel name and the context op's enclosing aie.device, then
   /// falls back to the unqualified name for single-device compatibility.
   ConduitInfo *lookupConduit(mlir::StringRef name,
-                             mlir::Operation *contextOp) {
-    if (!contextOp || !isMultiDevice())
-      return lookupConduit(name);
-    std::string key = makeConduitKey(name, contextOp);
-    auto it = conduitMap.find(key);
-    if (it != conduitMap.end())
-      return &it->second;
-    // Fallback to unqualified name (single-device or non-colliding).
-    return lookupConduit(name);
-  }
+                             mlir::Operation *contextOp);
 
   /// Emit DMA BD block content into an existing block:
   ///   1. UseLockOp (acquire) — skipped if acqLock is null
@@ -953,49 +647,13 @@ struct ConduitToDMAState {
   void emitBDBlock(mlir::Location loc, mlir::Block *block, mlir::Value acqLock,
                    int32_t acqVal, mlir::Value buffer, int64_t offset,
                    int64_t len, mlir::Value relLock, int32_t relVal,
-                   AIE::BDDimLayoutArrayAttr dims = {}, int pktID = -1) {
-    if (!buffer) {
-      mlir::emitError(loc,
-                      "conduit-to-dma: emitBDBlock called with null buffer — "
-                      "internal allocation error in Phase 3");
-      return;
-    }
-    builder->setInsertionPointToEnd(block);
-    if (acqLock)
-      builder->create<AIE::UseLockOp>(loc, acqLock, acqAction, acqVal);
-    if (pktID >= 0)
-      builder->create<AIE::DMABDPACKETOp>(loc, /*pkt_type=*/0, pktID);
-    if (buffer) {
-      if (dims && !dims.getValue().empty())
-        builder->create<AIE::DMABDOp>(loc, buffer, static_cast<int>(offset),
-                                      static_cast<int>(len), dims);
-      else
-        builder->create<AIE::DMABDOp>(loc, buffer, static_cast<int>(offset),
-                                      static_cast<int>(len));
-    }
-    if (relLock)
-      builder->create<AIE::UseLockOp>(loc, relLock, AIE::LockAction::Release,
-                                      relVal);
-  }
+                   AIE::BDDimLayoutArrayAttr dims = {}, int pktID = -1);
 
   // Allocate `count` buffers of type `bufTy` on the given tile.
   llvm::SmallVector<AIE::BufferOp> allocateBuffers(mlir::Value tileVal,
                                                    llvm::StringRef prefix,
                                                    mlir::Type bufTy,
-                                                   int64_t count) {
-    llvm::SmallVector<AIE::BufferOp> bufs;
-    for (int64_t i = 0; i < count; ++i) {
-      std::string symName = (prefix + "_buff_" + llvm::Twine(i)).str();
-      auto buf =
-          builder->create<AIE::BufferOp>(getLocForTile(tileVal), bufTy, tileVal,
-                                         mlir::StringAttr::get(ctx, symName),
-                                         /*address=*/mlir::IntegerAttr{},
-                                         /*initial_value=*/mlir::ElementsAttr{},
-                                         /*mem_bank=*/mlir::IntegerAttr{});
-      bufs.push_back(buf);
-    }
-    return bufs;
-  }
+                                                   int64_t count);
 };
 
 // ---------------------------------------------------------------------------
