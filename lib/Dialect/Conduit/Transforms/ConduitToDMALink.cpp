@@ -410,7 +410,8 @@ void linkPhase(ConduitToDMAState &state) {
                                 state.lockAcqValue(Port::Consume, 1),
                                 relayBufs[i % relayBufs.size()].getResult(), 0,
                                 relayPerBufLen, relLock,
-                                state.lockRelValue(Port::Consume));
+                                state.lockRelValue(Port::Consume),
+                                dstInfo->producerDimensions);
               builder.create<AIE::NextBDOp>(loc, mm2sBDs[(i + 1) % relayDepth]);
             }
 
@@ -1485,7 +1486,8 @@ void linkPhase(ConduitToDMAState &state) {
                           state.lockAcqValue(Port::Consume, 1),
                           prodBufs[i % prodBufs.size()].getResult(), 0,
                           perBufLen, relLock,
-                          state.lockRelValue(Port::Consume));
+                          state.lockRelValue(Port::Consume),
+                          info.producerDimensions);
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % nBufs]);
       }
@@ -1524,7 +1526,8 @@ void linkPhase(ConduitToDMAState &state) {
                           state.lockAcqValue(Port::Consume, 1),
                           prodBufs[i % prodBufs.size()].getResult(), 0,
                           perBufLen, relLock,
-                          state.lockRelValue(Port::Consume));
+                          state.lockRelValue(Port::Consume),
+                          info.producerDimensions);
         builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                       bdBlocks[(i + 1) % nBufs]);
       }
@@ -1665,7 +1668,8 @@ void linkPhase(ConduitToDMAState &state) {
                               state.lockAcqValue(Port::Consume, 1),
                               info.buffers[i % info.buffers.size()].getResult(),
                               0, perBufLen, relLock,
-                              state.lockRelValue(Port::Consume));
+                              state.lockRelValue(Port::Consume),
+                              info.producerDimensions);
             builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                           bdBlocks[(i + 1) % nBufs]);
           }
@@ -1707,7 +1711,8 @@ void linkPhase(ConduitToDMAState &state) {
                             state.lockAcqValue(Port::Consume, 1),
                             info.buffers[i % info.buffers.size()].getResult(),
                             0, perBufLen, relLock,
-                            state.lockRelValue(Port::Consume));
+                            state.lockRelValue(Port::Consume),
+                            info.producerDimensions);
           builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
                                         bdBlocks[(i + 1) % nBufs]);
         }
