@@ -640,6 +640,7 @@ def Conduit_Release : Conduit_Op<"release"> {
   }];
   let arguments = (ins Conduit_WindowType:$window, I64Attr:$count, Conduit_PortAttr:$port);
   let assemblyFormat = "$window attr-dict `:` type($window)";
+  let hasVerifier = 1;
 }
 
 def Conduit_ReleaseAsync : Conduit_Op<"release_async"> {
@@ -840,6 +841,7 @@ def Conduit_PutMemref : Conduit_Op<"put_memref"> {
                        // computing the composed transformation D_B ∘ D_A.
                        OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def Conduit_GetMemref : Conduit_Op<"get_memref"> {
@@ -862,6 +864,7 @@ def Conduit_GetMemref : Conduit_Op<"get_memref"> {
                        // computing the composed transformation D_B ∘ D_A.
                        OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 // ---------------------------------------------------------------------------

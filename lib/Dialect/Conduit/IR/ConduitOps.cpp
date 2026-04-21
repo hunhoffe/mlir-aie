@@ -16,6 +16,9 @@
 //   Create::verify() — depth>=0 check; element_type MemRefType check;
 //                   sync_mode/disable_synchronization conflict;
 //                   M4: dynamic-dim warning; M5: routing_mode; M6: CSDF balance
+//   PutMemref::verify() / GetMemref::verify() — M3: num_elems>0,
+//                       offsets/sizes/strides length match, sizes>0, product
+//   Release::verify() — M2: count>0, port consistency, count<=acquire count
 //   Acquire::verify() / WaitWindow::verify() — M8a: window value release
 //   linearity
 //                                              M9: same-block acquire-release
@@ -647,6 +650,121 @@ static ::mlir::LogicalResult checkTokenOperandTypes(mlir::Operation *op,
   // for defense-in-depth but may be dead code — the TableGen constraint fires
   // first.
   return checkTokenOperandTypes(getOperation(), getTokens());
+}
+
+//===----------------------------------------------------------------------===//
+// M2: Release verifier
+//
+// Checks:
+//   1. count > 0 — releasing zero elements is nonsensical.
+//   2. Port consistency — the release port must match the port of the
+//      defining acquire (or acquire_async via wait_window).  A mismatch
+//      means the consumer releases the producer's lock (or vice versa),
+//      causing silent hardware lock-counter corruption.
+//   3. Single-op count bound — a single release cannot return more slots
+//      than were acquired.  (Cumulative multi-release check is M8a,
+//      enforced from the acquire side.)
+//===----------------------------------------------------------------------===//
+
+::mlir::LogicalResult Release::verify() {
+  // 1. count > 0.
+  if (getCount() == 0)
+    return emitOpError("release count must be > 0");
+
+  // 2–3. Port consistency and count bound via the defining op.
+  mlir::Value win = getWindow();
+  if (auto *defOp = win.getDefiningOp()) {
+    Port releasePort = getPort();
+
+    if (auto acqOp = mlir::dyn_cast<Acquire>(defOp)) {
+      // Port consistency.
+      if (acqOp.getPort() != releasePort)
+        return emitOpError("release port (")
+               << stringifyPort(releasePort)
+               << ") does not match acquire port ("
+               << stringifyPort(acqOp.getPort()) << ")";
+      // Single release count <= acquire count.
+      if (getCount() > acqOp.getCount())
+        return emitOpError("release count (")
+               << getCount() << ") exceeds acquire count ("
+               << acqOp.getCount() << ")";
+    } else if (auto waitOp = mlir::dyn_cast<WaitWindow>(defOp)) {
+      // Trace through wait_window → acquire_async for port and count.
+      if (auto acqAsyncOp = waitOp.getToken().getDefiningOp<AcquireAsync>()) {
+        if (acqAsyncOp.getPort() != releasePort)
+          return emitOpError("release port (")
+                 << stringifyPort(releasePort)
+                 << ") does not match acquire_async port ("
+                 << stringifyPort(acqAsyncOp.getPort()) << ")";
+        if (getCount() > acqAsyncOp.getCount())
+          return emitOpError("release count (")
+                 << getCount() << ") exceeds acquire_async count ("
+                 << acqAsyncOp.getCount() << ")";
+      }
+    }
+  }
+
+  return ::mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// M3: PutMemref / GetMemref verifiers (blocking Tier 3 memref-DMA ops)
+//
+// Checks:
+//   1. num_elems > 0 — transferring zero elements is nonsensical.
+//   2. offsets, sizes, strides must have equal length (same N-D space).
+//   3. Each sizes[i] > 0 — a zero-size dimension makes the transfer empty.
+//   4. num_elems == product(sizes) — consistency check.
+//===----------------------------------------------------------------------===//
+
+/// Shared verifier logic for put_memref and get_memref.
+/// Both ops have identical structural attributes: name, num_elems, offsets,
+/// sizes, strides.
+static ::mlir::LogicalResult
+verifyMemrefDmaOp(mlir::Operation *op, int64_t numElems,
+                  llvm::ArrayRef<int64_t> offsets,
+                  llvm::ArrayRef<int64_t> sizes,
+                  llvm::ArrayRef<int64_t> strides) {
+  // 1. num_elems > 0.
+  if (numElems <= 0)
+    return op->emitOpError("num_elems must be > 0, got ") << numElems;
+
+  // 2. offsets, sizes, strides must have equal length.
+  if (offsets.size() != sizes.size())
+    return op->emitOpError("offsets length (")
+           << offsets.size() << ") does not match sizes length ("
+           << sizes.size() << ")";
+  if (strides.size() != sizes.size())
+    return op->emitOpError("strides length (")
+           << strides.size() << ") does not match sizes length ("
+           << sizes.size() << ")";
+
+  // 3. Each sizes[i] > 0.
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    if (sizes[i] <= 0)
+      return op->emitOpError("sizes[")
+             << i << "] must be > 0, got " << sizes[i];
+  }
+
+  // 4. num_elems == product(sizes).
+  int64_t product = 1;
+  for (int64_t s : sizes)
+    product *= s;
+  if (numElems != product)
+    return op->emitOpError("num_elems (")
+           << numElems << ") does not match product of sizes (" << product
+           << ")";
+
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult PutMemref::verify() {
+  return verifyMemrefDmaOp(getOperation(), getNumElems(), getOffsets(),
+                           getSizes(), getStrides());
+}
+::mlir::LogicalResult GetMemref::verify() {
+  return verifyMemrefDmaOp(getOperation(), getNumElems(), getOffsets(),
+                           getSizes(), getStrides());
 }
 
 ::mlir::LogicalResult PutMemrefAsync::verify() {
