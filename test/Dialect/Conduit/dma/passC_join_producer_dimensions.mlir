@@ -13,12 +13,12 @@
 //   compute(2,3) --+
 //   join_src_a: compute(2,2)->MemTile, 16xi32
 //   join_src_b: compute(2,3)->MemTile, 16xi32
-//   join_out: MemTile->shim, 32xi32, dimensionsToStream=[<size=4, stride=8>, <size=8, stride=1>]
+//   join_out: MemTile->shim, 32xi32, dimensionsToStream=[<size=2, stride=4>, <size=4, stride=1>]
 //   objectfifo.link joins join_src_a + join_src_b -> join_out through MemTile(2,1)
 //
 // Expected:
 //   The MemTile MM2S BD (output side) must carry the producer dimensions
-//   [<size = 4, stride = 8>, <size = 8, stride = 1>].
+//   [<size = 2, stride = 4>, <size = 4, stride = 1>].
 
 // CHECK-LABEL: module @join_producer_dims
 // CHECK:   aie.device(xcve2302) {
@@ -26,7 +26,7 @@
 // MemTile DMA: MM2S output must carry producer_dimensions
 // CHECK:     aie.memtile_dma
 // CHECK:       aie.dma_start(MM2S
-// CHECK:       aie.dma_bd({{.*}} : memref<32xi32>, 0, 32, [<size = 4, stride = 8>, <size = 8, stride = 1>])
+// CHECK:       aie.dma_bd({{.*}} : memref<32xi32>, 0, 32, [<size = 2, stride = 4>, <size = 4, stride = 1>])
 
 // No residual Conduit ops
 // CHECK-NOT: conduit.create
@@ -48,7 +48,7 @@ module @join_producer_dims {
         : !aie.objectfifo<memref<16xi32>>
 
     // Destination objectfifo: MemTile -> shim with dimensionsToStream.
-    aie.objectfifo @join_out (%tile_2_1 dimensionsToStream [<size = 4, stride = 8>, <size = 8, stride = 1>],
+    aie.objectfifo @join_out (%tile_2_1 dimensionsToStream [<size = 2, stride = 4>, <size = 4, stride = 1>],
                               {%tile_2_0}, 2 : i32)
         : !aie.objectfifo<memref<32xi32>>
 
