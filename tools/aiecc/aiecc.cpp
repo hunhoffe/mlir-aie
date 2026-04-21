@@ -1471,8 +1471,10 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
     // Conduit passes are module-level; add before device-level nesting
     std::string conduitPipeline =
         "objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma";
-    if (!noConduitPlaceBuffers)
-      conduitPipeline += ",conduit-place-buffers";
+    // conduit-place-buffers is available but NOT in the default pipeline
+    // until empirically verified to improve performance. Enable via
+    // manual aie-opt invocation or future flag.
+    (void)noConduitPlaceBuffers;  // Flag exists but pipeline disabled
     if (failed(parsePassPipeline(conduitPipeline, pm))) {
       llvm::errs() << "Error: Failed to parse conduit pipeline\n";
       return failure();
