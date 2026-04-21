@@ -355,6 +355,11 @@ struct ConduitDepthPromotePass
         int64_t key = tileKey(prodCoord.first, prodCoord.second);
         tileLockCount[key] += 2;
         tileBDCount[key] += depth;
+        if (elemTypeAttr) {
+          int64_t perSlotBytes =
+              estimateSingleSlotBytes(elemTypeAttr.getValue());
+          tileMemUsed[key] += perSlotBytes * depth;
+        }
       }
     });
 
@@ -533,19 +538,36 @@ struct ConduitDepthPromotePass
         }
       }
 
-      // Criterion 6: memory budget.
+      // Look up producer tile coordinate for budget checks.
+      std::pair<int64_t, int64_t> prodCoord = {-1, -1};
+      {
+        auto tileIt = inferredMap.find(name);
+        if (tileIt != inferredMap.end() && tileIt->second.producerTile)
+          prodCoord = extractCoord(tileIt->second.producerTile);
+      }
+
+      // Criterion 6: memory budget (consumer + producer tiles).
       // slot_elems is no longer an attribute; derive from element_type instead.
       auto elemTypeAttr =
           createOp->getAttrOfType<mlir::TypeAttr>("element_type");
       bool memOverBudget = false;
-      if (!consCoords.empty() && elemTypeAttr) {
+      if (elemTypeAttr) {
         int64_t bufBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
+        // Check consumer tiles.
         for (auto [col, row] : consCoords) {
           int64_t key = tileKey(col, row);
           if (tileMemUsed[key] + bufBytes * targetDepth >
               kDefaultTileMemoryBytes) {
             memOverBudget = true;
             break;
+          }
+        }
+        // Check producer tile (non-shim).
+        if (!memOverBudget && prodCoord.first >= 0 && prodCoord.second != 0) {
+          int64_t key = tileKey(prodCoord.first, prodCoord.second);
+          if (tileMemUsed[key] + bufBytes * targetDepth >
+              kDefaultTileMemoryBytes) {
+            memOverBudget = true;
           }
         }
       }
@@ -594,9 +616,20 @@ struct ConduitDepthPromotePass
 
       // slot_elems is no longer an attribute — no update needed.
 
-      // Update per-tile resource counters.
+      // Update per-tile resource counters (consumers).
       for (auto [col, row] : consCoords) {
         int64_t key = tileKey(col, row);
+        tileLockCount[key] += 1;
+        tileBDCount[key] += (targetDepth - 1);
+        if (elemTypeAttr) {
+          int64_t perSlotBytes =
+              estimateSingleSlotBytes(elemTypeAttr.getValue());
+          tileMemUsed[key] += perSlotBytes * targetDepth;
+        }
+      }
+      // Update per-tile resource counters (producer, non-shim).
+      if (prodCoord.first >= 0 && prodCoord.second != 0) {
+        int64_t key = tileKey(prodCoord.first, prodCoord.second);
         tileLockCount[key] += 1;
         tileBDCount[key] += (targetDepth - 1);
         if (elemTypeAttr) {
