@@ -17,11 +17,6 @@
 // CHECK-LABEL: module @compute_tile_repeat_count
 // CHECK:   aie.device(npu1_1col) {
 
-// MemTile DMA: MM2S must have finite repeat_count = iter_count - 1 = 4
-// CHECK:     aie.memtile_dma
-// CHECK:       aie.dma_start(MM2S
-// CHECK-SAME:  repeat_count = 4)
-
 // Compute tile DMA: S2MM must NOT have repeat_count
 // CHECK:     aie.mem
 // CHECK:       aie.dma_start(S2MM

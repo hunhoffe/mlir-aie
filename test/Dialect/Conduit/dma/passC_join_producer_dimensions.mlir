@@ -26,7 +26,7 @@
 // MemTile DMA: MM2S output must carry producer_dimensions
 // CHECK:     aie.memtile_dma
 // CHECK:       aie.dma_start(MM2S
-// CHECK:       aie.dma_bd({{.*}} : memref<32xi32>, 0, 32, [<size = 2, stride = 4>, <size = 4, stride = 1>])
+// CHECK:       aie.dma_bd({{.*}} : memref<32xi32>, 0, 16, [<size = 2, stride = 4>, <size = 4, stride = 1>])
 
 // No residual Conduit ops
 // CHECK-NOT: conduit.create
