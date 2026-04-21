@@ -2,8 +2,9 @@
 //
 // Tests iter_count=5 with depth=2 on MemTile → compute.
 //
-// Expected: consumer DMA has dma_start with repeat_count=4 (iter_count-1),
-// circular BD chain with 2 BDs.
+// Expected: MemTile MM2S DMA has repeat_count=4 (iter_count-1).
+// Compute tile consumer DMA must NOT have repeat_count (cycles infinitely;
+// the core controls lifetime via main()).  Circular BD chain with 2 BDs.
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
@@ -13,9 +14,10 @@
 // Consumer lock init = depth = 2
 // CHECK:     aie.lock({{.*}}) {init = 2 : i32, sym_name = "of_cons_prod_lock_0"}
 // CHECK:     aie.lock({{.*}}) {init = 0 : i32, sym_name = "of_cons_cons_lock_0"}
-// Consumer DMA: repeat_count = iter_count - 1 = 4
+// Compute tile consumer DMA: NO repeat_count (cycles infinitely)
 // CHECK:     aie.mem
-// CHECK:       aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 4)
+// CHECK:       aie.dma_start(S2MM
+// CHECK-NOT:   repeat_count
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd

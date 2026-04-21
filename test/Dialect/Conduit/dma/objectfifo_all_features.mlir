@@ -6,7 +6,7 @@
 // Expected:
 // - MemTile link lock init = depth × repeat_count = 2 × 2 = 4
 // - MemTile MM2S: 4 BD blocks, each with dimensionsToStream layout
-// - Consumer dma_start: repeat_count = iter_count - 1 = 2
+// - Compute tile consumer DMA: NO repeat_count (cycles infinitely)
 
 // CHECK-LABEL: module
 // CHECK:   aie.device(npu1_1col) {
@@ -33,9 +33,10 @@
 // CHECK:       aie.dma_bd({{.*}}, 0, 16, [<size = 4, stride = 4>, <size = 4, stride = 1>])
 // Circular: last BD loops back
 // CHECK:       aie.next_bd ^bb4
-// Consumer DMA: repeat_count = iter_count - 1 = 2
+// Compute tile consumer DMA: NO repeat_count (cycles infinitely)
 // CHECK:     aie.mem
-// CHECK:       aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 2)
+// CHECK:       aie.dma_start(S2MM
+// CHECK-NOT:   repeat_count
 // CHECK:       aie.dma_bd
 // CHECK:       aie.next_bd
 // CHECK:       aie.dma_bd
