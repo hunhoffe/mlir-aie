@@ -1042,9 +1042,10 @@ void lowerPhase(ConduitToDMAState &state) {
   // aie.runtime_sequence → aiex.dma_configure_task_for + dma_start/await/free.
   //
   // This is the reverse of --dma-task-to-conduit. After --conduit-fuse-operators
-  // merges runtime_sequences and eliminates dead block args, the remaining
-  // put/get ops correspond 1:1 (positionally) to the runtime_sequence block
-  // args.  Each Nth conduit.put_memref/get_memref maps to block arg N.
+  // merges runtime_sequences and eliminates dead block args, there may be
+  // more put/get ops than block args (multiple per-column ops share one
+  // full-buffer block arg).  Ops are mapped to block args via arg groups:
+  // contiguous ops starting with offsets[0]==0 form a group sharing one arg.
   //
   // Mapping:
   //   conduit.put_memref {name=@chan} → aiex.dma_configure_task_for
@@ -1086,6 +1087,28 @@ void lowerPhase(ConduitToDMAState &state) {
       auto blockArgs = rtSeq.getBody().front().getArguments();
       auto indexTy = mlir::IndexType::get(ctx);
 
+      // Build arg groups: map put/get_memref ops to block args via the
+      // same offset==0 grouping invariant used by --conduit-fuse-operators.
+      // After fusion, there may be more ops than block args (multiple
+      // per-column ops share one full-buffer block arg).  Each group of
+      // contiguous ops starting with offsets[0]==0 maps to one block arg.
+      llvm::SmallVector<unsigned> opToArgIndex(memrefOps.size(), 0);
+      {
+        unsigned currentArgIdx = 0;
+        bool firstGroup = true;
+        for (unsigned i = 0; i < memrefOps.size(); ++i) {
+          auto offsetsAttr =
+              memrefOps[i]->getAttrOfType<mlir::DenseI64ArrayAttr>(
+                  "offsets");
+          int64_t offset =
+              (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
+          if (offset == 0 && !firstGroup)
+            ++currentArgIdx;
+          firstGroup = false;
+          opToArgIndex[i] = currentArgIdx;
+        }
+      }
+
       // Task SSA values for free/await at end.
       llvm::SmallVector<mlir::Value> putTasks;
       llvm::SmallVector<mlir::Value> awaitTasks;
@@ -1105,12 +1128,21 @@ void lowerPhase(ConduitToDMAState &state) {
         bool isS2MM =
             (conduitToDir[conduitName] == AIE::DMAChannelDir::S2MM);
 
-        if (i >= blockArgs.size())
+        // Resolve block arg via arg group mapping, not positional index.
+        unsigned argIdx = opToArgIndex[i];
+        if (argIdx >= blockArgs.size())
           continue;
-        mlir::Value bufArg = blockArgs[i];
+        mlir::Value bufArg = blockArgs[argIdx];
 
         int64_t numElems =
             op->getAttrOfType<mlir::IntegerAttr>("num_elems").getInt();
+
+        // Use the op's offsets[0] as the DMA BD offset (not hardcoded 0).
+        auto offsetsAttr =
+            op->getAttrOfType<mlir::DenseI64ArrayAttr>("offsets");
+        int bdOffset = (offsetsAttr && !offsetsAttr.empty())
+                           ? static_cast<int>(offsetsAttr[0])
+                           : 0;
 
         // Get BDDimLayout dimensions (put_memref carries producer_dimensions).
         AIE::BDDimLayoutArrayAttr dims;
@@ -1142,11 +1174,11 @@ void lowerPhase(ConduitToDMAState &state) {
 
         if (dims && !dims.getValue().empty())
           builder.create<AIE::DMABDOp>(
-              loc, bufArg, /*offset=*/0,
+              loc, bufArg, bdOffset,
               static_cast<int>(numElems), dims);
         else
           builder.create<AIE::DMABDOp>(
-              loc, bufArg, /*offset=*/0,
+              loc, bufArg, bdOffset,
               static_cast<int>(numElems));
         // Set burst_length = 0 on the dma_bd.
         bdBlock->back().setAttr("burst_length",

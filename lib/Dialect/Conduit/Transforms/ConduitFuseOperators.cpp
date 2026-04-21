@@ -55,6 +55,7 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 
@@ -250,6 +251,7 @@ static void eraseRuntimeDMAOpsForName(AIE::DeviceOp device,
 struct ArgGroup {
   unsigned argIndex;
   llvm::SmallVector<std::string> channelNames;
+  int64_t maxExtent = 0; // max(offset[0] + num_elems) across all ops in group
 };
 
 /// Build arg groups from a runtime_sequence body's put/get_memref ops.
@@ -275,11 +277,18 @@ buildArgGroupsFromSeq(mlir::Block &seqBody) {
     auto offsetsAttr = op.getAttrOfType<mlir::DenseI64ArrayAttr>("offsets");
     int64_t offset =
         (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
+
+    // Compute extent = offset + num_elems for this op.
+    auto numElemsAttr = op.getAttrOfType<mlir::IntegerAttr>("num_elems");
+    int64_t numElems = numElemsAttr ? numElemsAttr.getInt() : 0;
+    int64_t extent = offset + numElems;
+
     if (groups.empty() || offset == 0) {
       unsigned idx = groups.empty() ? 0 : groups.back().argIndex + 1;
-      groups.push_back({idx, {nameAttr.getValue().str()}});
+      groups.push_back({idx, {nameAttr.getValue().str()}, extent});
     } else {
       groups.back().channelNames.push_back(nameAttr.getValue().str());
+      groups.back().maxExtent = std::max(groups.back().maxExtent, extent);
     }
   }
   return groups;
@@ -939,14 +948,33 @@ struct ConduitFuseOperatorsPass
               static_cast<unsigned>(origTypesB.size()));
 
           // Build surviving arg types: non-dead from A + non-dead from B.
+          // Use computed max extents from buildArgGroupsFromSeq() to
+          // reconstruct full-buffer types, fixing the per-tile arg type bug.
+          auto computeFullBufferType =
+              [](unsigned i,
+                 const llvm::SmallVector<ArgGroup> &groups,
+                 const llvm::SmallVector<mlir::Type> &origTypes) -> mlir::Type {
+            if (i < groups.size() && groups[i].maxExtent > 0 &&
+                i < origTypes.size()) {
+              if (auto memTy =
+                      mlir::dyn_cast<mlir::MemRefType>(origTypes[i])) {
+                return mlir::MemRefType::get({groups[i].maxExtent},
+                                             memTy.getElementType());
+              }
+            }
+            return origTypes[i];
+          };
+
           llvm::SmallVector<mlir::Type> newArgTypes;
           for (unsigned i = 0; i < origTypesA.size(); ++i) {
             if (!deadA.contains(i))
-              newArgTypes.push_back(origTypesA[i]);
+              newArgTypes.push_back(
+                  computeFullBufferType(i, argGroupsA, origTypesA));
           }
           for (unsigned i = 0; i < origTypesB.size(); ++i) {
             if (!deadB.contains(i))
-              newArgTypes.push_back(origTypesB[i]);
+              newArgTypes.push_back(
+                  computeFullBufferType(i, argGroupsB, origTypesB));
           }
 
           // Reconstruct block args if the count changed.
