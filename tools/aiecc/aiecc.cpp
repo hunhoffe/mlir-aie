@@ -60,6 +60,7 @@
 #include "aie/Dialect/AIEVec/Transforms/Passes.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/AIEX/Transforms/AIEXPasses.h"
+#include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 #include "aie/InitialAllDialect.h"
 #include "aie/Targets/AIETargets.h"
 #include "aie/version.h"
@@ -320,6 +321,11 @@ static cl::opt<bool> packetSwObjFifos("packet-sw-objFifos",
                                       cl::desc("Use packet-switched flows"),
                                       cl::init(false),
                                       cl::cat(aieCompilerOptions));
+
+static cl::opt<bool> useConduit("use-conduit",
+                                cl::desc("Use Conduit IR lowering instead of objectFifo stateful transform"),
+                                cl::init(false),
+                                cl::cat(aieCompilerOptions));
 
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
@@ -1455,21 +1461,34 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   // Step 3: Canonicalize device (module-level pass)
   pm.addPass(xilinx::AIE::createAIECanonicalizeDevicePass());
 
-  // Step 4: Device-level passes - use nest<DeviceOp>()
+  // Step 4: ObjectFifo / Conduit pipeline
+  if (useConduit) {
+    // Conduit passes are module-level; add before device-level nesting
+    std::string conduitPipeline =
+        "objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma";
+    if (failed(parsePassPipeline(conduitPipeline, pm))) {
+      llvm::errs() << "Error: Failed to parse conduit pipeline\n";
+      return failure();
+    }
+  }
+
+  // Step 5: Device-level passes - use nest<DeviceOp>()
   OpPassManager &devicePm = pm.nest<xilinx::AIE::DeviceOp>();
   // Note: Trace lowering runs in a separate guarded pipeline
   // (runTraceLoweringPipeline) before this function is called.
   devicePm.addPass(xilinx::AIE::createAIEAssignLockIDsPass());
-  devicePm.addPass(xilinx::AIE::createAIEObjectFifoRegisterProcessPass());
-  {
-    std::string objFifoPipelineStr =
-        "aie-objectFifo-stateful-transform{dynamic-objFifos=" +
-        std::string(dynamicObjFifos ? "true" : "false") +
-        " packet-sw-objFifos=" +
-        std::string(packetSwObjFifos ? "true" : "false") + "}";
-    if (failed(parsePassPipeline(objFifoPipelineStr, devicePm))) {
-      llvm::errs() << "Error: Failed to parse objectFifo pipeline\n";
-      return failure();
+  if (!useConduit) {
+    devicePm.addPass(xilinx::AIE::createAIEObjectFifoRegisterProcessPass());
+    {
+      std::string objFifoPipelineStr =
+          "aie-objectFifo-stateful-transform{dynamic-objFifos=" +
+          std::string(dynamicObjFifos ? "true" : "false") +
+          " packet-sw-objFifos=" +
+          std::string(packetSwObjFifos ? "true" : "false") + "}";
+      if (failed(parsePassPipeline(objFifoPipelineStr, devicePm))) {
+        llvm::errs() << "Error: Failed to parse objectFifo pipeline\n";
+        return failure();
+      }
     }
   }
   devicePm.addPass(xilinx::AIE::createAIEAssignBufferDescriptorIDsPass());
@@ -5544,6 +5563,7 @@ static int processInputFile(StringRef inputFile, StringRef tmpDirName) {
   xilinx::registerConversionPasses();
   xilinx::AIE::registerAIEPasses();
   xilinx::AIEX::registerAIEXPasses();
+  xilinx::conduit::registerConduitPasses();
   xilinx::aievec::registerAIEVecAnalysisPasses();
   xilinx::aievec::registerAIEVecPasses();
   xilinx::aievec::registerAIEVecPipelines();
