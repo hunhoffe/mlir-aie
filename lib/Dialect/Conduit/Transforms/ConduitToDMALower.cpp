@@ -454,7 +454,12 @@ void lowerPhase(ConduitToDMAState &state) {
           if (!counterInitialized.count(ctrKey)) {
             counterInitialized.insert(ctrKey);
             mlir::OpBuilder initBuilder(ctx);
-            initBuilder.setInsertionPointAfterValue(resolvedRotationBuf);
+            // Insert init store at start of core body (rotation buffer is an
+            // aie.buffer at device level, so setInsertionPointAfterValue would
+            // place the store outside the core).
+            auto &coreBody =
+                mlir::cast<AIE::CoreOp>(acquireCoreOp).getBody().front();
+            initBuilder.setInsertionPointToStart(&coreBody);
             mlir::Location loc = op.getLoc();
             mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
             mlir::Value zero =
@@ -480,8 +485,9 @@ void lowerPhase(ConduitToDMAState &state) {
           if (!counterInitialized.count(ctrKey)) {
             counterInitialized.insert(ctrKey);
             mlir::OpBuilder initBuilder(ctx);
-            initBuilder.setInsertionPointAfterValue(
-                resolvedProducerRotationBuf);
+            auto &coreBody =
+                mlir::cast<AIE::CoreOp>(acquireCoreOp).getBody().front();
+            initBuilder.setInsertionPointToStart(&coreBody);
             mlir::Location loc = op.getLoc();
             mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
             mlir::Value zero =
@@ -731,7 +737,9 @@ void lowerPhase(ConduitToDMAState &state) {
         if (!counterInitialized.count(ctrKey)) {
           counterInitialized.insert(ctrKey);
           mlir::OpBuilder initBuilder(ctx);
-          initBuilder.setInsertionPointAfterValue(resolvedRotationBuf);
+          auto &coreBody =
+              mlir::cast<AIE::CoreOp>(acquireCoreOp).getBody().front();
+          initBuilder.setInsertionPointToStart(&coreBody);
           mlir::Location loc = op.getLoc();
           mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
           mlir::Value zero =
@@ -757,8 +765,9 @@ void lowerPhase(ConduitToDMAState &state) {
         if (!counterInitialized.count(ctrKey)) {
           counterInitialized.insert(ctrKey);
           mlir::OpBuilder initBuilder(ctx);
-          initBuilder.setInsertionPointAfterValue(
-              resolvedProducerRotationBuf);
+          auto &coreBody =
+              mlir::cast<AIE::CoreOp>(acquireCoreOp).getBody().front();
+          initBuilder.setInsertionPointToStart(&coreBody);
           mlir::Location loc = op.getLoc();
           mlir::Type i32Ty = mlir::IntegerType::get(ctx, 32);
           mlir::Value zero =
