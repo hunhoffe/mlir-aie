@@ -9,7 +9,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Phase 6: Lower conduit.acquire/release → aie.use_lock.
-//   Step 1: SubviewAccess → buffer replacement (static or dynamic rotation).
+//   Step 1: SubviewAccess → buffer replacement (static or dynamic index_switch).
 //   Step 2: Release → use_lock + counter increment (collect for deferred
 //   erase). Step 3: Erase Release ops. Step 4: Acquire → use_lock + counter
 //   init; erase.
@@ -146,55 +146,37 @@ void lowerPhase(ConduitToDMAState &state) {
                     builder.create<mlir::arith::SelectOp>(loc, cond, sub, sum);
               }
 
-              // IMPORTANT: Do NOT use scf::IndexSwitchOp here.
-              //
-              // PEANO (llvm-aie) has a code generation bug where it generates
-              // incorrect lookup tables for scf.index_switch when the modular
-              // index wraps around (e.g., (counter+1)%4 = 0 at counter=3).
-              // The erroneous table causes the wrong buffer address to be
-              // selected, resulting in concurrent DMA+core access to the same
-              // buffer without lock protection → hardware fault (unexpected
-              // command state) on AIE2 npu1.
-              //
-              // Confirmed: for depth=4 with 6 middle iterations, the table at
-              // .data[0x7bc4c+12] contained buff_3 instead of buff_0, causing
-              // the N=6 sliding window to fail while N=5 passed.
-              //
-              // Fix: use a chain of scf::IfOp (→ cf.cond_br), which PEANO
-              // generates correctly. This avoids the lookup table entirely.
+              // Use scf::IndexSwitchOp, matching stateful transform.
               mlir::Type bufTy = op.getResult().getType();
 
-              // Build a nested if/else chain: if absIdx==0 yield buf[0]
-              // else if absIdx==1 yield buf[1] else ... else yield buf[N-1].
-              // The outermost if wraps the whole expression.
-              mlir::Value result = (*tileBuffers)[numBufs - 1].getResult();
-              for (int64_t i = numBufs - 2; i >= 0; --i) {
-                mlir::Value caseConst =
-                    builder.create<mlir::arith::ConstantIndexOp>(loc, i);
-                mlir::Value cond = builder.create<mlir::arith::CmpIOp>(
-                    loc, mlir::arith::CmpIPredicate::eq, absIdx, caseConst);
-                mlir::Value innerResult = result; // capture for lambda
-                auto ifOp = builder.create<mlir::scf::IfOp>(
-                    loc, bufTy, cond, /*withElseRegion=*/true);
-                // Then block: yield buf[i]
-                {
-                  mlir::OpBuilder::InsertionGuard g(builder);
-                  builder.setInsertionPointToStart(
-                      &ifOp.getThenRegion().front());
-                  builder.create<mlir::scf::YieldOp>(
-                      loc, (*tileBuffers)[i].getResult());
-                }
-                // Else block: yield the result from the inner chain
-                {
-                  mlir::OpBuilder::InsertionGuard g(builder);
-                  builder.setInsertionPointToStart(
-                      &ifOp.getElseRegion().front());
-                  builder.create<mlir::scf::YieldOp>(loc, innerResult);
-                }
-                result = ifOp.getResult(0);
+              // Build case values [0, 1, ..., numBufs-1].
+              llvm::SmallVector<int64_t, 4> caseValues;
+              for (int64_t i = 0; i < numBufs; ++i)
+                caseValues.push_back(i);
+              auto cases =
+                  mlir::DenseI64ArrayAttr::get(ctx, caseValues);
+              auto switchOp = mlir::scf::IndexSwitchOp::create(
+                  builder, loc, mlir::TypeRange({bufTy}), absIdx, cases,
+                  static_cast<unsigned>(numBufs));
+              // Default case: yield buf[(idx % numBufs)].
+              builder.createBlock(&switchOp.getDefaultRegion());
+              builder.setInsertionPointToStart(
+                  &switchOp.getDefaultBlock());
+              builder.create<mlir::scf::YieldOp>(
+                  loc, (*tileBuffers)[bufIdx].getResult());
+              // Case regions: case i yields buf[(idx + i) % numBufs].
+              for (int64_t i = 0; i < numBufs; ++i) {
+                builder.createBlock(&switchOp.getCaseRegions()[i]);
+                builder.setInsertionPoint(
+                    &switchOp.getCaseBlock(i),
+                    switchOp.getCaseBlock(i).begin());
+                int64_t bufferToAccess = (idx + i) % numBufs;
+                builder.create<mlir::scf::YieldOp>(
+                    loc,
+                    (*tileBuffers)[bufferToAccess].getResult());
               }
 
-              op.getResult().replaceAllUsesWith(result);
+              op.getResult().replaceAllUsesWith(switchOp.getResult(0));
               replaced = true;
             }
           }
