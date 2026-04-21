@@ -45,10 +45,12 @@ struct ConduitPlaceBuffersPass
     mlir::ModuleOp module = getOperation();
     mlir::MLIRContext *ctx = module.getContext();
 
-    // Group aie.buffer ops by channel name using the naming convention
-    // emitted by Pass C (ConduitToDMAAlloc): "<chan>_cons_buff_<N>".
-    // For each group, assign mem_bank = slot_index % numBanks.
-    llvm::StringMap<llvm::SmallVector<AIE::BufferOp>> channelBuffers;
+    // Collect consumer buffers per tile using the naming convention emitted
+    // by Pass C (ConduitToDMAAlloc): "<chan>_cons_buff_<N>".
+    // Assign mem_bank per-tile across all channel groups so that buffers
+    // from different channels don't collide in the same bank.
+    llvm::DenseMap<mlir::Operation *, llvm::SmallVector<AIE::BufferOp>>
+        tileBuffers;
     module.walk([&](AIE::BufferOp bufOp) {
       auto symName = bufOp.getSymName();
       if (!symName)
@@ -61,27 +63,26 @@ struct ConduitPlaceBuffersPass
         return;
       // Verify everything after the suffix is digits (the slot index).
       llvm::StringRef rest = name.drop_front(pos + kSuffix.size());
-      if (rest.empty() || rest.find_first_not_of("0123456789") != llvm::StringRef::npos)
+      if (rest.empty() ||
+          rest.find_first_not_of("0123456789") != llvm::StringRef::npos)
         return;
-      llvm::StringRef chanName = name.take_front(pos);
-      channelBuffers[chanName].push_back(bufOp);
+      tileBuffers[bufOp.getTile().getDefiningOp()].push_back(bufOp);
     });
 
-    for (auto &[chanName, bufs] : channelBuffers) {
-      // Sort by slot index (the numeric suffix) so bank assignment is stable.
+    for (auto &[tile, bufs] : tileBuffers) {
+      // Sort by name for deterministic ordering. This naturally groups
+      // buffers from the same channel together (same prefix), keeping
+      // consecutive FIFO slots in different banks for double-buffering.
       llvm::sort(bufs, [](AIE::BufferOp a, AIE::BufferOp b) {
-        llvm::StringRef na = *a.getSymName(), nb = *b.getSymName();
-        static constexpr llvm::StringLiteral kSuffix = "_cons_buff_";
-        int64_t ia = 0, ib = 0;
-        na.drop_front(na.rfind(kSuffix) + kSuffix.size()).getAsInteger(10, ia);
-        nb.drop_front(nb.rfind(kSuffix) + kSuffix.size()).getAsInteger(10, ib);
-        return ia < ib;
+        return a.getSymName()->compare(*b.getSymName()) < 0;
       });
-      for (auto [i, bufOp] : llvm::enumerate(bufs)) {
+      int bankIdx = 0;
+      for (auto bufOp : bufs) {
         if (!bufOp.getMemBank()) {
           bufOp.setMemBankAttr(mlir::IntegerAttr::get(
               mlir::IntegerType::get(ctx, 32),
-              static_cast<int64_t>(i) % kDefaultNumBanks));
+              static_cast<int64_t>(bankIdx) % kDefaultNumBanks));
+          ++bankIdx;
         }
       }
     }
