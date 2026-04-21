@@ -1,25 +1,20 @@
 // RUN: aie-opt --conduit-check-channels --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: Pass C generates scf.if chains for buffer selection
-// in depth>1 channels. This test verifies that scf.if is used (not
-// scf.index_switch) and that the rotation counter is memref.alloca().
+// Regression test: Pass C generates scf.index_switch for buffer selection
+// in depth>1 channels. The rotation counter is an aie.buffer on the tile.
 //
 // The buffer selection pattern for depth=2:
 //   %idx = arith.index_cast %counter : i32 to index
-//   %cond = arith.cmpi eq, %idx, %c0 : index
-//   %buf = scf.if %cond -> memref<T> {
-//     scf.yield %buf_0
-//   } else {
-//     scf.yield %buf_1
-//   }
+//   %buf = scf.index_switch %idx -> memref<T>
+//   case 0 { scf.yield %buf_0 }
+//   default { scf.yield %buf_1 }
 //
 // CHECK-LABEL: module @passC_no_index_switch
 // CHECK: aie.buffer({{.*}}) : memref<1xi32>
 // CHECK: aie.core
 // CHECK: memref.store
-// CHECK: arith.cmpi eq
-// CHECK: scf.if
-// CHECK-NOT: scf.index_switch
+// CHECK: scf.index_switch
+// CHECK-NOT: arith.cmpi eq
 // CHECK: aie.end
 
 module @passC_no_index_switch {

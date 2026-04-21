@@ -45,8 +45,7 @@
 // CHECK:         aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
 // CHECK:         memref.load {{.*}} : memref<2xi32>
 // CHECK:         arith.index_cast
-// CHECK:         arith.cmpi eq
-// CHECK:         scf.if
+// CHECK:         scf.index_switch
 // CHECK:           scf.yield %[[PBUF0]]
 // CHECK:           scf.yield %[[PBUF1]]
 // CHECK:         func.call @produce_data

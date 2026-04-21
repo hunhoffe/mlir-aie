@@ -35,11 +35,10 @@
 // --- Counter initialized to 0 at top of core body ---
 // CHECK:         memref.store {{.*}} : memref<1xi32>
 // CHECK:       scf.for
-// --- Counter loaded, used for scf.if chain buffer selection, then incremented ---
+// --- Counter loaded, used for scf.index_switch buffer selection, then incremented ---
 // CHECK:         memref.load {{.*}} : memref<1xi32>
 // CHECK:         arith.index_cast
-// CHECK:         arith.cmpi eq
-// CHECK:         scf.if
+// CHECK:         scf.index_switch
 // --- Rotation counter update: arith.andi for power-of-2 depth (NOT arith.remui) ---
 // CHECK:         memref.load {{.*}} : memref<1xi32>
 // CHECK:         arith.addi

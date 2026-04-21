@@ -59,8 +59,7 @@
 // CHECK:         aie.use_lock(%{{.*}}fifo_prod_lock_0, AcquireGreaterEqual, 1)
 // CHECK:         memref.load {{.*}}[%c1{{.*}}] : memref<2xi32>
 // CHECK:         arith.index_cast
-// CHECK:         arith.cmpi eq
-// CHECK:         scf.if
+// CHECK:         scf.index_switch
 // CHECK:           scf.yield %{{.*}}fifo_buff_0
 // CHECK:           scf.yield %{{.*}}fifo_buff_1
 // CHECK:         func.call @generate
@@ -78,16 +77,11 @@
 // CHECK:       scf.for
 // CHECK:         aie.use_lock(%{{.*}}fifo_cons_cons_lock_0, AcquireGreaterEqual, 1)
 // CHECK:         arith.index_cast
-// CHECK:         arith.cmpi eq
-// CHECK:         scf.if
-// CHECK:           scf.yield %{{.*}}fifo_cons_buff_{{[23]}}
-// CHECK:           scf.yield %{{.*}}fifo_cons_buff_{{[23]}}
-// CHECK:         arith.cmpi eq
-// CHECK:         scf.if
-// CHECK:           scf.yield %{{.*}}fifo_cons_buff_1
-// CHECK:         arith.cmpi eq
-// CHECK:         scf.if
+// CHECK:         scf.index_switch
 // CHECK:           scf.yield %{{.*}}fifo_cons_buff_0
+// CHECK:           scf.yield %{{.*}}fifo_cons_buff_1
+// CHECK:           scf.yield %{{.*}}fifo_cons_buff_2
+// CHECK:           scf.yield %{{.*}}fifo_cons_buff_3
 // CHECK:         func.call @consume
 // CHECK:         arith.addi
 // CHECK:         %[[MASK4:.*]] = arith.constant 3 : i32

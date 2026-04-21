@@ -43,8 +43,7 @@
 // CHECK:         aie.use_lock(%[[CONS_CONS]], AcquireGreaterEqual, 1)
 // CHECK:         memref.load {{.*}} : memref<1xi32>
 // CHECK:         arith.index_cast
-// CHECK:         arith.cmpi eq
-// CHECK:         scf.if
+// CHECK:         scf.index_switch
 // CHECK:           scf.yield %[[BUFF0]]
 // CHECK:           scf.yield %[[BUFF1]]
 // CHECK:         func.call @process_10_i32

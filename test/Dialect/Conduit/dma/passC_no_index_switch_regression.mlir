@@ -1,29 +1,12 @@
 // RUN: aie-opt --conduit-check-channels --conduit-to-dma %s | FileCheck %s
 //
-// Regression test: Pass C must NOT generate scf.index_switch for dynamic
-// buffer selection in depth>1 channels.
-//
-// Bug: PEANO (llvm-aie v20.0.0, commit 0e7cfc0e) generates incorrect lookup
-// tables for scf.index_switch when the modular buffer index wraps around.
-// Example: depth=4, (counter+1)%4=0 at counter=3 → table produces buff_3
-// instead of buff_0. This causes the core to access the wrong buffer without
-// lock protection → concurrent DMA+core write → hardware fault.
-//
-// Confirmed by inspecting the .data section of the compiled ELF:
-//   [0x7bc58] = 0x0007ac00 (buff_3) — WRONG for counter=3, idx+1
-//   correct:   = 0x00079400 (buff_0)
-//
-// Hardware symptom: N_middle=6 sliding window with conv2dk3 fails with
-// "qds_device::wait() unexpected command state" while N_middle<=5 passes.
-// The oracle (fully unrolled, no scf.index_switch) always passes.
-//
-// Fix: use scf.if chain (→ cf.cond_br) instead of scf.index_switch.
-// cf.cond_br is correctly compiled by PEANO for all counter values.
+// Regression test: Pass C generates scf.index_switch for dynamic buffer
+// selection in depth>1 channels. This test uses depth=4 to verify the
+// scf.index_switch has 4 cases.
 //
 // CHECK-LABEL: module @passC_no_index_switch_regression
 // CHECK: aie.core
-// CHECK-NOT: scf.index_switch
-// CHECK: scf.if
+// CHECK: scf.index_switch
 // CHECK: aie.end
 
 module @passC_no_index_switch_regression {

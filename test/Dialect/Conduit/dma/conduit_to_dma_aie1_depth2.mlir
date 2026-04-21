@@ -27,8 +27,7 @@
 // CHECK: scf.for
 // CHECK: aie.use_lock(%{{.*}}, Acquire, 1)
 // CHECK: arith.index_cast
-// CHECK: arith.cmpi eq
-// CHECK: scf.if
+// CHECK: scf.index_switch
 // CHECK: aie.use_lock(%{{.*}}, Release, 0)
 // CHECK: arith.andi
 

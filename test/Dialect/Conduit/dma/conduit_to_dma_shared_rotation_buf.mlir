@@ -39,8 +39,7 @@
 // CHECK:       %c0{{.*}} = arith.constant 0 : index
 // CHECK:       memref.load {{.*}}[%c0{{.*}}] : memref<2xi32>
 // CHECK:       arith.index_cast
-// CHECK:       arith.cmpi eq
-// CHECK:       scf.if
+// CHECK:       scf.index_switch
 // CHECK:         scf.yield %{{.*}}fifo_a_cons_buff_0
 // CHECK:         scf.yield %{{.*}}fifo_a_cons_buff_1
 // CHECK:       func.call @process_a
@@ -53,8 +52,7 @@
 // CHECK:       %c1{{.*}} = arith.constant 1 : index
 // CHECK:       memref.load {{.*}}[%c1{{.*}}] : memref<2xi32>
 // CHECK:       arith.index_cast
-// CHECK:       arith.cmpi eq
-// CHECK:       scf.if
+// CHECK:       scf.index_switch
 // CHECK:         scf.yield %{{.*}}fifo_b_cons_buff_0
 // CHECK:         scf.yield %{{.*}}fifo_b_cons_buff_1
 // CHECK:       func.call @process_b
