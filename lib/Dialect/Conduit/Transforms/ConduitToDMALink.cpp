@@ -335,10 +335,13 @@ void linkPhase(ConduitToDMAState &state) {
               relayProdLock ? relayProdLock.getResult() : mlir::Value{};
           mlir::Value relLock =
               relayConsLock ? relayConsLock.getResult() : mlir::Value{};
+          AIE::BDDimLayoutArrayAttr relayConsDims;
+          if (!coreRelaySrc.consumerDimensions.empty())
+            relayConsDims = coreRelaySrc.consumerDimensions[0];
           state.emitBDBlock(
               loc, s2mmBDs[i], acqLock, state.lockAcqValue(Port::Produce, 1),
               relayBufs[i % relayBufs.size()].getResult(), 0, relayPerBufLen,
-              relLock, state.lockRelValue(Port::Produce));
+              relLock, state.lockRelValue(Port::Produce), relayConsDims);
           builder.create<AIE::NextBDOp>(loc, s2mmBDs[(i + 1) % relayDepth]);
         }
 
@@ -1059,10 +1062,14 @@ void linkPhase(ConduitToDMAState &state) {
         mlir::Value ingestRelLock = (sliceIdx < sliceConsLocks.size())
                                         ? sliceConsLocks[sliceIdx].getResult()
                                         : mlir::Value{};
+        AIE::BDDimLayoutArrayAttr ingestDims;
+        if (!srcInfo.consumerDimensions.empty())
+          ingestDims = srcInfo.consumerDimensions[0];
         state.emitBDBlock(loc, ingestBlocks[blkIdx], ingestAcqLock,
                           state.lockAcqValue(Port::Produce, 1),
                           linkBufs[bufIdx].getResult(), dstOffset, dstLen,
-                          ingestRelLock, state.lockRelValue(Port::Produce));
+                          ingestRelLock, state.lockRelValue(Port::Produce),
+                          ingestDims);
         builder.create<AIE::NextBDOp>(loc,
                                       ingestBlocks[(blkIdx + 1) % totalIngest]);
       }
@@ -1168,6 +1175,17 @@ void linkPhase(ConduitToDMAState &state) {
         }
       }
 
+      // Look up dst conduit's producerDimensions (dims_to_stream) for the
+      // join MM2S BDs, matching how the distribute path passes dstProdDims.
+      AIE::BDDimLayoutArrayAttr joinDstProdDims;
+      if (!dsts.empty()) {
+        std::string joinDstName =
+            mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
+        ConduitInfo *dstInfo = state.lookupConduit(joinDstName, linkOp.op);
+        if (dstInfo)
+          joinDstProdDims = dstInfo->producerDimensions;
+      }
+
       llvm::SmallVector<mlir::Block *> sendBDBlocks;
       for (unsigned i = 0; i < totalBDs; ++i)
         sendBDBlocks.push_back(addBlock());
@@ -1192,7 +1210,7 @@ void linkPhase(ConduitToDMAState &state) {
             joinIntermediateBuffers[bufIdx % joinIntermediateBuffers.size()]
                 .getResult(),
             mm2sOffsets[srcIdx], mm2sLens[srcIdx], relLock,
-            state.lockRelValue(Port::Consume));
+            state.lockRelValue(Port::Consume), joinDstProdDims);
         builder.create<AIE::NextBDOp>(loc,
                                       sendBDBlocks[(bdIdx + 1) % totalBDs]);
       }
