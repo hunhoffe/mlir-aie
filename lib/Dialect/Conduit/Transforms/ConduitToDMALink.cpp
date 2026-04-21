@@ -1807,8 +1807,11 @@ void linkPhase(ConduitToDMAState &state) {
               }
 
               // Compute DMAStartOp repeat_count from dma_repeat.
+              // AIE compute tile DMAs must cycle infinitely (repeat_count=0)
+              // — the core controls lifetime via its main() function.
+              // Only MemTile and Shim DMAs use finite repeat_count.
               int32_t dmaRepeatCount =
-                  (info.dmaRepeat > 0)
+                  (info.dmaRepeat > 0 && prodIsMemTile)
                       ? static_cast<int32_t>(info.dmaRepeat - 1)
                       : 0;
               // BD chain repeat factor for objectfifo bd_repeat.
@@ -2045,8 +2048,9 @@ void linkPhase(ConduitToDMAState &state) {
       // producer_dimensions are NOT applied here: for shim consumers, the
       // DMA descriptor on the shim side (runtime-programmed) carries dims.
       // The compute tile MM2S BD uses the raw buffer without transforms.
-      int32_t caseBDmaRepeatCount =
-          (info.dmaRepeat > 0) ? static_cast<int32_t>(info.dmaRepeat - 1) : 0;
+      // Case B is always a compute tile — never set finite repeat_count.
+      // Compute tile DMAs must cycle infinitely; the core controls lifetime.
+      int32_t caseBDmaRepeatCount = 0;
       int64_t caseBBdRepeat = info.bdRepeat > 1 ? info.bdRepeat : 1;
       int64_t caseBEffectiveBDs = info.nConsumerBuffers() * caseBBdRepeat;
 
@@ -2130,15 +2134,11 @@ void linkPhase(ConduitToDMAState &state) {
                 info.buffers[(i / caseBBdRepeat) % info.buffers.size()]
                     .getResult(),
                 0, perBufLen, blockRelVal, state.lockRelValue(Port::Consume));
-            bool caseBIsLast =
-                (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
-            if (caseBIsLast)
-              builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(),
-                                            newEndBlock);
-            else
-              builder.create<AIE::NextBDOp>(
-                  state.deviceOp.getLoc(),
-                  bdBlocks[(i + 1) % caseBEffectiveBDs]);
+            // Case B is always a compute tile — chain must be circular
+            // (infinite cycling with repeat_count=0).
+            builder.create<AIE::NextBDOp>(
+                state.deviceOp.getLoc(),
+                bdBlocks[(i + 1) % caseBEffectiveBDs]);
           }
           builder.setInsertionPointToEnd(newEndBlock);
           builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -2210,13 +2210,10 @@ void linkPhase(ConduitToDMAState &state) {
               info.buffers[(i / caseBBdRepeat) % info.buffers.size()]
                   .getResult(),
               0, perBufLen, blockRelVal, state.lockRelValue(Port::Consume));
-          bool caseBIsLast =
-              (i == caseBEffectiveBDs - 1) && (info.dmaRepeat > 0);
-          if (caseBIsLast)
-            builder.create<AIE::NextBDOp>(state.deviceOp.getLoc(), endMemBlock);
-          else
-            builder.create<AIE::NextBDOp>(
-                state.deviceOp.getLoc(), bdBlocks[(i + 1) % caseBEffectiveBDs]);
+          // Case B is always a compute tile — chain must be circular
+          // (infinite cycling with repeat_count=0).
+          builder.create<AIE::NextBDOp>(
+              state.deviceOp.getLoc(), bdBlocks[(i + 1) % caseBEffectiveBDs]);
         }
         builder.setInsertionPointToEnd(endMemBlock);
         builder.create<AIE::EndOp>(state.deviceOp.getLoc());
@@ -2363,8 +2360,13 @@ void linkPhase(ConduitToDMAState &state) {
         }
 
         // Compute DMAStartOp repeat_count from dma_repeat.
+        // AIE compute tile DMAs must cycle infinitely (repeat_count=0)
+        // — the core controls lifetime.  Only MemTile DMAs use finite
+        // repeat_count from dma_repeat.
         int32_t dmaRepeatCount =
-            (info.dmaRepeat > 0) ? static_cast<int32_t>(info.dmaRepeat - 1) : 0;
+            (info.dmaRepeat > 0 && consIsMemTile)
+                ? static_cast<int32_t>(info.dmaRepeat - 1)
+                : 0;
 
         llvm::SmallVector<mlir::Block *> bdBlocks;
         for (int64_t i = 0; i < nBufs; ++i)
