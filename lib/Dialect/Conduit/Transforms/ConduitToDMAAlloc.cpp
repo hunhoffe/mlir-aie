@@ -133,7 +133,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        bool explicitSharedMem = (info.routingMode == "shared_memory");
+        bool explicitSharedMem = (info.routingMode == RoutingMode::SharedMemory);
         if (explicitSharedMem || rightShared || leftShared) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
@@ -182,7 +182,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       if (state.linkSrcNamesEarly.count(name)) {
         // linkSrcNamesEarly: producer-side counter on compute producer tile.
         // Stream conduits: no producer-side allocation, skip counter.
-        if (info.routingMode != "stream") {
+        if (info.routingMode != RoutingMode::Stream) {
           auto [pCol, pRow] = info.producerTileCoord;
           if (pCol >= 0 && pRow >= 2) {
             AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
@@ -217,7 +217,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     if (info.sharedMemory)
       continue;
     // Stream conduits: no producer-side DMA — skip producer-side counter.
-    if (info.routingMode == "stream")
+    if (info.routingMode == RoutingMode::Stream)
       continue;
     if (state.linkSrcNamesEarly.count(name) ||
         state.linkJoinSrcNames.count(name))
@@ -363,7 +363,7 @@ void allocPhase(ConduitToDMAState &state) {
       state.switchToDeviceIndex(info.deviceIndex);
 
     // Cascade conduits use no buffers, locks, or DMA — skip entirely.
-    if (info.routingMode == "cascade")
+    if (info.routingMode == RoutingMode::Cascade)
       continue;
 
     // Phase 5b: track whether buffers were pre-materialized.
@@ -486,7 +486,7 @@ void allocPhase(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
         bool leftShared =
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        bool explicitSharedMem = (info.routingMode == "shared_memory");
+        bool explicitSharedMem = (info.routingMode == RoutingMode::SharedMemory);
         if (explicitSharedMem || rightShared || leftShared) {
           info.sharedMemory = true;
 
@@ -708,7 +708,7 @@ void allocPhase(ConduitToDMAState &state) {
         // allocation entirely. The producer core outputs data directly
         // through the Core AXI stream port — no DMA, buffers, or locks
         // on the producer tile.
-        if (info.routingMode != "stream") {
+        if (info.routingMode != RoutingMode::Stream) {
           auto [pCol, pRow] = info.producerTileCoord;
           if (pCol >= 0 && pRow >= 2) {
             AIE::TileOp pTile = state.lookupTileByCoord(pCol, pRow);
@@ -793,10 +793,10 @@ void allocPhase(ConduitToDMAState &state) {
     if (state.isMultiDevice())
       state.switchToDeviceIndex(info.deviceIndex);
 
-    if (info.routingMode == "cascade")
+    if (info.routingMode == RoutingMode::Cascade)
       continue;
     // Stream conduits: no producer-side DMA — skip producer-side allocation.
-    if (info.routingMode == "stream")
+    if (info.routingMode == RoutingMode::Stream)
       continue;
     if (info.sharedMemory)
       continue;

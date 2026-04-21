@@ -169,19 +169,11 @@ struct PacketChannelState {
   llvm::DenseMap<std::pair<mlir::Operation *, int>, bool> isPacketChannel;
 
   // Per packet-mode MM2S port: (flow_id, dst_tile_op*) pairs routing through.
-  // Key: portKey(tileOp, channel).
-  llvm::DenseMap<int64_t,
+  // Key: (tile_op_ptr, channel_index) — same composite key type as
+  // isPacketChannel.
+  llvm::DenseMap<std::pair<mlir::Operation *, int>,
                  llvm::SmallVector<std::pair<uint8_t, mlir::Operation *>>>
       portOccupancy;
-
-  // Build a stable int64_t key for portOccupancy from a (tile, channel) pair.
-  // Uses the lower 56 bits of the tile pointer + 8 bits of channel index.
-  // Collision probability is negligible for designs with <256^7 tiles.
-  static int64_t portKey(mlir::Operation *tileOp, int channel) {
-    auto addr = reinterpret_cast<uintptr_t>(tileOp);
-    return static_cast<int64_t>((addr & 0x00FFFFFFFFFFFFFFULL) << 8) |
-           static_cast<int64_t>(channel & 0xFF);
-  }
 };
 
 // parseTileCoord is defined in ConduitTileInference.h (included above).
@@ -225,8 +217,10 @@ struct ConduitInfo {
   // Cyclostatic (CSDF) access pattern from conduit.create access_pattern attr.
   // Empty = uniform SDF; non-empty = CSDF per-iteration acquire counts.
   llvm::SmallVector<int64_t> accessPattern;
-  // Routing mode: "circuit" (default), "packet", "cascade", or "stream".
-  std::string routingMode = "circuit";
+  // Routing mode enum. std::nullopt = "any" (absent / unresolved — Pass D
+  // resolves). Present values: Circuit, Packet, Cascade, Stream, SharedMemory,
+  // DMA.
+  std::optional<RoutingMode> routingMode;
   // Core stream port index for routing_mode="stream" (-1 if not stream).
   int32_t aieStreamPort = -1;
   // DMA channel fusion group label (from --conduit-fuse-channels annotation).
@@ -799,13 +793,13 @@ struct ConduitToDMAState {
   // For packet flows, the packet ID is allocated from packetIDAllocator.
   // If the ID budget is exhausted, passFailed is set and the flow is not
   // emitted (the error is reported by the allocator on the module op).
-  void emitFlow(llvm::StringRef routingMode, mlir::Value srcTile,
+  void emitFlow(std::optional<RoutingMode> routingMode, mlir::Value srcTile,
                 AIE::WireBundle srcBundle, int32_t srcChan, mlir::Value dstTile,
                 AIE::WireBundle dstBundle, int32_t dstChan) {
     // Use the loc from the device that owns srcTile so that multi-device
     // modules assign correct source locations to emitted flow ops.
     mlir::Location loc = getLocForTile(srcTile);
-    if (routingMode == "packet") {
+    if (routingMode == RoutingMode::Packet) {
       // Allocate a packet flow ID; fail gracefully if budget is exhausted.
       if (!packetIDAllocator) {
         module.emitError("internal error: packetIDAllocator not initialized "

@@ -172,8 +172,8 @@ static bool tryPacketFallback(ConduitToDMAState &state,
   // share the same output port from P's switchbox.  A full pathfinder
   // traversal of intermediate switchboxes is deferred to P2-E.
   // -----------------------------------------------------------------------
-  int64_t pKey = PacketChannelState::portKey(prodTileOp, mm2sChannel);
-  auto &occupancy = state.pktChannelState.portOccupancy[pKey];
+  auto portKey = std::make_pair(prodTileOp, mm2sChannel);
+  auto &occupancy = state.pktChannelState.portOccupancy[portKey];
   for (auto &[existFlowID, existDstOp] : occupancy) {
     if (existDstOp == consTileOp) {
       // Two packet flows with different IDs routing to the same consumer
@@ -284,7 +284,7 @@ static bool tryPacketFallback(ConduitToDMAState &state,
   builder.setInsertionPointAfter(pktFlow);
 
   // Update routingMode so that Phase 5.5 generates packet BD chains.
-  info.routingMode = "packet";
+  info.routingMode = RoutingMode::Packet;
 
   return true;
 }
@@ -307,7 +307,7 @@ void routePhase(ConduitToDMAState &state) {
       state.switchToDeviceIndex(info.deviceIndex);
 
     // Cascade conduits: no shim DMA, no aie.flow — handled below.
-    if (info.routingMode == "cascade")
+    if (info.routingMode == RoutingMode::Cascade)
       continue;
 
     auto [prodCol, prodRow] = info.producerTileCoord;
@@ -338,7 +338,7 @@ void routePhase(ConduitToDMAState &state) {
                 ? state.tileNextMM2SChannel[shimTile.getResult()]
                 : 0;
         if (static_cast<uint32_t>(currentMM2S) >= maxShimMM2S &&
-            info.routingMode != "packet") {
+            info.routingMode != RoutingMode::Packet) {
           bool found = false;
           for (int64_t adjCol = prodCol + 1; adjCol < prodCol + 8; ++adjCol) {
             AIE::TileOp adjTile = state.lookupTileByCoord(adjCol, 0);
@@ -716,7 +716,7 @@ void routePhase(ConduitToDMAState &state) {
     // Also record one MemTile domain per group for block allocation.
     llvm::StringMap<mlir::Value> fuseGroupDomain;
     for (auto &[name, info] : state.conduitMap) {
-      if (info.routingMode != "packet" || info.fuseGroup.empty())
+      if (info.routingMode != RoutingMode::Packet || info.fuseGroup.empty())
         continue;
       if (state.isMultiDevice())
         state.switchToDeviceIndex(info.deviceIndex);
@@ -772,10 +772,10 @@ void routePhase(ConduitToDMAState &state) {
       state.switchToDeviceIndex(info.deviceIndex);
 
     // Pass 0: only packet conduits.  Pass 1: everything else.
-    if (flowPass == 0 && info.routingMode != "packet") continue;
-    if (flowPass == 1 && info.routingMode == "packet") continue;
+    if (flowPass == 0 && info.routingMode != RoutingMode::Packet) continue;
+    if (flowPass == 1 && info.routingMode == RoutingMode::Packet) continue;
 
-    if (info.routingMode == "cascade")
+    if (info.routingMode == RoutingMode::Cascade)
       continue;
     if (info.sharedMemory)
       continue;
@@ -838,7 +838,7 @@ void routePhase(ConduitToDMAState &state) {
       }
       state.fuseGroupMembers[qFG].push_back(name);
       state.conduitMM2SChannel[name] = mm2sChannel;
-    } else if (info.routingMode == "any") {
+    } else if (!info.routingMode.has_value()) {
       // mode=any: check whether a circuit DMA channel is available.
       int32_t nextCh = state.tileNextMM2SChannel.count(prodTileVal)
                            ? state.tileNextMM2SChannel[prodTileVal]
@@ -862,16 +862,16 @@ void routePhase(ConduitToDMAState &state) {
         mm2sChannel = state.tileNextMM2SChannel[prodTileVal]++;
         state.conduitMM2SChannel[name] = mm2sChannel;
         // Track packet-mode channel designation for Step 3.5c.
-        if (info.routingMode == "packet" && prodTile) {
+        if (info.routingMode == RoutingMode::Packet && prodTile) {
           auto key = std::make_pair(prodTile.getOperation(),
                                     static_cast<int>(mm2sChannel));
           state.pktChannelState.isPacketChannel[key] = true;
           // NOTE: usedPacketFallback is NOT set here; explicit packet-mode
           // broadcast is handled below (single multi-dest packet flow).
         }
-      } else if (info.routingMode != "cascade" &&
-                 info.routingMode != "shared_memory" &&
-                 info.routingMode != "stream") {
+      } else if (info.routingMode != RoutingMode::Cascade &&
+                 info.routingMode != RoutingMode::SharedMemory &&
+                 info.routingMode != RoutingMode::Stream) {
         // Circuit DMA exhausted on producer tile — fall back to
         // packet-switched DMA regardless of explicit routing_mode.
         // tryPacketFallback (Step 3.5c) will reuse an existing
@@ -890,7 +890,7 @@ void routePhase(ConduitToDMAState &state) {
     // each packet to all destinations.  This matches the oracle's behavior
     // (AIEObjectFifoStatefulTransform) where one bdPacket ID is used for all
     // producer MM2S BDs and one packet_flow carries multiple packet_dest ops.
-    if (info.routingMode == "packet" && mm2sChannel >= 0 &&
+    if (info.routingMode == RoutingMode::Packet && mm2sChannel >= 0 &&
         !info.consumerTileCoords.empty()) {
       if (!state.packetIDAllocator) {
         state.module.emitError(
@@ -1037,7 +1037,7 @@ void routePhase(ConduitToDMAState &state) {
       // so the compute consumer flow must also be emitted.
       if (!info.forceDMA && info.consumerTileCoords.size() == 1 &&
           info.shimConsumerTileCoords.empty()) {
-        bool explicitSharedMem = (info.routingMode == "shared_memory");
+        bool explicitSharedMem = (info.routingMode == RoutingMode::SharedMemory);
         bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
                                                               consCol, consRow);
         bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
@@ -1163,7 +1163,7 @@ void routePhase(ConduitToDMAState &state) {
     if (state.isMultiDevice())
       state.switchToDeviceIndex(info.deviceIndex);
 
-    if (info.routingMode != "cascade")
+    if (info.routingMode != RoutingMode::Cascade)
       continue;
 
     auto [prodCol, prodRow] = info.producerTileCoord;

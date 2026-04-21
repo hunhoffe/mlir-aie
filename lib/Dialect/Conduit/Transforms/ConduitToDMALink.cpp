@@ -429,7 +429,7 @@ void linkPhase(ConduitToDMAState &state) {
     ConduitInfo *srcInfoPtr = state.lookupConduit(srcName, linkOp.op);
 
     // Guard: cascade-mode conduits cannot be used with distribute/join/forward.
-    if (srcInfoPtr && srcInfoPtr->routingMode == "cascade") {
+    if (srcInfoPtr && srcInfoPtr->routingMode == RoutingMode::Cascade) {
       linkOp.emitError(
           "conduit distribute/join/forward cannot use cascade-mode "
           "conduit '" +
@@ -758,10 +758,10 @@ void linkPhase(ConduitToDMAState &state) {
             dstIdx < distMM2SChannels.size() ? distMM2SChannels[dstIdx] : 0;
 
         // Determine routing mode for this dst conduit.
-        std::string dstRoutingMode =
-            dstInfo ? dstInfo->routingMode : std::string("circuit");
+        std::optional<RoutingMode> dstRoutingMode =
+            dstInfo ? dstInfo->routingMode : RoutingMode::Circuit;
 
-        if (dstRoutingMode == "packet") {
+        if (dstRoutingMode == RoutingMode::Packet) {
           // Packet-mode broadcast: emit ONE multi-dest aie.packet_flow.
           // Allocate S2MM channels per consumer first, then build the flow.
           if (!state.packetIDAllocator) {
@@ -882,7 +882,7 @@ void linkPhase(ConduitToDMAState &state) {
           if (srcProdTile) {
             AIE::WireBundle srcBundle = AIE::WireBundle::DMA;
             int32_t srcPort = 0;
-            if (srcInfo.routingMode == "stream") {
+            if (srcInfo.routingMode == RoutingMode::Stream) {
               srcBundle = AIE::WireBundle::Core;
               srcPort = srcInfo.aieStreamPort >= 0 ? srcInfo.aieStreamPort : 0;
             } else {
@@ -1367,7 +1367,7 @@ void linkPhase(ConduitToDMAState &state) {
     if (!state.linkSrcNamesEarly.count(name))
       continue;
     // Stream conduits: producer uses Core AXI stream port, no DMA needed.
-    if (info.routingMode == "stream")
+    if (info.routingMode == RoutingMode::Stream)
       continue;
     auto [prodCol, prodRow] = info.producerTileCoord;
     if (prodCol < 0 || prodRow < 2)

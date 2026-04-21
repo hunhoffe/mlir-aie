@@ -63,9 +63,9 @@ void collectPhase(ConduitToDMAState &state) {
     // so that Step 3.5 packet fallback still applies when no explicit mode
     // has been set via --conduit-infer-modes).
     if (auto rm = op.getRoutingMode())
-      info.routingMode = stringifyRoutingMode(*rm).str();
+      info.routingMode = *rm;
     else
-      info.routingMode = "any"; // absent = unresolved; let Pass C decide
+      info.routingMode = std::nullopt; // absent = unresolved; let Pass C decide
 
     // Core stream port for routing_mode="stream".
     if (auto aspAttr = op->getAttrOfType<mlir::IntegerAttr>("aie_stream_port"))
@@ -147,7 +147,7 @@ void collectPhase(ConduitToDMAState &state) {
     // The hardware cascade stream is a blocking register (rendezvous channel),
     // not a FIFO. depth = 2 cannot be implemented; emitting it would produce
     // a silently incorrect program.
-    if (info.routingMode == "cascade" && info.depth != 1) {
+    if (info.routingMode == RoutingMode::Cascade && info.depth != 1) {
       op.emitError("cascade conduit must have depth = 1; hardware has no FIFO "
                    "on the cascade stream");
       state.passFailed = true;
