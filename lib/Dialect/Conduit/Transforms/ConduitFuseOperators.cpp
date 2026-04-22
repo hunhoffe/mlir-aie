@@ -867,6 +867,8 @@ struct ConduitFuseOperatorsPass
         // defined in bodyB have been moved to bodyA, so devB->erase() will
         // not encounter live-use violations.
         devB->erase();
+        devices.erase(devices.begin() + i + 1);
+        --i;
 
         // --- Step 8b: Sink cores and runtime sequences to end of device body.
         //
