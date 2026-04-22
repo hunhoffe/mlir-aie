@@ -328,6 +328,24 @@ static cl::opt<bool> useConduit(
         "Use Conduit IR lowering instead of objectFifo stateful transform"),
     cl::init(false), cl::cat(aieCompilerOptions));
 
+static cl::opt<bool> conduitFuseSpatial(
+    "conduit-fuse-spatial",
+    cl::desc(
+        "With --use-conduit, inject --conduit-fuse-operators (spatial fusion)"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
+static cl::opt<bool> conduitFuseCoreBodies(
+    "conduit-fuse-core-bodies-flag",
+    cl::desc("With --use-conduit, inject --conduit-fuse-core-bodies "
+             "(loop-body fusion)"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
+static cl::opt<bool> conduitFuseChannels(
+    "conduit-fuse-channels-flag",
+    cl::desc(
+        "With --use-conduit, inject --conduit-fuse-channels (relay fusion)"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
                                     cl::init(false),
@@ -1465,8 +1483,16 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   // Step 4: ObjectFifo / Conduit pipeline
   if (useConduit) {
     // Conduit passes are module-level; add before device-level nesting
-    std::string conduitPipeline =
-        "objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma";
+    std::string conduitPipeline = "objectfifo-to-conduit";
+    if (conduitFuseSpatial || conduitFuseCoreBodies)
+      conduitPipeline += ",dma-task-to-conduit";
+    if (conduitFuseCoreBodies)
+      conduitPipeline += ",conduit-fuse-core-bodies";
+    if (conduitFuseSpatial)
+      conduitPipeline += ",conduit-fuse-operators";
+    if (conduitFuseChannels)
+      conduitPipeline += ",conduit-fuse-channels";
+    conduitPipeline += ",conduit-depth-promote,conduit-to-dma";
     if (failed(parsePassPipeline(conduitPipeline, pm))) {
       llvm::errs() << "Error: Failed to parse conduit pipeline\n";
       return failure();
