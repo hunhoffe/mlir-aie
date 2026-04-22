@@ -1487,9 +1487,9 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
     if (conduitFuseSpatial || conduitFuseCoreBodies)
       conduitPipeline += ",dma-task-to-conduit";
     if (conduitFuseCoreBodies)
-      conduitPipeline += ",conduit-fuse-core-bodies";
+      conduitPipeline += ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
     if (conduitFuseSpatial)
-      conduitPipeline += ",conduit-fuse-operators";
+      conduitPipeline += ",aie-combine-device,conduit-fuse-operators";
     if (conduitFuseChannels)
       conduitPipeline += ",conduit-fuse-channels";
     conduitPipeline += ",conduit-depth-promote,conduit-to-dma";
