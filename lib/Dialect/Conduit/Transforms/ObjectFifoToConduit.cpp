@@ -56,8 +56,8 @@
 // - The memtile heuristic in link rewriting is approximate.
 // - producer_dimensions/consumer_dimensions from the source objectfifo are
 //   propagated to the forceCircuit check but not emitted on conduit.create.
-// - The pass currently operates on the whole module; nested device ops are
-//   handled one level deep only.
+// - The pass processes each aie.device independently with fresh maps,
+//   preventing name collisions across devices in multi-device modules.
 //
 //===----------------------------------------------------------------------===//
 
@@ -181,12 +181,12 @@ struct ObjectFifoToConduitPass
   // Walk the module to build fifoInfoMap (name → tile/depth/type info) and
   // detect cyclostatic (CSDF) access patterns from acquire op counts.
 
-  void collectFifoInfo(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
+  void collectFifoInfo(AIE::DeviceOp device, mlir::MLIRContext *ctx) {
     fifoInfoMap.clear();
     aieStreamFifoPort.clear();
 
     // Phase 1: collect FifoInfo for all aie.objectfifo ops.
-    module.walk([&](AIE::ObjectFifoCreateOp op) {
+    device.walk([&](AIE::ObjectFifoCreateOp op) {
       // aie_stream ObjectFIFOs route data through the Core AXI stream port
       // rather than DMA. Record the stream port for conduit.create emission;
       // Pass C uses routing_mode="stream" to emit aie.flow(Core:N, ...).
@@ -269,7 +269,7 @@ struct ObjectFifoToConduitPass
     // Number of distinct producer cores per fifo name.
     llvm::DenseMap<mlir::StringAttr, mlir::Operation *> fifoProducerCore;
 
-    module.walk([&](AIE::ObjectFifoAcquireOp op) {
+    device.walk([&](AIE::ObjectFifoAcquireOp op) {
       auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
       // Find the enclosing aie.core op.
       mlir::Operation *coreOp = op->getParentOp();
@@ -291,7 +291,7 @@ struct ObjectFifoToConduitPass
     // Also collect Consume-port release counts for sliding-window detection.
     // Sliding-window: consumer acquire count > consumer release count per step.
     llvm::DenseMap<CoreKey, llvm::SmallVector<int64_t>> perCoreConsumeRelCounts;
-    module.walk([&](AIE::ObjectFifoReleaseOp op) {
+    device.walk([&](AIE::ObjectFifoReleaseOp op) {
       auto nameAttr = mlir::StringAttr::get(ctx, op.getObjFifoName().str());
       mlir::Operation *coreOp = op->getParentOp();
       while (coreOp && !mlir::isa<AIE::CoreOp>(coreOp))
@@ -400,7 +400,7 @@ struct ObjectFifoToConduitPass
     // Users who need register_process expansion must run
     // --aie-register-objectFifos before --objectfifo-to-conduit.
     llvm::SmallVector<AIE::ObjectFifoRegisterProcessOp> regProcOps;
-    module.walk(
+    device.walk(
         [&](AIE::ObjectFifoRegisterProcessOp op) { regProcOps.push_back(op); });
     for (auto op : regProcOps)
       op.erase();
@@ -414,7 +414,7 @@ struct ObjectFifoToConduitPass
   // conduit.subview_access / conduit.release, replacing all ObjectFIFO ops.
   // Original ops are collected in erasure vectors for later cleanup.
 
-  void transformFifos(mlir::ModuleOp module, mlir::OpBuilder &builder,
+  void transformFifos(AIE::DeviceOp device, mlir::OpBuilder &builder,
                       mlir::MLIRContext *ctx) {
     fifosToErase.clear();
     subviewsToErase.clear();
@@ -426,7 +426,7 @@ struct ObjectFifoToConduitPass
     // aie.objectfifo.acquire to reference a live objectfifo symbol.  Collect
     // for deferred erasure after Phase 4 completes.
 
-    module.walk([&](AIE::ObjectFifoCreateOp op) {
+    device.walk([&](AIE::ObjectFifoCreateOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
 
@@ -637,7 +637,7 @@ struct ObjectFifoToConduitPass
 
     // Phase 3: rewrite aie.objectfifo.link → conduit.distribute or
     // conduit.join.
-    module.walk([&](AIE::ObjectFifoLinkOp op) {
+    device.walk([&](AIE::ObjectFifoLinkOp op) {
       builder.setInsertionPoint(op);
       mlir::Location loc = op.getLoc();
 
@@ -771,7 +771,7 @@ struct ObjectFifoToConduitPass
 
     // Collect cascade fifo names for Phase 4 dispatch.
     llvm::DenseSet<mlir::StringAttr> cascadeFifoNames;
-    module.walk([&](AIE::ObjectFifoCreateOp op) {
+    device.walk([&](AIE::ObjectFifoCreateOp op) {
       if (op.getViaCascade())
         cascadeFifoNames.insert(op.getSymNameAttr());
     });
@@ -893,7 +893,7 @@ struct ObjectFifoToConduitPass
     // blocks. This ensures that when the scf.if body block is visited, the
     // enclosing core entry block's window map is already populated — enabling
     // the parent-block walk in findWindowInDominatingBlock to succeed.
-    module.walk<mlir::WalkOrder::PreOrder>([&](mlir::Block *block) {
+    device.walk<mlir::WalkOrder::PreOrder>([&](mlir::Block *block) {
       // Per-block window map: fifo name → all conduit.acquire SSA values
       // emitted in this block, in program order.  Multiple entries arise when
       // the same fifo has separate acquire groups (e.g., preamble before a
@@ -1373,7 +1373,7 @@ struct ObjectFifoToConduitPass
   // Erase all original ObjectFIFO ops (subview, acquire, release, create)
   // and emit shim DMA allocation symbols + allocate delegate tile transfer.
 
-  void eraseOriginalOps(mlir::ModuleOp module, mlir::OpBuilder &builder,
+  void eraseOriginalOps(AIE::DeviceOp device, mlir::OpBuilder &builder,
                         mlir::MLIRContext *ctx) {
     // Deferred erasure: erase subviews before acquires (subview uses acquire
     // result).
@@ -1387,7 +1387,7 @@ struct ObjectFifoToConduitPass
     // Erase aie.objectfifo.register_external_buffers ops (no conduit
     // equivalent). Collect first to avoid walk-while-erase.
     llvm::SmallVector<AIE::ObjectFifoRegisterExternalBuffersOp> extBufOps;
-    module.walk([&](AIE::ObjectFifoRegisterExternalBuffersOp op) {
+    device.walk([&](AIE::ObjectFifoRegisterExternalBuffersOp op) {
       extBufOps.push_back(op);
     });
     for (auto extBufOp : extBufOps)
@@ -1557,7 +1557,7 @@ struct ObjectFifoToConduitPass
     // existing test corpus only uses compute-tile delegates for buffer
     // coalescing, which the oracle already handles without relay.
     llvm::SmallVector<AIE::ObjectFifoAllocateOp> allocatesToErase;
-    module.walk(
+    device.walk(
         [&](AIE::ObjectFifoAllocateOp op) { allocatesToErase.push_back(op); });
     for (AIE::ObjectFifoAllocateOp allocOp : allocatesToErase) {
       auto delegateTile = allocOp.getDelegateTileOp();
@@ -1582,7 +1582,7 @@ struct ObjectFifoToConduitPass
 
       // Find the conduit.create for this objectfifo.
       Create srcCreateOp = nullptr;
-      module.walk([&](Create createOp) {
+      device.walk([&](Create createOp) {
         if (createOp.getSymName() == fifoName)
           srcCreateOp = createOp;
       });
@@ -1639,9 +1639,9 @@ struct ObjectFifoToConduitPass
             walkOp.getPort() == Port::Consume)
           walkOp.setNameAttr(relayRef);
       };
-      module.walk([&](Acquire op) { rewriteConsumer(op); });
-      module.walk([&](AcquireAsync op) { rewriteConsumer(op); });
-      module.walk([&](ReleaseAsync op) { rewriteConsumer(op); });
+      device.walk([&](Acquire op) { rewriteConsumer(op); });
+      device.walk([&](AcquireAsync op) { rewriteConsumer(op); });
+      device.walk([&](ReleaseAsync op) { rewriteConsumer(op); });
 
       allocOp.erase();
     }
@@ -1659,15 +1659,20 @@ struct ObjectFifoToConduitPass
     mlir::OpBuilder builder(module.getContext());
     mlir::MLIRContext *ctx = module.getContext();
 
-    passFailed = false;
+    // Process each aie.device independently with fresh maps to prevent
+    // name collisions across devices in multi-device modules (e.g.,
+    // FusedMLIROperator IR with 19 device blocks all using @in_0, @out_0).
+    module.walk([&](AIE::DeviceOp device) {
+      passFailed = false;
 
-    collectFifoInfo(module, ctx);
-    if (passFailed)
-      return;
-    transformFifos(module, builder, ctx);
-    if (passFailed)
-      return;
-    eraseOriginalOps(module, builder, ctx);
+      collectFifoInfo(device, ctx);
+      if (passFailed)
+        return;
+      transformFifos(device, builder, ctx);
+      if (passFailed)
+        return;
+      eraseOriginalOps(device, builder, ctx);
+    });
   }
 };
 
