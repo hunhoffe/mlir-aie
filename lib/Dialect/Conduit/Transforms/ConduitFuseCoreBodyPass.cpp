@@ -832,6 +832,31 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
   mlir::scf::ForOp producerFor = getOutermostFor(producerCore);
   mlir::scf::ForOp consumerFor = getOutermostFor(consumerCore);
 
+  // Find the consumer for loop that directly contains the intermediate
+  // acquire. For 2-level nesting (outer num_invocations + inner tile loop),
+  // this is the inner for, not the outermost. For 1-level nesting this
+  // stays equal to consumerFor.
+  mlir::scf::ForOp consumerCloneFrom = consumerFor;
+  if (consumerFor) {
+    bool found = false;
+    consumerCore.walk([&](Acquire acq) {
+      if (found)
+        return;
+      if (acq.getName() == consumerChannelName &&
+          acq.getPort() == Port::Consume) {
+        mlir::Operation *parent = acq->getParentOp();
+        while (parent && parent != consumerCore.getOperation()) {
+          if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
+            consumerCloneFrom = forOp;
+            found = true;
+            return;
+          }
+          parent = parent->getParentOp();
+        }
+      }
+    });
+  }
+
   // ---------------------------------------------------------------
   // Step B': Find the insertion point for consumer ops.
   // Consumer ops must be inserted at the same nesting level as the
@@ -915,11 +940,12 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
     builder.setInsertionPoint(producerBlock.getTerminator());
   }
 
-  // Build IRMapping: map consumer's induction var to the enclosing for
-  // at the insertion point (which may be a nested inner loop, not the
-  // outermost for).
+  // Build IRMapping: map consumer induction vars to producer induction vars
+  // at each nesting level. Walk from the clone-from level outward so that
+  // 2-level nests (outer num_invocations + inner tile loop) get both IVs
+  // mapped correctly.
   mlir::IRMapping mapping;
-  if (consumerFor) {
+  if (consumerCloneFrom) {
     mlir::scf::ForOp enclosingFor;
     if (consumerInsertionPt) {
       mlir::Operation *parent = consumerInsertionPt->getParentOp();
@@ -931,28 +957,32 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
         parent = parent->getParentOp();
       }
     }
-    if (enclosingFor) {
-      mapping.map(consumerFor.getInductionVar(),
-                  enclosingFor.getInductionVar());
-    } else if (producerFor) {
-      mapping.map(consumerFor.getInductionVar(), producerFor.getInductionVar());
+    // Map IVs from the clone-from level outward through all nesting levels.
+    mlir::scf::ForOp cFor = consumerCloneFrom;
+    mlir::scf::ForOp pFor = enclosingFor ? enclosingFor : producerFor;
+    while (cFor && pFor) {
+      mapping.map(cFor.getInductionVar(), pFor.getInductionVar());
+      cFor = cFor->getParentOfType<mlir::scf::ForOp>();
+      pFor = pFor->getParentOfType<mlir::scf::ForOp>();
     }
   }
 
   // For loop bodies, pre-clone any ops defined OUTSIDE the consumer's
-  // scf.for but used INSIDE it (e.g., arith.constant ops). This ensures
-  // the IRMapping has entries for these values before we clone the for body.
-  if (consumerFor) {
+  // clone-from for but used INSIDE it (e.g., arith.constant ops defined
+  // in an outer for body or the core body). This ensures the IRMapping
+  // has entries for these values before we clone the for body.
+  if (consumerCloneFrom) {
     llvm::DenseSet<mlir::Operation *> alreadyCloned;
-    for (mlir::Operation &innerOp : *consumerFor.getBody()) {
+    for (mlir::Operation &innerOp : *consumerCloneFrom.getBody()) {
       for (mlir::Value operand : innerOp.getOperands()) {
         mlir::Operation *defOp = operand.getDefiningOp();
         if (!defOp)
           continue;
-        // If defined outside the for body and not already in the mapping,
-        // clone it into the producer.
-        if (!consumerFor->isProperAncestor(defOp) &&
-            defOp != consumerFor.getOperation() && !mapping.contains(operand) &&
+        // If defined outside the clone-from for body and not already in
+        // the mapping, clone it into the producer.
+        if (!consumerCloneFrom->isProperAncestor(defOp) &&
+            defOp != consumerCloneFrom.getOperation() &&
+            !mapping.contains(operand) &&
             alreadyCloned.insert(defOp).second) {
           builder.clone(*defOp, mapping);
         }
@@ -960,10 +990,11 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
     }
   }
 
-  // Collect ops to clone from the consumer.
+  // Collect ops to clone from the consumer's clone-from for body (inner
+  // for when nested, outermost for when single-level).
   llvm::SmallVector<mlir::Operation *> opsToClone;
-  if (consumerFor) {
-    for (mlir::Operation &op : *consumerFor.getBody()) {
+  if (consumerCloneFrom) {
+    for (mlir::Operation &op : *consumerCloneFrom.getBody()) {
       if (op.hasTrait<mlir::OpTrait::IsTerminator>())
         continue;
       opsToClone.push_back(&op);
