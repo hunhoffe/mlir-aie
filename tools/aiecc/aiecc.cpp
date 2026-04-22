@@ -346,6 +346,13 @@ static cl::opt<bool> conduitFuseChannels(
         "With --use-conduit, inject --conduit-fuse-channels (relay fusion)"),
     cl::init(false), cl::cat(aieCompilerOptions));
 
+static cl::opt<bool> conduitAddDmaTaskConversion(
+    "conduit-add-dma-task-conversion",
+    cl::desc("With --use-conduit, inject --dma-task-to-conduit independently "
+             "of fusion flags. Lets us exercise Pass C lowering of "
+             "aiex.dma_task ops without enabling any fusion."),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
                                     cl::init(false),
@@ -1484,7 +1491,8 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   if (useConduit) {
     // Conduit passes are module-level; add before device-level nesting
     std::string conduitPipeline = "objectfifo-to-conduit";
-    if (conduitFuseSpatial || conduitFuseCoreBodies)
+    if (conduitFuseSpatial || conduitFuseCoreBodies ||
+        conduitAddDmaTaskConversion)
       conduitPipeline += ",dma-task-to-conduit";
     if (conduitFuseCoreBodies)
       conduitPipeline += ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
@@ -1493,6 +1501,10 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
     if (conduitFuseChannels)
       conduitPipeline += ",conduit-fuse-channels";
     conduitPipeline += ",conduit-depth-promote,conduit-to-dma";
+    if (verbose) {
+      llvm::outs() << "Conduit pipeline: " << conduitPipeline << "\n";
+      llvm::outs().flush();
+    }
     if (failed(parsePassPipeline(conduitPipeline, pm))) {
       llvm::errs() << "Error: Failed to parse conduit pipeline\n";
       return failure();
