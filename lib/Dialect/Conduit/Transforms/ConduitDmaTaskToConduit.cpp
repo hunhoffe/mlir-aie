@@ -80,8 +80,21 @@ static mlir::FlatSymbolRefAttr getAllocAttr(mlir::Operation *op) {
 
 // ---------------------------------------------------------------------------
 // Helper: convert BDDimLayout dimensions into offsets/sizes/strides arrays.
-// Strips trivial leading dimensions (size==1, stride==0) to produce a
-// compact representation.  The dma_bd scalar offset becomes offsets[0].
+//
+// Strips all dims with stride==0 to produce a compact addressable
+// representation:
+//   * <size=1, stride=0> is a trivial filler dim (no effect on addressing).
+//   * <size=N, stride=0> with N>1 is a broadcast/repeat dim (read same address
+//     N times). The repeat factor does NOT contribute unique addressable
+//     elements — `num_elems` reflects one buffer pass, and the repeat is
+//     preserved separately via `producer_dimensions` (full BDDimLayout) which
+//     is propagated to MM2S channel programming.
+//
+// Including a non-trivial stride=0 repeat dim in `sizes` would break the
+// verifier's `num_elems == product(sizes)` check (num_elems = buffer-pass
+// element count, not channel-element count).
+//
+// The dma_bd scalar offset becomes offsets[0].
 // ---------------------------------------------------------------------------
 static void dimsToOffsetsStrides(int32_t bdOffset, int64_t len,
                                  AIE::BDDimLayoutArrayAttr dimensions,
@@ -89,13 +102,11 @@ static void dimsToOffsetsStrides(int32_t bdOffset, int64_t len,
                                  llvm::SmallVectorImpl<int64_t> &sizes,
                                  llvm::SmallVectorImpl<int64_t> &strides) {
   if (dimensions && !dimensions.empty()) {
-    // Strip trivial leading dims (size=1, stride=0).
-    bool nonTrivialSeen = false;
     for (auto dim : dimensions.getValue()) {
       auto bdDim = mlir::cast<AIE::BDDimLayoutAttr>(dim);
-      if (!nonTrivialSeen && bdDim.getSize() == 1 && bdDim.getStride() == 0)
+      // Skip all stride=0 dims (broadcast/repeat or trivial filler).
+      if (bdDim.getStride() == 0)
         continue;
-      nonTrivialSeen = true;
       sizes.push_back(static_cast<int64_t>(bdDim.getSize()));
       strides.push_back(static_cast<int64_t>(bdDim.getStride()));
     }
