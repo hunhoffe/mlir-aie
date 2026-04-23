@@ -132,6 +132,13 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
 
       // Move all non-RunOp ops in confB to just before confA's RunOp (or at
       // the end of bodyA if confA has no run).
+      //
+      // NOTE: do NOT call op->remove() before moveBefore(): moveBefore is
+      // implemented as a list-splice and asserts the op is currently in a
+      // block (Operation.cpp:558).  remove() detaches it (block becomes null),
+      // which trips the assertion.  moveBefore handles the detach+reinsert
+      // atomically.  For the push_back fallback we DO need to detach first
+      // because Block::push_back expects a free-standing op.
       mlir::Operation *insertBefore = runA ? runA.getOperation() : nullptr;
       llvm::SmallVector<mlir::Operation *> toMove;
       for (mlir::Operation &op : bodyB) {
@@ -140,11 +147,12 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
         toMove.push_back(&op);
       }
       for (mlir::Operation *op : toMove) {
-        op->remove();
-        if (insertBefore)
+        if (insertBefore) {
           op->moveBefore(insertBefore);
-        else
+        } else {
+          op->remove();
           bodyA.push_back(op);
+        }
       }
 
       // Concatenate the two RunOps into one.
@@ -163,12 +171,10 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
         runA.erase();
         (void)newRun;
       } else if (runB && !runA) {
-        // confA had no run (atypical) — move runB into confA.
+        // confA had no run (atypical) — move runB into confA.  insertBefore
+        // is null here (it's runA), so we detach + push_back.
         runB->remove();
-        if (insertBefore)
-          runB->moveBefore(insertBefore);
-        else
-          bodyA.push_back(runB);
+        bodyA.push_back(runB);
         if (survSeqRef)
           runB.setRuntimeSequenceSymbolAttr(survSeqRef);
       }
