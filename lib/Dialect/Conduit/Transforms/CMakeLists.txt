@@ -19,6 +19,7 @@ add_mlir_dialect_library(ConduitTransforms
   ConduitFuseCoreBodyPass.cpp
   ConduitFuseRelay.cpp
   ConduitFuseOperators.cpp
+  DeviceMergeUtils.cpp
   ConduitInferModes.cpp
   ConduitInferRates.cpp
   ConduitLivenessCheck.cpp
@@ -49,10 +50,12 @@ add_mlir_dialect_library(ConduitTransforms
   MLIRAIEInterfacesIncGen
   MLIRAIEOpsIncGen
   MLIRAIEPassIncGen
+  MLIRAIEXIncGen
 
   LINK_LIBS PUBLIC
   Conduit
   AIE
+  AIEX
   MLIRIR
   MLIRPass
   MLIRSupport

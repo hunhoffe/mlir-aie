@@ -31,6 +31,8 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "DeviceMergeUtils.h"
+
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
@@ -236,7 +238,17 @@ struct ConduitCombineDevicePass
           }
         }
 
-        // devB body is now empty except its aie.end terminator. Erase it.
+        // devB body is now empty except its aie.end terminator. Before
+        // erasing devB, retarget any module-level `aiex.configure @<devB>`
+        // host-orchestrator references onto devA — folding into a sibling
+        // `aiex.configure @<devA>` if one exists in the same host
+        // runtime_sequence — so the merged-device runtime semantics survive
+        // the merge.
+        if (mlir::failed(detail::rewriteHostConfigureOnDeviceMerge(
+                module, devA, devB, seqA))) {
+          signalPassFailure();
+          return;
+        }
         devB->erase();
 
         // --- Sink cores and runtime sequences to end of device body. ---

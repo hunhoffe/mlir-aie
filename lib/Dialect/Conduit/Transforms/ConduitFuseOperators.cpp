@@ -49,6 +49,7 @@
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
 #include "ConduitTileInference.h"
+#include "DeviceMergeUtils.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
@@ -866,6 +867,19 @@ struct ConduitFuseOperatorsPass
         // bodyB is now empty except its aie.end terminator. All SSA values
         // defined in bodyB have been moved to bodyA, so devB->erase() will
         // not encounter live-use violations.
+        //
+        // Before erasing devB, rewrite host-orchestrator references: any
+        // module-level `aiex.configure @<devB.sym_name> { ... aiex.run ... }`
+        // block must be retargeted to devA (and folded into a sibling
+        // `aiex.configure @<devA.sym_name>` if one exists in the same host
+        // runtime_sequence) so the merged-device runtime semantics is
+        // preserved. Without this, the module verifier will emit
+        // "No such device: '@<devB>'" against the dangling reference.
+        if (mlir::failed(detail::rewriteHostConfigureOnDeviceMerge(
+                devA->getParentOfType<mlir::ModuleOp>(), devA, devB, seqA))) {
+          signalPassFailure();
+          return;
+        }
         devB->erase();
         devices.erase(devices.begin() + i + 1);
         --i;

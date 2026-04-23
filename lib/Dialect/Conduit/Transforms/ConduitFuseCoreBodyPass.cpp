@@ -44,6 +44,7 @@
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
 #include "ConduitTileInference.h"
+#include "DeviceMergeUtils.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
@@ -124,8 +125,13 @@ static void dedupTileOps(AIE::DeviceOp device) {
 /// Merge devB into devA (same-tile mode) and unify the fusion_group channel
 /// pair into a single channel so that findFusableCorePairs can detect the
 /// cross-device pair as a same-device pair.
-static void mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
-                                 mlir::MLIRContext *ctx) {
+///
+/// Returns failure() if the host-orchestrator rewrite that runs immediately
+/// before `devB->erase()` cannot preserve runtime semantics (e.g., arity
+/// mismatch between the merged runtime_sequence and a host-side aiex.run).
+static mlir::LogicalResult
+mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
+                     mlir::MLIRContext *ctx) {
   // --- Find the matching fusion_group channel pair. ---
   Create producerChannel = nullptr;
   Create consumerChannel = nullptr;
@@ -148,7 +154,7 @@ static void mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
   });
 
   if (!producerChannel || !consumerChannel)
-    return;
+    return mlir::success();
 
   std::string prodName = producerChannel.getName().str();
   std::string consName = consumerChannel.getName().str();
@@ -288,7 +294,16 @@ static void mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
       }
     }
 
-    // devB body is now empty except its aie.end terminator. Erase it.
+    // devB body is now empty except its aie.end terminator. Before
+    // erasing devB, retarget any module-level `aiex.configure @<devB>`
+    // host-orchestrator references onto devA — folding into a sibling
+    // `aiex.configure @<devA>` if one exists in the same host
+    // runtime_sequence — so the merged-device runtime semantics survive
+    // the merge. Without this, the module verifier emits
+    // "No such device: '@<devB>'" against the dangling reference.
+    if (mlir::failed(detail::rewriteHostConfigureOnDeviceMerge(
+            devA->getParentOfType<mlir::ModuleOp>(), devA, devB, seqA)))
+      return mlir::failure();
     devB->erase();
 
     // Sink cores, mem, and runtime_sequences to end of device body
@@ -370,12 +385,16 @@ static void mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
 
   for (auto *op : toErase)
     op->erase();
+  return mlir::success();
 }
 
 /// Pre-process: merge cross-device fusion_group connections into single
 /// devices so that findFusableCorePairs can detect them.
-static void mergeDevicesForFusion(mlir::ModuleOp module,
-                                  mlir::MLIRContext *ctx) {
+///
+/// Returns failure() if any underlying merge surfaces a host-orchestrator
+/// rewrite error (see rewriteHostConfigureOnDeviceMerge).
+static mlir::LogicalResult
+mergeDevicesForFusion(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
   bool merged = true;
   while (merged) {
     merged = false;
@@ -383,7 +402,7 @@ static void mergeDevicesForFusion(mlir::ModuleOp module,
     module.walk([&](AIE::DeviceOp dev) { devices.push_back(dev); });
 
     if (devices.size() < 2)
-      return;
+      return mlir::success();
 
     for (size_t i = 0; i + 1 < devices.size(); ++i) {
       AIE::DeviceOp devA = devices[i];
@@ -392,11 +411,13 @@ static void mergeDevicesForFusion(mlir::ModuleOp module,
       if (!devicesConnectedByFusionGroup(devA, devB))
         continue;
 
-      mergeAndUnifyDevices(devA, devB, ctx);
+      if (mlir::failed(mergeAndUnifyDevices(devA, devB, ctx)))
+        return mlir::failure();
       merged = true;
       break; // Restart — device list is invalidated.
     }
   }
+  return mlir::success();
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,7 +1314,10 @@ struct ConduitFuseCoreBodyPass
     // Step 0: Merge cross-device fusion_group connections into single devices.
     // This allows findFusableCorePairs to detect pairs that span separate
     // aie.device blocks (e.g., GEMV in device A → SiLU in device B).
-    mergeDevicesForFusion(module, ctx);
+    if (mlir::failed(mergeDevicesForFusion(module, ctx))) {
+      signalPassFailure();
+      return;
+    }
 
     // Process each aie.device independently.
     module.walk([&](AIE::DeviceOp device) {
