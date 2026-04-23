@@ -1026,18 +1026,26 @@ void lowerPhase(ConduitToDMAState &state) {
   // Step 8g: Lower conduit.put_memref / get_memref inside
   // aie.runtime_sequence → aiex.dma_configure_task_for + dma_start/await/free.
   //
-  // This is the reverse of --dma-task-to-conduit. After
-  // --conduit-fuse-operators merges runtime_sequences and eliminates dead block
-  // args, there may be more put/get ops than block args (multiple per-column
-  // ops share one full-buffer block arg).  Ops are mapped to block args via arg
-  // groups: contiguous ops starting with offsets[0]==0 form a group sharing one
-  // arg.
+  // This is the reverse of --dma-task-to-conduit.  Each put/get_memref op
+  // carries an explicit `arg_index` attribute set by --dma-task-to-conduit
+  // from the original aie.dma_bd's BlockArgument index.  We use that
+  // attribute as the authoritative binding when re-emitting aie.dma_bd.
+  //
+  // FS7 history: an earlier version of this step grouped ops by an
+  // `offsets[0] == 0` heuristic ("a new arg group starts when offset is
+  // zero").  That heuristic is the bug — it mis-binds ops whose first
+  // offset is a non-zero patch marker (e.g. IRON's `0xDEADBEE0` runtime
+  // patch markers used by StridedCopy/Repeat) to the previous group's
+  // block arg, silently routing OUTPUT BDs to INPUT block args.  The
+  // heuristic has been deleted; arg_index is required, and missing
+  // arg_index fails the pass loudly to surface upstream pipeline bugs.
   //
   // Mapping:
-  //   conduit.put_memref {name=@chan} → aiex.dma_configure_task_for
-  //       @chan_shim_alloc { aie.dma_bd(%argN, ...) / aie.end }
-  //   conduit.get_memref {name=@chan} → same but with {issue_token = true}
-  //       + aiex.dma_await_task after dma_start_task
+  //   conduit.put_memref {name=@chan, arg_index=N} →
+  //       aiex.dma_configure_task_for @chan_shim_alloc {
+  //         aie.dma_bd(%argN, ...) / aie.end }
+  //   conduit.get_memref {name=@chan, arg_index=N} → same but with
+  //       {issue_token = true} + aiex.dma_await_task after dma_start_task
   //
   // The shim_dma_allocation symbol is looked up via the conduit_channel attr
   // or by the "{name}_shim_alloc" naming convention established by routePhase.
@@ -1073,27 +1081,6 @@ void lowerPhase(ConduitToDMAState &state) {
       auto blockArgs = rtSeq.getBody().front().getArguments();
       auto indexTy = mlir::IndexType::get(ctx);
 
-      // Build arg groups: map put/get_memref ops to block args via the
-      // same offset==0 grouping invariant used by --conduit-fuse-operators.
-      // After fusion, there may be more ops than block args (multiple
-      // per-column ops share one full-buffer block arg).  Each group of
-      // contiguous ops starting with offsets[0]==0 maps to one block arg.
-      llvm::SmallVector<unsigned> opToArgIndex(memrefOps.size(), 0);
-      {
-        unsigned currentArgIdx = 0;
-        bool firstGroup = true;
-        for (unsigned i = 0; i < memrefOps.size(); ++i) {
-          auto offsetsAttr =
-              memrefOps[i]->getAttrOfType<mlir::DenseI64ArrayAttr>("offsets");
-          int64_t offset =
-              (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
-          if (offset == 0 && !firstGroup)
-            ++currentArgIdx;
-          firstGroup = false;
-          opToArgIndex[i] = currentArgIdx;
-        }
-      }
-
       // Task SSA values for free/await at end.
       llvm::SmallVector<mlir::Value> putTasks;
       llvm::SmallVector<mlir::Value> awaitTasks;
@@ -1112,10 +1099,34 @@ void lowerPhase(ConduitToDMAState &state) {
         std::string allocSym = allocIt->second;
         bool isS2MM = (conduitToDir[conduitName] == AIE::DMAChannelDir::S2MM);
 
-        // Resolve block arg via arg group mapping, not positional index.
-        unsigned argIdx = opToArgIndex[i];
-        if (argIdx >= blockArgs.size())
-          continue;
+        // Resolve block arg via the explicit arg_index attribute set by
+        // --dma-task-to-conduit.  The previous offsets[0]==0 grouping
+        // heuristic was the FS7 bug — it silently mis-bound output ops
+        // whose first offset is a non-zero patch marker to the input
+        // block arg.  arg_index is now the authoritative binding; missing
+        // arg_index is a hard error (signals upstream pipeline bug).
+        auto argIdxAttr =
+            op->getAttrOfType<mlir::IntegerAttr>("arg_index");
+        if (!argIdxAttr) {
+          op->emitError("conduit-to-dma Step 8g: put/get_memref op is "
+                        "missing the required `arg_index` attribute — must "
+                        "be set by --dma-task-to-conduit (or any other "
+                        "producer of put/get_memref ops inside an "
+                        "aie.runtime_sequence) so the BD can be re-bound "
+                        "to the correct block argument");
+          state.passFailed = true;
+          return;
+        }
+        int64_t argIdxSigned = argIdxAttr.getInt();
+        if (argIdxSigned < 0 ||
+            static_cast<size_t>(argIdxSigned) >= blockArgs.size()) {
+          op->emitError("conduit-to-dma Step 8g: arg_index ")
+              << argIdxSigned << " is out of range (runtime_sequence has "
+              << blockArgs.size() << " block arguments)";
+          state.passFailed = true;
+          return;
+        }
+        unsigned argIdx = static_cast<unsigned>(argIdxSigned);
         mlir::Value bufArg = blockArgs[argIdx];
 
         int64_t numElems =
@@ -1128,11 +1139,30 @@ void lowerPhase(ConduitToDMAState &state) {
                            ? static_cast<int>(offsetsAttr[0])
                            : 0;
 
-        // Get BDDimLayout dimensions (put_memref carries producer_dimensions).
+        // Get BDDimLayout dimensions for the BD chain.
+        //   * put_memref (MM2S) carries producer_dimensions: a single
+        //     BDDimLayoutArrayAttr matching aie.dma_bd's dimensions slot.
+        //   * get_memref (S2MM) carries consumer_dimensions: a
+        //     BDDimLayoutArrayArrayAttr (one entry per consumer tile).
+        //     For shim S2MM rebuild, there is exactly one consumer (the
+        //     shim DMA), so we use the first inner array.  FS7 sub-fix:
+        //     this restores the strided write geometry (e.g. StridedCopy's
+        //     8×131072 scatter) that was previously dropped to nullptr.
         AIE::BDDimLayoutArrayAttr dims;
-        if (auto dimsAttr = op->getAttrOfType<AIE::BDDimLayoutArrayAttr>(
-                "producer_dimensions"))
-          dims = dimsAttr;
+        if (isS2MM) {
+          if (auto consDimsAttr =
+                  op->getAttrOfType<AIE::BDDimLayoutArrayArrayAttr>(
+                      "consumer_dimensions")) {
+            if (!consDimsAttr.empty()) {
+              dims = mlir::dyn_cast<AIE::BDDimLayoutArrayAttr>(
+                  consDimsAttr.getValue().front());
+            }
+          }
+        } else {
+          if (auto dimsAttr = op->getAttrOfType<AIE::BDDimLayoutArrayAttr>(
+                  "producer_dimensions"))
+            dims = dimsAttr;
+        }
 
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();

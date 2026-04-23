@@ -839,7 +839,17 @@ def Conduit_PutMemref : Conduit_Op<"put_memref"> {
                        // BD chain. Set by Pass A when the objectfifo carries
                        // dimensionsToStream. The fusion pass reads this as D_A when
                        // computing the composed transformation D_B ∘ D_A.
-                       OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions);
+                       OptionalAttr<AIE_BDDimLayoutArrayAttr>:$producer_dimensions,
+                       // arg_index: index of the aie.runtime_sequence block
+                       // argument that this op's DMA descriptor binds to.
+                       // Set by --dma-task-to-conduit (sourced from the original
+                       // aie.dma_bd's BlockArgument index).  Required when the op
+                       // is rebuilt back to aiex.dma_configure_task_for in
+                       // --conduit-to-dma Step 8g; absence triggers a hard
+                       // failure (signals upstream pipeline bug).  Optional in
+                       // the dialect to accommodate hand-written verifier tests
+                       // and AIR-side variants that never reach Step 8g.
+                       OptionalAttr<I64Attr>:$arg_index);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }
@@ -862,7 +872,17 @@ def Conduit_GetMemref : Conduit_Op<"get_memref"> {
                        // BD chain. Set by Pass A when the objectfifo carries
                        // dimensionsFromStream. The fusion pass reads this as D_B when
                        // computing the composed transformation D_B ∘ D_A.
-                       OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions);
+                       OptionalAttr<AIE_BDDimLayoutArrayArrayAttr>:$consumer_dimensions,
+                       // arg_index: index of the aie.runtime_sequence block
+                       // argument that this op's DMA descriptor binds to.
+                       // Set by --dma-task-to-conduit (sourced from the original
+                       // aie.dma_bd's BlockArgument index).  Required when the op
+                       // is rebuilt back to aiex.dma_configure_task_for in
+                       // --conduit-to-dma Step 8g; absence triggers a hard
+                       // failure (signals upstream pipeline bug).  Optional in
+                       // the dialect to accommodate hand-written verifier tests
+                       // and AIR-side variants that never reach Step 8g.
+                       OptionalAttr<I64Attr>:$arg_index);
   let assemblyFormat = "attr-dict";
   let hasVerifier = 1;
 }

@@ -34,7 +34,16 @@
 // aie.dma_bd inside the task body are mapped to the conduit op attributes:
 //   num_elems ← len
 //   offsets/sizes/strides ← derived from BDDimLayout dimensions
-//   producer_dimensions ← raw BDDimLayout (MM2S only)
+//   producer_dimensions ← raw BDDimLayout (MM2S)
+//   consumer_dimensions ← raw BDDimLayout wrapped in a singleton array of
+//                         arrays (S2MM)
+//   arg_index           ← BlockArgument index of `aie.dma_bd(%argN, …)` in
+//                         the enclosing aie.runtime_sequence body
+//
+// arg_index encodes the EXPLICIT block-arg binding so the reverse rebuild
+// in --conduit-to-dma Step 8g does not need to guess via offset heuristics
+// (FS7 fix: the heuristic mis-bound output ops with non-zero `0xDEADBEE0`
+// patch markers to the input arg).
 //
 // All dma_start_task, dma_await_task, and dma_free_task ops are erased.
 //
@@ -215,6 +224,11 @@ private:
 
     mlir::MLIRContext *ctx = rtSeq.getContext();
 
+    // The runtime_sequence's body block — used to verify that the dma_bd's
+    // BlockArgument actually belongs to THIS runtime_sequence (not some
+    // unrelated nested op).
+    mlir::Block *rtSeqBlock = &rtSeq.getBody().front();
+
     // Collect ops to erase, separated by kind for correct erase ordering.
     llvm::SmallVector<mlir::Operation *> configOps;
     llvm::SmallVector<mlir::Operation *> userOps; // start/await/free
@@ -246,14 +260,37 @@ private:
         std::optional<int32_t> lenOpt = dmaBd.getLen();
         int64_t len = lenOpt ? static_cast<int64_t>(*lenOpt) : 0;
         AIE::BDDimLayoutArrayAttr dimensions = dmaBd.getDimensionsAttr();
+        mlir::Value buffer = dmaBd.getBuffer();
 
         // If len is 0 and we have a shaped memref, compute from shape.
         if (len == 0) {
-          auto memrefTy =
-              mlir::dyn_cast<mlir::MemRefType>(dmaBd.getBuffer().getType());
+          auto memrefTy = mlir::dyn_cast<mlir::MemRefType>(buffer.getType());
           if (memrefTy && memrefTy.hasStaticShape())
             len = memrefTy.getNumElements();
         }
+
+        // Resolve the BlockArgument that this BD binds to.  FS7: the
+        // round-trip from put/get_memref back to dma_configure_task_for in
+        // --conduit-to-dma Step 8g previously relied on an offset==0
+        // heuristic to group ops by block arg.  That heuristic mis-binds any
+        // op whose offsets[0] is a non-zero patch marker (e.g. `0xDEADBEE0`).
+        // We instead capture the binding explicitly here and propagate it
+        // via the new arg_index attribute.  Fail loudly if the buffer is not
+        // a direct block arg of the enclosing aie.runtime_sequence — that
+        // signals an upstream IR shape this pass never validated against.
+        auto bufBlockArg = mlir::dyn_cast<mlir::BlockArgument>(buffer);
+        if (!bufBlockArg || bufBlockArg.getOwner() != rtSeqBlock) {
+          dmaBd.emitError(
+              "dma-task-to-conduit: aie.dma_bd buffer must be a direct "
+              "BlockArgument of the enclosing aie.runtime_sequence "
+              "(arg_index binding required for round-trip to "
+              "aiex.dma_configure_task_for in --conduit-to-dma Step 8g)");
+          signalPassFailure();
+          return;
+        }
+        auto argIndexAttr = mlir::IntegerAttr::get(
+            mlir::IntegerType::get(ctx, 64),
+            static_cast<int64_t>(bufBlockArg.getArgNumber()));
 
         // Build offsets/sizes/strides from dimensions.
         llvm::SmallVector<int64_t> offsets, sizes, strides;
@@ -273,12 +310,22 @@ private:
           // MM2S: shim sends data into the conduit → put_memref.
           // Pass through the BDDimLayout as producer_dimensions.
           PutMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
-                            offsetsAttr, sizesAttr, stridesAttr, dimensions);
+                            offsetsAttr, sizesAttr, stridesAttr, dimensions,
+                            argIndexAttr);
         } else {
           // S2MM: shim receives data from the conduit → get_memref.
+          // Wrap the single BDDimLayout as a singleton-of-singleton
+          // BDDimLayoutArrayArrayAttr so the round-trip rebuild in
+          // --conduit-to-dma Step 8g can recover the full S2MM strided
+          // write geometry (FS7 sub-fix: previously dropped to nullptr,
+          // which lost StridedCopy's e.g. 8×131072 scatter pattern).
+          AIE::BDDimLayoutArrayArrayAttr consumerDims;
+          if (dimensions && !dimensions.empty())
+            consumerDims =
+                AIE::BDDimLayoutArrayArrayAttr::get(ctx, dimensions);
           GetMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
-                            offsetsAttr, sizesAttr, stridesAttr,
-                            /*consumer_dimensions=*/nullptr);
+                            offsetsAttr, sizesAttr, stridesAttr, consumerDims,
+                            argIndexAttr);
         }
 
         configOps.push_back(op);
