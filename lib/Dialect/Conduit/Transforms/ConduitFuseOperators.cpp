@@ -704,43 +704,14 @@ struct ConduitFuseOperatorsPass
         mlir::Block &bodyB = devB.getBodyRegion().front();
 
         // Find devA's runtime_sequence (may not exist).
-        mlir::Operation *seqA = nullptr;
-        for (mlir::Operation &op : bodyA) {
-          if (op.getName().getStringRef() == "aie.runtime_sequence") {
-            seqA = &op;
-            break;
-          }
-        }
+        mlir::Operation *seqA = detail::findRuntimeSequence(bodyA);
 
         // Phase 1: move all non-sequence, non-terminator ops from bodyB into
         // bodyA. This establishes the tile/shim SSA values in devA's scope so
         // that the sequence body ops (which use those tile values) can be moved
         // safely in Phase 2.
-        mlir::OpBuilder b(ctx);
-        if (bodyA.mightHaveTerminator()) {
-          if (mlir::Operation *term = bodyA.getTerminator())
-            b.setInsertionPoint(term);
-          else
-            b.setInsertionPointToEnd(&bodyA);
-        } else {
-          b.setInsertionPointToEnd(&bodyA);
-        }
-        llvm::SmallVector<mlir::Operation *> seqOps;
-        {
-          llvm::SmallVector<mlir::Operation *> nonSeq;
-          for (mlir::Operation &op : bodyB) {
-            if (op.hasTrait<mlir::OpTrait::IsTerminator>())
-              continue;
-            if (op.getName().getStringRef() == "aie.runtime_sequence")
-              seqOps.push_back(&op);
-            else
-              nonSeq.push_back(&op);
-          }
-          for (mlir::Operation *op : nonSeq) {
-            op->remove();
-            b.insert(op);
-          }
-        }
+        llvm::SmallVector<mlir::Operation *> seqOps =
+            detail::movePhase1NonSequenceOps(bodyA, bodyB);
 
         // Phase 2: merge devB's runtime_sequence(s) into devA's sequence.
         //
@@ -857,8 +828,7 @@ struct ConduitFuseOperatorsPass
               // in devB and will be erased with devB below.
             } else if (!seqA) {
               // devA has no sequence yet — move devB's as-is.
-              seqB->remove();
-              b.insert(seqB);
+              detail::moveToEndOfDeviceBody(seqB, bodyA);
               seqA = seqB;
             }
           }
@@ -896,23 +866,7 @@ struct ConduitFuseOperatorsPass
         // Fix: move all aie.core, aie.mem, and aie.runtime_sequence ops in
         // devA's body to just before the aie.end terminator. This places them
         // after any locks/buffers that Pass C will insert after the tile ops.
-        {
-          llvm::SmallVector<mlir::Operation *> toSink;
-          for (mlir::Operation &op : bodyA) {
-            llvm::StringRef name = op.getName().getStringRef();
-            if (name == "aie.core" || name == "aie.mem" ||
-                name == "aie.runtime_sequence")
-              toSink.push_back(&op);
-          }
-          mlir::Operation *termA =
-              bodyA.mightHaveTerminator() ? bodyA.getTerminator() : nullptr;
-          for (mlir::Operation *op : toSink) {
-            if (termA)
-              op->moveBefore(termA);
-            else
-              op->moveBefore(&bodyA, bodyA.end());
-          }
-        }
+        detail::sinkCoresMemsAndSequences(bodyA);
 
         // --- Step 8c: Remove dead block args for fused intermediate channels.
         //

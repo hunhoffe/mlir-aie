@@ -13,13 +13,134 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
+#include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
 
 #include "llvm/ADT/SmallVector.h"
 
 namespace xilinx::conduit::detail {
+
+// ---------------------------------------------------------------------------
+// Device-body merge primitives.  See DeviceMergeUtils.h for design notes.
+// ---------------------------------------------------------------------------
+
+mlir::Operation *findRuntimeSequence(mlir::Block &body) {
+  for (mlir::Operation &op : body) {
+    if (op.getName().getStringRef() == "aie.runtime_sequence")
+      return &op;
+  }
+  return nullptr;
+}
+
+llvm::SmallVector<mlir::Operation *>
+movePhase1NonSequenceOps(mlir::Block &bodyA, mlir::Block &bodyB) {
+  // Set up an OpBuilder positioned just before bodyA's terminator (or at the
+  // end of bodyA if no terminator is present).  The original per-pass code
+  // used `OpBuilder(ctx)` with the same insertion-point setup; matching it
+  // exactly preserves the resulting op order.
+  mlir::OpBuilder b(bodyA.getParent()->getContext());
+  if (bodyA.mightHaveTerminator()) {
+    if (mlir::Operation *term = bodyA.getTerminator())
+      b.setInsertionPoint(term);
+    else
+      b.setInsertionPointToEnd(&bodyA);
+  } else {
+    b.setInsertionPointToEnd(&bodyA);
+  }
+
+  llvm::SmallVector<mlir::Operation *> seqOps;
+  llvm::SmallVector<mlir::Operation *> nonSeq;
+  for (mlir::Operation &op : bodyB) {
+    if (op.hasTrait<mlir::OpTrait::IsTerminator>())
+      continue;
+    if (op.getName().getStringRef() == "aie.runtime_sequence")
+      seqOps.push_back(&op);
+    else
+      nonSeq.push_back(&op);
+  }
+  for (mlir::Operation *op : nonSeq) {
+    op->remove();
+    b.insert(op);
+  }
+  return seqOps;
+}
+
+void moveToEndOfDeviceBody(mlir::Operation *op, mlir::Block &bodyA) {
+  // Use moveBefore (a list-splice) for byte-identical behavior with the
+  // original `op->remove(); builder.insert(op);` pattern when the builder
+  // was positioned before bodyA's terminator.
+  if (mlir::Operation *termA =
+          bodyA.mightHaveTerminator() ? bodyA.getTerminator() : nullptr)
+    op->moveBefore(termA);
+  else
+    op->moveBefore(&bodyA, bodyA.end());
+}
+
+void mergeRuntimeSequencesSimple(
+    mlir::Operation *&seqA,
+    llvm::ArrayRef<mlir::Operation *> seqOpsB,
+    mlir::Block &bodyA) {
+  for (mlir::Operation *seqB : seqOpsB) {
+    if (seqA && seqA->getNumRegions() > 0 && seqB->getNumRegions() > 0) {
+      mlir::Block &seqBodyA = seqA->getRegion(0).front();
+      mlir::Block &seqBodyB = seqB->getRegion(0).front();
+
+      // Append seqB's block args to seqA, building the IRMapping.
+      mlir::IRMapping argMapping;
+      for (mlir::BlockArgument arg : seqBodyB.getArguments()) {
+        mlir::BlockArgument newArg =
+            seqBodyA.addArgument(arg.getType(), arg.getLoc());
+        argMapping.map(arg, newArg);
+      }
+
+      // Clone seqB's body into seqA before seqA's terminator.
+      mlir::OpBuilder seqBuilder(seqA->getContext());
+      if (seqBodyA.mightHaveTerminator()) {
+        if (mlir::Operation *term = seqBodyA.getTerminator())
+          seqBuilder.setInsertionPoint(term);
+        else
+          seqBuilder.setInsertionPointToEnd(&seqBodyA);
+      } else {
+        seqBuilder.setInsertionPointToEnd(&seqBodyA);
+      }
+      for (mlir::Operation &inner : seqBodyB) {
+        if (inner.hasTrait<mlir::OpTrait::IsTerminator>())
+          continue;
+        seqBuilder.clone(inner, argMapping);
+      }
+    } else if (!seqA) {
+      // devA has no sequence yet — promote devB's as-is.
+      moveToEndOfDeviceBody(seqB, bodyA);
+      seqA = seqB;
+    }
+  }
+}
+
+void sinkCoresMemsAndSequences(mlir::Block &bodyA) {
+  llvm::SmallVector<mlir::Operation *> toSink;
+  for (mlir::Operation &op : bodyA) {
+    llvm::StringRef name = op.getName().getStringRef();
+    if (name == "aie.core" || name == "aie.mem" ||
+        name == "aie.runtime_sequence")
+      toSink.push_back(&op);
+  }
+  mlir::Operation *termA =
+      bodyA.mightHaveTerminator() ? bodyA.getTerminator() : nullptr;
+  for (mlir::Operation *op : toSink) {
+    if (termA)
+      op->moveBefore(termA);
+    else
+      op->moveBefore(&bodyA, bodyA.end());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Host-orchestrator rewrite (FS3 fix).
+// ---------------------------------------------------------------------------
 
 namespace {
 

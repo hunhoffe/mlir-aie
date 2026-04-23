@@ -38,7 +38,6 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -122,7 +121,6 @@ struct ConduitCombineDevicePass
 
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
-    mlir::MLIRContext *ctx = module.getContext();
 
     // Collect all DeviceOps in module order.
     llvm::SmallVector<AIE::DeviceOp> devices;
@@ -149,94 +147,29 @@ struct ConduitCombineDevicePass
 
       // --- Merge device B into device A by physically moving ops. ---
       //
-      // aie.device has IsolatedFromAbove semantics. We use op->remove() +
-      // builder.insert(op) to physically move each op from bodyB into
-      // bodyA (before bodyA's terminator). Moving preserves all SSA values.
+      // aie.device has IsolatedFromAbove semantics. The shared body-merge
+      // primitives in DeviceMergeUtils preserve all SSA values via
+      // remove/insert (never cloning tile/lock/buffer ops).
       {
         mlir::Block &bodyA = devA.getBodyRegion().front();
         mlir::Block &bodyB = devB.getBodyRegion().front();
 
         // Find devA's runtime_sequence (may not exist).
-        mlir::Operation *seqA = nullptr;
-        for (mlir::Operation &op : bodyA) {
-          if (op.getName().getStringRef() == "aie.runtime_sequence") {
-            seqA = &op;
-            break;
-          }
-        }
+        mlir::Operation *seqA = detail::findRuntimeSequence(bodyA);
 
         // Phase 1: move all non-sequence, non-terminator ops from bodyB
-        // into bodyA.
-        mlir::OpBuilder b(ctx);
-        if (bodyA.mightHaveTerminator()) {
-          if (mlir::Operation *term = bodyA.getTerminator())
-            b.setInsertionPoint(term);
-          else
-            b.setInsertionPointToEnd(&bodyA);
-        } else {
-          b.setInsertionPointToEnd(&bodyA);
-        }
-        llvm::SmallVector<mlir::Operation *> seqOps;
-        {
-          llvm::SmallVector<mlir::Operation *> nonSeq;
-          for (mlir::Operation &op : bodyB) {
-            if (op.hasTrait<mlir::OpTrait::IsTerminator>())
-              continue;
-            if (op.getName().getStringRef() == "aie.runtime_sequence")
-              seqOps.push_back(&op);
-            else
-              nonSeq.push_back(&op);
-          }
-          for (mlir::Operation *op : nonSeq) {
-            op->remove();
-            b.insert(op);
-          }
-        }
+        // into bodyA. Returns the runtime_sequence ops left in bodyB for
+        // Phase 2.
+        llvm::SmallVector<mlir::Operation *> seqOps =
+            detail::movePhase1NonSequenceOps(bodyA, bodyB);
 
         // Phase 2: merge devB's runtime_sequence(s) into devA's sequence.
         //
         // aie.runtime_sequence is a Symbol with block-argument-typed host
         // memref parameters. When devA and devB have different signatures,
-        // we merge them into a single combined sequence whose signature is
-        // the concatenation of devA's args plus devB's args.
-        {
-          for (mlir::Operation *seqB : seqOps) {
-            if (seqA && seqA->getNumRegions() > 0 &&
-                seqB->getNumRegions() > 0) {
-              mlir::Block &seqBodyA = seqA->getRegion(0).front();
-              mlir::Block &seqBodyB = seqB->getRegion(0).front();
-
-              // Append seqB's block args to seqA, building the IRMapping.
-              mlir::IRMapping argMapping;
-              for (mlir::BlockArgument arg : seqBodyB.getArguments()) {
-                mlir::BlockArgument newArg =
-                    seqBodyA.addArgument(arg.getType(), arg.getLoc());
-                argMapping.map(arg, newArg);
-              }
-
-              // Clone each op from seqBodyB into seqBodyA.
-              mlir::OpBuilder seqBuilder(ctx);
-              if (seqBodyA.mightHaveTerminator()) {
-                if (mlir::Operation *term = seqBodyA.getTerminator())
-                  seqBuilder.setInsertionPoint(term);
-                else
-                  seqBuilder.setInsertionPointToEnd(&seqBodyA);
-              } else {
-                seqBuilder.setInsertionPointToEnd(&seqBodyA);
-              }
-              for (mlir::Operation &inner : seqBodyB) {
-                if (inner.hasTrait<mlir::OpTrait::IsTerminator>())
-                  continue;
-                seqBuilder.clone(inner, argMapping);
-              }
-            } else if (!seqA) {
-              // devA has no sequence yet — move devB's as-is.
-              seqB->remove();
-              b.insert(seqB);
-              seqA = seqB;
-            }
-          }
-        }
+        // they are merged into a single combined sequence whose signature
+        // is the concatenation of devA's args plus devB's args.
+        detail::mergeRuntimeSequencesSimple(seqA, seqOps, bodyA);
 
         // devB body is now empty except its aie.end terminator. Before
         // erasing devB, retarget any module-level `aiex.configure @<devB>`
@@ -258,23 +191,7 @@ struct ConduitCombineDevicePass
         // tiles, so locks emitted by Pass C would come after the cores,
         // violating MLIR dominance. Fix: move all aie.core, aie.mem, and
         // aie.runtime_sequence ops to just before the aie.end terminator.
-        {
-          llvm::SmallVector<mlir::Operation *> toSink;
-          for (mlir::Operation &op : bodyA) {
-            llvm::StringRef name = op.getName().getStringRef();
-            if (name == "aie.core" || name == "aie.mem" ||
-                name == "aie.runtime_sequence")
-              toSink.push_back(&op);
-          }
-          mlir::Operation *termA =
-              bodyA.mightHaveTerminator() ? bodyA.getTerminator() : nullptr;
-          for (mlir::Operation *op : toSink) {
-            if (termA)
-              op->moveBefore(termA);
-            else
-              op->moveBefore(&bodyA, bodyA.end());
-          }
-        }
+        detail::sinkCoresMemsAndSequences(bodyA);
       }
     }
   }

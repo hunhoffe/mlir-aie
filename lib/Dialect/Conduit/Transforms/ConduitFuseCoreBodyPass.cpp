@@ -224,75 +224,14 @@ mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
     mlir::Block &bodyB = devB.getBodyRegion().front();
 
     // Find devA's runtime_sequence (may not exist).
-    mlir::Operation *seqA = nullptr;
-    for (mlir::Operation &op : bodyA) {
-      if (op.getName().getStringRef() == "aie.runtime_sequence") {
-        seqA = &op;
-        break;
-      }
-    }
+    mlir::Operation *seqA = detail::findRuntimeSequence(bodyA);
 
     // Phase 1: move all non-sequence, non-terminator ops from bodyB into bodyA.
-    mlir::OpBuilder b(ctx);
-    if (bodyA.mightHaveTerminator()) {
-      if (mlir::Operation *term = bodyA.getTerminator())
-        b.setInsertionPoint(term);
-      else
-        b.setInsertionPointToEnd(&bodyA);
-    } else {
-      b.setInsertionPointToEnd(&bodyA);
-    }
-
-    llvm::SmallVector<mlir::Operation *> seqOps;
-    {
-      llvm::SmallVector<mlir::Operation *> nonSeq;
-      for (mlir::Operation &op : bodyB) {
-        if (op.hasTrait<mlir::OpTrait::IsTerminator>())
-          continue;
-        if (op.getName().getStringRef() == "aie.runtime_sequence")
-          seqOps.push_back(&op);
-        else
-          nonSeq.push_back(&op);
-      }
-      for (mlir::Operation *op : nonSeq) {
-        op->remove();
-        b.insert(op);
-      }
-    }
+    llvm::SmallVector<mlir::Operation *> seqOps =
+        detail::movePhase1NonSequenceOps(bodyA, bodyB);
 
     // Phase 2: merge devB's runtime_sequence(s) into devA's sequence.
-    for (mlir::Operation *seqB : seqOps) {
-      if (seqA && seqA->getNumRegions() > 0 && seqB->getNumRegions() > 0) {
-        mlir::Block &seqBodyA = seqA->getRegion(0).front();
-        mlir::Block &seqBodyB = seqB->getRegion(0).front();
-
-        mlir::IRMapping argMapping;
-        for (mlir::BlockArgument arg : seqBodyB.getArguments()) {
-          mlir::BlockArgument newArg =
-              seqBodyA.addArgument(arg.getType(), arg.getLoc());
-          argMapping.map(arg, newArg);
-        }
-
-        mlir::OpBuilder seqBuilder(ctx);
-        if (seqBodyA.mightHaveTerminator()) {
-          if (mlir::Operation *term = seqBodyA.getTerminator())
-            seqBuilder.setInsertionPoint(term);
-          else
-            seqBuilder.setInsertionPointToEnd(&seqBodyA);
-        } else {
-          seqBuilder.setInsertionPointToEnd(&seqBodyA);
-        }
-        for (mlir::Operation &inner : seqBodyB) {
-          if (inner.hasTrait<mlir::OpTrait::IsTerminator>())
-            continue;
-          seqBuilder.clone(inner, argMapping);
-        }
-      } else if (!seqA) {
-        seqB->remove();
-        b.insert(seqB);
-        seqA = seqB;
-      }
-    }
+    detail::mergeRuntimeSequencesSimple(seqA, seqOps, bodyA);
 
     // devB body is now empty except its aie.end terminator. Before
     // erasing devB, retarget any module-level `aiex.configure @<devB>`
@@ -308,23 +247,7 @@ mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
 
     // Sink cores, mem, and runtime_sequences to end of device body
     // (before aie.end terminator) to maintain dominance.
-    {
-      llvm::SmallVector<mlir::Operation *> toSink;
-      for (mlir::Operation &op : bodyA) {
-        llvm::StringRef name = op.getName().getStringRef();
-        if (name == "aie.core" || name == "aie.mem" ||
-            name == "aie.runtime_sequence")
-          toSink.push_back(&op);
-      }
-      mlir::Operation *termA =
-          bodyA.mightHaveTerminator() ? bodyA.getTerminator() : nullptr;
-      for (mlir::Operation *op : toSink) {
-        if (termA)
-          op->moveBefore(termA);
-        else
-          op->moveBefore(&bodyA, bodyA.end());
-      }
-    }
+    detail::sinkCoresMemsAndSequences(bodyA);
   }
 
   // --- Dedup tile ops (same coordinates → single SSA value). ---

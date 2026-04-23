@@ -36,7 +36,83 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+
+namespace mlir {
+class Block;
+} // namespace mlir
+
 namespace xilinx::conduit::detail {
+
+// ---------------------------------------------------------------------------
+// Device-body merge primitives shared between --aie-combine-device,
+// --conduit-fuse-core-bodies, and --conduit-fuse-operators.
+//
+// These helpers physically merge the body of devB into the body of devA
+// (preserving SSA values via remove/insert; never cloning tile/lock/buffer
+// ops).  They are pure deduplication of identical code that previously lived
+// in three transform files; behavior is byte-identical to the prior
+// per-pass implementations.
+//
+// The runtime_sequence merge differs across callers:
+//   - --aie-combine-device and --conduit-fuse-core-bodies use the SIMPLE
+//     append-and-clone strategy implemented in mergeRuntimeSequencesSimple.
+//   - --conduit-fuse-operators uses sync-group-aware chunk interleaving
+//     (kept inline in that pass) and additional dead-block-arg removal.
+// ---------------------------------------------------------------------------
+
+/// Find the first `aie.runtime_sequence` op in `body`, or nullptr.
+mlir::Operation *findRuntimeSequence(mlir::Block &body);
+
+/// Move all non-terminator, non-`aie.runtime_sequence` ops from `bodyB` to
+/// just before `bodyA`'s terminator (or to the end of `bodyA` if no
+/// terminator is present).
+///
+/// Returns the `aie.runtime_sequence` ops found in `bodyB` — these are NOT
+/// moved by this helper; the caller decides how to merge them (simple
+/// append-and-clone vs sync-group-aware interleaving).
+///
+/// Used as "Phase 1" of the device-body merge: it establishes the tile/shim
+/// SSA values in bodyA's scope so any subsequent runtime_sequence body merge
+/// (whose DMA ops reference those tiles) operates against valid definitions.
+llvm::SmallVector<mlir::Operation *>
+movePhase1NonSequenceOps(mlir::Block &bodyA, mlir::Block &bodyB);
+
+/// Move `op` to just before `bodyA`'s terminator (or to the end of `bodyA`
+/// if no terminator is present).  Used to promote devB's runtime_sequence
+/// into devA when devA has none of its own.
+void moveToEndOfDeviceBody(mlir::Operation *op, mlir::Block &bodyA);
+
+/// "Phase 2 simple" — append-and-clone runtime_sequence merge for callers
+/// that do not need sync-group-aware chunk interleaving (used by
+/// --aie-combine-device and --conduit-fuse-core-bodies).
+///
+/// For each op in `seqOpsB`:
+///   - If `seqA` already exists with a body region, append fresh block-args
+///     to seqA matching seqB's, build an IRMapping, and clone seqB's
+///     non-terminator body ops into seqA before its terminator.
+///   - Otherwise (no seqA yet), promote seqB into bodyA via
+///     moveToEndOfDeviceBody and update `seqA` (passed by reference) so
+///     subsequent iterations see the promoted op.
+///
+/// `bodyA` is required for the seqB-promotion path.
+void mergeRuntimeSequencesSimple(
+    mlir::Operation *&seqA,
+    llvm::ArrayRef<mlir::Operation *> seqOpsB,
+    mlir::Block &bodyA);
+
+/// Move every `aie.core`, `aie.mem`, and `aie.runtime_sequence` op currently
+/// in `bodyA` to just before `bodyA`'s terminator (or end of bodyA if no
+/// terminator).
+///
+/// Required after the body merge: Pass C emits aie.lock / aie.buffer ops
+/// after the last aie.tile op in the merged body, but devA's pre-merge
+/// aie.core ops appear BEFORE devB's tiles — so without this sink, locks
+/// emitted later would land after the cores that use them, violating MLIR
+/// dominance.  Sinking the cores/mems/runtime_sequences past the
+/// soon-to-be-emitted lock/buffer insertion point fixes that.
+void sinkCoresMemsAndSequences(mlir::Block &bodyA);
 
 /// Rewrite host-orchestrator references to a soon-to-be-erased device.
 ///
