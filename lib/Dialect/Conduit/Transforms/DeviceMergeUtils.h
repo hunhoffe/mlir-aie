@@ -98,10 +98,9 @@ void moveToEndOfDeviceBody(mlir::Operation *op, mlir::Block &bodyA);
 ///     subsequent iterations see the promoted op.
 ///
 /// `bodyA` is required for the seqB-promotion path.
-void mergeRuntimeSequencesSimple(
-    mlir::Operation *&seqA,
-    llvm::ArrayRef<mlir::Operation *> seqOpsB,
-    mlir::Block &bodyA);
+void mergeRuntimeSequencesSimple(mlir::Operation *&seqA,
+                                 llvm::ArrayRef<mlir::Operation *> seqOpsB,
+                                 mlir::Block &bodyA);
 
 /// Move every `aie.core`, `aie.mem`, and `aie.runtime_sequence` op currently
 /// in `bodyA` to just before `bodyA`'s terminator (or end of bodyA if no
@@ -166,9 +165,10 @@ void sinkCoresMemsAndSequences(mlir::Block &bodyA);
 /// follow up with `reconcileHostRunArgsAfterTrim` to project the same drops
 /// into the host-side `aiex.run` arg vectors.  Without that follow-up, the
 /// run callsite arity will disagree with the trimmed callee.
-mlir::LogicalResult
-rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
-                                  AIE::DeviceOp devB, mlir::Operation *seqA);
+mlir::LogicalResult rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module,
+                                                      AIE::DeviceOp devA,
+                                                      AIE::DeviceOp devB,
+                                                      mlir::Operation *seqA);
 
 /// Phase 2 of the host-orchestrator rewrite — only needed by callers that trim
 /// the merged sequence's block args after `rewriteHostConfigureOnDeviceMerge`.
@@ -204,11 +204,12 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
 /// surviving sequence's arity, or if a run's pre-trim arg count is neither
 /// `origArgCountA + origArgCountB` (folded) nor `origArgCountB` (rewritten in
 /// place).
-mlir::LogicalResult reconcileHostRunArgsAfterTrim(
-    mlir::ModuleOp module, AIE::DeviceOp devA, mlir::Operation *seqA,
-    unsigned origArgCountA, unsigned origArgCountB,
-    const llvm::DenseSet<unsigned> &deadA,
-    const llvm::DenseSet<unsigned> &deadB);
+mlir::LogicalResult
+reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
+                              mlir::Operation *seqA, unsigned origArgCountA,
+                              unsigned origArgCountB,
+                              const llvm::DenseSet<unsigned> &deadA,
+                              const llvm::DenseSet<unsigned> &deadB);
 
 } // namespace xilinx::conduit::detail
 

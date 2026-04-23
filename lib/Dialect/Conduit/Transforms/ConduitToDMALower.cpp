@@ -1123,8 +1123,7 @@ void lowerPhase(ConduitToDMAState &state) {
         // whose first offset is a non-zero patch marker to the input
         // block arg.  arg_index is now the authoritative binding; missing
         // arg_index is a hard error (signals upstream pipeline bug).
-        auto argIdxAttr =
-            op->getAttrOfType<mlir::IntegerAttr>("arg_index");
+        auto argIdxAttr = op->getAttrOfType<mlir::IntegerAttr>("arg_index");
         if (!argIdxAttr) {
           op->emitError("conduit-to-dma Step 8g: put/get_memref op is "
                         "missing the required `arg_index` attribute — must "
@@ -1196,9 +1195,9 @@ void lowerPhase(ConduitToDMAState &state) {
           auto prevIt = prevPerChannel.find(conduitName);
           if (prevIt != prevPerChannel.end()) {
             const LiveTask &prev = prevIt->second;
-            mlir::OperationState rel(
-                prev.loc, prev.isS2MM ? "aiex.dma_await_task"
-                                      : "aiex.dma_free_task");
+            mlir::OperationState rel(prev.loc, prev.isS2MM
+                                                   ? "aiex.dma_await_task"
+                                                   : "aiex.dma_free_task");
             rel.addOperands(prev.task);
             builder.create(rel);
           }
@@ -1268,9 +1267,9 @@ void lowerPhase(ConduitToDMAState &state) {
         assert(trailIt != prevPerChannel.end() &&
                "liveOrder out of sync with prevPerChannel");
         const LiveTask &prev = trailIt->second;
-        mlir::OperationState rel(
-            rtSeq.getLoc(), prev.isS2MM ? "aiex.dma_await_task"
-                                        : "aiex.dma_free_task");
+        mlir::OperationState rel(rtSeq.getLoc(), prev.isS2MM
+                                                     ? "aiex.dma_await_task"
+                                                     : "aiex.dma_free_task");
         rel.addOperands(prev.task);
         builder.create(rel);
       }

@@ -1492,7 +1492,8 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
     // unconditional inclusion is safe.
     conduitPipeline += ",dma-task-to-conduit";
     if (conduitFuseCoreBodies)
-      conduitPipeline += ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
+      conduitPipeline +=
+          ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
     if (conduitFuseSpatial)
       // NOTE: conduit-fuse-operators does its OWN device-body merge via
       // DeviceMergeUtils (FS3 helper) at Step 8.  Do NOT prepend

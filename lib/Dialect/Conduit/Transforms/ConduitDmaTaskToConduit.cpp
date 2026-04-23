@@ -321,8 +321,7 @@ private:
           // which lost StridedCopy's e.g. 8×131072 scatter pattern).
           AIE::BDDimLayoutArrayArrayAttr consumerDims;
           if (dimensions && !dimensions.empty())
-            consumerDims =
-                AIE::BDDimLayoutArrayArrayAttr::get(ctx, dimensions);
+            consumerDims = AIE::BDDimLayoutArrayArrayAttr::get(ctx, dimensions);
           GetMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
                             offsetsAttr, sizesAttr, stridesAttr, consumerDims,
                             argIndexAttr);

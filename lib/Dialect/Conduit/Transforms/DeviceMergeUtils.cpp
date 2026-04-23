@@ -81,10 +81,9 @@ void moveToEndOfDeviceBody(mlir::Operation *op, mlir::Block &bodyA) {
     op->moveBefore(&bodyA, bodyA.end());
 }
 
-void mergeRuntimeSequencesSimple(
-    mlir::Operation *&seqA,
-    llvm::ArrayRef<mlir::Operation *> seqOpsB,
-    mlir::Block &bodyA) {
+void mergeRuntimeSequencesSimple(mlir::Operation *&seqA,
+                                 llvm::ArrayRef<mlir::Operation *> seqOpsB,
+                                 mlir::Block &bodyA) {
   for (mlir::Operation *seqB : seqOpsB) {
     if (seqA && seqA->getNumRegions() > 0 && seqB->getNumRegions() > 0) {
       mlir::Block &seqBodyA = seqA->getRegion(0).front();
@@ -172,8 +171,8 @@ static unsigned countRunOpsInConfigure(AIEX::ConfigureOp conf) {
 // Find the closest preceding sibling aiex.configure with the given symbol
 // name in the same parent block as `conf`.  Returns null if no such sibling
 // exists.
-static AIEX::ConfigureOp
-findSiblingConfigureBefore(AIEX::ConfigureOp conf, llvm::StringRef symName) {
+static AIEX::ConfigureOp findSiblingConfigureBefore(AIEX::ConfigureOp conf,
+                                                    llvm::StringRef symName) {
   mlir::Block *parent = conf->getBlock();
   if (!parent)
     return {};
@@ -191,9 +190,10 @@ findSiblingConfigureBefore(AIEX::ConfigureOp conf, llvm::StringRef symName) {
 
 } // namespace
 
-mlir::LogicalResult
-rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
-                                  AIE::DeviceOp devB, mlir::Operation *seqA) {
+mlir::LogicalResult rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module,
+                                                      AIE::DeviceOp devA,
+                                                      AIE::DeviceOp devB,
+                                                      mlir::Operation *seqA) {
   mlir::MLIRContext *ctx = module.getContext();
 
   llvm::StringRef devAName = devA.getSymName();
@@ -211,8 +211,7 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
   if (auto rs = mlir::dyn_cast_or_null<AIE::RuntimeSequenceOp>(seqA))
     survivingSeqName = rs.getSymName();
 
-  mlir::FlatSymbolRefAttr devARef =
-      mlir::FlatSymbolRefAttr::get(ctx, devAName);
+  mlir::FlatSymbolRefAttr devARef = mlir::FlatSymbolRefAttr::get(ctx, devAName);
   mlir::FlatSymbolRefAttr survSeqRef;
   if (!survivingSeqName.empty())
     survSeqRef = mlir::FlatSymbolRefAttr::get(ctx, survivingSeqName);
@@ -299,8 +298,8 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
             survSeqRef ? survSeqRef : runA.getRuntimeSequenceSymbolAttr();
 
         mlir::OpBuilder builder(runA);
-        auto newRun = builder.create<AIEX::RunOp>(runA.getLoc(), seqRef,
-                                                  newOperands);
+        auto newRun =
+            builder.create<AIEX::RunOp>(runA.getLoc(), seqRef, newOperands);
         runA.erase();
         (void)newRun;
       } else if (runB && !runA) {
@@ -335,11 +334,12 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
   return mlir::success();
 }
 
-mlir::LogicalResult reconcileHostRunArgsAfterTrim(
-    mlir::ModuleOp module, AIE::DeviceOp devA, mlir::Operation *seqA,
-    unsigned origArgCountA, unsigned origArgCountB,
-    const llvm::DenseSet<unsigned> &deadA,
-    const llvm::DenseSet<unsigned> &deadB) {
+mlir::LogicalResult
+reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
+                              mlir::Operation *seqA, unsigned origArgCountA,
+                              unsigned origArgCountB,
+                              const llvm::DenseSet<unsigned> &deadA,
+                              const llvm::DenseSet<unsigned> &deadB) {
   auto rs = mlir::dyn_cast_or_null<AIE::RuntimeSequenceOp>(seqA);
   if (!rs)
     return mlir::success();
@@ -409,8 +409,8 @@ mlir::LogicalResult reconcileHostRunArgsAfterTrim(
     if (newOperands.size() != expected) {
       run->emitError("device-merge Phase 2: reconciled aiex.run arg count ")
           << newOperands.size()
-          << " disagrees with merged aie.runtime_sequence @"
-          << survivingSeqName << " arity " << expected;
+          << " disagrees with merged aie.runtime_sequence @" << survivingSeqName
+          << " arity " << expected;
       failed = true;
       continue;
     }

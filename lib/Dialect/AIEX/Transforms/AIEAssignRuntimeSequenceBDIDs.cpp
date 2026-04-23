@@ -94,28 +94,29 @@ struct AIEAssignRuntimeSequenceBDIDsPass
   LogicalResult allocateUnspecified(DMAConfigureTaskOp op, BdIdGenerator &gen,
                                     int channelIndex,
                                     SmallVectorImpl<uint32_t> &assigned) {
-    WalkResult result = op.walk<WalkOrder::PreOrder>([&](AIE::DMABDOp bd_op) {
-      if (bd_op.getBdId().has_value()) {
-        assigned.push_back(bd_op.getBdId().value());
-        return WalkResult::advance();
-      }
-      std::optional<uint32_t> next_id = gen.nextBdId(channelIndex);
-      if (!next_id) {
-        AIE::TileOp tile = op.getTileOp();
-        op.emitOpError()
-            << "Allocator exhausted available buffer descriptor IDs for "
-               "channel "
-            << channelIndex << " on tile (" << tile.getCol() << ", "
-            << tile.getRow()
-            << "). Live BD intervals exceed the per-channel pool capacity; "
-               "interleave aiex.dma_await_task / aiex.dma_free_task with "
-               "configures to recycle IDs.";
-        return WalkResult::interrupt();
-      }
-      bd_op.setBdId(*next_id);
-      assigned.push_back(*next_id);
-      return WalkResult::advance();
-    });
+    WalkResult result =
+        op.walk<WalkOrder::PreOrder>([&](AIE::DMABDOp bd_op) {
+          if (bd_op.getBdId().has_value()) {
+            assigned.push_back(bd_op.getBdId().value());
+            return WalkResult::advance();
+          }
+          std::optional<uint32_t> next_id = gen.nextBdId(channelIndex);
+          if (!next_id) {
+            AIE::TileOp tile = op.getTileOp();
+            op.emitOpError()
+                << "Allocator exhausted available buffer descriptor IDs for "
+                   "channel "
+                << channelIndex << " on tile (" << tile.getCol() << ", "
+                << tile.getRow()
+                << "). Live BD intervals exceed the per-channel pool capacity; "
+                   "interleave aiex.dma_await_task / aiex.dma_free_task with "
+                   "configures to recycle IDs.";
+            return WalkResult::interrupt();
+          }
+          bd_op.setBdId(*next_id);
+          assigned.push_back(*next_id);
+          return WalkResult::advance();
+        });
     return result.wasInterrupted() ? failure() : success();
   }
 
@@ -246,8 +247,7 @@ struct AIEAssignRuntimeSequenceBDIDsPass
 
       SmallVector<uint32_t> assigned;
       int channelIndex = static_cast<int>(iv.configOp.getChannel());
-      if (failed(
-              allocateUnspecified(iv.configOp, gen, channelIndex, assigned)))
+      if (failed(allocateUnspecified(iv.configOp, gen, channelIndex, assigned)))
         return signalPassFailure();
 
       live.emplace_back(iv.endIdx, std::move(assigned));

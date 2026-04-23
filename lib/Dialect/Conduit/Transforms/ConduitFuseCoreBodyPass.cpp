@@ -129,9 +129,9 @@ static void dedupTileOps(AIE::DeviceOp device) {
 /// Returns failure() if the host-orchestrator rewrite that runs immediately
 /// before `devB->erase()` cannot preserve runtime semantics (e.g., arity
 /// mismatch between the merged runtime_sequence and a host-side aiex.run).
-static mlir::LogicalResult
-mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
-                     mlir::MLIRContext *ctx) {
+static mlir::LogicalResult mergeAndUnifyDevices(AIE::DeviceOp devA,
+                                                AIE::DeviceOp devB,
+                                                mlir::MLIRContext *ctx) {
   // --- Find the matching fusion_group channel pair. ---
   Create producerChannel = nullptr;
   Create consumerChannel = nullptr;
@@ -316,8 +316,8 @@ mergeAndUnifyDevices(AIE::DeviceOp devA, AIE::DeviceOp devB,
 ///
 /// Returns failure() if any underlying merge surfaces a host-orchestrator
 /// rewrite error (see rewriteHostConfigureOnDeviceMerge).
-static mlir::LogicalResult
-mergeDevicesForFusion(mlir::ModuleOp module, mlir::MLIRContext *ctx) {
+static mlir::LogicalResult mergeDevicesForFusion(mlir::ModuleOp module,
+                                                 mlir::MLIRContext *ctx) {
   bool merged = true;
   while (merged) {
     merged = false;
@@ -926,8 +926,7 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
         // the mapping, clone it into the producer.
         if (!consumerCloneFrom->isProperAncestor(defOp) &&
             defOp != consumerCloneFrom.getOperation() &&
-            !mapping.contains(operand) &&
-            alreadyCloned.insert(defOp).second) {
+            !mapping.contains(operand) && alreadyCloned.insert(defOp).second) {
           builder.clone(*defOp, mapping);
         }
       }
