@@ -188,6 +188,76 @@ static AIEX::ConfigureOp findSiblingConfigureBefore(AIEX::ConfigureOp conf,
   return closest;
 }
 
+// Trim block args of `orchestrator` (an outer host-side aie.runtime_sequence)
+// that have no remaining users inside the orchestrator body.
+//
+// Symmetric to Step 8c on the merged device-side runtime_sequence: after
+// `reconcileHostRunArgsAfterTrim` projects the trim into the host-side
+// `aiex.run` arg vectors, some host-buffer block args may become dead
+// (referenced by no op in the orchestrator body — e.g., fused-internal-channel
+// intermediates that the host previously staged through L3).  Erasing them
+// shrinks the host-ABI signature so the runtime no longer allocates a dead L3
+// buffer per invocation (Task #99).
+//
+// Liveness rule: a block arg is live iff at least one operand of some op
+// nested inside the orchestrator body refers to it.  We walk recursively so
+// operands inside `aiex.configure` blocks (and any other nested regions) are
+// inspected.
+static void trimOrchestratorDeadHostArgs(AIE::RuntimeSequenceOp orchestrator) {
+  if (orchestrator->getNumRegions() == 0)
+    return;
+  mlir::Region &region = orchestrator.getBody();
+  if (region.empty())
+    return;
+  mlir::Block &body = region.front();
+  unsigned n = body.getNumArguments();
+  if (n == 0)
+    return;
+
+  llvm::DenseSet<unsigned> live;
+  body.walk([&](mlir::Operation *op) {
+    for (mlir::Value v : op->getOperands()) {
+      if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(v)) {
+        if (blockArg.getOwner() == &body)
+          live.insert(blockArg.getArgNumber());
+      }
+    }
+  });
+
+  // Erase dead args in reverse order so surviving indices stay valid during
+  // erasure.
+  for (int idx = static_cast<int>(n) - 1; idx >= 0; --idx) {
+    if (!live.contains(static_cast<unsigned>(idx)))
+      body.eraseArgument(static_cast<unsigned>(idx));
+  }
+}
+
+// Find the FIRST following sibling aiex.configure with the given symbol
+// name in the same parent block as `conf`.  Returns null if no such sibling
+// exists.  Used as a fallback when no preceding sibling exists, so that the
+// fold-into-confA collapse fires regardless of confA/confB textual order
+// in the host orchestrator's parent block (FS-audit-2.2 fix).
+static AIEX::ConfigureOp findSiblingConfigureAfter(AIEX::ConfigureOp conf,
+                                                   llvm::StringRef symName) {
+  mlir::Block *parent = conf->getBlock();
+  if (!parent)
+    return {};
+  bool seenConf = false;
+  for (mlir::Operation &op : *parent) {
+    if (&op == conf.getOperation()) {
+      seenConf = true;
+      continue;
+    }
+    if (!seenConf)
+      continue;
+    if (auto sib = mlir::dyn_cast<AIEX::ConfigureOp>(op)) {
+      if (sib.getSymbol() == symName)
+        return sib;
+    }
+  }
+  return {};
+}
+
 } // namespace
 
 mlir::LogicalResult rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module,
@@ -228,7 +298,17 @@ mlir::LogicalResult rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module,
     return mlir::success();
 
   for (AIEX::ConfigureOp confB : bRefs) {
+    // Look for a sibling confA in the same parent block.  Prefer a BEFORE
+    // sibling (preserves byte-identical behavior with prior versions); fall
+    // back to an AFTER sibling so the fold fires regardless of textual
+    // configure order in the host orchestrator (FS-audit-2.2 fix).  If both
+    // exist, BEFORE wins.
     AIEX::ConfigureOp confA = findSiblingConfigureBefore(confB, devAName);
+    bool siblingIsAfter = false;
+    if (!confA) {
+      confA = findSiblingConfigureAfter(confB, devAName);
+      siblingIsAfter = (bool)confA;
+    }
     AIEX::RunOp runB = findRunOpInConfigure(confB);
 
     if (confA) {
@@ -251,8 +331,18 @@ mlir::LogicalResult rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module,
       mlir::Block &bodyA = confA.getBody().front();
       mlir::Block &bodyB = confB.getBody().front();
 
-      // Move all non-RunOp ops in confB to just before confA's RunOp (or at
-      // the end of bodyA if confA has no run).
+      // Move all non-RunOp ops in confB into bodyA.
+      //
+      //   - BEFORE case (confA precedes confB textually): insert before
+      //     confA's RunOp (or push_back if confA has no run).  This places
+      //     confB's setup ops AFTER confA's existing setup ops but still
+      //     before the merged RunOp — preserving the original
+      //     A-setup-then-B-setup-then-run order.
+      //   - AFTER  case (confA follows confB textually): insert at the FRONT
+      //     of bodyA so confB's setup ops appear before any of confA's body
+      //     ops — preserving the original B-setup-then-A-setup ordering as
+      //     observed in the host orchestrator before the collapse.  When
+      //     bodyA is empty, push_back is equivalent.
       //
       // NOTE: do NOT call op->remove() before moveBefore(): moveBefore is
       // implemented as a list-splice and asserts the op is currently in a
@@ -260,7 +350,12 @@ mlir::LogicalResult rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module,
       // which trips the assertion.  moveBefore handles the detach+reinsert
       // atomically.  For the push_back fallback we DO need to detach first
       // because Block::push_back expects a free-standing op.
-      mlir::Operation *insertBefore = runA ? runA.getOperation() : nullptr;
+      mlir::Operation *insertBefore;
+      if (!siblingIsAfter) {
+        insertBefore = runA ? runA.getOperation() : nullptr;
+      } else {
+        insertBefore = bodyA.empty() ? nullptr : &bodyA.front();
+      }
       llvm::SmallVector<mlir::Operation *> toMove;
       for (mlir::Operation &op : bodyB) {
         if (mlir::isa<AIEX::RunOp>(op))
@@ -361,6 +456,17 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
     runs.push_back(run);
   });
 
+  // Snapshot the orchestrator (outer aie.runtime_sequence) for each touched
+  // run — these are the rtSeq ops whose host-ABI block-arg signatures may
+  // have stale dead args after the run-callsite trim below.  Collect them
+  // BEFORE the loop because each `run.erase()` drops the parent-of-type
+  // anchor we'd need afterwards.
+  llvm::DenseSet<mlir::Operation *> orchestrators;
+  for (AIEX::RunOp run : runs) {
+    if (auto rtSeq = run->getParentOfType<AIE::RuntimeSequenceOp>())
+      orchestrators.insert(rtSeq.getOperation());
+  }
+
   bool failed = false;
   for (AIEX::RunOp run : runs) {
     unsigned argCount = run.getArgs().size();
@@ -420,6 +526,22 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
         run.getLoc(), run.getRuntimeSequenceSymbolAttr(), newOperands);
     run.erase();
     (void)newRun;
+  }
+
+  // Phase 3: trim now-dead host-orchestrator block args.  After the run-
+  // callsite trim above, fused-internal-channel intermediates that the host
+  // previously staged through L3 have no remaining users in the orchestrator
+  // body, but their block-arg slots remain in the orchestrator's runtime_seq
+  // signature.  This shrinks the host ABI so the runtime no longer allocates
+  // a dead L3 buffer per invocation (Task #99).  Only run on success — if any
+  // run failed validation we leave the IR alone for the diagnostic to surface.
+  if (!failed) {
+    for (mlir::Operation *op : orchestrators) {
+      auto rs = mlir::dyn_cast<AIE::RuntimeSequenceOp>(op);
+      if (!rs)
+        continue;
+      trimOrchestratorDeadHostArgs(rs);
+    }
   }
 
   return failed ? mlir::failure() : mlir::success();
