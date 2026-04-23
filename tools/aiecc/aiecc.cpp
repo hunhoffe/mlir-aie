@@ -1494,7 +1494,14 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
     if (conduitFuseCoreBodies)
       conduitPipeline += ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
     if (conduitFuseSpatial)
-      conduitPipeline += ",aie-combine-device,conduit-fuse-operators";
+      // NOTE: conduit-fuse-operators does its OWN device-body merge via
+      // DeviceMergeUtils (FS3 helper) at Step 8.  Do NOT prepend
+      // aie-combine-device here: it would physically merge devB into devA
+      // first, causing conduit-fuse-operators to bail at the
+      // devices.size() < 2 guard before its channel-merging logic (Steps
+      // 5-7: emit fused internal channel, rewrite acquires, delete the
+      // intermediate runtime DMA tasks) runs.
+      conduitPipeline += ",conduit-fuse-operators";
     if (conduitFuseChannels)
       conduitPipeline += ",conduit-fuse-channels";
     conduitPipeline += ",conduit-depth-promote,conduit-to-dma";
