@@ -115,10 +115,19 @@ void collectPhase(ConduitToDMAState &state) {
     // New feature attributes.
     if (auto sm = op.getSyncMode())
       info.noLocks = (*sm == SyncMode::None);
-    // forceDMA: routing_mode == Circuit means "pin circuit-switched DMA, skip
-    // shared-mem". Absent routing_mode or other values do not force DMA.
+    // forceDMA: skip shared-memory placement and force a DMA-mediated path.
+    //
+    // Step 4a (#128): both Circuit and DMA routing modes set forceDMA.
+    //   - Circuit means "pin circuit-switched DMA" (forceDMA + later
+    //     downstream packet-fallback budget logic still selects circuit).
+    //   - DMA means "force a DMA-mediated path; downstream is free to pick
+    //     circuit or packet" — explicitly EXCLUDES cascade / stream /
+    //     shared_memory.
+    // Absent routing_mode or other enum values (Cascade, Packet, Stream,
+    // SharedMemory) do not force DMA at this site.
     if (auto rm = op.getRoutingMode())
-      info.forceDMA = (*rm == RoutingMode::Circuit);
+      info.forceDMA =
+          (*rm == RoutingMode::Circuit || *rm == RoutingMode::DMA);
     // plio was removed from conduit.create (now on aie.shim_dma_allocation
     // only); plio inference from shim_dma_allocation happens in Pass C route
     // phase. No plio read here.
