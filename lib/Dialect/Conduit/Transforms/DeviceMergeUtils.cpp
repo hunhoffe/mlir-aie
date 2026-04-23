@@ -188,22 +188,31 @@ static AIEX::ConfigureOp findSiblingConfigureBefore(AIEX::ConfigureOp conf,
   return closest;
 }
 
-// Trim block args of `orchestrator` (an outer host-side aie.runtime_sequence)
-// that have no remaining users inside the orchestrator body.
+// Trim a specific set of block args from `orchestrator` (an outer host-side
+// aie.runtime_sequence) — the args identified by the caller as having become
+// dead due to THIS merge invocation (i.e. their corresponding aiex.run
+// callsite references were dropped in Phase 2).
 //
-// Symmetric to Step 8c on the merged device-side runtime_sequence: after
-// `reconcileHostRunArgsAfterTrim` projects the trim into the host-side
-// `aiex.run` arg vectors, some host-buffer block args may become dead
-// (referenced by no op in the orchestrator body — e.g., fused-internal-channel
-// intermediates that the host previously staged through L3).  Erasing them
-// shrinks the host-ABI signature so the runtime no longer allocates a dead L3
-// buffer per invocation (Task #99).
+// Symmetric to Step 8c on the merged device-side runtime_sequence.  Erasing
+// the merge-introduced dead args shrinks the host-ABI signature so the
+// runtime no longer allocates a dead L3 buffer per invocation (Task #99).
 //
-// Liveness rule: a block arg is live iff at least one operand of some op
-// nested inside the orchestrator body refers to it.  We walk recursively so
-// operands inside `aiex.configure` blocks (and any other nested regions) are
-// inspected.
-static void trimOrchestratorDeadHostArgs(AIE::RuntimeSequenceOp orchestrator) {
+// IMPORTANT: this trim consumes an EXPLICIT set of indices supplied by the
+// caller — it does NOT do post-hoc liveness analysis on the orchestrator
+// body.  Reason: an arg that is dead at IR level for reasons other than
+// merge (e.g. caller convention reserves a slot — IRON's
+// `FusedFullELFCallable` always passes 3 parent buffers (input/output/scratch)
+// even when scratch is unused inside the body, raw user-written runtime_seqs
+// with their own conventions, MHA's custom orchestrator, etc.) MUST NOT be
+// trimmed here.  Doing so silently corrupts the host ABI: the host runtime
+// continues to call `set_arg(i, bo)` against a now-nonexistent kernel slot,
+// producing all-zero outputs with no exception (the original #99
+// regression).
+static void trimOrchestratorMergeIntroducedArgs(
+    AIE::RuntimeSequenceOp orchestrator,
+    const llvm::DenseSet<unsigned> &deadIndices) {
+  if (deadIndices.empty())
+    return;
   if (orchestrator->getNumRegions() == 0)
     return;
   mlir::Region &region = orchestrator.getBody();
@@ -214,22 +223,38 @@ static void trimOrchestratorDeadHostArgs(AIE::RuntimeSequenceOp orchestrator) {
   if (n == 0)
     return;
 
-  llvm::DenseSet<unsigned> live;
-  body.walk([&](mlir::Operation *op) {
-    for (mlir::Value v : op->getOperands()) {
-      if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(v)) {
-        if (blockArg.getOwner() == &body)
-          live.insert(blockArg.getArgNumber());
+  // Erase in reverse order so surviving indices stay valid during erasure.
+  for (int idx = static_cast<int>(n) - 1; idx >= 0; --idx) {
+    if (deadIndices.contains(static_cast<unsigned>(idx)))
+      body.eraseArgument(static_cast<unsigned>(idx));
+  }
+}
+
+// Helper: count the number of times each block-arg of the orchestrator is
+// referenced as an operand of any aiex.run callsite NESTED inside the
+// orchestrator body.  The aiex.run callsite is the channel by which fusion-
+// induced argument death propagates from device-side to host-side; tracking
+// just these references (rather than full liveness) is what lets us
+// distinguish "dead because the merge made it so" from "dead from the start
+// by caller convention".
+static llvm::DenseMap<unsigned, unsigned>
+collectAiexRunArgUsage(AIE::RuntimeSequenceOp orchestrator) {
+  llvm::DenseMap<unsigned, unsigned> usage;
+  if (orchestrator->getNumRegions() == 0)
+    return usage;
+  mlir::Region &region = orchestrator.getBody();
+  if (region.empty())
+    return usage;
+  mlir::Block &body = region.front();
+  orchestrator.walk([&](AIEX::RunOp run) {
+    for (mlir::Value v : run.getArgs()) {
+      if (auto ba = mlir::dyn_cast<mlir::BlockArgument>(v)) {
+        if (ba.getOwner() == &body)
+          usage[ba.getArgNumber()] += 1;
       }
     }
   });
-
-  // Erase dead args in reverse order so surviving indices stay valid during
-  // erasure.
-  for (int idx = static_cast<int>(n) - 1; idx >= 0; --idx) {
-    if (!live.contains(static_cast<unsigned>(idx)))
-      body.eraseArgument(static_cast<unsigned>(idx));
-  }
+  return usage;
 }
 
 // Find the FIRST following sibling aiex.configure with the given symbol
@@ -467,6 +492,26 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
       orchestrators.insert(rtSeq.getOperation());
   }
 
+  // Phase 3 prep: snapshot the per-orchestrator aiex.run arg-usage map BEFORE
+  // the run-callsite rewrite below.  Phase 3 needs to compare BEFORE vs AFTER
+  // to identify which orchestrator-arg slots became orphaned strictly because
+  // of THIS merge (i.e. all aiex.run callsites that referenced them were
+  // rewritten to drop that position).  An arg dead-from-start by caller
+  // convention (e.g. IRON FusedFullELFCallable's reserved 3 parent-buffer
+  // slots, raw user-written runtime_seqs with their own conventions, MHA's
+  // custom orchestrator) MUST NOT be trimmed: doing so silently corrupts the
+  // host ABI (the runtime keeps calling set_arg(i, bo) against a now-
+  // nonexistent kernel slot, producing all-zero outputs with no exception
+  // — the original Task #99 regression).
+  llvm::DenseMap<mlir::Operation *, llvm::DenseMap<unsigned, unsigned>>
+      prevAiexRunUsage;
+  for (mlir::Operation *op : orchestrators) {
+    auto rtSeq = mlir::dyn_cast<AIE::RuntimeSequenceOp>(op);
+    if (!rtSeq)
+      continue;
+    prevAiexRunUsage[op] = collectAiexRunArgUsage(rtSeq);
+  }
+
   bool failed = false;
   for (AIEX::RunOp run : runs) {
     unsigned argCount = run.getArgs().size();
@@ -528,19 +573,44 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
     (void)newRun;
   }
 
-  // Phase 3: trim now-dead host-orchestrator block args.  After the run-
-  // callsite trim above, fused-internal-channel intermediates that the host
-  // previously staged through L3 have no remaining users in the orchestrator
-  // body, but their block-arg slots remain in the orchestrator's runtime_seq
-  // signature.  This shrinks the host ABI so the runtime no longer allocates
-  // a dead L3 buffer per invocation (Task #99).  Only run on success — if any
-  // run failed validation we leave the IR alone for the diagnostic to surface.
+  // Phase 3: trim merge-introduced dead host-orchestrator block args.  After
+  // the run-callsite rewrite above, fused-internal-channel intermediates
+  // that the host previously staged through L3 have lost all aiex.run
+  // references inside the orchestrator body.  Erasing those slots shrinks
+  // the host ABI so the runtime no longer allocates a dead L3 buffer per
+  // invocation (Task #99).
+  //
+  // Provenance rule (vs the original liveness-based trim that broke IRON
+  // FusedFullELFCallable's host ABI in #122): a slot qualifies as
+  // "merge-introduced dead" iff it was referenced by at least one aiex.run
+  // callsite BEFORE the rewrite above and by ZERO aiex.run callsites AFTER.
+  // Args dead-from-start by caller convention (reserved ABI slots, custom
+  // orchestrator patterns) had prevUsage==0 and are therefore never erased
+  // by this trim.  Only run on success — if any run failed validation we
+  // leave the IR alone for the diagnostic to surface.
   if (!failed) {
     for (mlir::Operation *op : orchestrators) {
       auto rs = mlir::dyn_cast<AIE::RuntimeSequenceOp>(op);
       if (!rs)
         continue;
-      trimOrchestratorDeadHostArgs(rs);
+      auto postIt = prevAiexRunUsage.find(op);
+      if (postIt == prevAiexRunUsage.end())
+        continue; // defensive: should not happen given orchestrators-set seed
+      const llvm::DenseMap<unsigned, unsigned> &prevUsage = postIt->second;
+      llvm::DenseMap<unsigned, unsigned> postUsage =
+          collectAiexRunArgUsage(rs);
+      llvm::DenseSet<unsigned> mergeIntroducedDead;
+      for (auto &kv : prevUsage) {
+        unsigned argIdx = kv.first;
+        unsigned prevCount = kv.second;
+        unsigned postCount = 0;
+        auto pit = postUsage.find(argIdx);
+        if (pit != postUsage.end())
+          postCount = pit->second;
+        if (prevCount > 0 && postCount == 0)
+          mergeIntroducedDead.insert(argIdx);
+      }
+      trimOrchestratorMergeIntroducedArgs(rs, mergeIntroducedDead);
     }
   }
 
