@@ -204,6 +204,12 @@ void ConduitToDMAState::switchToDeviceIndex(int devIdx) {
     return;
   activeDevIdx = devIdx;
   AIE::DeviceOp dev = deviceOps[devIdx];
+  // FS2: keep state.deviceOp in sync with the active device.  Without this,
+  // SymbolTable lookups in routePhase (e.g. checking for a pre-existing
+  // shim_dma_allocation) always ran against device 0, missed real matches in
+  // non-first devices, and emitted duplicate symbols → "redefinition of
+  // symbol" verifier crash.
+  deviceOp = dev;
   mlir::Block *body = &dev.getBodyRegion().front();
   if (body == deviceBody)
     return; // already pointing at the correct device
