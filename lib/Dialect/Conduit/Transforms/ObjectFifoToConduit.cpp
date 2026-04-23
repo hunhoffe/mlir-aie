@@ -541,7 +541,43 @@ struct ObjectFifoToConduitPass
       // Propagate via_cascade → routing_mode = Cascade.
       // Cascade has no hardware FIFO; depth must be 1.
       RoutingModeAttr routingModeAttr;
-      if (op.getViaCascade()) {
+
+      // Explicit routing_mode override (Step 2): if the source aie.objectfifo
+      // carries a discardable "routing_mode" StringAttr (set by the harness
+      // via set_conduit_attrs), parse it into the RoutingMode enum and use
+      // it directly. The explicit attr ALWAYS wins over via_cascade /
+      // aie_stream / via_DMA / dims / repeat derivations — the user has
+      // taken explicit control of routing.
+      if (auto rmStrAttr =
+              op->getAttrOfType<mlir::StringAttr>("routing_mode")) {
+        llvm::StringRef rmStr = rmStrAttr.getValue();
+        std::optional<RoutingMode> rmEnum;
+        if (rmStr == "circuit")
+          rmEnum = RoutingMode::Circuit;
+        else if (rmStr == "packet")
+          rmEnum = RoutingMode::Packet;
+        else if (rmStr == "cascade")
+          rmEnum = RoutingMode::Cascade;
+        else if (rmStr == "stream")
+          rmEnum = RoutingMode::Stream;
+        else if (rmStr == "shared_memory")
+          rmEnum = RoutingMode::SharedMemory;
+        else if (rmStr == "dma")
+          rmEnum = RoutingMode::DMA;
+        if (!rmEnum) {
+          op.emitError(
+              "objectfifo-to-conduit: invalid 'routing_mode' attr value '")
+              << rmStr
+              << "'; expected one of: circuit, packet, cascade, stream, "
+                 "shared_memory, dma";
+          signalPassFailure();
+          passFailed = true;
+          return; // skip conduit.create for this fifo
+        }
+        routingModeAttr = RoutingModeAttr::get(ctx, *rmEnum);
+      }
+
+      if (!routingModeAttr && op.getViaCascade()) {
         if (info.depth != 1) {
           op.emitError(
               "objectfifo-to-conduit: via_cascade=true requires depth=1 "
@@ -578,7 +614,14 @@ struct ObjectFifoToConduitPass
       // aie_stream would overwrite it with "stream" silently.  The result
       // is an aie_stream conduit with cascade semantics applied — wrong on
       // both counts.  Reject this combination explicitly.
-      if (op.getViaCascade() && streamPortIt != aieStreamFifoPort.end()) {
+      // Skipped when an explicit routing_mode override is in effect — the
+      // user has taken explicit control and is bypassing both derivations
+      // (see followup #117).  Predicate keys off the raw input attrs
+      // (`routing_mode` presence + `via_cascade` + `aie_stream`) rather than
+      // routingModeAttr, so the check fires regardless of whether the
+      // via_cascade derivation block above already set routingModeAttr.
+      if (!op->hasAttr("routing_mode") && op.getViaCascade() &&
+          streamPortIt != aieStreamFifoPort.end()) {
         op.emitError("objectfifo-to-conduit: objectfifo '")
             << op.getSymName()
             << "' has both via_cascade=true and aie_stream routing — "
@@ -588,7 +631,7 @@ struct ObjectFifoToConduitPass
         return; // skip conduit.create for this fifo
       }
 
-      if (streamPortIt != aieStreamFifoPort.end())
+      if (!routingModeAttr && streamPortIt != aieStreamFifoPort.end())
         routingModeAttr = RoutingModeAttr::get(ctx, RoutingMode::Stream);
 
       // If no cascade/stream routing, apply circuit override when via_DMA or
@@ -1495,6 +1538,17 @@ struct ObjectFifoToConduitPass
           deviceOp.walk([&](PutMemrefAsync op) { revertIfRenamed(op); });
           deviceOp.walk([&](GetMemrefAsync op) { revertIfRenamed(op); });
           deviceOp.walk([&](WaitWindow op) { revertIfRenamed(op); });
+          // AIE::ObjectFifoAllocateOp uses a different attr field
+          // ($objFifo_name → getObjFifoNameAttr); revert inline since the
+          // shared helper assumes the conduit-style getNameAttr accessor.
+          // Without this revert, Phase 4.6 alloc_tile lowering looks up the
+          // post-rename symbol (@chan_shim_alloc) and fails to find the
+          // matching conduit.create (which still uses @chan), warning + erasing
+          // the allocate and silently dropping the user's MemTile placement.
+          deviceOp.walk([&](AIE::ObjectFifoAllocateOp op) {
+            if (op.getObjFifoNameAttr() == allocRef)
+              op.setObjFifoNameAttr(origRef);
+          });
           // Also revert srcs/dsts arrays on distribute/join/forward ops.
           // replaceAllSymbolUses renames FlatSymbolRefAttr elements inside
           // SymbolRefArrayAttr arrays as well.
