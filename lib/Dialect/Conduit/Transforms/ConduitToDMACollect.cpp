@@ -126,8 +126,7 @@ void collectPhase(ConduitToDMAState &state) {
     // Absent routing_mode or other enum values (Cascade, Packet, Stream,
     // SharedMemory) do not force DMA at this site.
     if (auto rm = op.getRoutingMode())
-      info.forceDMA =
-          (*rm == RoutingMode::Circuit || *rm == RoutingMode::DMA);
+      info.forceDMA = (*rm == RoutingMode::Circuit || *rm == RoutingMode::DMA);
     // plio was removed from conduit.create (now on aie.shim_dma_allocation
     // only); plio inference from shim_dma_allocation happens in Pass C route
     // phase. No plio read here.

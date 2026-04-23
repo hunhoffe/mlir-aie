@@ -597,8 +597,7 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
       if (postIt == prevAiexRunUsage.end())
         continue; // defensive: should not happen given orchestrators-set seed
       const llvm::DenseMap<unsigned, unsigned> &prevUsage = postIt->second;
-      llvm::DenseMap<unsigned, unsigned> postUsage =
-          collectAiexRunArgUsage(rs);
+      llvm::DenseMap<unsigned, unsigned> postUsage = collectAiexRunArgUsage(rs);
       llvm::DenseSet<unsigned> mergeIntroducedDead;
       for (auto &kv : prevUsage) {
         unsigned argIdx = kv.first;

@@ -692,19 +692,19 @@ static std::string emitMemTileRelay(FusableCorePair &pair, AIE::DeviceOp device,
 
   // Create relay conduit.create with same characteristics as intermediate.
   builder.setInsertionPointAfter(intermediateConduit);
-  builder.create<Create>(intermediateConduit.getLoc(),
-                         mlir::StringAttr::get(ctx, relayName),
-                         intermediateConduit.getElementTypeAttr(),
-                         intermediateConduit.getDepthAttr(),
-                         /*routing_mode=*/intermediateConduit.getRoutingModeAttr(),
-                         /*sync_mode=*/SyncModeAttr{},
-                         /*producer_rates=*/nullptr,
-                         /*consumer_rates=*/nullptr,
-                         /*fusion_group=*/mlir::StringAttr{},
-                         /*bd_repeat=*/nullptr,
-                         /*dma_repeat=*/nullptr,
-                         /*producer_dimensions=*/nullptr,
-                         /*consumer_dimensions=*/nullptr);
+  builder.create<Create>(
+      intermediateConduit.getLoc(), mlir::StringAttr::get(ctx, relayName),
+      intermediateConduit.getElementTypeAttr(),
+      intermediateConduit.getDepthAttr(),
+      /*routing_mode=*/intermediateConduit.getRoutingModeAttr(),
+      /*sync_mode=*/SyncModeAttr{},
+      /*producer_rates=*/nullptr,
+      /*consumer_rates=*/nullptr,
+      /*fusion_group=*/mlir::StringAttr{},
+      /*bd_repeat=*/nullptr,
+      /*dma_repeat=*/nullptr,
+      /*producer_dimensions=*/nullptr,
+      /*consumer_dimensions=*/nullptr);
 
   // Emit conduit.scatter { src=@channel, dsts=[@channel_relay],
   //                        memtile="tile(col,1)" }.

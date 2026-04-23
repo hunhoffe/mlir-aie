@@ -927,8 +927,7 @@ struct ConduitFuseOperatorsPass
               // See `reprojectMemrefArgIndex` below.
               auto tagBOriginIfMemref = [&](mlir::Operation *cloned) {
                 llvm::StringRef nm = cloned->getName().getStringRef();
-                if (nm == "conduit.put_memref" ||
-                    nm == "conduit.get_memref" ||
+                if (nm == "conduit.put_memref" || nm == "conduit.get_memref" ||
                     nm == "conduit.put_memref_async" ||
                     nm == "conduit.get_memref_async")
                   cloned->setAttr("_origin_device",
@@ -1064,9 +1063,10 @@ struct ConduitFuseOperatorsPass
             if (!memTy)
               return t;
             int64_t bdExtent = (i < groups.size()) ? groups[i].maxExtent : 0;
-            int64_t origExtent = (memTy.hasStaticShape() && memTy.getRank() == 1)
-                                     ? memTy.getNumElements()
-                                     : 0;
+            int64_t origExtent =
+                (memTy.hasStaticShape() && memTy.getRank() == 1)
+                    ? memTy.getNumElements()
+                    : 0;
             int64_t finalExtent = std::max(bdExtent, origExtent);
             if (finalExtent <= 0)
               return t;
@@ -1126,8 +1126,7 @@ struct ConduitFuseOperatorsPass
           // The `_origin_device` discardable tag is removed in the same
           // walk so it never leaks to downstream passes.
           {
-            unsigned origArgCountA_v =
-                static_cast<unsigned>(origTypesA.size());
+            unsigned origArgCountA_v = static_cast<unsigned>(origTypesA.size());
             unsigned aSurvCount =
                 origArgCountA_v - static_cast<unsigned>(deadA.size());
             bool reprojFailed = false;

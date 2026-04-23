@@ -35,13 +35,14 @@ extern "C" {
 #include <string>
 #include <vector>
 
-// Forward-declare cdo_MaskWrite32 from third_party/bootgen/cdo-driver/cdo_driver.c.
-// It is intentionally not exported via cdo_driver.h, but the symbol is linked in.
-// Used below to inject a per-process-unique nonce into empty-device PDI bytes
-// so that firmware-side PDI content caching is defeated (Bug C/D in CLAUDE.md:
-// firmware caches PDIs by content and silently elides re-execution when the
-// content is byte-identical, so the device-reset that the empty PDI is supposed
-// to trigger never actually fires on the second LoadPDI).
+// Forward-declare cdo_MaskWrite32 from
+// third_party/bootgen/cdo-driver/cdo_driver.c. It is intentionally not exported
+// via cdo_driver.h, but the symbol is linked in. Used below to inject a
+// per-process-unique nonce into empty-device PDI bytes so that firmware-side
+// PDI content caching is defeated (Bug C/D in CLAUDE.md: firmware caches PDIs
+// by content and silently elides re-execution when the content is
+// byte-identical, so the device-reset that the empty PDI is supposed to trigger
+// never actually fires on the second LoadPDI).
 extern "C" {
 void cdo_MaskWrite32(uint64_t Addr, uint32_t Mask, uint32_t Data);
 }
@@ -122,12 +123,10 @@ static void emitEmptyDevicePdiCacheBustNonce() {
   cdo_MaskWrite32(/*Addr=*/kBenignAddr, /*Mask=*/0, /*Data=*/nonce);
 }
 
-static LogicalResult generateCDOBinariesSeparately(AIERTControl &ctl,
-                                                   const StringRef workDirPath,
-                                                   DeviceOp &targetOp,
-                                                   bool aieSim,
-                                                   bool enableCores,
-                                                   bool isEmptyDevice) {
+static LogicalResult
+generateCDOBinariesSeparately(AIERTControl &ctl, const StringRef workDirPath,
+                              DeviceOp &targetOp, bool aieSim, bool enableCores,
+                              bool isEmptyDevice) {
   auto ps = std::filesystem::path::preferred_separator;
 
   LLVM_DEBUG(llvm::dbgs() << "Generating aie_cdo_elfs.bin");
@@ -145,17 +144,16 @@ static LogicalResult generateCDOBinariesSeparately(AIERTControl &ctl,
   // the dominant byte-content section for non-empty devices too, so empty
   // devices' "init" file is the natural carrier).  See
   // emitEmptyDevicePdiCacheBustNonce comment for rationale.
-  if (failed(generateCDOBinary(
-          (llvm::Twine(workDirPath) + std::string(1, ps) +
-           targetOp.getSymName() + "_aie_cdo_init.bin")
-              .str(),
-          [&ctl, &targetOp, isEmptyDevice] {
-            if (failed(ctl.addInitConfig(targetOp)))
-              return failure();
-            if (isEmptyDevice)
-              emitEmptyDevicePdiCacheBustNonce();
-            return success();
-          })))
+  if (failed(generateCDOBinary((llvm::Twine(workDirPath) + std::string(1, ps) +
+                                targetOp.getSymName() + "_aie_cdo_init.bin")
+                                   .str(),
+                               [&ctl, &targetOp, isEmptyDevice] {
+                                 if (failed(ctl.addInitConfig(targetOp)))
+                                   return failure();
+                                 if (isEmptyDevice)
+                                   emitEmptyDevicePdiCacheBustNonce();
+                                 return success();
+                               })))
     return failure();
 
   LLVM_DEBUG(llvm::dbgs() << "Generating aie_cdo_enable.bin");
@@ -173,8 +171,7 @@ static LogicalResult generateCDOBinariesSeparately(AIERTControl &ctl,
 static LogicalResult generateCDOUnified(AIERTControl &ctl,
                                         const StringRef workDirPath,
                                         DeviceOp &targetOp, bool aieSim,
-                                        bool enableCores,
-                                        bool isEmptyDevice) {
+                                        bool enableCores, bool isEmptyDevice) {
   auto ps = std::filesystem::path::preferred_separator;
 
   return generateCDOBinary(
@@ -223,13 +220,12 @@ translateToCDODirect(ModuleOp m, llvm::StringRef workDirPath,
   // trigger a firmware-mediated device reset on LoadPDI.  Their PDI bytes are
   // otherwise byte-identical across compiles, which causes firmware PDI
   // content-caching to elide the reset.  See emitEmptyDevicePdiCacheBustNonce.
-  bool isEmptyDevice =
-      targetOp.getSymName().starts_with("empty_");
+  bool isEmptyDevice = targetOp.getSymName().starts_with("empty_");
 
   auto result = [&]() {
     if (emitUnified) {
-      return generateCDOUnified(ctl, workDirPath, targetOp, aieSim,
-                                enableCores, isEmptyDevice);
+      return generateCDOUnified(ctl, workDirPath, targetOp, aieSim, enableCores,
+                                isEmptyDevice);
     }
     return generateCDOBinariesSeparately(ctl, workDirPath, targetOp, aieSim,
                                          enableCores, isEmptyDevice);
