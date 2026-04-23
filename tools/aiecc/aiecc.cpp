@@ -346,13 +346,6 @@ static cl::opt<bool> conduitFuseChannels(
         "With --use-conduit, inject --conduit-fuse-channels (relay fusion)"),
     cl::init(false), cl::cat(aieCompilerOptions));
 
-static cl::opt<bool> conduitAddDmaTaskConversion(
-    "conduit-add-dma-task-conversion",
-    cl::desc("With --use-conduit, inject --dma-task-to-conduit independently "
-             "of fusion flags. Lets us exercise Pass C lowering of "
-             "aiex.dma_task ops without enabling any fusion."),
-    cl::init(false), cl::cat(aieCompilerOptions));
-
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
                                     cl::init(false),
@@ -1491,9 +1484,13 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   if (useConduit) {
     // Conduit passes are module-level; add before device-level nesting
     std::string conduitPipeline = "objectfifo-to-conduit";
-    if (conduitFuseSpatial || conduitFuseCoreBodies ||
-        conduitAddDmaTaskConversion)
-      conduitPipeline += ",dma-task-to-conduit";
+    // FS6: dma-task-to-conduit must always run under --use-conduit.  Bare
+    // --use-conduit on IRON-emitted IR (every Llama op) leaves
+    // aiex.dma_configure_task_for ops un-converted; conduit-to-dma then
+    // collides with aie-dma-to-npu on the auto-generated <chan>_shim_alloc
+    // symbol.  The pass is a no-op when no aiex.dma_task ops are present, so
+    // unconditional inclusion is safe.
+    conduitPipeline += ",dma-task-to-conduit";
     if (conduitFuseCoreBodies)
       conduitPipeline += ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
     if (conduitFuseSpatial)

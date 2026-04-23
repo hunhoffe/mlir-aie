@@ -1,4 +1,4 @@
-//===- aiecc_add_dma_task_conversion_flag.mlir ---------------*- MLIR -*-===//
+//===- aiecc_bare_use_conduit_includes_dma_task.mlir ---------*- MLIR -*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -8,33 +8,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Verifies the new aiecc cl::opt --conduit-add-dma-task-conversion injects
-// `dma-task-to-conduit` into the conduit resource-allocation pipeline
-// INDEPENDENTLY of fusion flags. This lets us exercise Pass C lowering of
-// aiex.dma_task ops on full Llama IR without enabling any fusion.
+// FS6 regression: `dma-task-to-conduit` was previously gated on
+// (conduitFuseSpatial || conduitFuseCoreBodies || conduitAddDmaTaskConversion)
+// in aiecc.cpp.  With bare `--use-conduit`, IRON's
+// `aiex.dma_configure_task_for` ops survived un-converted, while
+// `conduit-to-dma` independently allocated `<chan>_shim_alloc` for the same
+// channel symbols → "redefinition of symbol" verifier crash on every Llama
+// op.  Fix: drop the gating clause; `dma-task-to-conduit` always runs under
+// `--use-conduit` (no-op when no `aiex.dma_task` ops are present, so safe).
 //
-// Baseline: --use-conduit alone does NOT include dma-task-to-conduit.
-// New flag: --use-conduit --conduit-add-dma-task-conversion DOES include it,
-// without adding any fuse-operators / fuse-core-bodies / aie-combine-device
-// passes.
+// This test verifies the printed pipeline string for bare `--use-conduit`
+// now contains `dma-task-to-conduit`.
 //
 //===----------------------------------------------------------------------===//
 
-// Baseline: --use-conduit only — no dma-task-to-conduit, no fusion passes.
-// RUN: aiecc --no-xchesscc --no-xbridge -n --verbose --use-conduit %s 2>&1 | FileCheck %s --check-prefix=BASE
+// RUN: aiecc --no-xchesscc --no-xbridge -n --verbose --use-conduit %s 2>&1 | FileCheck %s
 
-// New flag enables dma-task-to-conduit independently of fusion.
-// RUN: aiecc --no-xchesscc --no-xbridge -n --verbose --use-conduit --conduit-add-dma-task-conversion %s 2>&1 | FileCheck %s --check-prefix=DTC
-
-// Compose with existing fusion flags: both gates active, dma-task-to-conduit
-// appears once.
-// RUN: aiecc --no-xchesscc --no-xbridge -n --verbose --use-conduit --conduit-add-dma-task-conversion --conduit-fuse-spatial %s 2>&1 | FileCheck %s --check-prefix=BOTH
-
-// BASE: Conduit pipeline: objectfifo-to-conduit,conduit-depth-promote,conduit-to-dma
-
-// DTC: Conduit pipeline: objectfifo-to-conduit,dma-task-to-conduit,conduit-depth-promote,conduit-to-dma
-
-// BOTH: Conduit pipeline: objectfifo-to-conduit,dma-task-to-conduit,aie-combine-device,conduit-fuse-operators,conduit-depth-promote,conduit-to-dma
+// CHECK: Conduit pipeline: objectfifo-to-conduit,dma-task-to-conduit,conduit-depth-promote,conduit-to-dma
 
 module {
   aie.device(npu1_1col) {
