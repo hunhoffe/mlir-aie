@@ -258,13 +258,26 @@ struct ArgGroup {
 
 /// Build arg groups from a runtime_sequence body's put/get_memref ops.
 ///
-/// After --dma-task-to-conduit, the block args are SSA-dead but remain in
-/// the function signature with the correct full-buffer types.  The
-/// put/get_memref ops are ordered so that ops sharing the same host buffer
-/// (block arg) are contiguous, with the first op in each group having
-/// offsets[0] == 0.  We use this structural invariant to recover the
-/// channel-name → block-arg-index mapping.
+/// Groups put/get_memref ops by their explicit `arg_index` attribute, which
+/// --dma-task-to-conduit (FS7 fix) sets from the original aie.dma_bd's
+/// BlockArgument index.  arg_index is the authoritative binding between a
+/// BD and a host-buffer block arg.
+///
+/// History: this routine previously used an `offset == 0` heuristic to
+/// detect arg-group boundaries on the implicit assumption that BDs sharing
+/// a host buffer are emitted contiguously with the first BD at offset 0.
+/// Multi-column lowerings violate that assumption — when the column-major
+/// BD ordering is `(col0_argA, col0_argB, col0_argC, col1_argA, ...)`
+/// every column's first BD hits `offset == 0` and starts a bogus new
+/// group, while non-zero-offset column-1+ BDs absorb into the wrong
+/// neighbour's group (Bug B / Matrix Row #1 4col_med compile failure).
+/// arg_index-driven grouping eliminates that ordering dependency.
+///
+/// The returned groups are sorted by argIndex so positional indexing into
+/// `groups[i]` (used by Step 8c's `computeFullBufferType` and
+/// `computeDeadArgs`) matches the layout of the original block arguments.
 static llvm::SmallVector<ArgGroup> buildArgGroupsFromSeq(mlir::Block &seqBody) {
+  llvm::DenseMap<unsigned, unsigned> argIdxToGroupPos;
   llvm::SmallVector<ArgGroup> groups;
   for (mlir::Operation &op : seqBody) {
     llvm::StringRef opName = op.getName().getStringRef();
@@ -275,22 +288,37 @@ static llvm::SmallVector<ArgGroup> buildArgGroupsFromSeq(mlir::Block &seqBody) {
     auto nameAttr = op.getAttrOfType<mlir::FlatSymbolRefAttr>("name");
     if (!nameAttr)
       continue;
+    auto argIdxAttr = op.getAttrOfType<mlir::IntegerAttr>("arg_index");
+    if (!argIdxAttr)
+      continue; // arg_index is required upstream (--dma-task-to-conduit);
+                // absence means we cannot reliably group this op.
+
+    int64_t argIdxSigned = argIdxAttr.getInt();
+    if (argIdxSigned < 0)
+      continue;
+    unsigned argIdx = static_cast<unsigned>(argIdxSigned);
+
     auto offsetsAttr = op.getAttrOfType<mlir::DenseI64ArrayAttr>("offsets");
     int64_t offset = (offsetsAttr && !offsetsAttr.empty()) ? offsetsAttr[0] : 0;
-
-    // Compute extent = offset + num_elems for this op.
     auto numElemsAttr = op.getAttrOfType<mlir::IntegerAttr>("num_elems");
     int64_t numElems = numElemsAttr ? numElemsAttr.getInt() : 0;
     int64_t extent = offset + numElems;
 
-    if (groups.empty() || offset == 0) {
-      unsigned idx = groups.empty() ? 0 : groups.back().argIndex + 1;
-      groups.push_back({idx, {nameAttr.getValue().str()}, extent});
+    auto it = argIdxToGroupPos.find(argIdx);
+    if (it == argIdxToGroupPos.end()) {
+      argIdxToGroupPos[argIdx] = static_cast<unsigned>(groups.size());
+      groups.push_back({argIdx, {nameAttr.getValue().str()}, extent});
     } else {
-      groups.back().channelNames.push_back(nameAttr.getValue().str());
-      groups.back().maxExtent = std::max(groups.back().maxExtent, extent);
+      ArgGroup &g = groups[it->second];
+      g.channelNames.push_back(nameAttr.getValue().str());
+      g.maxExtent = std::max(g.maxExtent, extent);
     }
   }
+  // Sort by argIndex so groups[i] corresponds positionally to block-arg i
+  // (a precondition for the Step 8c trim's indexed walks).
+  llvm::sort(groups, [](const ArgGroup &a, const ArgGroup &b) {
+    return a.argIndex < b.argIndex;
+  });
   return groups;
 }
 
@@ -805,13 +833,27 @@ struct ConduitFuseOperatorsPass
                 seqBuilder.setInsertionPointToEnd(&seqBodyA);
               }
 
+              // Helper: tag a cloned put/get_memref op as B-side so the
+              // post-trim arg_index reprojection (Step 8c followup) can
+              // distinguish A-side originals (untagged) from B-side clones.
+              // See `reprojectMemrefArgIndex` below.
+              auto tagBOriginIfMemref = [&](mlir::Operation *cloned) {
+                llvm::StringRef nm = cloned->getName().getStringRef();
+                if (nm == "conduit.put_memref" ||
+                    nm == "conduit.get_memref" ||
+                    nm == "conduit.put_memref_async" ||
+                    nm == "conduit.get_memref_async")
+                  cloned->setAttr("_origin_device",
+                                  mlir::StringAttr::get(ctx, "B"));
+              };
+
               // Re-insert in interleaved order.
               // 1. One-shot ops from A (re-insert originals).
               for (mlir::Operation *op : partA.oneShot)
                 seqBuilder.insert(op);
               // 2. One-shot ops from B (clone with arg mapping).
               for (mlir::Operation *op : partB.oneShot)
-                seqBuilder.clone(*op, argMapping);
+                tagBOriginIfMemref(seqBuilder.clone(*op, argMapping));
               // 3. Interleave batched chunks.
               size_t numChunks = partA.chunks.size();
               if (partB.chunks.size() > numChunks)
@@ -822,7 +864,7 @@ struct ConduitFuseOperatorsPass
                     seqBuilder.insert(op);
                 if (c < partB.chunks.size())
                   for (mlir::Operation *op : partB.chunks[c])
-                    seqBuilder.clone(*op, argMapping);
+                    tagBOriginIfMemref(seqBuilder.clone(*op, argMapping));
               }
               // seqB's body is now represented in seqA. seqB itself remains
               // in devB and will be erased with devB below.
@@ -914,19 +956,33 @@ struct ConduitFuseOperatorsPass
                               static_cast<unsigned>(origTypesB.size()));
 
           // Build surviving arg types: non-dead from A + non-dead from B.
-          // Use computed max extents from buildArgGroupsFromSeq() to
-          // reconstruct full-buffer types, fixing the per-tile arg type bug.
+          //
+          // Use the max of (BD-derived maxExtent, origType extent) to
+          // reconstruct full-buffer types:
+          //   * maxExtent fixes the per-tile arg type bug — IRON sometimes
+          //     records per-tile block-arg types (e.g. memref<128xbf16>)
+          //     even when the BDs span the full host buffer with offsets.
+          //   * origType extent preserves IRON's recorded full-buffer type
+          //     when it ALREADY spans the full buffer (e.g. multi-column
+          //     lowerings that record memref<8192xbf16> directly).  Taking
+          //     the max keeps both cases correct without a special-case.
           auto computeFullBufferType =
               [](unsigned i, const llvm::SmallVector<ArgGroup> &groups,
                  const llvm::SmallVector<mlir::Type> &origTypes) -> mlir::Type {
-            if (i < groups.size() && groups[i].maxExtent > 0 &&
-                i < origTypes.size()) {
-              if (auto memTy = mlir::dyn_cast<mlir::MemRefType>(origTypes[i])) {
-                return mlir::MemRefType::get({groups[i].maxExtent},
-                                             memTy.getElementType());
-              }
-            }
-            return origTypes[i];
+            if (i >= origTypes.size())
+              return origTypes.empty() ? mlir::Type{} : origTypes.back();
+            mlir::Type t = origTypes[i];
+            auto memTy = mlir::dyn_cast<mlir::MemRefType>(t);
+            if (!memTy)
+              return t;
+            int64_t bdExtent = (i < groups.size()) ? groups[i].maxExtent : 0;
+            int64_t origExtent = (memTy.hasStaticShape() && memTy.getRank() == 1)
+                                     ? memTy.getNumElements()
+                                     : 0;
+            int64_t finalExtent = std::max(bdExtent, origExtent);
+            if (finalExtent <= 0)
+              return t;
+            return mlir::MemRefType::get({finalExtent}, memTy.getElementType());
           };
 
           llvm::SmallVector<mlir::Type> newArgTypes;
@@ -948,6 +1004,89 @@ struct ConduitFuseOperatorsPass
               seqBody.eraseArgument(static_cast<unsigned>(idx));
             for (mlir::Type ty : newArgTypes)
               seqBody.addArgument(ty, seqA->getLoc());
+          }
+
+          // --- Step 8c-bis: Re-project `arg_index` on every surviving
+          // put/get_memref op in the merged sequence body.
+          //
+          // This is the device-side counterpart to Step 8d's host-side
+          // `reconcileHostRunArgsAfterTrim`.  Step 8c just reshaped the
+          // merged sequence's block-arg layout (drop deadA, then drop
+          // deadB), but the surviving conduit.put_memref / get_memref ops
+          // still carry their pre-merge `arg_index` attributes:
+          //
+          //   * A-side originals: arg_index references seqA's pre-trim
+          //     position (== merged-seq pre-trim position, since A's args
+          //     occupy [0, origArgCountA) without offset).
+          //   * B-side clones (tagged `_origin_device = "B"` at clone
+          //     time): arg_index still references seqB's ORIGINAL position
+          //     (0..origArgCountB-1), with NO offset for the merged
+          //     layout.
+          //
+          // --conduit-to-dma Step 8g (`ConduitToDMALower.cpp:1126-1148`)
+          // consumes arg_index directly as `blockArgs[argIdx]`, so without
+          // this reprojection BDs bind to the wrong block args (Bug A /
+          // Matrix Row #1 1col_small numerical wrong-output: routing-
+          // independent because routing is correct — block-arg binding
+          // is wrong).
+          //
+          // Reprojection (oldIdx → newIdx):
+          //   A-side: newIdx = oldIdx − |{d ∈ deadA : d < oldIdx}|
+          //   B-side: newIdx = (origArgCountA − |deadA|)
+          //                    + (oldIdx − |{d ∈ deadB : d < oldIdx}|)
+          //
+          // The `_origin_device` discardable tag is removed in the same
+          // walk so it never leaks to downstream passes.
+          {
+            unsigned origArgCountA_v =
+                static_cast<unsigned>(origTypesA.size());
+            unsigned aSurvCount =
+                origArgCountA_v - static_cast<unsigned>(deadA.size());
+            bool reprojFailed = false;
+            for (mlir::Operation &op : seqBody) {
+              llvm::StringRef opName = op.getName().getStringRef();
+              if (opName != "conduit.put_memref" &&
+                  opName != "conduit.get_memref" &&
+                  opName != "conduit.put_memref_async" &&
+                  opName != "conduit.get_memref_async")
+                continue;
+              auto argIdxAttr =
+                  op.getAttrOfType<mlir::IntegerAttr>("arg_index");
+              bool isB = false;
+              if (auto orig =
+                      op.getAttrOfType<mlir::StringAttr>("_origin_device"))
+                isB = (orig.getValue() == "B");
+              op.removeAttr("_origin_device");
+              if (!argIdxAttr)
+                continue;
+              int64_t oldIdx = argIdxAttr.getInt();
+              if (oldIdx < 0)
+                continue;
+              const llvm::DenseSet<unsigned> &dead = isB ? deadB : deadA;
+              if (dead.contains(static_cast<unsigned>(oldIdx))) {
+                op.emitError("conduit-fuse-operators: ")
+                    << (isB ? "B" : "A")
+                    << "-side put/get_memref op survived Step 8c trim but "
+                       "its arg_index "
+                    << oldIdx << " is in the dead-arg set";
+                reprojFailed = true;
+                continue;
+              }
+              unsigned deadBefore = 0;
+              for (unsigned d : dead)
+                if (static_cast<int64_t>(d) < oldIdx)
+                  ++deadBefore;
+              int64_t newIdx =
+                  isB ? (static_cast<int64_t>(aSurvCount) +
+                         (oldIdx - static_cast<int64_t>(deadBefore)))
+                      : (oldIdx - static_cast<int64_t>(deadBefore));
+              op.setAttr("arg_index",
+                         mlir::IntegerAttr::get(argIdxAttr.getType(), newIdx));
+            }
+            if (reprojFailed) {
+              signalPassFailure();
+              return;
+            }
           }
 
           // --- Step 8d: Phase 2 of the host-orchestrator rewrite.
