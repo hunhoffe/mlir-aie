@@ -75,6 +75,88 @@ namespace xilinx::conduit {
 namespace {
 
 // ---------------------------------------------------------------------------
+// Helper: resolve the routing_mode of a fused intermediate channel from its
+// two endpoints (outCh = producer-side, inCh = consumer-side).
+//
+// Conflict policy:
+//   * Both absent           → empty attr (downstream resolves)
+//   * Both equal             → that value
+//   * Exactly one set        → the one that's set
+//   * Cascade vs anything    → ERROR
+//   * SharedMemory vs Circuit→ ERROR
+//   * Otherwise              → producer (outCh) wins
+//
+// On error: emits a diagnostic on outCh and sets `errored = true`; the empty
+// attr returned MUST NOT be used (caller signals pass failure).
+// ---------------------------------------------------------------------------
+static RoutingModeAttr resolveFusedRoutingMode(Create outCh, Create inCh,
+                                               bool &errored) {
+  errored = false;
+  RoutingModeAttr outAttr = outCh.getRoutingModeAttr();
+  RoutingModeAttr inAttr = inCh.getRoutingModeAttr();
+
+  // Both absent: leave for downstream resolution.
+  if (!outAttr && !inAttr)
+    return RoutingModeAttr{};
+  // Exactly one set: take the set one.
+  if (!outAttr)
+    return inAttr;
+  if (!inAttr)
+    return outAttr;
+  // Both set: equal → that value.
+  RoutingMode outMode = outAttr.getValue();
+  RoutingMode inMode = inAttr.getValue();
+  if (outMode == inMode)
+    return outAttr;
+
+  auto isCascade = [](RoutingMode m) { return m == RoutingMode::Cascade; };
+  auto isShared = [](RoutingMode m) { return m == RoutingMode::SharedMemory; };
+  auto isCircuit = [](RoutingMode m) { return m == RoutingMode::Circuit; };
+
+  auto modeName = [](RoutingMode m) -> llvm::StringRef {
+    switch (m) {
+    case RoutingMode::Circuit:
+      return "circuit";
+    case RoutingMode::Packet:
+      return "packet";
+    case RoutingMode::Cascade:
+      return "cascade";
+    case RoutingMode::Stream:
+      return "stream";
+    case RoutingMode::SharedMemory:
+      return "shared_memory";
+    case RoutingMode::DMA:
+      return "dma";
+    }
+    return "?";
+  };
+
+  // Cascade vs anything (other than equal cascade, handled above) → ERROR.
+  if (isCascade(outMode) || isCascade(inMode)) {
+    outCh.emitOpError("conduit-fuse-operators: incompatible routing_mode "
+                      "for fused intermediate channel: producer=")
+        << modeName(outMode) << ", consumer=" << modeName(inMode)
+        << " (cascade cannot be fused with a non-cascade endpoint)";
+    errored = true;
+    return RoutingModeAttr{};
+  }
+
+  // SharedMemory vs Circuit (either direction) → ERROR.
+  if ((isShared(outMode) && isCircuit(inMode)) ||
+      (isCircuit(outMode) && isShared(inMode))) {
+    outCh.emitOpError("conduit-fuse-operators: incompatible routing_mode "
+                      "for fused intermediate channel: producer=")
+        << modeName(outMode) << ", consumer=" << modeName(inMode)
+        << " (shared_memory and circuit cannot be reconciled)";
+    errored = true;
+    return RoutingModeAttr{};
+  }
+
+  // Otherwise: producer wins.
+  return outAttr;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: collect the maximum column index used by any tile in a DeviceOp.
 // ---------------------------------------------------------------------------
 static int64_t maxColInDevice(AIE::DeviceOp device) {
@@ -573,11 +655,17 @@ struct ConduitFuseOperatorsPass
                 inCh->getAttrOfType<mlir::DenseI64ArrayAttr>("consumer_rates"))
           consumerRatesAttr = attr;
 
-        // routing_mode = absent ("any"): let --conduit-infer-modes resolve.
-        // Adjacent tiles (after offset) get shared_memory; non-adjacent get
-        // circuit.  Eliminates DMA channels for the intermediate when tiles
-        // are neighbours.
-        RoutingModeAttr routingModeAttr{};
+        // routing_mode: resolve from the two endpoints' attrs via the
+        // conflict policy in resolveFusedRoutingMode.  When both endpoints
+        // are absent the result is empty and --conduit-infer-modes resolves
+        // it (adjacent tiles → shared_memory; non-adjacent → circuit).
+        bool routingErrored = false;
+        RoutingModeAttr routingModeAttr =
+            resolveFusedRoutingMode(outCh, inCh, routingErrored);
+        if (routingErrored) {
+          signalPassFailure();
+          return;
+        }
 
         // Emit conduit.create INSIDE devA (not at module scope) so Pass C
         // sees it as a normal intra-device channel after the device merge.
