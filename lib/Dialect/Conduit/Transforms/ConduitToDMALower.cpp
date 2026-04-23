@@ -1081,9 +1081,27 @@ void lowerPhase(ConduitToDMAState &state) {
       auto blockArgs = rtSeq.getBody().front().getArguments();
       auto indexTy = mlir::IndexType::get(ctx);
 
-      // Task SSA values for free/await at end.
-      llvm::SmallVector<mlir::Value> putTasks;
-      llvm::SmallVector<mlir::Value> awaitTasks;
+      // Per-channel "previous live task" tracking.  Direction 1a fix
+      // (FS7 followup, Task #62): when a new put/get_memref on channel X
+      // arrives, the previous task on X must be released BEFORE configuring
+      // the next one — otherwise the BD ID allocator (Option B interval
+      // analysis) sees every interval span the whole runtime_sequence body
+      // and exhausts the per-tile pool (16 BDs on shim, 24/24 on memtile).
+      // Releasing means: aiex.dma_await_task for S2MM (matches IRON's
+      // issue_token=true contract), aiex.dma_free_task for MM2S.  Trailing
+      // tasks (one per channel that still hold a live BD at the end of the
+      // rtSeq body) get released at end-of-body.
+      struct LiveTask {
+        mlir::Value task;
+        bool isS2MM;
+        mlir::Location loc;
+      };
+      llvm::StringMap<LiveTask> prevPerChannel;
+      // Insertion-ordered keys so trailing release order is deterministic
+      // (StringMap iteration order is hash-dependent and would make lit
+      // tests flaky).  StringRefs point into FlatSymbolRefAttr storage,
+      // which outlives this loop (attrs are not mutated here).
+      llvm::SmallVector<llvm::StringRef, 16> liveOrder;
 
       for (unsigned i = 0; i < memrefOps.size(); ++i) {
         mlir::Operation *op = memrefOps[i];
@@ -1167,6 +1185,25 @@ void lowerPhase(ConduitToDMAState &state) {
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
+        // Direction 1a: release the previous live task on this channel
+        // (if any) BEFORE configuring the new one.  This bounds the per-
+        // channel BD lifetime to one in-flight transfer at a time, which
+        // — combined with the BD-ID interval allocator — lets a tile with
+        // N invocations of one channel use 1 BD slot rather than N.
+        // Channel-local; independent channels are unaffected and may
+        // overlap with each other up to the per-tile BD pool size.
+        {
+          auto prevIt = prevPerChannel.find(conduitName);
+          if (prevIt != prevPerChannel.end()) {
+            const LiveTask &prev = prevIt->second;
+            mlir::OperationState rel(
+                prev.loc, prev.isS2MM ? "aiex.dma_await_task"
+                                      : "aiex.dma_free_task");
+            rel.addOperands(prev.task);
+            builder.create(rel);
+          }
+        }
+
         // Build aiex.dma_configure_task_for.
         mlir::OperationState configState(loc, "aiex.dma_configure_task_for");
         configState.addAttribute("alloc",
@@ -1202,26 +1239,40 @@ void lowerPhase(ConduitToDMAState &state) {
           builder.create(startState);
         }
 
-        if (isS2MM)
-          awaitTasks.push_back(taskResult);
-        else
-          putTasks.push_back(taskResult);
+        // Update per-channel live task.  First time this channel is seen,
+        // record its key in liveOrder for deterministic trailing-release
+        // ordering at end-of-body.
+        // NB: cannot use operator[] here — LiveTask holds a mlir::Location
+        // which has no default constructor, so StringMap's insert-on-miss
+        // path won't compile.  try_emplace handles the insert; the else
+        // branch reassigns in place.
+        auto it = prevPerChannel.find(conduitName);
+        if (it == prevPerChannel.end()) {
+          prevPerChannel.try_emplace(conduitName,
+                                     LiveTask{taskResult, isS2MM, loc});
+          liveOrder.push_back(conduitName);
+        } else {
+          it->second = LiveTask{taskResult, isS2MM, loc};
+        }
       }
 
-      // Emit await + free at the end of the runtime_sequence body.
+      // Trailing release: each channel still holds one live task (the last
+      // configure on that channel).  Release it at the end of the rtSeq
+      // body in the order channels were first seen.  S2MM → await,
+      // MM2S → free, matching the per-op release semantics above.
       builder.setInsertionPointToEnd(&rtSeq.getBody().front());
-
-      for (auto task : awaitTasks) {
-        mlir::OperationState awaitState(rtSeq.getLoc(), "aiex.dma_await_task");
-        awaitState.addOperands(task);
-        builder.create(awaitState);
-      }
-
-      // Free put tasks in reverse order.
-      for (auto task : llvm::reverse(putTasks)) {
-        mlir::OperationState freeState(rtSeq.getLoc(), "aiex.dma_free_task");
-        freeState.addOperands(task);
-        builder.create(freeState);
+      for (llvm::StringRef channelKey : liveOrder) {
+        // Same default-ctor caveat as above: use find() not operator[].
+        // liveOrder only contains keys we inserted, so find() must hit.
+        auto trailIt = prevPerChannel.find(channelKey);
+        assert(trailIt != prevPerChannel.end() &&
+               "liveOrder out of sync with prevPerChannel");
+        const LiveTask &prev = trailIt->second;
+        mlir::OperationState rel(
+            rtSeq.getLoc(), prev.isS2MM ? "aiex.dma_await_task"
+                                        : "aiex.dma_free_task");
+        rel.addOperands(prev.task);
+        builder.create(rel);
       }
 
       // Erase the conduit put/get_memref ops.
