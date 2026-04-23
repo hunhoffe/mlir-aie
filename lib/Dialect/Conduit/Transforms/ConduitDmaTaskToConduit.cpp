@@ -81,18 +81,38 @@ static mlir::FlatSymbolRefAttr getAllocAttr(mlir::Operation *op) {
 // ---------------------------------------------------------------------------
 // Helper: convert BDDimLayout dimensions into offsets/sizes/strides arrays.
 //
-// Strips all dims with stride==0 to produce a compact addressable
-// representation:
-//   * <size=1, stride=0> is a trivial filler dim (no effect on addressing).
-//   * <size=N, stride=0> with N>1 is a broadcast/repeat dim (read same address
-//     N times). The repeat factor does NOT contribute unique addressable
-//     elements — `num_elems` reflects one buffer pass, and the repeat is
-//     preserved separately via `producer_dimensions` (full BDDimLayout) which
-//     is propagated to MM2S channel programming.
+// Conduit Tier-3 memref-DMA ops have a verifier requirement that
+// `num_elems == product(sizes)` — i.e. `sizes` must describe the unique
+// addressable elements that one BD execution transfers (matching the BD's
+// `len` parameter).
 //
-// Including a non-trivial stride=0 repeat dim in `sizes` would break the
-// verifier's `num_elems == product(sizes)` check (num_elems = buffer-pass
-// element count, not channel-element count).
+// A `dma_bd`'s `dimensions` array, however, can include extra OUTER dims
+// that act as REPEAT factors rather than addressable iteration dims.
+// They come in two flavors:
+//
+//   1. `<size=N, stride=0>` (broadcast). N==1 is a trivial filler; N>1 is
+//      an explicit broadcast (read the same address N times). FS5 fix.
+//   2. `<size=N, stride=S>` with S != 0, where the iteration wraps over
+//      memory already visited by inner dims. Detected by:
+//        product(sizes) > len  (channel-element count > BD-pass count).
+//      Llama runlist emits this combined with `repeat_count` on the
+//      enclosing `aiex.dma_configure_task_for`. FS5 extension fix.
+//
+// Both flavors are stripped from `sizes/strides`. The full BDDimLayout
+// (including the stripped outer dims) is preserved separately:
+//   * MM2S — propagated to `producer_dimensions` on `conduit.put_memref`,
+//     which downstream MM2S DMA programming consumes for the actual BD
+//     chain.
+//   * S2MM — the source `repeat_count` attr is the channel-side encoding;
+//     `consumer_dimensions` is left null (matching pre-fix behavior).
+//
+// Outer-dim peeling rules (defensive — only peel when the residual is
+// well-defined):
+//   * Stop when `product(sizes) == len` (no more repeat factors).
+//   * Skip when `len <= 0` (no target to peel against).
+//   * Stop if peeling the outermost would drop product BELOW `len`
+//     (something else is off — surface via the verifier rather than
+//     silently mangle the BD).
 //
 // The dma_bd scalar offset becomes offsets[0].
 // ---------------------------------------------------------------------------
@@ -109,6 +129,27 @@ static void dimsToOffsetsStrides(int32_t bdOffset, int64_t len,
         continue;
       sizes.push_back(static_cast<int64_t>(bdDim.getSize()));
       strides.push_back(static_cast<int64_t>(bdDim.getStride()));
+    }
+  }
+
+  // Peel outer non-zero-stride REPEAT dims while product(sizes) > len.
+  // (BDDimLayout convention: index 0 is outermost.)
+  if (len > 0 && sizes.size() > 1) {
+    int64_t prod = 1;
+    for (int64_t s : sizes)
+      prod *= s;
+    while (sizes.size() > 1 && prod > len) {
+      int64_t outer = sizes.front();
+      if (outer <= 0)
+        break;
+      int64_t next = prod / outer;
+      // Don't peel if the residual would no longer cover `len`; let the
+      // verifier surface the inconsistency rather than mangling the BD.
+      if (next < len)
+        break;
+      sizes.erase(sizes.begin());
+      strides.erase(strides.begin());
+      prod = next;
     }
   }
 
