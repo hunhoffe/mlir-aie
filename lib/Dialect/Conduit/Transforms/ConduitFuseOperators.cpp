@@ -949,6 +949,28 @@ struct ConduitFuseOperatorsPass
             for (mlir::Type ty : newArgTypes)
               seqBody.addArgument(ty, seqA->getLoc());
           }
+
+          // --- Step 8d: Phase 2 of the host-orchestrator rewrite.
+          //
+          // Project the same drops Step 8c just applied to the merged
+          // sequence's block args into the host-side `aiex.run` arg vectors.
+          // After `rewriteHostConfigureOnDeviceMerge` (the Phase 1 fold),
+          // each folded run carries the naive `runA.getArgs() ++
+          // runB.getArgs()` concat — which now overruns the trimmed callee.
+          // The helper drops `deadA` from the first `origArgCountA` positions
+          // and `deadB` from the next `origArgCountB` positions, restoring
+          // arity match.
+          //
+          // Non-folded `aiex.configure @devA` blocks (rewritten in place) are
+          // handled by the helper too: the run there only carries devB's
+          // args, so only `deadB` is projected.
+          if (mlir::failed(detail::reconcileHostRunArgsAfterTrim(
+                  devA->getParentOfType<mlir::ModuleOp>(), devA, seqA,
+                  static_cast<unsigned>(origTypesA.size()),
+                  static_cast<unsigned>(origTypesB.size()), deadA, deadB))) {
+            signalPassFailure();
+            return;
+          }
         }
       }
     }

@@ -20,6 +20,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace xilinx::conduit::detail {
@@ -276,10 +277,21 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
         }
       }
 
-      // Concatenate the two RunOps into one.
+      // Build the folded RunOp's argument vector as the NAIVE concatenation
+      // `runA.getArgs() ++ runB.getArgs()`.  This deliberately matches the
+      // current (pre-Step-8c) sequence arity, which is the post-Phase-2 sum
+      // `origArgCountA + origArgCountB`.
+      //
+      // Callers (e.g. --conduit-fuse-operators) that subsequently TRIM the
+      // sequence's block args MUST follow up with
+      // `reconcileHostRunArgsAfterTrim` to project the same drops into this
+      // run's arg vector.  See DeviceMergeUtils.h for the split-phase
+      // contract.
       if (runA && runB) {
-        llvm::SmallVector<mlir::Value> newOperands(runA.getArgs().begin(),
-                                                   runA.getArgs().end());
+        llvm::SmallVector<mlir::Value> newOperands;
+        newOperands.reserve(runA.getArgs().size() + runB.getArgs().size());
+        for (mlir::Value v : runA.getArgs())
+          newOperands.push_back(v);
         for (mlir::Value v : runB.getArgs())
           newOperands.push_back(v);
 
@@ -310,32 +322,107 @@ rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
     }
   }
 
-  // Sanity check: every aiex.run inside an aiex.configure @devA that targets
-  // the surviving sequence must agree with seqA's block-arg count.
-  if (auto rs = mlir::dyn_cast_or_null<AIE::RuntimeSequenceOp>(seqA)) {
-    unsigned expected = rs.getBody().front().getNumArguments();
-    bool argMismatch = false;
-    module.walk([&](AIEX::RunOp run) {
-      auto parentConf = run->getParentOfType<AIEX::ConfigureOp>();
-      if (!parentConf)
-        return;
-      if (parentConf.getSymbol() != devAName)
-        return;
-      if (run.getRuntimeSequenceSymbol() != survivingSeqName)
-        return;
-      if (run.getArgs().size() != expected) {
-        run->emitError("aiex.run arg count ")
-            << run.getArgs().size()
-            << " disagrees with merged aie.runtime_sequence @"
-            << survivingSeqName << " arity " << expected;
-        argMismatch = true;
-      }
-    });
-    if (argMismatch)
-      return mlir::failure();
-  }
+  // NOTE: arity validation is deliberately deferred.  At this point, callers
+  // that trim the merged sequence's block args (e.g. Step 8c in
+  // --conduit-fuse-operators) have NOT yet run, so the freshly-folded
+  // `aiex.run` carries the pre-trim concat arity that intentionally exceeds
+  // the post-trim callee.  Callers must invoke `reconcileHostRunArgsAfterTrim`
+  // after their trim to project the drops into the run-op arg vectors and
+  // validate the final arity.  Callers that DO NOT trim (--aie-combine-device,
+  // --conduit-fuse-core-bodies) need no follow-up: at this point the run's
+  // arity already matches the merged sequence.
 
   return mlir::success();
+}
+
+mlir::LogicalResult reconcileHostRunArgsAfterTrim(
+    mlir::ModuleOp module, AIE::DeviceOp devA, mlir::Operation *seqA,
+    unsigned origArgCountA, unsigned origArgCountB,
+    const llvm::DenseSet<unsigned> &deadA,
+    const llvm::DenseSet<unsigned> &deadB) {
+  auto rs = mlir::dyn_cast_or_null<AIE::RuntimeSequenceOp>(seqA);
+  if (!rs)
+    return mlir::success();
+
+  llvm::StringRef devAName = devA.getSymName();
+  llvm::StringRef survivingSeqName = rs.getSymName();
+  unsigned expected = rs.getBody().front().getNumArguments();
+
+  // Snapshot run ops to mutate; we replace them in place.
+  llvm::SmallVector<AIEX::RunOp> runs;
+  module.walk([&](AIEX::RunOp run) {
+    auto parentConf = run->getParentOfType<AIEX::ConfigureOp>();
+    if (!parentConf)
+      return;
+    if (parentConf.getSymbol() != devAName)
+      return;
+    if (run.getRuntimeSequenceSymbol() != survivingSeqName)
+      return;
+    runs.push_back(run);
+  });
+
+  bool failed = false;
+  for (AIEX::RunOp run : runs) {
+    unsigned argCount = run.getArgs().size();
+
+    // Two layouts are valid at this point:
+    //   - Folded:           argCount == origArgCountA + origArgCountB
+    //                       (segment A then segment B, both projected).
+    //   - Rewritten-in-place: argCount == origArgCountB
+    //                       (only segment B; symbol was rewritten by
+    //                       rewriteHostConfigureOnDeviceMerge but no fold).
+    bool isFolded = (argCount == origArgCountA + origArgCountB);
+    bool isInPlace = (argCount == origArgCountB && !isFolded);
+
+    if (!isFolded && !isInPlace) {
+      run->emitError("device-merge Phase 2: aiex.run arg count ")
+          << argCount << " is neither the folded total ("
+          << (origArgCountA + origArgCountB)
+          << ") nor the rewritten-in-place B-only count (" << origArgCountB
+          << "); cannot reconcile after Step 8c trim";
+      failed = true;
+      continue;
+    }
+
+    llvm::SmallVector<mlir::Value> newOperands;
+    newOperands.reserve(argCount);
+
+    if (isFolded) {
+      // Segment A: indices [0, origArgCountA) — drop positions in deadA.
+      for (unsigned i = 0; i < origArgCountA; ++i) {
+        if (!deadA.contains(i))
+          newOperands.push_back(run.getArgs()[i]);
+      }
+      // Segment B: indices [origArgCountA, origArgCountA + origArgCountB) —
+      // drop positions in deadB (re-based to 0).
+      for (unsigned i = 0; i < origArgCountB; ++i) {
+        if (!deadB.contains(i))
+          newOperands.push_back(run.getArgs()[origArgCountA + i]);
+      }
+    } else { // isInPlace
+      for (unsigned i = 0; i < origArgCountB; ++i) {
+        if (!deadB.contains(i))
+          newOperands.push_back(run.getArgs()[i]);
+      }
+    }
+
+    if (newOperands.size() != expected) {
+      run->emitError("device-merge Phase 2: reconciled aiex.run arg count ")
+          << newOperands.size()
+          << " disagrees with merged aie.runtime_sequence @"
+          << survivingSeqName << " arity " << expected;
+      failed = true;
+      continue;
+    }
+
+    mlir::OpBuilder builder(run);
+    auto newRun = builder.create<AIEX::RunOp>(
+        run.getLoc(), run.getRuntimeSequenceSymbolAttr(), newOperands);
+    run.erase();
+    (void)newRun;
+  }
+
+  return failed ? mlir::failure() : mlir::success();
 }
 
 } // namespace xilinx::conduit::detail

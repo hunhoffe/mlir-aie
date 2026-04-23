@@ -37,6 +37,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
@@ -151,13 +152,63 @@ void sinkCoresMemsAndSequences(mlir::Block &bodyA);
 ///     sequence; in that case no `aiex.run` retargeting is performed.
 ///   - Caller has not yet erased devB.
 ///
-/// Returns failure() if the rewrite would produce an `aiex.run` whose arity
-/// disagrees with the surviving sequence's block-arg count.  In that case
-/// the caller should NOT proceed with `devB->erase()`; callers signal
-/// pass-failure on that signal.
+/// IMPORTANT — split-phase contract:
+/// This Phase 1 step rewrites the configure-block topology and reconciles
+/// `aiex.run` symbols, but it does NOT validate the run-op arg vector against
+/// the merged callee's arity.  At the moment this runs, the surviving sequence
+/// still carries its post-Phase-2 (pre-Step-8c) block-arg count — i.e. the
+/// concatenation of the two pre-merge sequences' args.  The fold branch below
+/// emits the naive `runA.getArgs() ++ runB.getArgs()` concat for the same
+/// reason: that vector matches the sequence at this point.
+///
+/// Callers (e.g. --conduit-fuse-operators) that subsequently TRIM the merged
+/// sequence's block args (Step 8c: drop fused-internal-channel endpoints) MUST
+/// follow up with `reconcileHostRunArgsAfterTrim` to project the same drops
+/// into the host-side `aiex.run` arg vectors.  Without that follow-up, the
+/// run callsite arity will disagree with the trimmed callee.
 mlir::LogicalResult
 rewriteHostConfigureOnDeviceMerge(mlir::ModuleOp module, AIE::DeviceOp devA,
                                   AIE::DeviceOp devB, mlir::Operation *seqA);
+
+/// Phase 2 of the host-orchestrator rewrite — only needed by callers that trim
+/// the merged sequence's block args after `rewriteHostConfigureOnDeviceMerge`.
+///
+/// Walks every `aiex.run` op inside an `aiex.configure @<devA.sym_name>` block
+/// in `module` whose `runtime_sequence_symbol` matches `seqA`'s name, and
+/// projects the Step-8c trim into its arg vector.
+///
+/// The run's argument vector is treated as the concatenation of two segments,
+/// in this fixed order:
+///   - segment A: indices `[0, origArgCountA)` correspond to devA's pre-merge
+///     sequence block args (positions 0..origArgCountA-1 in seqA's pre-trim
+///     signature).
+///   - segment B: indices `[origArgCountA, origArgCountA + origArgCountB)`
+///     correspond to devB's pre-merge sequence block args.
+///
+/// For each run, `deadA` indices are dropped from segment A and `deadB` indices
+/// are dropped from segment B; the result must equal the surviving sequence's
+/// current block-arg count.
+///
+/// Pre-conditions:
+///   - `rewriteHostConfigureOnDeviceMerge` has already run; folded run-ops
+///     therefore carry the naive concat layout described above.
+///   - The Step-8c trim on `seqA`'s block args has already been applied, so
+///     `seqA`'s current block-arg count equals
+///     `(origArgCountA - |deadA|) + (origArgCountB - |deadB|)`.
+///   - For runs inside a non-folded `aiex.configure @devA` block (i.e. one
+///     that was rewritten in place rather than folded), the segment-A range
+///     is empty (the run only carried devB's args).  The helper detects this
+///     by run-arity and projects only `deadB`.
+///
+/// Returns failure() if any reconciled run's arg count disagrees with the
+/// surviving sequence's arity, or if a run's pre-trim arg count is neither
+/// `origArgCountA + origArgCountB` (folded) nor `origArgCountB` (rewritten in
+/// place).
+mlir::LogicalResult reconcileHostRunArgsAfterTrim(
+    mlir::ModuleOp module, AIE::DeviceOp devA, mlir::Operation *seqA,
+    unsigned origArgCountA, unsigned origArgCountB,
+    const llvm::DenseSet<unsigned> &deadA,
+    const llvm::DenseSet<unsigned> &deadB);
 
 } // namespace xilinx::conduit::detail
 
