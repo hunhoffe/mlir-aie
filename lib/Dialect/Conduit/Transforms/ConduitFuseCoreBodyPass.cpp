@@ -736,6 +736,10 @@ static std::string emitMemTileRelay(FusableCorePair &pair, AIE::DeviceOp device,
     col = tileOp.getCol();
 
   // Create relay conduit.create with same characteristics as intermediate.
+  // Propagate `bd_repeat` and `dma_repeat` from the source intermediate so
+  // Pass A's inferred replay annotations survive the relay split.  If the
+  // source has no annotation (legitimate Dynamic-skip case from Pass A),
+  // the getters return null and the relay create is left unannotated too.
   builder.setInsertionPointAfter(intermediateConduit);
   builder.create<Create>(
       intermediateConduit.getLoc(), mlir::StringAttr::get(ctx, relayName),
@@ -746,8 +750,8 @@ static std::string emitMemTileRelay(FusableCorePair &pair, AIE::DeviceOp device,
       /*producer_rates=*/nullptr,
       /*consumer_rates=*/nullptr,
       /*fusion_group=*/mlir::StringAttr{},
-      /*bd_repeat=*/nullptr,
-      /*dma_repeat=*/nullptr,
+      /*bd_repeat=*/intermediateConduit.getBdRepeatAttr(),
+      /*dma_repeat=*/intermediateConduit.getDmaRepeatAttr(),
       /*producer_dimensions=*/nullptr,
       /*consumer_dimensions=*/nullptr);
 

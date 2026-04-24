@@ -1,11 +1,11 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-fuse-core-bodies %s | FileCheck %s
 //
-// Foundation Phase 2 (Task #19), gap #5 — Pass A inference followed by
-// fuse-core-bodies in the MemTile-relay route.  Pins the documented HIGH-risk
-// gap from the fusion-loop-analysis audit: ConduitFuseCoreBodyPass.cpp's
-// emitMemTileRelay (lines ~679-725) emits the relay conduit.create with
-// `bd_repeat=nullptr` and `dma_repeat=nullptr`, dropping the dma_repeat that
-// Pass A inferred on the original intermediate channel.
+// Foundation Phase 2 (Task #19), gap #5 (FIXED) — Pass A inference followed
+// by fuse-core-bodies in the MemTile-relay route.  Pins the post-fix behavior
+// of `ConduitFuseCoreBodyPass.cpp::emitMemTileRelay`: the relay-side
+// `conduit.create` now propagates `bd_repeat` / `dma_repeat` from the
+// source intermediate channel rather than emitting `nullptr` (was the
+// documented HIGH-risk gap from the fusion-loop-analysis audit).
 //
 // Geometry:
 //   * Producer + consumer cores share tile(0,2); both have outer scf.for trip
@@ -20,16 +20,8 @@
 //   * The intermediate is split into @intermediate (producer side) and
 //     @intermediate_relay (consumer side) by emitMemTileRelay; a
 //     conduit.scatter is inserted between them.
-//   * @intermediate_relay's conduit.create is emitted with NO dma_repeat
-//     (and NO bd_repeat) attribute — the documented gap this test pins.
-//
-// Known limitation (HIGH-risk per audit, NOT FIXED): the MemTile relay
-// endpoint loses the inferred dma_repeat, so any downstream Pass C
-// lowering of the relay-side channel sees the implicit dma_repeat=1
-// instead of the inferred value.  For Llama today there is no
-// MemTile-relayed core-body fusion in the runlist, but if/when one
-// surfaces this is the canary.  Fix tracked in the fusion-loop-analysis
-// audit follow-ups.
+//   * @intermediate_relay's conduit.create now carries the propagated
+//     dma_repeat = 16 from the source intermediate (post-fix).
 
 // CHECK-LABEL: module @infer_then_fuse_core_bodies_relay
 
@@ -37,11 +29,10 @@
 // CHECK:       conduit.create @input
 // CHECK-SAME:  dma_repeat = 16
 
-// MemTile-relay endpoint emitted by emitMemTileRelay must carry NO
-// dma_repeat (and NO bd_repeat).  Pin the regression net.
+// MemTile-relay endpoint emitted by emitMemTileRelay propagates the
+// inferred dma_repeat from the source intermediate channel (post-fix).
 // CHECK:       conduit.create @intermediate_relay
-// CHECK-NOT:   dma_repeat
-// CHECK-NOT:   bd_repeat
+// CHECK-SAME:  dma_repeat = 16
 // CHECK:       conduit.scatter
 
 // External (L3-facing) output endpoint retains Pass A's inferred dma_repeat.
