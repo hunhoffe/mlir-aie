@@ -66,8 +66,10 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 
@@ -132,6 +134,345 @@ struct FifoInfo {
   // leaving rates empty.
   bool slidingWindowSkip = false;
 };
+
+// ---------------------------------------------------------------------------
+// dma_repeat inference (auto-fill when objectfifo carries no iter_count).
+//
+// Background:
+//   IRON's `set_iter_count(N)` translates to objectfifo.iter_count = N, which
+//   Phase 2 propagates to conduit.create's `dma_repeat`.  When the harness
+//   does not call set_iter_count, the host runtime sequence emits ONE BD per
+//   shim channel — but the producer/consumer cores' outer loops execute N
+//   times.  Without dma_repeat, the DMA fires once and the cores stall
+//   waiting for further data (the all-zero output Add → Mul fusion bug).
+//
+//   This helper walks the producer + consumer cores' acquire ops for a given
+//   channel, computes the static trip count of each side's enclosing loop
+//   nest, then divides by both the runtime-emission count and the BD's
+//   acquires-per-fire ratio.  Three-factor formula:
+//
+//     dma_repeat = (total_core_acquires / rt_emissions_per_channel)
+//                  / acquires_per_BD
+//
+//     total_core_acquires      = product of all enclosing scf.for / scf.parallel
+//                                trip counts at the acquire site
+//     rt_emissions_per_channel = count of aiex.dma_configure_task_for ops in
+//                                the runtime_sequence whose `alloc` symbol
+//                                matches this channel
+//     acquires_per_BD          = max(1, bd_len / fifo_elem_count)
+//                                (proxy for product(TAP sizes) / product(elem
+//                                shape) under linear/contiguous TAPs)
+//
+//   The middle factor matters for IRON design fns that emit multiple
+//   rt.fill/rt.drain per channel via Python looping in `rt.sequence` — e.g.,
+//   gemv with `num_batches > 1`.  For single-emission channels (most ops in
+//   Llama Row #1) it reduces to total/per_BD as before.
+//
+//   The numerator is the *product* of trip counts at the acquire site, so
+//   patterns that flatten loops (e.g., softmax's `range_(N * M)`) are handled
+//   naturally — the single loop's trip count IS the total acquire count.
+//
+// Skip cases:
+//   - silent (no remark):
+//       * no core-side acquires at all
+//       * derived dma_repeat <= 1
+//       * trip exceeds kTripCountUnboundedSentinel (legacy `cmax = i64::MAX`)
+//   - remark on the conduit.create (so the user can see why we backed off):
+//       * dynamic loop bounds anywhere in the enclosing nest
+//       * producer trip != consumer trip
+//       * multiple aiex.dma_configure_task_for ops match with differing BD lens
+//       * trip not divisible by rt_emissions_per_channel
+//       * per-emission acquires not divisible by acquires_per_BD
+// ---------------------------------------------------------------------------
+
+// Anything at or above this threshold is treated as the legacy infinite-loop
+// sentinel (`cmax = i64::MAX` followed by `step = 1`) and skipped silently
+// to preserve the behaviour of the existing while-true test corpus.
+static constexpr int64_t kTripCountUnboundedSentinel = int64_t{1} << 30;
+
+// Match either arith.constant_index or arith.constant of integer type.
+static std::optional<int64_t> getConstIndexOrInt(mlir::Value v) {
+  llvm::APInt val;
+  if (mlir::matchPattern(v, mlir::m_ConstantInt(&val)))
+    return val.getSExtValue();
+  return std::nullopt;
+}
+
+enum class TripStatus { Static, Dynamic, NotALoop };
+
+struct TripResult {
+  TripStatus status = TripStatus::NotALoop;
+  int64_t trip = 1;
+};
+
+// Static trip count of an scf.for / scf.parallel.  Anything else returns
+// NotALoop (caller treats as "skip this op while walking").
+static TripResult tripCountOfLoop(mlir::Operation *op) {
+  TripResult res;
+  if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+    auto tc = forOp.getStaticTripCount();
+    if (!tc) {
+      res.status = TripStatus::Dynamic;
+      return res;
+    }
+    res.status = TripStatus::Static;
+    res.trip = tc->getSExtValue();
+    return res;
+  }
+  if (auto parOp = mlir::dyn_cast<mlir::scf::ParallelOp>(op)) {
+    auto lbs = parOp.getLowerBound();
+    auto ubs = parOp.getUpperBound();
+    auto sts = parOp.getStep();
+    int64_t total = 1;
+    for (size_t i = 0; i < lbs.size(); ++i) {
+      auto lb = getConstIndexOrInt(lbs[i]);
+      auto ub = getConstIndexOrInt(ubs[i]);
+      auto st = getConstIndexOrInt(sts[i]);
+      if (!lb || !ub || !st || *st == 0) {
+        res.status = TripStatus::Dynamic;
+        return res;
+      }
+      int64_t span = *ub - *lb;
+      if (span <= 0) {
+        res.status = TripStatus::Static;
+        res.trip = 0;
+        return res;
+      }
+      int64_t trip = (span + *st - 1) / *st;
+      total *= trip;
+    }
+    res.status = TripStatus::Static;
+    res.trip = total;
+    return res;
+  }
+  return res;
+}
+
+// Walk parent chain from `op` (exclusive) upward, stopping at `boundary`
+// (exclusive).  Multiplies the static trip counts of every enclosing
+// scf.for / scf.parallel.  Dynamic anywhere → status = Dynamic.  No loops
+// in chain → status = Static, trip = 1.
+static TripResult productOfEnclosingLoops(mlir::Operation *op,
+                                          mlir::Operation *boundary) {
+  TripResult acc;
+  acc.status = TripStatus::Static;
+  acc.trip = 1;
+  mlir::Operation *cur = op->getParentOp();
+  while (cur && cur != boundary) {
+    TripResult t = tripCountOfLoop(cur);
+    if (t.status == TripStatus::Dynamic) {
+      acc.status = TripStatus::Dynamic;
+      return acc;
+    }
+    if (t.status == TripStatus::Static)
+      acc.trip *= t.trip;
+    cur = cur->getParentOp();
+  }
+  return acc;
+}
+
+// Walk every `aiex.dma_configure_task_for` op in `device` whose `alloc`
+// FlatSymbolRefAttr matches `channelName` and report:
+//   * count   — number of matching ops (rt_emissions_per_channel)
+//   * bdLen   — the embedded aie.dma_bd's `len`, unified across all matches
+//   * ambiguous — set when at least two matches carry differing lens; caller
+//                 treats that as a skip-with-remark case
+struct ChannelEmissionInfo {
+  int64_t count = 0;
+  std::optional<int64_t> bdLen;
+  bool ambiguous = false;
+};
+
+static ChannelEmissionInfo
+inspectChannelEmissions(AIE::DeviceOp device, llvm::StringRef channelName) {
+  ChannelEmissionInfo info;
+  device.walk([&](mlir::Operation *op) {
+    if (op->getName().getStringRef() != "aiex.dma_configure_task_for")
+      return;
+    mlir::FlatSymbolRefAttr allocAttr;
+    if (auto inh = op->getInherentAttr("alloc"))
+      allocAttr = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(*inh);
+    if (!allocAttr)
+      allocAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("alloc");
+    if (!allocAttr || allocAttr.getValue() != channelName)
+      return;
+    info.count++;
+    AIE::DMABDOp bd;
+    op->walk([&](AIE::DMABDOp b) { bd = b; });
+    if (!bd)
+      return;
+    auto lenOpt = bd.getLen();
+    if (!lenOpt)
+      return;
+    int64_t len = static_cast<int64_t>(*lenOpt);
+    if (info.bdLen.has_value() && *info.bdLen != len) {
+      info.ambiguous = true;
+      return;
+    }
+    info.bdLen = len;
+  });
+  return info;
+}
+
+struct DmaRepeatInference {
+  std::optional<int64_t> dmaRepeat;
+  // Empty == silent skip; non-empty == emit a remark on the conduit.create.
+  std::string reason;
+};
+
+// Per-port acquire bucket: all acquires for one channel within one core.
+struct PortAcquireBucket {
+  AIE::CoreOp core;
+  llvm::SmallVector<mlir::Operation *> acquires;
+};
+
+static DmaRepeatInference
+inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
+                         int64_t fifoElemCount) {
+  DmaRepeatInference out;
+
+  llvm::SmallVector<PortAcquireBucket, 2> prodSides;
+  llvm::SmallVector<PortAcquireBucket, 2> consSides;
+
+  device.walk([&](AIE::ObjectFifoAcquireOp acq) {
+    if (acq.getObjFifoName() != channelName)
+      return;
+    auto core = acq->getParentOfType<AIE::CoreOp>();
+    if (!core)
+      return;
+    auto &bucket = (acq.getPort() == AIE::ObjectFifoPort::Produce) ? prodSides
+                                                                   : consSides;
+    PortAcquireBucket *match = nullptr;
+    for (auto &p : bucket)
+      if (p.core == core) {
+        match = &p;
+        break;
+      }
+    if (!match) {
+      bucket.push_back({core, {}});
+      match = &bucket.back();
+    }
+    match->acquires.push_back(acq.getOperation());
+  });
+
+  if (prodSides.empty() && consSides.empty())
+    return out; // shim-on-shim or unused — silent skip.
+
+  // For each side, compute the per-core trip count = product of enclosing
+  // loops above each acquire (taken from the first acquire in the core).
+  // The simple "first-acquire enclosing loops" is sufficient for the target
+  // pattern (one acquire per innermost loop iter); preamble + body cores
+  // would need true total-acquire counting and are out of scope here.
+  enum class SideStatus { Empty, Static, Dynamic, Mismatch };
+  auto sideTrip = [&](llvm::ArrayRef<PortAcquireBucket> sides,
+                      int64_t &outTrip) -> SideStatus {
+    if (sides.empty())
+      return SideStatus::Empty;
+    std::optional<int64_t> agreed;
+    for (const auto &p : sides) {
+      if (p.acquires.empty())
+        continue;
+      AIE::CoreOp coreCopy = p.core;
+      TripResult tr = productOfEnclosingLoops(p.acquires.front(),
+                                              coreCopy.getOperation());
+      if (tr.status == TripStatus::Dynamic)
+        return SideStatus::Dynamic;
+      int64_t trip = tr.trip;
+      if (agreed && *agreed != trip)
+        return SideStatus::Mismatch;
+      agreed = trip;
+    }
+    if (!agreed)
+      return SideStatus::Empty;
+    outTrip = *agreed;
+    return SideStatus::Static;
+  };
+
+  int64_t prodTrip = 0, consTrip = 0;
+  SideStatus prodSt = sideTrip(prodSides, prodTrip);
+  SideStatus consSt = sideTrip(consSides, consTrip);
+
+  if (prodSt == SideStatus::Dynamic || consSt == SideStatus::Dynamic) {
+    out.reason = "dynamic loop bounds in producer or consumer core";
+    return out;
+  }
+  if (prodSt == SideStatus::Mismatch || consSt == SideStatus::Mismatch) {
+    out.reason =
+        "multiple cores on the same port have differing loop trip counts";
+    return out;
+  }
+
+  std::optional<int64_t> trip;
+  if (prodSt == SideStatus::Static && consSt == SideStatus::Static) {
+    if (prodTrip != consTrip) {
+      llvm::raw_string_ostream os(out.reason);
+      os << "producer trip " << prodTrip << " differs from consumer trip "
+         << consTrip;
+      return out;
+    }
+    trip = prodTrip;
+  } else if (prodSt == SideStatus::Static) {
+    trip = prodTrip;
+  } else if (consSt == SideStatus::Static) {
+    trip = consTrip;
+  }
+
+  if (!trip)
+    return out;
+
+  // Sentinel for legacy infinite-loop test patterns — silent skip.
+  if (*trip >= kTripCountUnboundedSentinel)
+    return out;
+
+  if (*trip <= 1)
+    return out; // dma_repeat=1 is the implicit default; do not annotate.
+
+  // Three-factor inference:
+  //   dma_repeat = (total_core_acquires / rt_emissions_per_channel)
+  //                / acquires_per_BD
+  //
+  // rt_emissions defaults to 1 when there is no shim BD (compute-to-compute
+  // fifo), so the formula degrades cleanly to the simple total/per_BD case.
+  ChannelEmissionInfo emit = inspectChannelEmissions(device, channelName);
+  if (emit.ambiguous) {
+    out.reason =
+        "multiple aiex.dma_configure_task_for ops match channel with differing "
+        "BD lengths — ambiguous TAP";
+    return out;
+  }
+
+  int64_t acquiresPerBD = 1;
+  if (emit.bdLen && fifoElemCount > 0) {
+    int64_t ratio = *emit.bdLen / fifoElemCount;
+    if (ratio > 1)
+      acquiresPerBD = ratio;
+  }
+
+  // Treat 0 emissions (compute-to-compute, no shim BD at all) as 1 — the
+  // outer loop drives `dma_repeat` directly with no host fan-out.
+  int64_t emissions = emit.count > 0 ? emit.count : 1;
+
+  if (*trip % emissions != 0) {
+    llvm::raw_string_ostream os(out.reason);
+    os << "trip " << *trip << " not divisible by rt_emissions " << emissions;
+    return out;
+  }
+  int64_t perEmission = *trip / emissions;
+
+  if (perEmission % acquiresPerBD != 0) {
+    llvm::raw_string_ostream os(out.reason);
+    os << "per-emission acquires " << perEmission
+       << " not divisible by acquires-per-BD " << acquiresPerBD;
+    return out;
+  }
+
+  int64_t result = perEmission / acquiresPerBD;
+  if (result <= 1)
+    return out;
+
+  out.dmaRepeat = result;
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Main pass
@@ -490,6 +831,50 @@ struct ObjectFifoToConduitPass
         iterCountAttr = mlir::IntegerAttr::get(
             mlir::IntegerType::get(ctx, 64),
             static_cast<int64_t>(op.getIterCount().value()));
+      }
+
+      // dma_repeat inference fallback: when the source aie.objectfifo carries
+      // no explicit iter_count, infer it from the producer/consumer cores'
+      // outer-loop trip counts.  See the helper's doc-comment for the formula
+      // and skip cases.  Without this, harnesses that omit set_iter_count emit
+      // a single host BD per channel while the cores loop N times — the cores
+      // stall after one fire (the all-zero-output Add → Mul fusion bug).
+      //
+      // Streaming-mode hardening (task #29): dma_repeat is the shim/memtile
+      // BD-chain replay count; it is meaningful ONLY for routing modes that
+      // lower to DMA (Circuit, Packet, DMA, SharedMemory, or absent →
+      // heuristic).  Stream and Cascade routing emit no shim DMA BDs, so a
+      // stamped dma_repeat is wrong-by-construction (Pass C currently
+      // ignores it on Stream channels via skip-branches in
+      // ConduitToDMAAlloc.cpp, but we should not stamp the attr in the first
+      // place).  Detect Stream/Cascade routing intent on the source
+      // aie.objectfifo (explicit `routing_mode = "stream"|"cascade"` attr,
+      // explicit `via_cascade=true`, or participation in the aie_stream
+      // routing map) and skip inference in those cases.
+      bool routingSkipsDma = false;
+      if (auto rmStrAttr =
+              op->getAttrOfType<mlir::StringAttr>("routing_mode")) {
+        llvm::StringRef rmStr = rmStrAttr.getValue();
+        if (rmStr == "stream" || rmStr == "cascade")
+          routingSkipsDma = true;
+      }
+      if (!routingSkipsDma && op.getViaCascade())
+        routingSkipsDma = true;
+      if (!routingSkipsDma &&
+          aieStreamFifoPort.find(op.getSymNameAttr()) !=
+              aieStreamFifoPort.end())
+        routingSkipsDma = true;
+
+      if (!iterCountAttr && !routingSkipsDma) {
+        auto inferred =
+            inferDmaRepeatForChannel(device, op.getSymName(), info.numElems);
+        if (inferred.dmaRepeat) {
+          iterCountAttr = mlir::IntegerAttr::get(
+              mlir::IntegerType::get(ctx, 64), *inferred.dmaRepeat);
+        } else if (!inferred.reason.empty()) {
+          op.emitRemark("conduit-objectfifo: dma_repeat inference skipped: ")
+              << inferred.reason;
+        }
       }
 
       // Propagate dimensionsToStream (producer side).
