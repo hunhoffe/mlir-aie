@@ -169,6 +169,14 @@ struct ConduitInferModesPass
                                                     consRow) ||
                      targetModel.isLegalMemAffinity(consCol, consRow, prodCol,
                                                     prodRow);
+          // Cross-column same-row "adjacency" (W-neighbor) is reported legal
+          // by AIE2TargetModel but NOT used in the Conduit lowering path
+          // when not explicitly requested.  Treat it as non-adjacent here so
+          // pre-consumed MM2S budget matches Pass C's actual allocation.
+          bool sameRowDifferentCol =
+              (prodRow == consRow) && (prodCol != consCol);
+          if (sameRowDifferentCol)
+            adj = false;
           if (adj)
             continue; // shared-memory path, no DMA channel consumed
         }
@@ -242,6 +250,14 @@ struct ConduitInferModesPass
             targetModel.isLegalMemAffinity(prodCol, prodRow, consCol,
                                            consRow) ||
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
+        // Cross-column same-row W-neighbor is silently legal in
+        // AIE2TargetModel but not NPU-validated through Conduit's shmem
+        // lowering.  Do NOT infer "shared_memory" for it; let Pass C take
+        // the DMA path (which is exercised + known good).
+        bool sameRowDifferentCol =
+            (prodRow == consRow) && (prodCol != consCol);
+        if (sameRowDifferentCol)
+          adj = false;
         if (adj) {
           op.setRoutingModeAttr(RoutingModeAttr::get(
               module.getContext(), RoutingMode::SharedMemory));

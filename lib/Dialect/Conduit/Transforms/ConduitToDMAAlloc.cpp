@@ -136,6 +136,17 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         bool explicitSharedMem =
             (info.routingMode == RoutingMode::SharedMemory);
+        // Mirror of Phase 3c shmem guard in allocPhase: cross-column same-row
+        // shmem is silently reported legal by AIE2TargetModel but is not
+        // NPU-validated through Conduit; fall through to DMA when not
+        // explicitly requested.  Prescan must agree with the main pass to
+        // keep rotation-counter slot counts consistent.
+        bool sameRowDifferentCol =
+            (prodRow == consRow) && (prodCol != consCol);
+        if (sameRowDifferentCol && !explicitSharedMem) {
+          rightShared = false;
+          leftShared = false;
+        }
         if (explicitSharedMem || rightShared || leftShared) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
@@ -248,6 +259,18 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
                                                               consCol, consRow);
         bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
                                                              prodCol, prodRow);
+        // Mirror Phase 3c guard: cross-column same-row shmem is not used in
+        // the Conduit path (unless explicit), so producer-side DMA buffers
+        // are needed even though isLegalMemAffinity reports the W-neighbor
+        // as legal.
+        bool explicitSharedMem =
+            (info.routingMode == RoutingMode::SharedMemory);
+        bool sameRowDifferentCol =
+            (prodRow == consRow) && (prodCol != consCol);
+        if (sameRowDifferentCol && !explicitSharedMem) {
+          rightAdj = false;
+          leftAdj = false;
+        }
         if (!rightAdj && !leftAdj)
           needsProdSide = true;
       }
@@ -476,6 +499,18 @@ void allocPhase(ConduitToDMAState &state) {
             targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
         bool explicitSharedMem =
             (info.routingMode == RoutingMode::SharedMemory);
+        // Cross-column same-row compute-to-compute shmem is reported legal by
+        // AIE2TargetModel::isLegalMemAffinity (W-neighbor) but has never been
+        // NPU-validated through the Conduit lowering path.  When NOT explicitly
+        // requested, fall through to the DMA flow (which is exercised + known
+        // good).  Explicit routing_mode = "shared_memory" is left alone here;
+        // a future feasibility-error pass (#107 / #124) will reject it.
+        bool sameRowDifferentCol =
+            (prodRow == consRow) && (prodCol != consCol);
+        if (sameRowDifferentCol && !explicitSharedMem) {
+          rightShared = false;
+          leftShared = false;
+        }
         if (explicitSharedMem || rightShared || leftShared) {
           info.sharedMemory = true;
 
@@ -822,6 +857,18 @@ void allocPhase(ConduitToDMAState &state) {
                                                               consCol, consRow);
         bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
                                                              prodCol, prodRow);
+        // Mirror Phase 3c guard: cross-column same-row shmem is not used in
+        // the Conduit path (unless explicit), so producer-side DMA buffers
+        // are needed even though isLegalMemAffinity reports the W-neighbor
+        // as legal.
+        bool explicitSharedMem =
+            (info.routingMode == RoutingMode::SharedMemory);
+        bool sameRowDifferentCol =
+            (prodRow == consRow) && (prodCol != consCol);
+        if (sameRowDifferentCol && !explicitSharedMem) {
+          rightAdj = false;
+          leftAdj = false;
+        }
         if (!rightAdj && !leftAdj)
           needsProdSide = true;
       }

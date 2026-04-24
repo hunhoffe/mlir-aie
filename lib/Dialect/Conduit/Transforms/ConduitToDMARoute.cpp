@@ -1045,6 +1045,16 @@ void routePhase(ConduitToDMAState &state) {
               prodCol, prodRow, consCol, consRow);
           bool leftAdj = state.targetModel->isLegalMemAffinity(
               consCol, consRow, prodCol, prodRow);
+          // Mirror Phase 3c shmem guard in ConduitToDMAAlloc.cpp: cross-column
+          // same-row "adjacency" (W-neighbor) is reported legal by
+          // AIE2TargetModel but not used by the Conduit shmem path when not
+          // explicitly requested.  Emit the aie.flow so the DMA path works.
+          bool sameRowDifferentCol =
+              (prodRow == consRow) && (prodCol != consCol);
+          if (sameRowDifferentCol && !explicitSharedMem) {
+            rightAdj = false;
+            leftAdj = false;
+          }
           if (explicitSharedMem || rightAdj || leftAdj)
             continue;
         }
