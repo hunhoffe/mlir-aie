@@ -88,6 +88,24 @@ static mlir::FlatSymbolRefAttr getAllocAttr(mlir::Operation *op) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: extract the I32 "repeat_count" attribute from a
+// dma_configure_task_for op (registered or unregistered).  Returns 0 when
+// the attribute is absent (matching the AIEX.td default of 0 = "no replay").
+// ---------------------------------------------------------------------------
+static uint32_t getRepeatCountAttr(mlir::Operation *op) {
+  // Try inherent attr first (registered ops).
+  if (auto optAttr = op->getInherentAttr("repeat_count"))
+    if (auto i = mlir::dyn_cast<mlir::IntegerAttr>(*optAttr))
+      return static_cast<uint32_t>(i.getInt());
+
+  // Fallback: discardable attr dict (unregistered ops).
+  if (auto i = op->getAttrOfType<mlir::IntegerAttr>("repeat_count"))
+    return static_cast<uint32_t>(i.getInt());
+
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: convert BDDimLayout dimensions into offsets/sizes/strides arrays.
 //
 // Conduit Tier-3 memref-DMA ops have a verifier requirement that
@@ -212,14 +230,24 @@ private:
     if (allocMap.empty())
       return;
 
+    // Phase 1b: Build a map from conduit channel name to the conduit.create
+    // op that defines it.  Used by the dma_repeat surfacing path below to
+    // stamp `dma_repeat = N` on the create when IRON emits an explicit
+    // `aiex.dma_configure_task_for {repeat_count = N}` attribute.
+    llvm::StringMap<Create> conduitCreateMap;
+    device.walk([&](Create createOp) {
+      conduitCreateMap[createOp.getSymName()] = createOp;
+    });
+
     // Phase 2: Walk runtime_sequence ops and convert DMA task ops.
     device.walk([&](AIE::RuntimeSequenceOp rtSeq) {
-      processRuntimeSequence(rtSeq, allocMap, builder);
+      processRuntimeSequence(rtSeq, allocMap, conduitCreateMap, builder);
     });
   }
 
   void processRuntimeSequence(AIE::RuntimeSequenceOp rtSeq,
                               const llvm::StringMap<ShimAllocInfo> &allocMap,
+                              const llvm::StringMap<Create> &conduitCreateMap,
                               mlir::OpBuilder &builder) {
 
     mlir::MLIRContext *ctx = rtSeq.getContext();
@@ -325,6 +353,45 @@ private:
           GetMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
                             offsetsAttr, sizesAttr, stridesAttr, consumerDims,
                             argIndexAttr);
+        }
+
+        // Surface IRON's `repeat_count` attr from the source
+        // aiex.dma_configure_task_for onto the conduit.create's
+        // `dma_repeat` attribute.  Convention is N==N==N verbatim:
+        // IRON encodes "additional firings" (repeat_count = N → N+1
+        // total fires); conduit.create.dma_repeat carries the same value;
+        // Pass C re-emits it verbatim onto configure_task.repeat_count
+        // (see ConduitToDMALower.cpp:1245-1248); firmware reads it as
+        // N+1 fires (see AIEDmaToNpu.cpp:180-183 where repeat_cnt is
+        // packed verbatim into the NPU command word).
+        //
+        // Only stamp when the IRON-emitted value is non-default (>0).
+        // Conflict policy: if Pass A (--objectfifo-to-conduit) already
+        // stamped a dma_repeat (the emit.count > 1 case), IRON's
+        // explicit value WINS — IRON is closer to the source-of-truth
+        // about the runtime sequence's actual replay count.  Emit a
+        // remark documenting the override.
+        uint32_t ironRepeatCount = getRepeatCountAttr(op);
+        if (ironRepeatCount > 0) {
+          auto createIt = conduitCreateMap.find(conduitName);
+          if (createIt != conduitCreateMap.end()) {
+            Create createOp = createIt->second;
+            auto ironRepeatAttr = mlir::IntegerAttr::get(
+                mlir::IntegerType::get(ctx, 64),
+                static_cast<int64_t>(ironRepeatCount));
+            if (auto existing = createOp.getDmaRepeat()) {
+              int64_t existingVal = static_cast<int64_t>(*existing);
+              int64_t ironVal = static_cast<int64_t>(ironRepeatCount);
+              if (existingVal != ironVal) {
+                op->emitRemark(
+                    "dma-task-to-conduit: IRON explicit repeat_count = ")
+                    << ironVal << " on @" << conduitName
+                    << " overrides Pass A inferred dma_repeat = "
+                    << existingVal;
+              }
+            }
+            createOp.setDmaRepeatAttr(ironRepeatAttr);
+          }
         }
 
         configOps.push_back(op);
