@@ -12,7 +12,7 @@
 // CHECK-LABEL: module @infer_mismatch_skipped
 // CHECK: conduit.create @chan
 // CHECK-NOT: dma_repeat
-// CHECK: }
+// CHECK-NEXT: aie.core
 
 module @infer_mismatch_skipped {
   aie.device(npu1) {

@@ -30,10 +30,11 @@
 //     * @fwd_in, @fwd_out, and the conduit.scatter survive in devA.
 //     * @comp_in, @comp_out, and the consumer core in devB are untouched.
 //
-// Note: `--conduit-fuse-core-bodies` has an analogous Pattern E
-// fusion-matching gap (independent code path in
-// ConduitFuseCoreBodyPass.cpp Step 0) — out of scope for this fix; see
-// reporter notes for follow-up tracking.
+// Sibling: `--conduit-fuse-core-bodies` had an analogous Pattern E gap
+// (independent code path in ConduitFuseCoreBodyPass.cpp Step 0); FIXED
+// in commit c5a3df0435 via the shared `isForwardChainEndpoint` helper
+// in DeviceMergeUtils.{h,cpp}. Pinned by
+// pattern_e_no_fuse_core_bodies_with_neighbor.mlir.
 
 // CHECK-LABEL: module @pattern_e_no_fuse_with_neighbor
 
