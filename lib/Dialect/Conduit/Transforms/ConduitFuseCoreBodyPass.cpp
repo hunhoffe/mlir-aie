@@ -76,28 +76,58 @@ namespace {
 
 /// Check if two devices are connected by a conduit channel pair with matching
 /// fusion_group attributes.
-static bool devicesConnectedByFusionGroup(AIE::DeviceOp devA,
-                                          AIE::DeviceOp devB) {
-  llvm::SmallVector<llvm::StringRef> groupsA;
+///
+/// Pattern E guard: a channel that participates in a `conduit.scatter` /
+/// `conduit.gather` is a forward-chain endpoint (e.g., from
+/// `aie.objectfifo.link`).  The Step 0 consumer→producer name unification
+/// inside `mergeAndUnifyDevices` only updates ops carrying a `name`
+/// FlatSymbolRefAttr (acquire/release/wait_window), so unifying such a
+/// channel would leave the scatter/gather op pointing at a dangling
+/// FlatSymbolRefAttr.  When a matched pair has Pattern E on either side,
+/// emit a remark on the offending channel and treat the devices as not
+/// connected for fusion.  `alreadyRemarked` deduplicates remarks across
+/// outer-loop restarts in `mergeDevicesForFusion`.
+static bool
+devicesConnectedByFusionGroup(AIE::DeviceOp devA, AIE::DeviceOp devB,
+                              llvm::StringSet<> &alreadyRemarked) {
+  // Build fusion_group → Create map for devA so we can locate the producer-
+  // side conduit.create when a match fires.
+  llvm::StringMap<Create> groupsA;
   devA.walk([&](Create op) {
     auto fg = op.getFusionGroup();
     if (fg && !fg->empty())
-      groupsA.push_back(*fg);
+      groupsA[*fg] = op;
   });
 
   bool found = false;
-  devB.walk([&](Create op) {
+  devB.walk([&](Create opB) {
     if (found)
       return;
-    auto fg = op.getFusionGroup();
+    auto fg = opB.getFusionGroup();
     if (!fg || fg->empty())
       return;
-    for (llvm::StringRef ga : groupsA) {
-      if (ga == *fg) {
-        found = true;
-        return;
-      }
+    auto it = groupsA.find(*fg);
+    if (it == groupsA.end())
+      return;
+    Create opA = it->second;
+    bool prodIsFwd = detail::isForwardChainEndpoint(devA, opA.getName());
+    bool consIsFwd = detail::isForwardChainEndpoint(devB, opB.getName());
+    if (prodIsFwd || consIsFwd) {
+      if (prodIsFwd && alreadyRemarked.insert(opA.getName()).second)
+        opA.emitRemark("conduit-fuse-core-bodies: skipping fusion_group "
+                       "match for output channel @")
+            << opA.getName()
+            << " — forward-chain / link-only endpoint (Pattern E); "
+               "scatter/gather references cannot be safely renamed";
+      if (consIsFwd && alreadyRemarked.insert(opB.getName()).second)
+        opB.emitRemark("conduit-fuse-core-bodies: skipping fusion_group "
+                       "match for input channel @")
+            << opB.getName()
+            << " — forward-chain / link-only endpoint (Pattern E); "
+               "scatter/gather references cannot be safely renamed";
+      return; // Treat as not connected; keep searching for other matches.
     }
+    found = true;
   });
   return found;
 }
@@ -154,6 +184,17 @@ static mlir::LogicalResult mergeAndUnifyDevices(AIE::DeviceOp devA,
   });
 
   if (!producerChannel || !consumerChannel)
+    return mlir::success();
+
+  // Pattern E defensive guard: if either side participates in a
+  // conduit.scatter/gather, the consumer→producer name unification below
+  // would leave dangling FlatSymbolRefAttrs because the rename walk only
+  // updates `name` attrs (not scatter/gather src/dsts).  The primary filter
+  // lives in devicesConnectedByFusionGroup so the outer loop never asks us
+  // to merge such a pair, but keep this as a hard backstop so a future
+  // refactor cannot reintroduce the bug silently.
+  if (detail::isForwardChainEndpoint(devA, producerChannel.getName()) ||
+      detail::isForwardChainEndpoint(devB, consumerChannel.getName()))
     return mlir::success();
 
   std::string prodName = producerChannel.getName().str();
@@ -318,6 +359,10 @@ static mlir::LogicalResult mergeAndUnifyDevices(AIE::DeviceOp devA,
 /// rewrite error (see rewriteHostConfigureOnDeviceMerge).
 static mlir::LogicalResult mergeDevicesForFusion(mlir::ModuleOp module,
                                                  mlir::MLIRContext *ctx) {
+  // Channels we have already remarked on as Pattern E forward-chain endpoints
+  // — survives outer-loop restarts so the diagnostic fires at most once per
+  // channel even when other unrelated pairs successfully merge.
+  llvm::StringSet<> alreadyRemarked;
   bool merged = true;
   while (merged) {
     merged = false;
@@ -331,7 +376,7 @@ static mlir::LogicalResult mergeDevicesForFusion(mlir::ModuleOp module,
       AIE::DeviceOp devA = devices[i];
       AIE::DeviceOp devB = devices[i + 1];
 
-      if (!devicesConnectedByFusionGroup(devA, devB))
+      if (!devicesConnectedByFusionGroup(devA, devB, alreadyRemarked))
         continue;
 
       if (mlir::failed(mergeAndUnifyDevices(devA, devB, ctx)))

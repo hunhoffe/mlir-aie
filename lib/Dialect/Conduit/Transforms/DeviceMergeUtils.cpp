@@ -616,4 +616,48 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
   return failed ? mlir::failure() : mlir::success();
 }
 
+// ---------------------------------------------------------------------------
+// Forward-chain endpoint detection (Pattern E).  See header for rationale.
+// We use the explicit scatter/gather marker (rather than "no compute body")
+// so that hand-written conduit-IR tests with no `aie.core` (e.g. the
+// routing-mode conflict-error pinning tests) still fuse and exercise the
+// downstream conflict-resolution paths.
+// ---------------------------------------------------------------------------
+bool isForwardChainEndpoint(AIE::DeviceOp device,
+                            llvm::StringRef channelName) {
+  bool found = false;
+  device.walk([&](mlir::Operation *op) {
+    if (found)
+      return mlir::WalkResult::interrupt();
+    llvm::StringRef opName = op->getName().getStringRef();
+    if (opName != "conduit.scatter" && opName != "conduit.gather")
+      return mlir::WalkResult::advance();
+    auto matches = [&](mlir::Attribute attr) -> bool {
+      if (!attr)
+        return false;
+      if (auto flat = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(attr))
+        return flat.getValue() == channelName;
+      if (auto sym = mlir::dyn_cast<mlir::SymbolRefAttr>(attr))
+        return sym.getRootReference() == channelName;
+      if (auto arr = mlir::dyn_cast<mlir::ArrayAttr>(attr)) {
+        for (mlir::Attribute e : arr)
+          if (auto flat = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(e))
+            if (flat.getValue() == channelName)
+              return true;
+        return false;
+      }
+      return false;
+    };
+    // Check all named attrs (Pass A may stash refs as inherent or
+    // discardable attrs; cover both).
+    for (mlir::NamedAttribute na : op->getAttrs())
+      if (matches(na.getValue())) {
+        found = true;
+        return mlir::WalkResult::interrupt();
+      }
+    return mlir::WalkResult::advance();
+  });
+  return found;
+}
+
 } // namespace xilinx::conduit::detail

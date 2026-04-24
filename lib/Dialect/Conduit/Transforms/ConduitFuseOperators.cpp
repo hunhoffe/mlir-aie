@@ -246,64 +246,11 @@ static bool isInputChannel(Create op,
 
 // ---------------------------------------------------------------------------
 // Helper: detect whether a conduit channel is a forward-chain endpoint
-// ("Pattern E") inside the given device.
-//
-// A Pattern E endpoint is a channel that participates in a `conduit.scatter`
-// or `conduit.gather` op (as `src`, `dst`, or member of `dsts`).  These ops
-// are emitted by Pass A from `aie.objectfifo.link` to express data motion
-// that is not driven by a compute core body.
-//
-// Why fuse-operators must skip these matches:
-//   The Step 6 channel-rename walk only updates ops carrying a `name`
-//   FlatSymbolRefAttr (acquire/release/subview_access/put_memref/...).
-//   `conduit.scatter` / `conduit.gather` reference channels through `src` /
-//   `dst` / `dsts` symbol attributes, NOT `name` — so a Step 5 erasure +
-//   Step 6 rename leaves the scatter/gather pointing at the deleted symbol
-//   (silent dangling FlatSymbolRefAttr).  Beyond the symbol bookkeeping,
-//   fusing a forward-chain endpoint is semantically meaningless: there is no
-//   compute body to merge with.
-//
-// We use the explicit scatter/gather marker (rather than "no compute body")
-// so that hand-written conduit-IR tests with no `aie.core` (e.g. the
-// routing-mode conflict-error pinning tests) still fuse and exercise the
-// downstream conflict-resolution paths.
+// ("Pattern E") inside the given device.  Implementation lives in
+// DeviceMergeUtils so it can be shared with --conduit-fuse-core-bodies (which
+// has the same Step 6 rename invariant and the same scatter/gather hazard).
 // ---------------------------------------------------------------------------
-static bool isForwardChainEndpoint(AIE::DeviceOp device,
-                                   llvm::StringRef channelName) {
-  bool found = false;
-  device.walk([&](mlir::Operation *op) {
-    if (found)
-      return mlir::WalkResult::interrupt();
-    llvm::StringRef opName = op->getName().getStringRef();
-    if (opName != "conduit.scatter" && opName != "conduit.gather")
-      return mlir::WalkResult::advance();
-    auto matches = [&](mlir::Attribute attr) -> bool {
-      if (!attr)
-        return false;
-      if (auto flat = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(attr))
-        return flat.getValue() == channelName;
-      if (auto sym = mlir::dyn_cast<mlir::SymbolRefAttr>(attr))
-        return sym.getRootReference() == channelName;
-      if (auto arr = mlir::dyn_cast<mlir::ArrayAttr>(attr)) {
-        for (mlir::Attribute e : arr)
-          if (auto flat = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(e))
-            if (flat.getValue() == channelName)
-              return true;
-        return false;
-      }
-      return false;
-    };
-    // Check all named attrs (Pass A may stash refs as inherent or
-    // discardable attrs; cover both).
-    for (mlir::NamedAttribute na : op->getAttrs())
-      if (matches(na.getValue())) {
-        found = true;
-        return mlir::WalkResult::interrupt();
-      }
-    return mlir::WalkResult::advance();
-  });
-  return found;
-}
+using detail::isForwardChainEndpoint;
 
 // ---------------------------------------------------------------------------
 // Helper: erase shim_dma_allocation ops for a given conduit name.

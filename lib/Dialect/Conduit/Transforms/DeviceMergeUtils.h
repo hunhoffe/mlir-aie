@@ -39,6 +39,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace mlir {
 class Block;
@@ -210,6 +211,28 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
                               unsigned origArgCountB,
                               const llvm::DenseSet<unsigned> &deadA,
                               const llvm::DenseSet<unsigned> &deadB);
+
+/// Detect whether a conduit channel is a forward-chain endpoint
+/// ("Pattern E") inside the given device.
+///
+/// A Pattern E endpoint is a channel that participates in a `conduit.scatter`
+/// or `conduit.gather` op (as `src`, `dst`, or member of `dsts`).  These ops
+/// are emitted by Pass A from `aie.objectfifo.link` to express data motion
+/// that is not driven by a compute core body.
+///
+/// Why fusion passes must skip these matches:
+///   The post-rewrite channel-rename walks (in fuse-operators / fuse-core-
+///   bodies) only update ops carrying a `name` FlatSymbolRefAttr (acquire /
+///   release / subview_access / put_memref / ...).  `conduit.scatter` /
+///   `conduit.gather` reference channels through `src` / `dst` / `dsts`
+///   symbol attributes, NOT `name` — so an erase + rename leaves the
+///   scatter/gather pointing at the deleted symbol (silent dangling
+///   FlatSymbolRefAttr).  Beyond the symbol bookkeeping, fusing a
+///   forward-chain endpoint is semantically meaningless: there is no
+///   compute body to merge with.
+///
+/// Used by: --conduit-fuse-operators, --conduit-fuse-core-bodies.
+bool isForwardChainEndpoint(AIE::DeviceOp device, llvm::StringRef channelName);
 
 } // namespace xilinx::conduit::detail
 
