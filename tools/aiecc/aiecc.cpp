@@ -324,8 +324,8 @@ static cl::opt<bool> conduitFuseCoreBodies(
 
 static cl::opt<bool> conduitFuseChannels(
     "conduit-fuse-channels-flag",
-    cl::desc("Inject --conduit-fuse-channels (relay fusion)"),
-    cl::init(false), cl::cat(aieCompilerOptions));
+    cl::desc("Inject --conduit-fuse-channels (relay fusion)"), cl::init(false),
+    cl::cat(aieCompilerOptions));
 
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
