@@ -39,6 +39,7 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "ConduitToDMACommon.h"
 #include "ConduitTileInference.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
@@ -165,22 +166,13 @@ struct ConduitInferModesPass
         auto forceDMAAttr = op->getAttrOfType<mlir::BoolAttr>("forceDMA");
         bool forceDMA = forceDMAAttr && forceDMAAttr.getValue();
         if (!forceDMA) {
-          bool adj = targetModel.isLegalMemAffinity(prodCol, prodRow, consCol,
-                                                    consRow) ||
-                     targetModel.isLegalMemAffinity(consCol, consRow, prodCol,
-                                                    prodRow);
-          // Cross-column same-row "adjacency" (W-neighbor) is reported legal
-          // by AIE2TargetModel but NOT used in the Conduit lowering path
-          // when not explicitly requested.  Treat it as non-adjacent here so
-          // pre-consumed MM2S budget matches Pass C's actual allocation.
-          // Use target-model helpers so future targets (e.g., NPU3) can
-          // override the neighbor relationship correctly.
-          bool sameRowDifferentCol =
-              targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
-              targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
-          if (sameRowDifferentCol)
-            adj = false;
-          if (adj)
+          // routing_mode is "any" here (R1 skipped resolved ones), so pass
+          // std::nullopt — explicit-shared-memory override does not apply
+          // during inference.  See isConduitFeasibleSharedMemory in
+          // ConduitToDMACommon.h.  Pre-consumed MM2S budget must match
+          // Pass C's actual allocation.
+          if (isConduitFeasibleSharedMemory(targetModel, prodCol, prodRow,
+                                            consCol, consRow, std::nullopt))
             continue; // shared-memory path, no DMA channel consumed
         }
       }
@@ -249,22 +241,11 @@ struct ConduitInferModesPass
       if (!forceDMA && consCoords.size() == 1) {
         int64_t consCol = consCoords[0].first;
         int64_t consRow = consCoords[0].second;
-        bool adj =
-            targetModel.isLegalMemAffinity(prodCol, prodRow, consCol,
-                                           consRow) ||
-            targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        // Cross-column same-row W-neighbor is silently legal in
-        // AIE2TargetModel but not NPU-validated through Conduit's shmem
-        // lowering.  Do NOT infer "shared_memory" for it; let Pass C take
-        // the DMA path (which is exercised + known good).
-        // Use target-model helpers so future targets (e.g., NPU3) can override
-        // the neighbor relationship correctly.
-        bool sameRowDifferentCol =
-            targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
-            targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
-        if (sameRowDifferentCol)
-          adj = false;
-        if (adj) {
+        // routing_mode is "any" here (R1 skipped resolved ones), so pass
+        // std::nullopt — no explicit-shared-memory override during inference.
+        // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h.
+        if (isConduitFeasibleSharedMemory(targetModel, prodCol, prodRow,
+                                          consCol, consRow, std::nullopt)) {
           op.setRoutingModeAttr(RoutingModeAttr::get(
               module.getContext(), RoutingMode::SharedMemory));
           continue;

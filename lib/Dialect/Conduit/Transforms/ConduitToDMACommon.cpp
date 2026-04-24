@@ -19,6 +19,30 @@
 namespace xilinx::conduit {
 
 // ---------------------------------------------------------------------------
+// Conduit-specific shared-memory feasibility predicate.
+// See ConduitToDMACommon.h for the rationale behind the two Conduit-lowering
+// adjustments wrapped here.
+// ---------------------------------------------------------------------------
+bool isConduitFeasibleSharedMemory(const AIE::AIETargetModel &targetModel,
+                                   int64_t prodCol, int64_t prodRow,
+                                   int64_t consCol, int64_t consRow,
+                                   std::optional<RoutingMode> routingMode) {
+  bool explicitSharedMem = (routingMode == RoutingMode::SharedMemory);
+  bool rightAdj =
+      targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
+  bool leftAdj =
+      targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
+  bool sameRowDifferentCol =
+      targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
+      targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
+  if (sameRowDifferentCol && !explicitSharedMem) {
+    rightAdj = false;
+    leftAdj = false;
+  }
+  return explicitSharedMem || rightAdj || leftAdj;
+}
+
+// ---------------------------------------------------------------------------
 // PacketIDAllocator
 // ---------------------------------------------------------------------------
 

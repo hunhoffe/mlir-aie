@@ -655,6 +655,32 @@ struct ConduitToDMAState {
 };
 
 // ---------------------------------------------------------------------------
+// Conduit-specific shared-memory feasibility predicate.
+//
+// Wraps `targetModel.isLegalMemAffinity()` with the two Conduit-lowering
+// adjustments that all 7 query sites in Pass C / ConduitInferModes share:
+//
+//   1. Cross-column same-row "W-neighbor" adjacency is reported legal by
+//      AIE2TargetModel::isLegalMemAffinity but has never been NPU-validated
+//      through the Conduit shared-memory lowering path.  When NOT explicitly
+//      requested via `routing_mode = "shared_memory"`, treat it as infeasible
+//      so the DMA path is taken (which is exercised + known good).  Detected
+//      via the `isMemWest` helper (in either direction) so future targets
+//      (e.g. NPU3) can override neighbor relationships correctly rather than
+//      a hand-written `prodRow == consRow && prodCol != consCol` guard.
+//   2. Explicit `routing_mode = "shared_memory"` overrides the cross-column
+//      exclusion (a future feasibility-error pass — #107 / #124 — will reject
+//      geometrically infeasible explicit requests at validation time).
+//
+// Returns true iff the producer/consumer tile pair is feasible for the
+// Conduit shared-memory lowering path, given the conduit's routing mode.
+// ---------------------------------------------------------------------------
+bool isConduitFeasibleSharedMemory(const AIE::AIETargetModel &targetModel,
+                                   int64_t prodCol, int64_t prodRow,
+                                   int64_t consCol, int64_t consRow,
+                                   std::optional<RoutingMode> routingMode);
+
+// ---------------------------------------------------------------------------
 // Phase function declarations.  Each phase function modifies state in place.
 // If a phase detects an error, it sets state.passFailed = true.
 // ---------------------------------------------------------------------------

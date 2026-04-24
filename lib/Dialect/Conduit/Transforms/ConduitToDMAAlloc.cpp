@@ -130,27 +130,12 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       bool sameTile = (prodCol == consCol && prodRow == consRow);
       if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile &&
           !sameTile) {
-        bool rightShared =
-            targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
-        bool leftShared =
-            targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        bool explicitSharedMem =
-            (info.routingMode == RoutingMode::SharedMemory);
-        // Mirror of Phase 3c shmem guard in allocPhase: cross-column same-row
-        // shmem is silently reported legal by AIE2TargetModel but is not
-        // NPU-validated through Conduit; fall through to DMA when not
-        // explicitly requested.  Prescan must agree with the main pass to
-        // keep rotation-counter slot counts consistent.
-        // Use target-model helpers so future targets (e.g., NPU3) can override
-        // the neighbor relationship correctly.
-        bool sameRowDifferentCol =
-            targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
-            targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
-        if (sameRowDifferentCol && !explicitSharedMem) {
-          rightShared = false;
-          leftShared = false;
-        }
-        if (explicitSharedMem || rightShared || leftShared) {
+        // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h: prescan
+        // must agree with the main pass to keep rotation-counter slot counts
+        // consistent.
+        if (isConduitFeasibleSharedMemory(targetModel, prodCol, prodRow,
+                                          consCol, consRow,
+                                          info.routingMode)) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
           AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
@@ -258,26 +243,10 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     } else {
       auto [consCol, consRow] = info.consumerTileCoords[0];
       if (consRow >= 1) {
-        bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
-                                                              consCol, consRow);
-        bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
-                                                             prodCol, prodRow);
-        // Mirror Phase 3c guard: cross-column same-row shmem is not used in
-        // the Conduit path (unless explicit), so producer-side DMA buffers
-        // are needed even though isLegalMemAffinity reports the W-neighbor
-        // as legal.
-        // Use target-model helpers so future targets (e.g., NPU3) can override
-        // the neighbor relationship correctly.
-        bool explicitSharedMem =
-            (info.routingMode == RoutingMode::SharedMemory);
-        bool sameRowDifferentCol =
-            state.targetModel->isMemWest(prodCol, prodRow, consCol, consRow) ||
-            state.targetModel->isMemWest(consCol, consRow, prodCol, prodRow);
-        if (sameRowDifferentCol && !explicitSharedMem) {
-          rightAdj = false;
-          leftAdj = false;
-        }
-        if (!rightAdj && !leftAdj)
+        // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h.
+        if (!isConduitFeasibleSharedMemory(*state.targetModel, prodCol,
+                                           prodRow, consCol, consRow,
+                                           info.routingMode))
           needsProdSide = true;
       }
     }
@@ -499,28 +468,10 @@ void allocPhase(ConduitToDMAState &state) {
       bool sameTile = (prodCol == consCol && prodRow == consRow);
       if (!prodIsShim && !consIsShim && !prodIsMemtile && !consIsMemtile &&
           !sameTile) {
-        bool rightShared =
-            targetModel.isLegalMemAffinity(prodCol, prodRow, consCol, consRow);
-        bool leftShared =
-            targetModel.isLegalMemAffinity(consCol, consRow, prodCol, prodRow);
-        bool explicitSharedMem =
-            (info.routingMode == RoutingMode::SharedMemory);
-        // Cross-column same-row compute-to-compute shmem is reported legal by
-        // AIE2TargetModel::isLegalMemAffinity (W-neighbor) but has never been
-        // NPU-validated through the Conduit lowering path.  When NOT explicitly
-        // requested, fall through to the DMA flow (which is exercised + known
-        // good).  Explicit routing_mode = "shared_memory" is left alone here;
-        // a future feasibility-error pass (#107 / #124) will reject it.
-        // Use target-model helpers so future targets (e.g., NPU3) can override
-        // the neighbor relationship correctly.
-        bool sameRowDifferentCol =
-            targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
-            targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
-        if (sameRowDifferentCol && !explicitSharedMem) {
-          rightShared = false;
-          leftShared = false;
-        }
-        if (explicitSharedMem || rightShared || leftShared) {
+        // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h.
+        if (isConduitFeasibleSharedMemory(targetModel, prodCol, prodRow,
+                                          consCol, consRow,
+                                          info.routingMode)) {
           info.sharedMemory = true;
 
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
@@ -862,26 +813,10 @@ void allocPhase(ConduitToDMAState &state) {
     } else {
       auto [consCol, consRow] = info.consumerTileCoords[0];
       if (consRow >= 1) {
-        bool rightAdj = state.targetModel->isLegalMemAffinity(prodCol, prodRow,
-                                                              consCol, consRow);
-        bool leftAdj = state.targetModel->isLegalMemAffinity(consCol, consRow,
-                                                             prodCol, prodRow);
-        // Mirror Phase 3c guard: cross-column same-row shmem is not used in
-        // the Conduit path (unless explicit), so producer-side DMA buffers
-        // are needed even though isLegalMemAffinity reports the W-neighbor
-        // as legal.
-        // Use target-model helpers so future targets (e.g., NPU3) can override
-        // the neighbor relationship correctly.
-        bool explicitSharedMem =
-            (info.routingMode == RoutingMode::SharedMemory);
-        bool sameRowDifferentCol =
-            state.targetModel->isMemWest(prodCol, prodRow, consCol, consRow) ||
-            state.targetModel->isMemWest(consCol, consRow, prodCol, prodRow);
-        if (sameRowDifferentCol && !explicitSharedMem) {
-          rightAdj = false;
-          leftAdj = false;
-        }
-        if (!rightAdj && !leftAdj)
+        // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h.
+        if (!isConduitFeasibleSharedMemory(*state.targetModel, prodCol,
+                                           prodRow, consCol, consRow,
+                                           info.routingMode))
           needsProdSide = true;
       }
     }

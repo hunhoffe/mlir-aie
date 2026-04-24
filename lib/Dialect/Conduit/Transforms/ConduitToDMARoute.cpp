@@ -1039,27 +1039,12 @@ void routePhase(ConduitToDMAState &state) {
         // so the compute consumer flow must also be emitted.
         if (!info.forceDMA && info.consumerTileCoords.size() == 1 &&
             info.shimConsumerTileCoords.empty()) {
-          bool explicitSharedMem =
-              (info.routingMode == RoutingMode::SharedMemory);
-          bool rightAdj = state.targetModel->isLegalMemAffinity(
-              prodCol, prodRow, consCol, consRow);
-          bool leftAdj = state.targetModel->isLegalMemAffinity(
-              consCol, consRow, prodCol, prodRow);
-          // Mirror Phase 3c shmem guard in ConduitToDMAAlloc.cpp: cross-column
-          // same-row "adjacency" (W-neighbor) is reported legal by
-          // AIE2TargetModel but not used by the Conduit shmem path when not
-          // explicitly requested.  Emit the aie.flow so the DMA path works.
-          // Use target-model helpers so future targets (e.g., NPU3) can override
-          // the neighbor relationship correctly.
-          bool sameRowDifferentCol =
-              state.targetModel->isMemWest(prodCol, prodRow, consCol,
-                                           consRow) ||
-              state.targetModel->isMemWest(consCol, consRow, prodCol, prodRow);
-          if (sameRowDifferentCol && !explicitSharedMem) {
-            rightAdj = false;
-            leftAdj = false;
-          }
-          if (explicitSharedMem || rightAdj || leftAdj)
+          // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h:
+          // for adjacent single-consumer pairs the shmem path takes over,
+          // so no aie.flow is needed.
+          if (isConduitFeasibleSharedMemory(*state.targetModel, prodCol,
+                                            prodRow, consCol, consRow,
+                                            info.routingMode))
             continue;
         }
 
