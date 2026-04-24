@@ -154,7 +154,8 @@ struct FifoInfo {
 //     dma_repeat = (total_core_acquires / rt_emissions_per_channel)
 //                  / acquires_per_BD
 //
-//     total_core_acquires      = product of all enclosing scf.for / scf.parallel
+//     total_core_acquires      = product of all enclosing scf.for /
+//     scf.parallel
 //                                trip counts at the acquire site
 //     rt_emissions_per_channel = count of aiex.dma_configure_task_for ops in
 //                                the runtime_sequence whose `alloc` symbol
@@ -185,7 +186,8 @@ struct FifoInfo {
 //       * per-emission acquires not divisible by acquires_per_BD
 //       * shim channel with exactly one aiex.dma_configure_task_for emission
 //         (host-side num_invocations is invisible to Pass A; see emit.count==1
-//         block in inferDmaRepeatForChannel below — Bug C falsification, 2026-04-24)
+//         block in inferDmaRepeatForChannel below — Bug C falsification,
+//         2026-04-24)
 // ---------------------------------------------------------------------------
 
 // Anything at or above this threshold is treated as the legacy infinite-loop
@@ -329,9 +331,9 @@ struct PortAcquireBucket {
   llvm::SmallVector<mlir::Operation *> acquires;
 };
 
-static DmaRepeatInference
-inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
-                         int64_t fifoElemCount) {
+static DmaRepeatInference inferDmaRepeatForChannel(AIE::DeviceOp device,
+                                                   llvm::StringRef channelName,
+                                                   int64_t fifoElemCount) {
   DmaRepeatInference out;
 
   llvm::SmallVector<PortAcquireBucket, 2> prodSides;
@@ -343,8 +345,8 @@ inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
     auto core = acq->getParentOfType<AIE::CoreOp>();
     if (!core)
       return;
-    auto &bucket = (acq.getPort() == AIE::ObjectFifoPort::Produce) ? prodSides
-                                                                   : consSides;
+    auto &bucket =
+        (acq.getPort() == AIE::ObjectFifoPort::Produce) ? prodSides : consSides;
     PortAcquireBucket *match = nullptr;
     for (auto &p : bucket)
       if (p.core == core) {
@@ -376,8 +378,8 @@ inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
       if (p.acquires.empty())
         continue;
       AIE::CoreOp coreCopy = p.core;
-      TripResult tr = productOfEnclosingLoops(p.acquires.front(),
-                                              coreCopy.getOperation());
+      TripResult tr =
+          productOfEnclosingLoops(p.acquires.front(), coreCopy.getOperation());
       if (tr.status == TripStatus::Dynamic)
         return SideStatus::Dynamic;
       int64_t trip = tr.trip;
@@ -462,9 +464,10 @@ inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
   // for the same shape and Llama works at 6.808 TPS via the host-loop path.
   //
   // For emit.count > 1 (e.g., IRON gemv's per-batch BD emission via Python
-  // looping in rt.sequence — see infer_iter_count_multi_emission_gemv_pattern.mlir)
-  // Pass A CAN observe N directly as emit.count and the three-factor formula
-  // is sound — keep that path live.
+  // looping in rt.sequence — see
+  // infer_iter_count_multi_emission_gemv_pattern.mlir) Pass A CAN observe N
+  // directly as emit.count and the three-factor formula is sound — keep that
+  // path live.
   //
   // Compute-to-compute fifos (emit.count == 0, no shim BD anywhere) keep the
   // legacy "outer loop drives dma_repeat directly" behavior.
@@ -893,9 +896,8 @@ struct ObjectFifoToConduitPass
       }
       if (!routingSkipsDma && op.getViaCascade())
         routingSkipsDma = true;
-      if (!routingSkipsDma &&
-          aieStreamFifoPort.find(op.getSymNameAttr()) !=
-              aieStreamFifoPort.end())
+      if (!routingSkipsDma && aieStreamFifoPort.find(op.getSymNameAttr()) !=
+                                  aieStreamFifoPort.end())
         routingSkipsDma = true;
 
       if (!iterCountAttr && !routingSkipsDma) {

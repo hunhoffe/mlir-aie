@@ -623,8 +623,7 @@ reconcileHostRunArgsAfterTrim(mlir::ModuleOp module, AIE::DeviceOp devA,
 // routing-mode conflict-error pinning tests) still fuse and exercise the
 // downstream conflict-resolution paths.
 // ---------------------------------------------------------------------------
-bool isForwardChainEndpoint(AIE::DeviceOp device,
-                            llvm::StringRef channelName) {
+bool isForwardChainEndpoint(AIE::DeviceOp device, llvm::StringRef channelName) {
   bool found = false;
   device.walk([&](mlir::Operation *op) {
     if (found)

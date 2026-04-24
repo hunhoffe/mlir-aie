@@ -39,8 +39,8 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
-#include "ConduitToDMACommon.h"
 #include "ConduitTileInference.h"
+#include "ConduitToDMACommon.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"

@@ -206,12 +206,10 @@ static int64_t getEffectiveDmaRepeat(Create createOp) {
 //
 // Returns true if all groups are compatible; false (and emits an error
 // on the offending op) if any group has a mismatch.
-static bool
-checkGroupDmaRepeatCompatibility(llvm::StringRef kindLabel,
-                                 llvm::SmallVectorImpl<ConduitInfo> &conduits,
-                                 const llvm::StringMap<unsigned> &nameToGroup,
-                                 const llvm::DenseMap<unsigned, unsigned>
-                                     &groupCount) {
+static bool checkGroupDmaRepeatCompatibility(
+    llvm::StringRef kindLabel, llvm::SmallVectorImpl<ConduitInfo> &conduits,
+    const llvm::StringMap<unsigned> &nameToGroup,
+    const llvm::DenseMap<unsigned, unsigned> &groupCount) {
   llvm::DenseMap<unsigned, int64_t> groupRepeat;
   bool ok = true;
   for (auto &ci : conduits) {
@@ -230,8 +228,7 @@ checkGroupDmaRepeatCompatibility(llvm::StringRef kindLabel,
       ci.createOp.emitError()
           << "fuse-channels: cannot group channels with mismatched "
              "dma_repeat values "
-          << gIt->second << " vs " << rep << " (" << kindLabel
-          << " group)";
+          << gIt->second << " vs " << rep << " (" << kindLabel << " group)";
       ok = false;
     }
   }

@@ -134,8 +134,7 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
         // must agree with the main pass to keep rotation-counter slot counts
         // consistent.
         if (isConduitFeasibleSharedMemory(targetModel, prodCol, prodRow,
-                                          consCol, consRow,
-                                          info.routingMode)) {
+                                          consCol, consRow, info.routingMode)) {
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
           AIE::TileOp consTile = state.lookupTileByCoord(consCol, consRow);
           AIE::TileOp prodTile = state.lookupTileByCoord(prodCol, prodRow);
@@ -244,9 +243,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
       auto [consCol, consRow] = info.consumerTileCoords[0];
       if (consRow >= 1) {
         // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h.
-        if (!isConduitFeasibleSharedMemory(*state.targetModel, prodCol,
-                                           prodRow, consCol, consRow,
-                                           info.routingMode))
+        if (!isConduitFeasibleSharedMemory(*state.targetModel, prodCol, prodRow,
+                                           consCol, consRow, info.routingMode))
           needsProdSide = true;
       }
     }
@@ -470,8 +468,7 @@ void allocPhase(ConduitToDMAState &state) {
           !sameTile) {
         // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h.
         if (isConduitFeasibleSharedMemory(targetModel, prodCol, prodRow,
-                                          consCol, consRow,
-                                          info.routingMode)) {
+                                          consCol, consRow, info.routingMode)) {
           info.sharedMemory = true;
 
           AIE::TileOp allocTile = state.lookupTileByCoord(prodCol, prodRow);
@@ -814,9 +811,8 @@ void allocPhase(ConduitToDMAState &state) {
       auto [consCol, consRow] = info.consumerTileCoords[0];
       if (consRow >= 1) {
         // See isConduitFeasibleSharedMemory in ConduitToDMACommon.h.
-        if (!isConduitFeasibleSharedMemory(*state.targetModel, prodCol,
-                                           prodRow, consCol, consRow,
-                                           info.routingMode))
+        if (!isConduitFeasibleSharedMemory(*state.targetModel, prodCol, prodRow,
+                                           consCol, consRow, info.routingMode))
           needsProdSide = true;
       }
     }

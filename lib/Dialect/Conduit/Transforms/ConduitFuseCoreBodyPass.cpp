@@ -87,9 +87,9 @@ namespace {
 /// emit a remark on the offending channel and treat the devices as not
 /// connected for fusion.  `alreadyRemarked` deduplicates remarks across
 /// outer-loop restarts in `mergeDevicesForFusion`.
-static bool
-devicesConnectedByFusionGroup(AIE::DeviceOp devA, AIE::DeviceOp devB,
-                              llvm::StringSet<> &alreadyRemarked) {
+static bool devicesConnectedByFusionGroup(AIE::DeviceOp devA,
+                                          AIE::DeviceOp devB,
+                                          llvm::StringSet<> &alreadyRemarked) {
   // Build fusion_group → Create map for devA so we can locate the producer-
   // side conduit.create when a match fires.
   llvm::StringMap<Create> groupsA;

@@ -1243,10 +1243,9 @@ void lowerPhase(ConduitToDMAState &state) {
         // above).  Hardware fires the BD `repeat_count` total times per
         // start_task, matching the per-core acquire count.
         if (channelDmaRepeat > 1)
-          configState.addAttribute(
-              "repeat_count",
-              builder.getI32IntegerAttr(
-                  static_cast<int32_t>(channelDmaRepeat)));
+          configState.addAttribute("repeat_count",
+                                   builder.getI32IntegerAttr(
+                                       static_cast<int32_t>(channelDmaRepeat)));
         configState.addTypes(indexTy);
         configState.addRegion();
         mlir::Operation *configOp = builder.create(configState);
