@@ -1181,6 +1181,35 @@ void lowerPhase(ConduitToDMAState &state) {
             dims = dimsAttr;
         }
 
+        // Bug C / iter_count fix: consume `dma_repeat = N` from the source
+        // conduit.create on the shim BD.  Pass A's iter_count inference
+        // stamps `dma_repeat = N` on shim-facing channels when the per-core
+        // outer loop fires the BD chain N times per host dispatch (e.g.
+        // num_invocations=4 with cores running while_true=False produces
+        // dma_repeat=4).  Without consuming it here, each shim dispatch
+        // only fires the BD once and the cores stall after exhausting
+        // 1/N-th of the work — Bug C root cause for the .bin runtime path.
+        //
+        // We surface dma_repeat to the shim DMA via the
+        // `aiex.dma_configure_task_for.repeat_count` attribute (AIEX.td:1088),
+        // which lowers directly into NpuPushQueueOp.repeat_count
+        // (AIEDMATasksToNPU.cpp:56) and from there into the NPU command
+        // word's repeat field (AIEDmaToNpu.cpp:180-183).  This is the
+        // hardware's purpose-built mechanism for shim DMA replay and avoids
+        // mutating the BD's data-layout transformation, which (a) would
+        // collide with the AIE2p 4-dim cap on IRON-emitted BDs of the form
+        // [<1,0>, <1,0>, <1,0>, <inner, stride>], and (b) has unverified
+        // lock-semantics interaction.
+        //
+        // Mirrors the memtile path in ConduitToDMALink.cpp:1804+ which
+        // surfaces dma_repeat via DMAStartOp.repeat_count (with libxaie's
+        // 0=once, N-1 convention for that op).  For the shim NPU command
+        // path the value is passed through verbatim — set repeat_count = N.
+        // BD len and dims are left untouched.
+        int64_t channelDmaRepeat = 0;
+        if (auto *info = state.lookupConduit(conduitName, op))
+          channelDmaRepeat = info->dmaRepeat;
+
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
@@ -1209,11 +1238,23 @@ void lowerPhase(ConduitToDMAState &state) {
                                  mlir::FlatSymbolRefAttr::get(ctx, allocSym));
         if (isS2MM)
           configState.addAttribute("issue_token", builder.getBoolAttr(true));
+        // Bug C / iter_count fix: surface dma_repeat to the shim DMA via
+        // the configure_task's repeat_count attribute (see comment block
+        // above).  Hardware fires the BD `repeat_count` total times per
+        // start_task, matching the per-core acquire count.
+        if (channelDmaRepeat > 1)
+          configState.addAttribute(
+              "repeat_count",
+              builder.getI32IntegerAttr(
+                  static_cast<int32_t>(channelDmaRepeat)));
         configState.addTypes(indexTy);
         configState.addRegion();
         mlir::Operation *configOp = builder.create(configState);
 
-        // Build body: aie.dma_bd + aie.end.
+        // Build body: aie.dma_bd + aie.end.  BD len + dims are taken
+        // verbatim from the source put/get_memref op; dma_repeat is
+        // applied via the configure_task attribute above, NOT by mutating
+        // the BD's data layout.
         mlir::Region &bodyRegion = configOp->getRegion(0);
         mlir::Block *bdBlock = new mlir::Block();
         bodyRegion.push_back(bdBlock);
