@@ -1181,111 +1181,6 @@ void lowerPhase(ConduitToDMAState &state) {
             dims = dimsAttr;
         }
 
-        // Bug C / iter_count fix: consume `dma_repeat = N` from the source
-        // conduit.create on the shim BD.  Pass A's iter_count inference
-        // stamps `dma_repeat = N` on shim-facing channels when the per-core
-        // outer loop fires the BD chain N times per host dispatch (e.g.
-        // num_invocations=4 with cores running while_true=False produces
-        // dma_repeat=4).  Without consuming it here, each shim dispatch
-        // only fires the BD once and the cores stall after exhausting
-        // 1/N-th of the work — Bug C root cause for the .bin runtime path.
-        //
-        // Option A (TAP placeholder idiom): apply an outer <size=N, stride=0>
-        // dim to the BD's data layout and scale len by N.  The BD then walks
-        // the same buffer N times per fire, exactly matching the per-core
-        // acquire count.  Mirrors how IRON itself generates repeat-style BDs
-        // (see dma_task_to_conduit_repeat_bd* lit tests, FS5 fix history)
-        // and what ConduitToDMALink does for memtile DMAStartOp.repeat_count
-        // = N-1 (line 1804+).
-        //
-        // AIE2/AIE2p shim BDs cap data-layout dims at 4.  IRON typically
-        // emits 4-dim shim BDs of the form
-        //   [<1,0>, <1,0>, <1,0>, <innerSize, innerStride>]
-        // — three leading <size=1, stride=0> placeholder slots plus one
-        // inner walk.  Naïvely prepending a 5th dim violates the 4-dim cap
-        // and the AIE verifier rejects the IR.  Decision logic:
-        //
-        //   1. If any leading <size=1, stride=0> placeholder exists, FOLD
-        //      dma_repeat into the outermost such slot (rewrite size 1→N).
-        //      Preserves dim count; len scales by N exactly as in the
-        //      prepend case (the placeholder previously contributed factor
-        //      1, now contributes factor N to BD walk count).
-        //   2. Else if dim count < 4, PREPEND <size=N, stride=0>
-        //      (existing behavior; len scales by N).
-        //   3. Else (4 dims, no placeholder available), emit an error —
-        //      do NOT silently produce broken IR.
-        int64_t channelDmaRepeat = 0;
-        if (auto *info = state.lookupConduit(conduitName, op))
-          channelDmaRepeat = info->dmaRepeat;
-        int64_t effectiveLen = numElems;
-        AIE::BDDimLayoutArrayAttr effectiveDims = dims;
-        if (channelDmaRepeat > 1) {
-          // Locate the outermost leading <size=1, stride=0> placeholder
-          // (scan from the front; stop at the first non-placeholder dim so
-          // we don't mistake an inner stride-0 broadcast for a leading slot).
-          int placeholderIdx = -1;
-          if (dims && !dims.getValue().empty()) {
-            for (auto [i, dimAttr] : llvm::enumerate(dims.getValue())) {
-              auto d = mlir::cast<AIE::BDDimLayoutAttr>(dimAttr);
-              if (d.getSize() == 1u && d.getStride() == 0u) {
-                placeholderIdx = static_cast<int>(i);
-                break;
-              }
-              // First non-placeholder dim ends the leading-placeholder run.
-              break;
-            }
-          }
-
-          llvm::SmallVector<AIE::BDDimLayoutAttr> newDims;
-          if (placeholderIdx >= 0) {
-            // Fold into the placeholder: rewrite that slot's size to N.
-            for (auto [i, dimAttr] : llvm::enumerate(dims.getValue())) {
-              auto d = mlir::cast<AIE::BDDimLayoutAttr>(dimAttr);
-              if (static_cast<int>(i) == placeholderIdx) {
-                newDims.push_back(AIE::BDDimLayoutAttr::get(
-                    ctx, /*size=*/static_cast<uint32_t>(channelDmaRepeat),
-                    /*stride=*/0));
-              } else {
-                newDims.push_back(d);
-              }
-            }
-            effectiveLen = numElems * channelDmaRepeat;
-            effectiveDims = AIE::BDDimLayoutArrayAttr::get(ctx, newDims);
-          } else if (!dims || dims.getValue().size() < 4) {
-            // Prepend path: room available (or no source dims at all).
-            newDims.push_back(AIE::BDDimLayoutAttr::get(
-                ctx, /*size=*/static_cast<uint32_t>(channelDmaRepeat),
-                /*stride=*/0));
-            if (dims && !dims.getValue().empty()) {
-              for (auto d : dims.getValue())
-                newDims.push_back(d);
-            } else {
-              // No source dims: synthesize a unit-stride inner dim of
-              // length numElems so the prepended outer placeholder has an
-              // explicit base walk to repeat.
-              newDims.push_back(AIE::BDDimLayoutAttr::get(
-                  ctx, /*size=*/static_cast<uint32_t>(numElems),
-                  /*stride=*/1));
-            }
-            effectiveLen = numElems * channelDmaRepeat;
-            effectiveDims = AIE::BDDimLayoutArrayAttr::get(ctx, newDims);
-          } else {
-            // 4 dims already and no leading <1,0> placeholder to reuse.
-            // AIE2p caps shim BD data-layout at 4 dims; we cannot prepend
-            // without producing broken IR.  Surface the conflict instead
-            // of silently dropping dma_repeat.
-            op->emitError(
-                "conduit-to-dma Step 8g: shim BD for '")
-                << conduitName
-                << "' already has 4 data-layout dims with no leading "
-                   "<size=1, stride=0> placeholder available; cannot apply "
-                   "dma_repeat = "
-                << channelDmaRepeat;
-            state.passFailed = true;
-            return;
-          }
-        }
-
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
@@ -1324,13 +1219,12 @@ void lowerPhase(ConduitToDMAState &state) {
         bodyRegion.push_back(bdBlock);
         builder.setInsertionPointToEnd(bdBlock);
 
-        if (effectiveDims && !effectiveDims.getValue().empty())
+        if (dims && !dims.getValue().empty())
           builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
-                                       static_cast<int>(effectiveLen),
-                                       effectiveDims);
+                                       static_cast<int>(numElems), dims);
         else
           builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
-                                       static_cast<int>(effectiveLen));
+                                       static_cast<int>(numElems));
         // Set burst_length = 0 on the dma_bd.
         bdBlock->back().setAttr("burst_length", builder.getI32IntegerAttr(0));
         builder.create<AIE::EndOp>(loc);
