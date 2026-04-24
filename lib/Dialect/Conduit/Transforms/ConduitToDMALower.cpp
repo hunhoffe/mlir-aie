@@ -1181,6 +1181,47 @@ void lowerPhase(ConduitToDMAState &state) {
             dims = dimsAttr;
         }
 
+        // Bug C / iter_count fix: consume `dma_repeat = N` from the source
+        // conduit.create on the shim BD.  Pass A's iter_count inference
+        // stamps `dma_repeat = N` on shim-facing channels when the per-core
+        // outer loop fires the BD chain N times per host dispatch (e.g.
+        // num_invocations=4 with cores running while_true=False produces
+        // dma_repeat=4).  Without consuming it here, each shim dispatch
+        // only fires the BD once and the cores stall after exhausting
+        // 1/N-th of the work — Bug C root cause for the .bin runtime path.
+        //
+        // Option A (TAP placeholder idiom): prepend an outermost
+        // <size=N, stride=0> dim to the BD's data layout and scale len by
+        // N.  The BD then walks the same buffer N times per fire, exactly
+        // matching the per-core acquire count.  Mirrors how IRON itself
+        // generates repeat-style BDs (see dma_task_to_conduit_repeat_bd*
+        // lit tests, FS5 fix history) and what ConduitToDMALink does for
+        // memtile DMAStartOp.repeat_count = N-1 (line 1804+).
+        int64_t channelDmaRepeat = 0;
+        if (auto *info = state.lookupConduit(conduitName, op))
+          channelDmaRepeat = info->dmaRepeat;
+        int64_t effectiveLen = numElems;
+        AIE::BDDimLayoutArrayAttr effectiveDims = dims;
+        if (channelDmaRepeat > 1) {
+          effectiveLen = numElems * channelDmaRepeat;
+          llvm::SmallVector<AIE::BDDimLayoutAttr> newDims;
+          newDims.push_back(AIE::BDDimLayoutAttr::get(
+              ctx, /*size=*/static_cast<uint32_t>(channelDmaRepeat),
+              /*stride=*/0));
+          if (dims && !dims.getValue().empty()) {
+            for (auto d : dims.getValue())
+              newDims.push_back(d);
+          } else {
+            // No source dims: synthesize a unit-stride inner dim of length
+            // numElems so the prepended outer placeholder has an explicit
+            // base walk to repeat.
+            newDims.push_back(AIE::BDDimLayoutAttr::get(
+                ctx, /*size=*/static_cast<uint32_t>(numElems),
+                /*stride=*/1));
+          }
+          effectiveDims = AIE::BDDimLayoutArrayAttr::get(ctx, newDims);
+        }
+
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
@@ -1219,12 +1260,13 @@ void lowerPhase(ConduitToDMAState &state) {
         bodyRegion.push_back(bdBlock);
         builder.setInsertionPointToEnd(bdBlock);
 
-        if (dims && !dims.getValue().empty())
+        if (effectiveDims && !effectiveDims.getValue().empty())
           builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
-                                       static_cast<int>(numElems), dims);
+                                       static_cast<int>(effectiveLen),
+                                       effectiveDims);
         else
           builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
-                                       static_cast<int>(numElems));
+                                       static_cast<int>(effectiveLen));
         // Set burst_length = 0 on the dma_bd.
         bdBlock->back().setAttr("burst_length", builder.getI32IntegerAttr(0));
         builder.create<AIE::EndOp>(loc);
