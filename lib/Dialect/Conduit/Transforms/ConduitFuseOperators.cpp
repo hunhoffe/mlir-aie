@@ -245,6 +245,67 @@ static bool isInputChannel(Create op,
 }
 
 // ---------------------------------------------------------------------------
+// Helper: detect whether a conduit channel is a forward-chain endpoint
+// ("Pattern E") inside the given device.
+//
+// A Pattern E endpoint is a channel that participates in a `conduit.scatter`
+// or `conduit.gather` op (as `src`, `dst`, or member of `dsts`).  These ops
+// are emitted by Pass A from `aie.objectfifo.link` to express data motion
+// that is not driven by a compute core body.
+//
+// Why fuse-operators must skip these matches:
+//   The Step 6 channel-rename walk only updates ops carrying a `name`
+//   FlatSymbolRefAttr (acquire/release/subview_access/put_memref/...).
+//   `conduit.scatter` / `conduit.gather` reference channels through `src` /
+//   `dst` / `dsts` symbol attributes, NOT `name` — so a Step 5 erasure +
+//   Step 6 rename leaves the scatter/gather pointing at the deleted symbol
+//   (silent dangling FlatSymbolRefAttr).  Beyond the symbol bookkeeping,
+//   fusing a forward-chain endpoint is semantically meaningless: there is no
+//   compute body to merge with.
+//
+// We use the explicit scatter/gather marker (rather than "no compute body")
+// so that hand-written conduit-IR tests with no `aie.core` (e.g. the
+// routing-mode conflict-error pinning tests) still fuse and exercise the
+// downstream conflict-resolution paths.
+// ---------------------------------------------------------------------------
+static bool isForwardChainEndpoint(AIE::DeviceOp device,
+                                   llvm::StringRef channelName) {
+  bool found = false;
+  device.walk([&](mlir::Operation *op) {
+    if (found)
+      return mlir::WalkResult::interrupt();
+    llvm::StringRef opName = op->getName().getStringRef();
+    if (opName != "conduit.scatter" && opName != "conduit.gather")
+      return mlir::WalkResult::advance();
+    auto matches = [&](mlir::Attribute attr) -> bool {
+      if (!attr)
+        return false;
+      if (auto flat = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(attr))
+        return flat.getValue() == channelName;
+      if (auto sym = mlir::dyn_cast<mlir::SymbolRefAttr>(attr))
+        return sym.getRootReference() == channelName;
+      if (auto arr = mlir::dyn_cast<mlir::ArrayAttr>(attr)) {
+        for (mlir::Attribute e : arr)
+          if (auto flat = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(e))
+            if (flat.getValue() == channelName)
+              return true;
+        return false;
+      }
+      return false;
+    };
+    // Check all named attrs (Pass A may stash refs as inherent or
+    // discardable attrs; cover both).
+    for (mlir::NamedAttribute na : op->getAttrs())
+      if (matches(na.getValue())) {
+        found = true;
+        return mlir::WalkResult::interrupt();
+      }
+    return mlir::WalkResult::advance();
+  });
+  return found;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: erase shim_dma_allocation ops for a given conduit name.
 // Pass A emits aie.shim_dma_allocation with sym_name = @<name>_shim_alloc,
 // so we check for both the raw name and the _shim_alloc suffixed form.
@@ -532,6 +593,13 @@ struct ConduitFuseOperatorsPass
       // Channels with matching fusion_group values are paired for fusion.
       // Falls back to element_type matching for IR without fusion_group attrs.
       // Each input channel is consumed at most once (1:1 pairing).
+      //
+      // Pattern E guard: a channel that participates in a `conduit.scatter`
+      // / `conduit.gather` is a forward-chain endpoint (e.g., from
+      // `aie.objectfifo.link`).  Step 6's rename walk only updates ops with
+      // a `name` attr, so erasing/renaming such a channel would leave the
+      // scatter/gather op pointing at a dangling FlatSymbolRefAttr.  Skip
+      // with a remark — there is no compute body on this side to fuse.
       llvm::SmallVector<std::pair<Create, Create>> matched;
       {
         llvm::DenseSet<mlir::Operation *> consumedInputs;
@@ -539,11 +607,27 @@ struct ConduitFuseOperatorsPass
           auto outFG = outCh.getFusionGroup();
           if (!outFG || outFG->empty())
             continue;
+          if (isForwardChainEndpoint(devA, outCh.getName())) {
+            outCh.emitRemark("conduit-fuse-operators: skipping fusion_group "
+                             "match for output channel @")
+                << outCh.getName()
+                << " — forward-chain / link-only endpoint (Pattern E); "
+                   "scatter/gather references cannot be safely renamed";
+            continue;
+          }
           for (Create inCh : inputChannels) {
             if (consumedInputs.contains(inCh.getOperation()))
               continue;
             auto inFG = inCh.getFusionGroup();
             if (inFG && *outFG == *inFG) {
+              if (isForwardChainEndpoint(devB, inCh.getName())) {
+                inCh.emitRemark("conduit-fuse-operators: skipping "
+                                "fusion_group match for input channel @")
+                    << inCh.getName()
+                    << " — forward-chain / link-only endpoint (Pattern E); "
+                       "scatter/gather references cannot be safely renamed";
+                continue;
+              }
               matched.push_back({outCh, inCh});
               consumedInputs.insert(inCh.getOperation());
               break;
@@ -552,12 +636,19 @@ struct ConduitFuseOperatorsPass
         }
       }
       // Fallback: match by element_type if no fusion_group attrs found.
+      // Same Pattern E guard applies — element_type collision between a
+      // forward chain and a Pattern A neighbor would trigger the identical
+      // dangling-symbol bug.
       if (matched.empty()) {
         llvm::DenseSet<mlir::Operation *> consumedInputs;
         for (Create outCh : outputChannels) {
+          if (isForwardChainEndpoint(devA, outCh.getName()))
+            continue;
           mlir::Type outET = outCh.getElementType();
           for (Create inCh : inputChannels) {
             if (consumedInputs.contains(inCh.getOperation()))
+              continue;
+            if (isForwardChainEndpoint(devB, inCh.getName()))
               continue;
             mlir::Type inET = inCh.getElementType();
             if (outET == inET) {
