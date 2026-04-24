@@ -16,8 +16,7 @@
 //
 //   Pass C: --conduit-to-dma
 //     Lowers Conduit IR to raw AIE hardware ops (aie.dma_bd, aie.lock,
-//     aie.buffer, aie.flow).  Replaces the existing
-//     --aie-objectFifo-stateful-transform path.
+//     aie.buffer, aie.flow).
 //
 // The intended pipeline is:
 //

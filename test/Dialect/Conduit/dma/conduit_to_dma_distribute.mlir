@@ -8,7 +8,7 @@
 //   - aie.memtile_dma for the distribute MemTile DMA BD chain
 //   - Per-destination aie.flow ops: MemTile MM2S ch i → compute_tile_i DMA 0
 //
-// Resource comparison target (from --aie-objectFifo-stateful-transform):
+// Expected resource counts:
 //   aie.buffer:  ≥8  (depth-many per conduit)
 //   aie.lock:   ≥6   on MemTile (2 per destination × 3 destinations)
 //   aie.flow:    4   (shim→memtile + memtile→tile22, 23, 33)

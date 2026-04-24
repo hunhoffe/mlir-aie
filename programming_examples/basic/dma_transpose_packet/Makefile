@@ -31,7 +31,7 @@ build/aie.mlir: ${srcdir}/${aie_py_src}
 build/final.xclbin: build/aie.mlir
 	mkdir -p ${@D}
 	cd ${@D} && aiecc --aie-generate-xclbin --no-compile-host --xclbin-name=${@F} \
-				--no-xchesscc --no-xbridge --packet-sw-objFifos \
+				--no-xchesscc --no-xbridge \
 				--aie-generate-npu-insts --npu-insts-name=insts.bin $(<:%=../%)
 
 ${targetname}.exe: ${srcdir}/test.cpp

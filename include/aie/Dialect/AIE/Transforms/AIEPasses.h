@@ -56,10 +56,6 @@ createAIEVectorTransferLoweringPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIEHoistVectorTransferPointersPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEPathfinderPass();
-std::unique_ptr<mlir::OperationPass<DeviceOp>>
-createAIEObjectFifoStatefulTransformPass();
-std::unique_ptr<mlir::OperationPass<DeviceOp>>
-createAIEObjectFifoRegisterProcessPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIELowerCascadeFlowsPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
 createAIEAssignBufferDescriptorIDsPass();

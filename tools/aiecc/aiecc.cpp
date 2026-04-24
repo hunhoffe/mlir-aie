@@ -312,38 +312,19 @@ static cl::opt<bool> dryRun("n",
                             cl::desc("Dry run mode (don't execute commands)"),
                             cl::init(false), cl::cat(aieCompilerOptions));
 
-static cl::opt<bool> dynamicObjFifos("dynamic-objFifos",
-                                     cl::desc("Use dynamic object FIFOs"),
-                                     cl::init(false),
-                                     cl::cat(aieCompilerOptions));
-
-static cl::opt<bool> packetSwObjFifos("packet-sw-objFifos",
-                                      cl::desc("Use packet-switched flows"),
-                                      cl::init(false),
-                                      cl::cat(aieCompilerOptions));
-
-static cl::opt<bool> useConduit(
-    "use-conduit",
-    cl::desc(
-        "Use Conduit IR lowering instead of objectFifo stateful transform"),
-    cl::init(false), cl::cat(aieCompilerOptions));
-
 static cl::opt<bool> conduitFuseSpatial(
     "conduit-fuse-spatial",
-    cl::desc(
-        "With --use-conduit, inject --conduit-fuse-operators (spatial fusion)"),
+    cl::desc("Inject --conduit-fuse-operators (spatial fusion)"),
     cl::init(false), cl::cat(aieCompilerOptions));
 
 static cl::opt<bool> conduitFuseCoreBodies(
     "conduit-fuse-core-bodies-flag",
-    cl::desc("With --use-conduit, inject --conduit-fuse-core-bodies "
-             "(loop-body fusion)"),
+    cl::desc("Inject --conduit-fuse-core-bodies (loop-body fusion)"),
     cl::init(false), cl::cat(aieCompilerOptions));
 
 static cl::opt<bool> conduitFuseChannels(
     "conduit-fuse-channels-flag",
-    cl::desc(
-        "With --use-conduit, inject --conduit-fuse-channels (relay fusion)"),
+    cl::desc("Inject --conduit-fuse-channels (relay fusion)"),
     cl::init(false), cl::cat(aieCompilerOptions));
 
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
@@ -1480,16 +1461,14 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   // Step 3: Canonicalize device (module-level pass)
   pm.addPass(xilinx::AIE::createAIECanonicalizeDevicePass());
 
-  // Step 4: ObjectFifo / Conduit pipeline
-  if (useConduit) {
-    // Conduit passes are module-level; add before device-level nesting
+  // Step 4: Conduit pipeline (module-level; runs before device-level nesting)
+  {
     std::string conduitPipeline = "objectfifo-to-conduit";
-    // FS6: dma-task-to-conduit must always run under --use-conduit.  Bare
-    // --use-conduit on IRON-emitted IR (every Llama op) leaves
-    // aiex.dma_configure_task_for ops un-converted; conduit-to-dma then
-    // collides with aie-dma-to-npu on the auto-generated <chan>_shim_alloc
-    // symbol.  The pass is a no-op when no aiex.dma_task ops are present, so
-    // unconditional inclusion is safe.
+    // FS6: dma-task-to-conduit must always run.  IRON-emitted IR (every Llama
+    // op) leaves aiex.dma_configure_task_for ops un-converted; conduit-to-dma
+    // then collides with aie-dma-to-npu on the auto-generated
+    // <chan>_shim_alloc symbol.  The pass is a no-op when no aiex.dma_task ops
+    // are present, so unconditional inclusion is safe.
     conduitPipeline += ",dma-task-to-conduit";
     if (conduitFuseCoreBodies)
       conduitPipeline +=
@@ -1521,20 +1500,6 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   // Note: Trace lowering runs in a separate guarded pipeline
   // (runTraceLoweringPipeline) before this function is called.
   devicePm.addPass(xilinx::AIE::createAIEAssignLockIDsPass());
-  if (!useConduit) {
-    devicePm.addPass(xilinx::AIE::createAIEObjectFifoRegisterProcessPass());
-    {
-      std::string objFifoPipelineStr =
-          "aie-objectFifo-stateful-transform{dynamic-objFifos=" +
-          std::string(dynamicObjFifos ? "true" : "false") +
-          " packet-sw-objFifos=" +
-          std::string(packetSwObjFifos ? "true" : "false") + "}";
-      if (failed(parsePassPipeline(objFifoPipelineStr, devicePm))) {
-        llvm::errs() << "Error: Failed to parse objectFifo pipeline\n";
-        return failure();
-      }
-    }
-  }
   devicePm.addPass(xilinx::AIE::createAIEAssignBufferDescriptorIDsPass());
   devicePm.addPass(xilinx::AIE::createAIELowerCascadeFlowsPass());
   devicePm.addPass(xilinx::AIEX::createAIEBroadcastPacketPass());

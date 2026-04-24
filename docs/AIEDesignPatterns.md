@@ -344,10 +344,8 @@ XAieTile_LockRelease(&(TileInst[7][2]), 1, 0x1, 0);
 
 ## Using AIE ObjectFIFOs
 
-[ObjectFIFO Example](https://github.com/Xilinx/mlir-aie/tree/main/test/objectFifo-stateful-transform/non_adjacency_test_1.aie.mlir)
-
 An objectFIFO can be established between two or more tiles. Broadcast is possible from one producer tile to multiple consumer tiles.
-Unlike a typical FIFO, elements are not pushed to nor popped from the objectFIFO. Instead, a pool of memory elements is allocated to the objectFIFO by the objectFIFO lowering pass, i.e., AIEObjectFifoStatefulTransform.mlir. 
+Unlike a typical FIFO, elements are not pushed to nor popped from the objectFIFO. Instead, a pool of memory elements is allocated to the objectFIFO by the Conduit lowering pipeline (`--objectfifo-to-conduit` followed by `--conduit-to-dma`).
 
 Processes can then write to and read from these memory elements after acquiring them.
 
@@ -457,7 +455,7 @@ Another lowering technique generates MLIR operations that ensure the acquire / r
 	aie.end
 }
 ```
-This lowering can be enabled for each core by setting the `dynamic_objfifo_lowering` attribute of the CoreOp to true, or enabled for all the cores in the design at once by setting the `dynamic-objFifos` flag of aiecc (which is then passed to the --aie-objectFifo-stateful-transform lowering pass).
+The dynamic-lowering form shown above is what the Conduit lowering pipeline (`--objectfifo-to-conduit` followed by `--conduit-to-dma`) produces by default.
 
 ObjectFIFOs can be established between tiles on the shim row and AIE tiles in order to bring data in from or out to external memory locations. These external memory locations are pointed to using AIE.external_buffer operations and they need to be explicitly registered to an objectFIFO so that it knows where the data has been allocated externally (in this case, the objectFIFO lowering will only allocate memory elements required by AIE tiles):
 ```
@@ -484,25 +482,6 @@ module @objectFIFO  {
 	AIE.objectfifo @of2 (%tile22, { %tile24 }, 2 : i32) : !AIE.objectfifo<memref<16xi32>>
 
 	AIE.objectfifo.link [@of1] -> [@of2] ()
-}
-```
-
-At a higher abstraction level, a process can be registered to an objectFIFO using access patterns and work functions:
-```
-module @objectFIFO  {
-    %tile12 = AIE.tile(1, 2)
-    %tile33 = AIE.tile(3, 3)
-
-    AIE.objectfifo @of1 (%tile12, {tile33}, 2 : i32) : !AIE.objectfifo<memref<16xi32>>
-
-    %prodAcqPattern = arith.constant dense<[1]> : tensor<1xi32>
-    %prodRelPattern = arith.constant dense<[1]> : tensor<1xi32>
-    %prodLength = arith.constant 12 : index
-    func @producer_work() -> () {
-        return
-    }
-
-    AIE.objectfifo.register_process @of1 (Produce, %prodAcqPattern : tensor<1xi32>, %prodRelPattern : tensor<1xi32>, @producer_work, %prodLength)
 }
 ```
 

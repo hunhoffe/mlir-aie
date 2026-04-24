@@ -25,7 +25,7 @@ This data movement transformation can be visualized as a map which shows the ord
 
 The implicit copy is performed using the `ObjectFifo.forward()` function that specifies how input data arriving via `of_in` should be sent further via `of_out` by specifically leveraging a compute tile's (`AnyComputeTile`'s) DMA.
 
-> This design is set to be lowered using packet-switched flows for the underlying data movement. This is enabled in the [Makefile](./Makefile) using the `--packet-sw-objFifos` flag for the `aiecc` compiler utility.
+> This design was previously lowered using packet-switched flows for the underlying data movement (via the now-removed `--packet-sw-objFifos` aiecc flag). Packet routing now lives only on `conduit.create` ops via the `routing_mode = "packet"` attribute; restoring it for this example requires constructing the conduit IR directly via the low-level dialect API. The IRON Python path for setting per-channel `routing_mode` on this design is deferred to a follow-up sprint — until then, this example will lower with circuit routing.
 
 ## Design Versions
 * [dma_transpose_placed.py](./dma_transpose_placed.py) shows a lower-level version of IRON, where constructors directly correspond to MLIR operations

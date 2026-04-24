@@ -54,8 +54,9 @@
 // Limitations (documented honestly)
 // ----------------------------------
 // - The memtile heuristic in link rewriting is approximate.
-// - producer_dimensions/consumer_dimensions from the source objectfifo are
-//   propagated to the forceCircuit check but not emitted on conduit.create.
+// - producer_dimensions/consumer_dimensions are propagated from
+//   dimensionsToStream / dimensionsFromStream and emitted on conduit.create
+//   when at least one inner array is non-empty.
 // - The pass processes each aie.device independently with fresh maps,
 //   preventing name collisions across devices in multi-device modules.
 //
@@ -388,22 +389,6 @@ struct ObjectFifoToConduitPass
         // accessPattern: keep empty (no merged multi-consumer pattern).
       }
     }
-
-    // P2-D: erase aie.objectfifo.register_process ops.
-    // register_process is a code-generation macro that the dedicated pre-pass
-    // (--aie-register-objectFifos) expands into standard acquire/release loops
-    // before the stateful transform runs. When that pre-pass has already run,
-    // these ops are already gone. When it has not run, silently erasing them
-    // is safe: the op has zero presence in the stateful-transform corpus (all
-    // 130 files in test/objectFifo-stateful-transform/ use raw acquire/release,
-    // not register_process) and the stateful transform itself ignores them.
-    // Users who need register_process expansion must run
-    // --aie-register-objectFifos before --objectfifo-to-conduit.
-    llvm::SmallVector<AIE::ObjectFifoRegisterProcessOp> regProcOps;
-    device.walk(
-        [&](AIE::ObjectFifoRegisterProcessOp op) { regProcOps.push_back(op); });
-    for (auto op : regProcOps)
-      op.erase();
   }
 
   // -----------------------------------------------------------------------
@@ -492,6 +477,33 @@ struct ObjectFifoToConduitPass
             static_cast<int64_t>(op.getIterCount().value()));
       }
 
+      // Risk #2 guard: padDimensions support is not yet wired through Pass C.
+      // Setting it on aie.objectfifo today would be silently dropped, producing
+      // wrong code under conduit-default lowering.  Fail loudly until proper
+      // propagation lands (follow-up sprint).
+      if (auto padDims = op.getPadDimensions();
+          padDims.has_value() && !padDims->empty()) {
+        op.emitError("objectfifo-to-conduit: padDimensions on aie.objectfifo "
+                     "is not supported under conduit lowering yet (no Pass C "
+                     "BD-emission support); see follow-up");
+        signalPassFailure();
+        passFailed = true;
+        return;
+      }
+
+      // Risk #3 guard: initValues are not yet propagated through Pass C buffer
+      // allocation.  Setting initValues on aie.objectfifo today produces
+      // uninitialized buffers in the conduit lowering path.  Fail loudly.
+      if (auto initVals = op.getInitValues();
+          initVals.has_value() && !initVals->empty()) {
+        op.emitError("objectfifo-to-conduit: initValues on aie.objectfifo "
+                     "is not supported under conduit lowering yet (no Pass C "
+                     "buffer pre-init support); see follow-up");
+        signalPassFailure();
+        passFailed = true;
+        return;
+      }
+
       // Propagate dimensionsToStream (producer side).
       // Stored as generic mlir::Attribute to avoid cross-dialect tablegen dep.
       mlir::Attribute prodDimsAttr;
@@ -542,42 +554,23 @@ struct ObjectFifoToConduitPass
       // Cascade has no hardware FIFO; depth must be 1.
       RoutingModeAttr routingModeAttr;
 
-      // Explicit routing_mode override (Step 2): if the source aie.objectfifo
-      // carries a discardable "routing_mode" StringAttr (set by the harness
-      // via set_conduit_attrs), parse it into the RoutingMode enum and use
-      // it directly. The explicit attr ALWAYS wins over via_cascade /
-      // aie_stream / via_DMA / dims / repeat derivations — the user has
-      // taken explicit control of routing.
-      if (auto rmStrAttr =
-              op->getAttrOfType<mlir::StringAttr>("routing_mode")) {
-        llvm::StringRef rmStr = rmStrAttr.getValue();
-        std::optional<RoutingMode> rmEnum;
-        if (rmStr == "circuit")
-          rmEnum = RoutingMode::Circuit;
-        else if (rmStr == "packet")
-          rmEnum = RoutingMode::Packet;
-        else if (rmStr == "cascade")
-          rmEnum = RoutingMode::Cascade;
-        else if (rmStr == "stream")
-          rmEnum = RoutingMode::Stream;
-        else if (rmStr == "shared_memory")
-          rmEnum = RoutingMode::SharedMemory;
-        else if (rmStr == "dma")
-          rmEnum = RoutingMode::DMA;
-        if (!rmEnum) {
+      if (!routingModeAttr && op.getViaCascade()) {
+        // Risk #4 guard: cascade is hardware point-to-point; multi-consumer
+        // cascade is semantically undefined (would emit multiple
+        // aie.put_cascade users with no defined ordering).  Reject before
+        // lowering.  Tile arrays are stored as flat [col0,row0,col1,row1,...]
+        // pairs, so divide size by 2 to count tiles.
+        size_t numConsumers = info.consumerTilesArr.size() / 2 +
+                              info.shimConsumerTilesArr.size() / 2;
+        if (numConsumers != 1) {
           op.emitError(
-              "objectfifo-to-conduit: invalid 'routing_mode' attr value '")
-              << rmStr
-              << "'; expected one of: circuit, packet, cascade, stream, "
-                 "shared_memory, dma";
+              "objectfifo-to-conduit: via_cascade=true requires exactly one "
+              "consumer tile (cascade hardware is point-to-point); got ")
+              << numConsumers;
           signalPassFailure();
           passFailed = true;
           return; // skip conduit.create for this fifo
         }
-        routingModeAttr = RoutingModeAttr::get(ctx, *rmEnum);
-      }
-
-      if (!routingModeAttr && op.getViaCascade()) {
         if (info.depth != 1) {
           op.emitError(
               "objectfifo-to-conduit: via_cascade=true requires depth=1 "
@@ -614,14 +607,7 @@ struct ObjectFifoToConduitPass
       // aie_stream would overwrite it with "stream" silently.  The result
       // is an aie_stream conduit with cascade semantics applied — wrong on
       // both counts.  Reject this combination explicitly.
-      // Skipped when an explicit routing_mode override is in effect — the
-      // user has taken explicit control and is bypassing both derivations
-      // (see followup #117).  Predicate keys off the raw input attrs
-      // (`routing_mode` presence + `via_cascade` + `aie_stream`) rather than
-      // routingModeAttr, so the check fires regardless of whether the
-      // via_cascade derivation block above already set routingModeAttr.
-      if (!op->hasAttr("routing_mode") && op.getViaCascade() &&
-          streamPortIt != aieStreamFifoPort.end()) {
+      if (op.getViaCascade() && streamPortIt != aieStreamFifoPort.end()) {
         op.emitError("objectfifo-to-conduit: objectfifo '")
             << op.getSymName()
             << "' has both via_cascade=true and aie_stream routing — "
@@ -631,8 +617,15 @@ struct ObjectFifoToConduitPass
         return; // skip conduit.create for this fifo
       }
 
-      if (!routingModeAttr && streamPortIt != aieStreamFifoPort.end())
+      if (!routingModeAttr && streamPortIt != aieStreamFifoPort.end()) {
+        // aie_stream uses aie.flow(Core:N,...) and bypasses DMA BD emission.
+        // The aie.objectfifo verifier (in AIEDialect.cpp) already rejects
+        // aie_stream + dimensionsToStream / dimensionsFromStream with a more
+        // specific message ("data layout transformations are unavailable on
+        // stream end") before this pass runs, so no extra guard is needed
+        // here — see follow-up Risk #5 audit (2026-04-24).
         routingModeAttr = RoutingModeAttr::get(ctx, RoutingMode::Stream);
+      }
 
       // If no cascade/stream routing, apply circuit override when via_DMA or
       // dims/repeat force DMA routing (replaces the old viaDMA bool attr).

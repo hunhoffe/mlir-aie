@@ -1,7 +1,7 @@
 // RUN: aie-opt --conduit-to-dma %s | FileCheck %s
 //
-// Resource parity test: join lowering must produce the same lock/buffer/flow
-// counts as the oracle (--aie-objectFifo-stateful-transform).
+// Resource parity test: join lowering must produce the expected
+// lock/buffer/flow counts.
 //
 // Expected resource counts:
 //   aie.buffer:   8  (link1: 2; link2: 2; link3: 2; link4: 2 on memtile)

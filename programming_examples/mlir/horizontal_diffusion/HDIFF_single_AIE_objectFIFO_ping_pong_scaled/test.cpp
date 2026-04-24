@@ -451,8 +451,6 @@ int main(int argc, char *argv[]) {
   // mlir_aie_print_tile_status(_xaie, 7, 3);
 
   usleep(sleep_u);
-  // /mnt/scratch/gagsingh/mlir-aie/install/bin/aie-opt
-  // --aie-objectFifo-stateful-transform aie.mlir
 
   mlir_aie_sync_mem_cpu(_xaie,
                         32); //// only used in libaiev2 //sync up with output

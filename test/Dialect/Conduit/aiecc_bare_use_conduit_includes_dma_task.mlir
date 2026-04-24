@@ -10,19 +10,19 @@
 //
 // FS6 regression: `dma-task-to-conduit` was previously gated on
 // (conduitFuseSpatial || conduitFuseCoreBodies || conduitAddDmaTaskConversion)
-// in aiecc.cpp.  With bare `--use-conduit`, IRON's
-// `aiex.dma_configure_task_for` ops survived un-converted, while
-// `conduit-to-dma` independently allocated `<chan>_shim_alloc` for the same
-// channel symbols → "redefinition of symbol" verifier crash on every Llama
-// op.  Fix: drop the gating clause; `dma-task-to-conduit` always runs under
-// `--use-conduit` (no-op when no `aiex.dma_task` ops are present, so safe).
+// in aiecc.cpp.  Without it, IRON's `aiex.dma_configure_task_for` ops
+// survived un-converted, while `conduit-to-dma` independently allocated
+// `<chan>_shim_alloc` for the same channel symbols → "redefinition of
+// symbol" verifier crash on every Llama op.  Fix: drop the gating clause;
+// `dma-task-to-conduit` always runs (no-op when no `aiex.dma_task` ops are
+// present, so safe).
 //
-// This test verifies the printed pipeline string for bare `--use-conduit`
-// now contains `dma-task-to-conduit`.
+// This test verifies the printed pipeline string contains
+// `dma-task-to-conduit`.
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: aiecc --no-xchesscc --no-xbridge -n --verbose --use-conduit %s 2>&1 | FileCheck %s
+// RUN: aiecc --no-xchesscc --no-xbridge -n --verbose %s 2>&1 | FileCheck %s
 
 // CHECK: Conduit pipeline: objectfifo-to-conduit,dma-task-to-conduit,conduit-depth-promote,conduit-to-dma
 

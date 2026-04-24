@@ -89,7 +89,7 @@ ifeq ($(CHESS), true)
 	cd ${@D} && aiecc --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host \
 		--xclbin-name=${@F} --npu-insts-name=insts_trace.bin $(<:%=../%)
 else
-	cd ${@D} && aiecc -v --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --packet-sw-objFifos \
+	cd ${@D} && aiecc -v --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host \
 		--no-xchesscc --no-xbridge --xclbin-name=${@F} --npu-insts-name=insts_trace.bin $(<:%=../%)
 endif
 

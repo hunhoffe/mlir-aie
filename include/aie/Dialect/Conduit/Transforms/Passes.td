@@ -73,8 +73,7 @@ def ObjectFifoToConduit : Pass<"objectfifo-to-conduit", "::mlir::ModuleOp"> {
 def ConduitToDMA : Pass<"conduit-to-dma", "::mlir::ModuleOp"> {
   let summary = "Lower Conduit IR to aie.dma_bd / aie.lock / aie.buffer hardware ops";
   let description = [{
-    Converts Conduit IR directly to the raw AIE hardware programming model,
-    replacing the existing aie-objectFifoStatefulTransform path:
+    Converts Conduit IR directly to the raw AIE hardware programming model:
 
       conduit.create {name, capacity} + tile annotations
         → aie.buffer (depth-many) + aie.lock (prod + cons) per tile
@@ -95,13 +94,8 @@ def ConduitToDMA : Pass<"conduit-to-dma", "::mlir::ModuleOp"> {
       conduit.create (shim-tile producer)
         → aie.shim_dma_allocation + aie.flow
 
-    Implements the same LockAnalysis + DMAChannelAnalysis + buffer-allocation
-    logic as AIEObjectFifoStatefulTransform, operating on Conduit IR instead
-    of ObjectFIFO IR.
-
-    A correct implementation produces identical aie.dma_bd / aie.lock /
-    aie.buffer / aie.flow counts as the existing stateful transform pass.
-    Differences reveal either bugs or optimization opportunities.
+    Performs LockAnalysis + DMAChannelAnalysis + buffer allocation on Conduit
+    IR.
   }];
 
   let constructor = "xilinx::conduit::createConduitToDMAPass()";

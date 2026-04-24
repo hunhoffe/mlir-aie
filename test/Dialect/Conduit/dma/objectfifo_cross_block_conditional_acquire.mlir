@@ -1,5 +1,4 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma %s 2>&1 | FileCheck %s --check-prefix=CONDUIT
-// RUN: aie-opt --aie-objectFifo-stateful-transform %s 2>&1 | FileCheck %s --check-prefix=ORACLE
 //
 // DEFERRED-6: Cross-block acquire lit test — nested conditional acquire.
 //
@@ -14,17 +13,12 @@
 //   acquire(2) before scf.if, acquire(1) in each arm, release(1) in each arm,
 //   release(1) after scf.if.  The arm acquires are subsumed (1 <= 2).
 //
-// Both variants must produce the same lock structure as the stateful transform
-// oracle: one AcquireGreaterEqual before the if, no lock acquire in the arms,
-// Release in each arm.  No C1 phantom warning should be emitted.
-//
-// Resource counts (buffers, BD chain depth) differ between Conduit and Oracle
-// — this is expected and documented (CLAUDE.md: "Resource count parity with
-// oracle is NOT required").
+// Expected lock structure: one AcquireGreaterEqual before the if, no lock
+// acquire in the arms, Release in each arm.  No C1 phantom warning should be
+// emitted.
 
 // ---- Module anchor ----
 // CONDUIT-LABEL: module @cross_block_cond_acquire
-// ORACLE-LABEL:  module @cross_block_cond_acquire
 
 // ---- Variant 1: acquire(1) before if + acquire(1) in each arm ----
 //
@@ -39,15 +33,6 @@
 // CONDUIT-NOT:   AcquireGreaterEqual
 // CONDUIT:       aie.use_lock(%fifo1_cons_prod_lock_0, Release, 1)
 // CONDUIT:       aie.end
-
-// ORACLE:        aie.use_lock(%fifo1_cons_cons_lock_0, AcquireGreaterEqual, 1)
-// ORACLE:        scf.if
-// ORACLE-NOT:    AcquireGreaterEqual
-// ORACLE:        aie.use_lock(%fifo1_cons_prod_lock_0, Release, 1)
-// ORACLE:        } else {
-// ORACLE-NOT:    AcquireGreaterEqual
-// ORACLE:        aie.use_lock(%fifo1_cons_prod_lock_0, Release, 1)
-// ORACLE:        aie.end
 
 // ---- Variant 2: acquire(2) before if + acquire(1) in each arm ----
 //
@@ -66,20 +51,8 @@
 // CONDUIT:       aie.use_lock(%fifo2_cons_prod_lock_0, Release, 1)
 // CONDUIT:       aie.end
 
-// ORACLE:        aie.use_lock(%fifo2_cons_cons_lock_0, AcquireGreaterEqual, 2)
-// ORACLE:        scf.if
-// ORACLE-NOT:    AcquireGreaterEqual
-// ORACLE:        aie.use_lock(%fifo2_cons_prod_lock_0, Release, 1)
-// ORACLE:        } else {
-// ORACLE-NOT:    AcquireGreaterEqual
-// ORACLE:        aie.use_lock(%fifo2_cons_prod_lock_0, Release, 1)
-// ORACLE:        }
-// ORACLE:        aie.use_lock(%fifo2_cons_prod_lock_0, Release, 1)
-// ORACLE:        aie.end
-
 // ---- No C1 phantom warnings (scanned from last match to end of input) ----
 // CONDUIT-NOT:   phantom
-// ORACLE-NOT:    phantom
 
 module @cross_block_cond_acquire {
     aie.device(xcve2302) {

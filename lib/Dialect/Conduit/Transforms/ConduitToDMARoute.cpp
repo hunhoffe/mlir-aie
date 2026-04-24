@@ -889,8 +889,7 @@ void routePhase(ConduitToDMAState &state) {
       // ---- Explicit packet-mode broadcast: single multi-dest flow. ----
       // For routing_mode="packet", emit one aie.packet_flow with all consumer
       // destinations and a single packet ID.  The switchbox hardware broadcasts
-      // each packet to all destinations.  This matches the oracle's behavior
-      // (AIEObjectFifoStatefulTransform) where one bdPacket ID is used for all
+      // each packet to all destinations: one bdPacket ID is used for all
       // producer MM2S BDs and one packet_flow carries multiple packet_dest ops.
       if (info.routingMode == RoutingMode::Packet && mm2sChannel >= 0 &&
           !info.consumerTileCoords.empty()) {

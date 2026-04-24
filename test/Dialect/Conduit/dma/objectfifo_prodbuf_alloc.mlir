@@ -4,13 +4,12 @@
 //
 // objectfifo @of: depth=4, non-adjacent tiles (DMA path), producer acquires 1 at a time.
 // effectiveDepth = min(4, 1+1) = 2: only 2 producer buffers should be allocated on
-// the producer tile, matching the oracle (--aie-objectFifo-stateful-transform) output.
+// the producer tile.
 //
 // Without the fix, all 4 depth buffers would be allocated on the producer tile,
 // wasting tile SRAM in patterns where the producer never holds more than 1 element.
 //
-// Oracle reference:
-//   aie-opt --aie-objectFifo-stateful-transform %s emits:
+// Expected layout:
 //   - 2 producer buffers on tile(1,2): of_buff_0, of_buff_1
 //   - 4 consumer buffers on tile(3,3): of_cons_buff_0..3
 //   - of_prod_lock_0 {init = 2}: reflects effectiveDepth, not raw depth

@@ -1764,9 +1764,8 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
     the producer. Otherwise, the producer size will be applied. If a single size is specified, it will be
     applied to both producer and consumers.
 
-    This operation is then converted by the `AIEObjectFifoStatefulTransformPass` into `aie.buffers` and their associated
-    `aie.locks`. The pass also establishes Flow and DMA operations between the producer and consumer tiles if they are
-    not adjacent.
+    This operation is consumed by `--objectfifo-to-conduit` (the Conduit lowering pipeline) which produces `aie.buffer`
+    and `aie.lock` ops along with the necessary Flow / DMA orchestration between producer and consumer tiles.
 
     1-to-1 tile example:
     ```
@@ -2055,12 +2054,8 @@ def AIE_ObjectFifoAcquireOp: AIE_Op<"objectfifo.acquire", []> {
     (producer: acquire for write, consumer: acquire for read). Then, it returns a subview of
     the acquired objects which can be used to access them.
 
-    This operation is then converted by the `AIEObjectFifoStatefulTransformPass` into `aie.use_lock` operations on
-    the locks of the `objectFifo` objects that will be acquired. Under the hood, the operation only performs
-    new acquires if necessary. For example, if two objects have been acquired in the past and none have yet
-    to be released by the same process, then performing another acquire operation on the same `objectFifo`
-    within the same process of size two or less will not result in any new use_lock operations (and for size
-    greater than two, only (size - 2) use_lock operations will be performed).
+    This operation is consumed by `--objectfifo-to-conduit` and lowered (via `--conduit-to-dma`) into
+    `aie.use_lock` operations on the locks of the `objectFifo` objects that will be acquired.
 
     Example:
     ```
@@ -2097,7 +2092,8 @@ def AIE_ObjectFifoReleaseOp: AIE_Op<"objectfifo.release", []> {
     in the `objectFifo`. The mode it releases the locks in is chosen based on the `port`
     (producer: release for read, consumer: release for write).
 
-    This operation is then converted by the `AIEObjectFifoStatefulTransformPass` into `aie.use_lock` operations.
+    This operation is consumed by `--objectfifo-to-conduit` and lowered (via `--conduit-to-dma`) into
+    `aie.use_lock` operations.
 
     Example:
     ```
@@ -2150,77 +2146,6 @@ def AIE_ObjectFifoSubviewAccessOp : AIE_Op<"objectfifo.subview.access", []> {
 
   let assemblyFormat = [{
     $subview `[` $index `]` attr-dict `:` qualified(type($subview)) `->` qualified(type($output))
-  }];
-}
-
-def AIE_ObjectFifoRegisterProcessOp: AIE_Op<"objectfifo.register_process", []> {
-  let summary = "Operation that produces the acquire/release patterns for a process registered to an objectFifo";
-  let description = [{
-    The `aie.registerProcess` operation allows the user to register a function to an `objectFifo` along with its
-    acquire and release patterns. These patterns will be used to generate a sequence of acquires and releases
-    on the `objectFifo` elements. This generated sequence is often in the form of a for loop, however, in the case
-    of cyclo-static patterns only the repetition of same number accesses and releases will generate a for loop.
-    This may result in multiple for loops of different sizes being generated. If there is no repetition, then no
-    loops will be generated.
-
-    Example:
-    ```
-      aie.objectfifo @of1 (%t72, %t73, 2) : !aie.objectfifo<memref<16xi32>>
-      %length = arith.constant 10 : index
-      %acquirePatternProducer = arith.constant dense<[1, 2, 2, 0]> : tensor<4xi32>
-      %releasePatternProducer = arith.constant dense<[0, 1, 1, 2]> : tensor<4xi32>
-      func @producer_work(%input : !aie.objectfifosubview<memref<16xi32>>) -> () { ... }
-
-      aie.objectfifo.register_process @of1 (Produce, %acquirePatternProducer : tensor<4xi32>, %releasePatternProducer : tensor<4xi32>, @producer_work, %length)
-    ```
-    This operation registers function @producer_work and associated patterns to the produce end of @of1.
-    @producer_work will be called with the subviews produced when acquiring elements from @of1 following the acquire pattern.
-
-    If the input patterns are static (only one element) then the length of the produced for loop will be that of the input `%length`.
-    If the input patterns are cyclo-static then they must be of the same size.
-  }];
-
-  let arguments = (
-    ins ObjectFifoPort:$port,
-        FlatSymbolRefAttr:$objFifo_name,
-        I32Tensor:$acquirePatternTensor,
-        I32Tensor:$releasePatternTensor,
-        FlatSymbolRefAttr:$callee,
-        Index:$length
-  );
-
-  let assemblyFormat = [{
-    attr-dict $objFifo_name `(`
-        $port `,`
-        $acquirePatternTensor `:` type($acquirePatternTensor) `,`
-        $releasePatternTensor `:` type($releasePatternTensor) `,`
-        $callee `,` $length
-    `)`
-  }];
-
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    ObjectFifoCreateOp getObjectFifo();
-
-    mlir::DenseIntElementsAttr getAcquirePattern() {
-      return llvm::cast<mlir::DenseIntElementsAttr>(getAcquirePatternTensor()
-          .getDefiningOp<mlir::arith::ConstantOp>()
-          .getValue());
-    }
-
-    mlir::DenseIntElementsAttr getReleasePattern() {
-      return llvm::cast<mlir::DenseIntElementsAttr>(getReleasePatternTensor()
-          .getDefiningOp<mlir::arith::ConstantOp>()
-          .getValue());
-    }
-
-    int getProcessLength() {
-      return llvm::cast<mlir::IntegerAttr>(getLength()
-          .getDefiningOp<mlir::arith::ConstantOp>()
-          .getValue())
-          .getInt();
-    }
   }];
 }
 

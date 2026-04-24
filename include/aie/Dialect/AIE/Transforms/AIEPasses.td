@@ -304,56 +304,6 @@ def AIEHoistVectorTransferPointers : Pass<"aie-hoist-vector-transfer-pointers", 
   let constructor = "xilinx::AIE::createAIEHoistVectorTransferPointersPass()";
 }
 
-def AIEObjectFifoStatefulTransform : Pass<"aie-objectFifo-stateful-transform", "DeviceOp"> {
-  let summary = "Instantiate the buffers and locks of aie.objectFifo.createObjectFifo operations";
-  let description = [{
-    Replace each aie.objectFifo.createObjectFifo operation with aie.buffer and aie.lock operations in the 
-    producer tile. Convert aie.objectFifo.acquire, aie.objectFifo.release and aie.objectFifo.subviewAccess
-    operations into useLock operations by keeping track of acquire/release operations on each objectFifo by
-    each process.
-
-    If the producer and consumer tiles of an aie.objectFifo.createObjectFifo operation are not adjacent, the 
-    pass also establised aie.flow and aie.dma operations to enable communication between the tiles.
-    Extend the body of each loop that contains operations on objectFifos such that it is unrolled
-    based on the number of elements in the objectFifos. If the number of iterations of the loop 
-    cannot be divided pefectly by the unrolling factor, the pass duplicates the loop body after 
-    the original loop.
-  }];
-
-  let constructor = "xilinx::AIE::createAIEObjectFifoStatefulTransformPass()";
-  let dependentDialects = [
-    "mlir::scf::SCFDialect",
-    "mlir::func::FuncDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::memref::MemRefDialect",
-    "xilinx::AIE::AIEDialect",
-  ];
-
-  let options = [
-    Option<"clDynamicObjectFifos", "dynamic-objFifos", "bool", /*default=*/"false", 
-           "Flag to enable dynamic object fifo lowering in cores instead of loop unrolling.">,      
-    Option<"clPacketSwObjectFifos", "packet-sw-objFifos", "bool", /*default=*/"false",
-           "Flag to enable aie.packetflow lowering from objectfifos.">, 
-  ];
-}
-
-def AIEObjectFifoRegisterProcess : Pass<"aie-register-objectFifos", "DeviceOp"> {
-  let summary = "Generate acquire/release patterns for producer/consumer processes registered to an objectFifo";
-  let description = [{
-    Generate acquire/release patterns in the CoreOps of associated cores for each 
-    aie.objectfifo.register_process operation. Patterns are generated as for loops
-    of different sizes depending on input patterns.
-  }];
-
-  let constructor = "xilinx::AIE::createAIEObjectFifoRegisterProcessPass()";
-  let dependentDialects = [
-    "mlir::scf::SCFDialect",
-    "mlir::func::FuncDialect",
-    "mlir::arith::ArithDialect",
-    "xilinx::AIE::AIEDialect",
-  ];
-}
-
 def AIELowerCascadeFlows : Pass<"aie-lower-cascade-flows", "DeviceOp"> {
   let summary = "Lower aie.cascade_flow operations through `aie.configure_cascade` operations";
   let description = [{

@@ -4,11 +4,10 @@
 // Input: same as objectfifo_to_conduit_depth_one.mlir
 //
 // After --objectfifo-to-conduit --conduit-to-dma the module should contain
-// the hardware ops that --aie-objectFifo-stateful-transform produces for the
-// same input.  We check for structural presence, not exact SSA names (those
-// vary with lock ID assignment order).
+// the expected hardware ops.  We check for structural presence, not exact
+// SSA names (those vary with lock ID assignment order).
 //
-// Ground truth from --aie-objectFifo-stateful-transform (run on this exact input):
+// Expected layout:
 //
 //   Consumer tile (tile_0_2):
 //     aie.buffer  input_fifo_cons_buff_0 : memref<10xi32>
@@ -46,7 +45,7 @@
 //            use_lock(cons_lock, Release, 1)                 <- correct
 //            next_bd ^bd }                                   <- correct
 //
-// Resource comparison: Pass C vs stateful-transform (from compare_ir_outputs.sh):
+// Resource comparison (historical, captured prior to stateful-pass removal):
 //   aie.buffer:   stateful=2  conduit=1   DIFF -1   <- missing shim-side buffer
 //   aie.lock:     stateful=4  conduit=2   DIFF -2   <- missing shim-side locks
 //   aie.dma_bd:   stateful=1  conduit=1   MATCH

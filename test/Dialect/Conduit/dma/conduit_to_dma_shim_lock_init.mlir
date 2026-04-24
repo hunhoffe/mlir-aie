@@ -1,17 +1,16 @@
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma --split-input-file %s | FileCheck %s
 // RUN: aie-opt --objectfifo-to-conduit --conduit-to-dma --split-input-file %s | FileCheck %s --check-prefix=CHECK-D1
 //
-// Regression test: shim producer lock init value must be 0 (oracle match).
+// Regression test: shim producer lock init value must be 0.
 //
 // Background:
 //   Shim-side locks (prod_lock and cons_lock on the shim tile) are programmed
 //   by the host runtime via aiex.npu.dma_memcpy_nd token signaling.  The AIE
 //   runtime handles lock initialization as part of DMA configuration, so both
-//   shim locks must start at 0 to match the oracle
-//   (--aie-objectFifo-stateful-transform) output.
+//   shim locks must start at 0.
 //
 //   Pre-signaling depth free slots to a shim DMA that has not yet been
-//   configured causes over-commitment and mismatches the oracle.
+//   configured causes over-commitment.
 //
 // Topology: depth-2 shim-to-compute (shim tile [0,0] → compute tile [0,2]).
 // Target: npu1_1col (AIE2).

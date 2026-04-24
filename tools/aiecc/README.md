@@ -92,8 +92,6 @@ aiecc [options] <input.mlir>
 - `-L<dir>` - Add library search directory for host compilation
 - `-l<lib>` - Link library for host compilation
 - `-o <file>` - Output filename for host compilation
-- `--dynamic-objFifos` - Use dynamic object FIFOs
-- `--packet-sw-objFifos` - Use packet-switched flows
 - `--generate-ctrl-pkt-overlay` - Generate control packet overlay
 - `--dump-intermediates` - Dump intermediate MLIR files for debugging
 

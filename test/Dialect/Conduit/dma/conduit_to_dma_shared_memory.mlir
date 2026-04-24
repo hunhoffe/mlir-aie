@@ -7,19 +7,18 @@
 // isNorth(2,2,2,3) = true), so the producer and consumer share a memory bank
 // without any DMA.
 //
-// The stateful transform (--aie-objectFifo-stateful-transform) detects this
-// adjacency via requiresDMAs() → isSharedMemory() and:
+// Pass C detects this adjacency via requiresDMAs() → isSharedMemory() and:
 //   - allocates buffers and locks on the PRODUCER tile (share_direction != 1)
 //   - emits NO aie.flow, NO aie.dma_bd, NO aie.mem
 //
-// Pass C must reproduce the same shared memory lowering:
+// Pass C produces the following shared memory lowering:
 //   aie.buffer  on tile(2,2)  [producer tile]
 //   aie.lock    on tile(2,2)  [producer tile]
 //   NO aie.flow
 //   NO aie.dma_bd
 //   NO aie.mem
 //
-// Ground truth (from --aie-objectFifo-stateful-transform):
+// Expected layout:
 //
 //   %tile_2_2 = aie.tile(2, 2)
 //   %tile_2_3 = aie.tile(2, 3)

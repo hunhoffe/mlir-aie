@@ -10,7 +10,7 @@
 //
 // Tests for --aie-check-cascade-pairing.
 //
-// Four test cases (split by // -----):
+// Four test cases (one per --split-input-file partition):
 //   1. Valid: cascade_flow + put_cascade in source + get_cascade in dest — no error.
 //   2. Negative: cascade_flow present, put_cascade in source, NO get_cascade in dest.
 //   3. Negative: cascade_flow present, get_cascade in dest, NO put_cascade in source.
@@ -18,7 +18,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: aie-opt --aie-check-cascade-pairing --verify-diagnostics %s
+// RUN: aie-opt --split-input-file --aie-check-cascade-pairing --verify-diagnostics %s
 
 // -----
 

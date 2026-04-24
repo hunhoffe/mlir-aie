@@ -73,9 +73,11 @@ The main flow of `aiecc.py` is:
 aie-opt 
 --lower-affine
 --aie-canonicalize-device
+--objectfifo-to-conduit
+--dma-task-to-conduit
+--conduit-depth-promote
+--conduit-to-dma
 --aie-assign-lock-ids
---aie-register-objectFifos
---aie-objectFifo-stateful-transform
 --aie-lower-broadcast-packet
 --aie-lower-multicast
 --aie-assign-buffer-addresses

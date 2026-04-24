@@ -7,7 +7,7 @@
 // after confirming depth-3 produces exactly 3 BD blocks and 3 next_bd ops,
 // matching the N-general depth-N ring pattern.
 //
-// Ground truth (from --aie-objectFifo-stateful-transform on the same input):
+// Expected layout:
 //   BD chain lives in aie.mem(%tile_0_2), NOT aie.memtile_dma.
 //   Ring: ^bd0 -> ^bd1 -> ^bd2 -> ^bd0 (three BD blocks, ring closure at buff_2).
 //   Names: win_fifo_cons_buff_{0,1,2}, win_fifo_cons_prod_lock_0 (init=3),

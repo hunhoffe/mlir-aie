@@ -644,13 +644,13 @@ void lowerPhase(ConduitToDMAState &state) {
       op.erase();
   }
 
-  // WaitAllAsync: collect-then-reverse-erase (defs before uses).
-  {
-    llvm::SmallVector<WaitAllAsync> waitAllAsyncsToErase;
-    module.walk([&](WaitAllAsync op) { waitAllAsyncsToErase.push_back(op); });
-    for (auto op : llvm::reverse(waitAllAsyncsToErase))
-      op.erase();
-  }
+  // WaitAllAsync erasure is DEFERRED until after Step 8c (sync WaitAll
+  // erasure), because a sync conduit.wait_all may reference a
+  // !conduit.dma.token produced by a wait_all_async (e.g., the IR shape
+  // emitted by the air-channel-to-conduit + conduit-fuse-channels +
+  // conduit-depth-promote pipeline).  Erasing wait_all_async here while its
+  // sync wait_all consumers still exist triggers
+  // "operation destroyed but still has uses".  See Step 8c below.
 
   // -----------------------------------------------------------------------
   // Phase 8: Lower async acquire/release/wait_window/wait_all.
@@ -815,6 +815,17 @@ void lowerPhase(ConduitToDMAState &state) {
   });
   for (auto op : waitAllToErase)
     op.erase();
+
+  // Deferred from Phase 7: WaitAllAsync erase.  Must run after Step 8c so
+  // sync wait_all consumers of wait_all_async-produced !conduit.dma.token
+  // values are gone before their producers are destroyed.  Reverse order
+  // handles wait_all_async → wait_all_async chains within this pool.
+  {
+    llvm::SmallVector<WaitAllAsync> waitAllAsyncsToErase;
+    module.walk([&](WaitAllAsync op) { waitAllAsyncsToErase.push_back(op); });
+    for (auto op : llvm::reverse(waitAllAsyncsToErase))
+      op.erase();
+  }
 
   // Step 8a-erase: Erase AcquireAsync ops.
   for (auto op : asyncAcquiresToErase)

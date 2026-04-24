@@ -46,8 +46,9 @@ def packet_switch_kernel(dev, in_out_size):
 
         # Data allocations and synchronization with aie.buffer() and aie.lock()
         # (TODO: use objectfifo once it also supports packet_flow)
-        # aie.buffer() and aie.lock() is the underhood implementation of aie.objectfifo, which can be
-        # verified by running "aie-opt -aie-objectFifo-stateful-transform aie_add.mlir"
+        # aie.buffer() and aie.lock() is the underlying implementation of aie.objectfifo, which can
+        # be verified by running the conduit lowering pipeline
+        # ("aie-opt -objectfifo-to-conduit -conduit-to-dma aie_add.mlir").
         # core_0_2
         core02_buff_in = buffer(tile=CT_0_2, datatype=vector_ty, name="core02_buff_in")
         core02_prod_lock_in = lock(
