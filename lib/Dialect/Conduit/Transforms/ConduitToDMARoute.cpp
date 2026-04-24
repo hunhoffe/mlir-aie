@@ -1049,8 +1049,12 @@ void routePhase(ConduitToDMAState &state) {
           // same-row "adjacency" (W-neighbor) is reported legal by
           // AIE2TargetModel but not used by the Conduit shmem path when not
           // explicitly requested.  Emit the aie.flow so the DMA path works.
+          // Use target-model helpers so future targets (e.g., NPU3) can override
+          // the neighbor relationship correctly.
           bool sameRowDifferentCol =
-              (prodRow == consRow) && (prodCol != consCol);
+              state.targetModel->isMemWest(prodCol, prodRow, consCol,
+                                           consRow) ||
+              state.targetModel->isMemWest(consCol, consRow, prodCol, prodRow);
           if (sameRowDifferentCol && !explicitSharedMem) {
             rightAdj = false;
             leftAdj = false;

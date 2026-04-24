@@ -173,8 +173,11 @@ struct ConduitInferModesPass
           // by AIE2TargetModel but NOT used in the Conduit lowering path
           // when not explicitly requested.  Treat it as non-adjacent here so
           // pre-consumed MM2S budget matches Pass C's actual allocation.
+          // Use target-model helpers so future targets (e.g., NPU3) can
+          // override the neighbor relationship correctly.
           bool sameRowDifferentCol =
-              (prodRow == consRow) && (prodCol != consCol);
+              targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
+              targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
           if (sameRowDifferentCol)
             adj = false;
           if (adj)
@@ -254,8 +257,11 @@ struct ConduitInferModesPass
         // AIE2TargetModel but not NPU-validated through Conduit's shmem
         // lowering.  Do NOT infer "shared_memory" for it; let Pass C take
         // the DMA path (which is exercised + known good).
+        // Use target-model helpers so future targets (e.g., NPU3) can override
+        // the neighbor relationship correctly.
         bool sameRowDifferentCol =
-            (prodRow == consRow) && (prodCol != consCol);
+            targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
+            targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
         if (sameRowDifferentCol)
           adj = false;
         if (adj) {

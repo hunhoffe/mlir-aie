@@ -141,8 +141,11 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
         // NPU-validated through Conduit; fall through to DMA when not
         // explicitly requested.  Prescan must agree with the main pass to
         // keep rotation-counter slot counts consistent.
+        // Use target-model helpers so future targets (e.g., NPU3) can override
+        // the neighbor relationship correctly.
         bool sameRowDifferentCol =
-            (prodRow == consRow) && (prodCol != consCol);
+            targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
+            targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
         if (sameRowDifferentCol && !explicitSharedMem) {
           rightShared = false;
           leftShared = false;
@@ -263,10 +266,13 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
         // the Conduit path (unless explicit), so producer-side DMA buffers
         // are needed even though isLegalMemAffinity reports the W-neighbor
         // as legal.
+        // Use target-model helpers so future targets (e.g., NPU3) can override
+        // the neighbor relationship correctly.
         bool explicitSharedMem =
             (info.routingMode == RoutingMode::SharedMemory);
         bool sameRowDifferentCol =
-            (prodRow == consRow) && (prodCol != consCol);
+            state.targetModel->isMemWest(prodCol, prodRow, consCol, consRow) ||
+            state.targetModel->isMemWest(consCol, consRow, prodCol, prodRow);
         if (sameRowDifferentCol && !explicitSharedMem) {
           rightAdj = false;
           leftAdj = false;
@@ -505,8 +511,11 @@ void allocPhase(ConduitToDMAState &state) {
         // requested, fall through to the DMA flow (which is exercised + known
         // good).  Explicit routing_mode = "shared_memory" is left alone here;
         // a future feasibility-error pass (#107 / #124) will reject it.
+        // Use target-model helpers so future targets (e.g., NPU3) can override
+        // the neighbor relationship correctly.
         bool sameRowDifferentCol =
-            (prodRow == consRow) && (prodCol != consCol);
+            targetModel.isMemWest(prodCol, prodRow, consCol, consRow) ||
+            targetModel.isMemWest(consCol, consRow, prodCol, prodRow);
         if (sameRowDifferentCol && !explicitSharedMem) {
           rightShared = false;
           leftShared = false;
@@ -861,10 +870,13 @@ void allocPhase(ConduitToDMAState &state) {
         // the Conduit path (unless explicit), so producer-side DMA buffers
         // are needed even though isLegalMemAffinity reports the W-neighbor
         // as legal.
+        // Use target-model helpers so future targets (e.g., NPU3) can override
+        // the neighbor relationship correctly.
         bool explicitSharedMem =
             (info.routingMode == RoutingMode::SharedMemory);
         bool sameRowDifferentCol =
-            (prodRow == consRow) && (prodCol != consCol);
+            state.targetModel->isMemWest(prodCol, prodRow, consCol, consRow) ||
+            state.targetModel->isMemWest(consCol, consRow, prodCol, prodRow);
         if (sameRowDifferentCol && !explicitSharedMem) {
           rightAdj = false;
           leftAdj = false;
