@@ -62,9 +62,11 @@ module @remark_producer_side_core_bodies {
     %shim_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
     aie.objectfifo @comp_in(%shim_0, {%tile_0_2}, 2 : i32)
         {fusion_group = "fg0"}
         : !aie.objectfifo<memref<8xbf16>>
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
     aie.objectfifo @comp_out(%tile_0_2, {%shim_0}, 2 : i32)
         : !aie.objectfifo<memref<8xbf16>>
 
@@ -125,8 +127,10 @@ module @remark_consumer_side_core_bodies {
     %shim_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
     aie.objectfifo @comp_in_a(%shim_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<8xbf16>>
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
     aie.objectfifo @comp_out_a(%tile_0_2, {%shim_0}, 2 : i32)
         {fusion_group = "fg1"}
         : !aie.objectfifo<memref<8xbf16>>

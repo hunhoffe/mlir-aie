@@ -183,6 +183,9 @@ struct FifoInfo {
 //       * multiple aiex.dma_configure_task_for ops match with differing BD lens
 //       * trip not divisible by rt_emissions_per_channel
 //       * per-emission acquires not divisible by acquires_per_BD
+//       * shim channel with exactly one aiex.dma_configure_task_for emission
+//         (host-side num_invocations is invisible to Pass A; see emit.count==1
+//         block in inferDmaRepeatForChannel below — Bug C falsification, 2026-04-24)
 // ---------------------------------------------------------------------------
 
 // Anything at or above this threshold is treated as the legacy infinite-loop
@@ -438,6 +441,36 @@ inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
     out.reason =
         "multiple aiex.dma_configure_task_for ops match channel with differing "
         "BD lengths — ambiguous TAP";
+    return out;
+  }
+
+  // emit.count == 1 SHIM CHANNEL skip (bug_c falsification, 2026-04-24).
+  //
+  // When there is exactly one `aiex.dma_configure_task_for` for this channel
+  // in the runtime_sequence (the dominant Llama / ElementwiseAdd pattern),
+  // Pass A cannot disambiguate between three IR-equivalent runtime shapes:
+  //   (A) 1 host dispatch + N BD-replays per dispatch  → dma_repeat = N
+  //   (B) K host dispatches + (N/K) BD-replays each    → dma_repeat = N/K
+  //   (C) N host dispatches + 1 BD fire each, BD covers `acquiresPerBD`
+  //       acquires per fire                              → dma_repeat = 1
+  // IRON's `num_invocations = N` (host-side `run()` loop) lowers to (C) but
+  // is INVISIBLE to the IR Pass A sees — the runtime_sequence only encodes
+  // a single BD def either way.  Stamping `dma_repeat = (trip / per_BD)` was
+  // a speculative guess that picked (A)/(B) and over-fired the shim BD on
+  // the actual (C) hardware path (Bug C: NPU stalls after the first ELF
+  // dispatch's worth of work).  Stateful lowering emits NO `repeat_count`
+  // for the same shape and Llama works at 6.808 TPS via the host-loop path.
+  //
+  // For emit.count > 1 (e.g., IRON gemv's per-batch BD emission via Python
+  // looping in rt.sequence — see infer_iter_count_multi_emission_gemv_pattern.mlir)
+  // Pass A CAN observe N directly as emit.count and the three-factor formula
+  // is sound — keep that path live.
+  //
+  // Compute-to-compute fifos (emit.count == 0, no shim BD anywhere) keep the
+  // legacy "outer loop drives dma_repeat directly" behavior.
+  if (emit.count == 1) {
+    out.reason = "host-side num_invocations not observable in IR (single "
+                 "shim BD def); deferring dma_repeat to runtime";
     return out;
   }
 

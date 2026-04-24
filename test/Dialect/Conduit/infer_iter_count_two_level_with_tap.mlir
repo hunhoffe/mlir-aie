@@ -1,22 +1,35 @@
-// RUN: aie-opt --objectfifo-to-conduit %s | FileCheck %s
+// RUN: aie-opt --objectfifo-to-conduit %s -verify-diagnostics 2>&1 | FileCheck %s
 //
-// Task #11 — Pass A dma_repeat inference, two-level loop with TAP that
-// covers the inner walk.
+// Task #11 + #74 — Pass A dma_repeat inference, two-level loop with TAP
+// that covers the inner walk, single shim BD def.
 //
 // Geometry:
 //   outer trip = 16, inner trip = 4 → total acquires = 64
 //   shim BD len = 512, fifo elem count = 128 → acquires_per_BD = 4
-//   → dma_repeat = 64 / 4 = 16
+//   single aiex.dma_configure_task_for for @chan → emit.count = 1
+//
+// EXPECTED BEHAVIOR (post-#74): with emit.count == 1, Pass A CANNOT
+// disambiguate replay-per-dispatch from a host-side num_invocations loop
+// (IRON's `num_invocations = N` is invisible to Pass A — it lowers to a
+// host `run()` loop, not to multiple BD defs).  Stamping
+// dma_repeat = 64 / 4 = 16 in this shape over-fires the shim BD on the
+// (C) host-loop runtime path and reproduces Bug C (NPU stall after the
+// first dispatch's worth of work).  Pass A therefore SKIPs the
+// dma_repeat stamp and emits a remark; runtime defaults to dma_repeat = 1.
+// See infer_iter_count_multi_emission_gemv_pattern.mlir for the
+// emit.count > 1 case where inference IS sound and remains live.
 
 // CHECK-LABEL: module @infer_two_level_with_tap
 // CHECK: conduit.create @chan
-// CHECK-SAME: dma_repeat = 16
+// CHECK-NOT: dma_repeat
+// CHECK-NEXT: aie.core
 
 module @infer_two_level_with_tap {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
     aie.objectfifo @chan(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<128xbf16>>
 

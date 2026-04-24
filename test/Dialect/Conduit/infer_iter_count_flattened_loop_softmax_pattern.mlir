@@ -1,29 +1,37 @@
-// RUN: aie-opt --objectfifo-to-conduit %s | FileCheck %s
+// RUN: aie-opt --objectfifo-to-conduit %s -verify-diagnostics 2>&1 | FileCheck %s
 //
-// Task #11 — Pass A dma_repeat inference under a flattened single scf.for
-// (Softmax pattern from IRON `iron/operators/softmax/design.py`, which uses
-// `range_(num_invocations * N_div_n)` instead of nested loops).
+// Task #11 + #74 — Pass A dma_repeat inference under a flattened single
+// scf.for (Softmax pattern from IRON `iron/operators/softmax/design.py`,
+// which uses `range_(num_invocations * N_div_n)` instead of nested loops).
 //
 // Geometry:
 //   * Single core, single scf.for(0, N*M) where N = num_invocations = 4 and
 //     M = N_div_n = 4 → 16 acquires total.
-//   * Host runtime_sequence emits ONE BD on the channel; BD len = M = 4
-//     elements; fifo elem-type is memref<1xbf16> → acquires_per_BD = 4.
-//   * Three-factor formula: dma_repeat = (16 / 1) / 4 = 4 = N.
+//   * Host runtime_sequence emits ONE BD on the channel
+//     (aiex.dma_configure_task_for @softmax_in — emit.count = 1);
+//     BD len = M = 4 elements; fifo elem-type is memref<1xbf16>
+//     → acquires_per_BD = 4.
 //
-// The naive shortcut "outermost trip count = dma_repeat" would return 16 here
-// (the flattened trip count) — wrong by a factor of M.  This pins the
-// product-of-trip-counts-then-divide behaviour.
+// EXPECTED BEHAVIOR (post-#74): with emit.count == 1 the runtime shape
+// is ambiguous between (A) replay-per-dispatch and (C) host-side
+// num_invocations loop with one BD fire each.  IRON Softmax lowers to
+// (C); a stamped dma_repeat = 4 would over-fire the shim BD and stall
+// the NPU (Bug C).  Pass A SKIPs the dma_repeat stamp and emits a
+// remark; runtime defaults to dma_repeat = 1.  See
+// infer_iter_count_multi_emission_gemv_pattern.mlir for the
+// emit.count > 1 case where inference IS sound and remains live.
 
 // CHECK-LABEL: module @infer_flattened_loop_softmax
 // CHECK: conduit.create @softmax_in
-// CHECK-SAME: dma_repeat = 4
+// CHECK-NOT: dma_repeat
+// CHECK-NEXT: aie.core
 
 module @infer_flattened_loop_softmax {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
     aie.objectfifo @softmax_in(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<1xbf16>>
 

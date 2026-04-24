@@ -1,20 +1,25 @@
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-operators %s | FileCheck %s
 //
-// Task #11 — Pass A dma_repeat inference + fuse-operators.  Verifies the
-// inferred dma_repeat survives device merging and channel elimination.
+// Task #11 + #74 — Pass A dma_repeat inference (skip path) survives
+// fuse-operators.  Verifies that the post-#74 emit.count == 1 SKIP
+// behavior on the L3-facing endpoints is preserved across device
+// merging and channel elimination — i.e., fuse-operators does not
+// re-introduce a dma_repeat attribute that Pass A deliberately omitted.
 //
 // Geometry:
-//   Each core's outer loop = 16 iterations; no aiex.dma_configure_task_for
-//   for the producer/consumer of the fused intermediate (compute-to-shim
-//   from devA, shim-to-compute into devB), so acquires_per_BD = 1 →
-//   dma_repeat = 16 on every channel after Pass A.
+//   Each core's outer loop = 16 iterations.  The L3-facing endpoints
+//   (@ext_in on devA, @ext_out on devB) each have exactly ONE
+//   aiex.dma_configure_task_for in their runtime_sequence — so
+//   emit.count = 1 and Pass A SKIPS dma_repeat (see #74 / Bug C).
+//   The fused-intermediate channels (@inter_out / @inter_in) are erased
+//   by fuse-operators and replaced by @fused_intermediate_0; that
+//   replacement intentionally carries no dma_repeat (shared-memory
+//   routed by default — no shim BD replay).
 //
-// After --conduit-fuse-operators:
-//   * @inter_out / @inter_in are erased and replaced by @fused_intermediate_0
-//     (no longer round-trips through L3).
-//   * @ext_in (devA) and @ext_out (devB) survive with their inferred
-//     dma_repeat = 16 attribute intact (the L3-facing endpoints — this is
-//     the MED-risk path the test pins).
+// EXPECTED BEHAVIOR (post-#74): NO dma_repeat appears on any
+// conduit.create after fuse-operators.  Pre-#74 this test pinned
+// dma_repeat = 16 on @ext_in / @ext_out; that pin was unsound for the
+// IRON host-loop runtime path (Bug C).
 //
 // Known limitation (documented, not blocking): @fused_intermediate_0 is
 // emitted by ConduitFuseOperators with empty bd_repeat / dma_repeat
@@ -27,11 +32,11 @@
 // CHECK-LABEL: module @infer_then_fuse_operators
 
 // CHECK: conduit.create @ext_in
-// CHECK-SAME: dma_repeat = 16
+// CHECK-NOT: dma_repeat
 // CHECK: conduit.create @fused_intermediate_0
 // CHECK-NOT: dma_repeat
 // CHECK: conduit.create @ext_out
-// CHECK-SAME: dma_repeat = 16
+// CHECK-NOT: dma_repeat
 
 module @infer_then_fuse_operators {
   aie.device(npu2) @devA {
