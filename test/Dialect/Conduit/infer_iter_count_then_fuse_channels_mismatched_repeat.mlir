@@ -1,4 +1,4 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-fuse-channels %s | FileCheck %s
+// RUN: aie-opt --objectfifo-to-conduit --conduit-fuse-channels --verify-diagnostics %s
 //
 // Foundation Phase 2 (Task #19), gap #4 — Pass A inference followed by
 // fuse-channels with channels that should land in the same
@@ -17,32 +17,14 @@
 //         acquires_per_BD = 2  → dma_repeat = 32 / 2  = 16.
 //   * The two consumer acquires are sequentially interleaved in the
 //     same scf.for body block, so their live intervals are disjoint and
-//     fuse-channels will assign them to the same S2MM group.
+//     fuse-channels would otherwise assign them to the same S2MM group.
 //
-// CURRENT BEHAVIOR (the gap this test pins):
-//   fuse-channels does NOT inspect per-channel dma_repeat values when
-//   forming an S2MM group; it only looks at producer/consumer-tile
-//   shape and live-interval non-overlap.  Channels with mismatched
-//   dma_repeat (2 vs 16) are silently grouped together.  Pass C
-//   currently does NOT reject this either.  This is a known LOW-risk
-//   gap — see PLAN.md backlog "Pass C should reject mismatched
-//   dma_repeat within a dma_channel_group".
-//
-// If a future fix adds an error/remark in either pass, this test
-// should be flipped from pinning the silent group to pinning the
-// error/remark.  Until then, the regression net is "we noticed this
-// happens silently, on purpose, for now".
-
-// CHECK-LABEL: module @infer_then_fuse_channels_mismatched_repeat
-
-// MLIR sorts attrs alphabetically: dma_channel_group_s2mm < dma_repeat.
-// CHECK:       conduit.create @chan_a
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
-// CHECK-SAME:  dma_repeat = 2
-
-// CHECK:       conduit.create @chan_b
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
-// CHECK-SAME:  dma_repeat = 16
+// EXPECTED BEHAVIOR (Task #45):
+//   --conduit-fuse-channels MUST reject grouping channels with mismatched
+//   dma_repeat values.  Channels with different dma_repeat fundamentally
+//   cannot share a hardware S2MM channel slot — they fire BDs at
+//   different rates per dispatch.  The pass emits an error on the
+//   offending (second-encountered) conduit.create and signalPassFailure.
 
 module @infer_then_fuse_channels_mismatched_repeat {
   aie.device(npu1_1col) {
@@ -51,6 +33,7 @@ module @infer_then_fuse_channels_mismatched_repeat {
 
     aie.objectfifo @chan_a(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<2xbf16>>
+    // expected-error@+1 {{fuse-channels: cannot group channels with mismatched dma_repeat values 2 vs 16 (S2MM group)}}
     aie.objectfifo @chan_b(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<2xbf16>>
 

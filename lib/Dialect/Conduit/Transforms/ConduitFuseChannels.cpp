@@ -189,6 +189,55 @@ struct ConduitInfo {
   Create createOp;
 };
 
+// Returns the effective dma_repeat for a Create op.  Absent attribute
+// defaults to 1 (DMA fires exactly once per dispatch).
+static int64_t getEffectiveDmaRepeat(Create createOp) {
+  if (auto rep = createOp.getDmaRepeat())
+    return static_cast<int64_t>(*rep);
+  return 1;
+}
+
+// Validates that all members of the same channel group share the same
+// effective dma_repeat value.  Channels with mismatched dma_repeat
+// fundamentally cannot share a hardware channel slot because they fire
+// BDs at different rates per dispatch.
+//
+// 'kindLabel' is "MM2S" or "S2MM" for diagnostic clarity.
+//
+// Returns true if all groups are compatible; false (and emits an error
+// on the offending op) if any group has a mismatch.
+static bool
+checkGroupDmaRepeatCompatibility(llvm::StringRef kindLabel,
+                                 llvm::SmallVectorImpl<ConduitInfo> &conduits,
+                                 const llvm::StringMap<unsigned> &nameToGroup,
+                                 const llvm::DenseMap<unsigned, unsigned>
+                                     &groupCount) {
+  llvm::DenseMap<unsigned, int64_t> groupRepeat;
+  bool ok = true;
+  for (auto &ci : conduits) {
+    auto it = nameToGroup.find(ci.name);
+    if (it == nameToGroup.end())
+      continue;
+    unsigned gid = it->second;
+    auto countIt = groupCount.find(gid);
+    if (countIt == groupCount.end() || countIt->second < 2)
+      continue;
+    int64_t rep = getEffectiveDmaRepeat(ci.createOp);
+    auto gIt = groupRepeat.find(gid);
+    if (gIt == groupRepeat.end()) {
+      groupRepeat[gid] = rep;
+    } else if (gIt->second != rep) {
+      ci.createOp.emitError()
+          << "fuse-channels: cannot group channels with mismatched "
+             "dma_repeat values "
+          << gIt->second << " vs " << rep << " (" << kindLabel
+          << " group)";
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 // Greedy linear-scan interval coloring.
 //
 // Sorts 'items' in place by interval start, then assigns each to the
@@ -382,6 +431,16 @@ struct ConduitFuseChannelsPass
             groupNeedsRuntime[gid] = false;
         }
 
+        // dma_repeat compatibility: members of the same group must share
+        // the same effective dma_repeat (absent = 1).  Mismatches are
+        // unsafe at the hardware level — separate channels fire BDs at
+        // different rates and cannot share a slot.
+        if (!checkGroupDmaRepeatCompatibility("MM2S", conduits, nameToGroup,
+                                              groupCount)) {
+          signalPassFailure();
+          continue;
+        }
+
         for (auto &ci : conduits) {
           auto it = nameToGroup.find(ci.name);
           if (it == nameToGroup.end())
@@ -525,6 +584,13 @@ struct ConduitFuseChannelsPass
             groupNeedsRuntime[gid] = true;
           else if (!groupNeedsRuntime.count(gid))
             groupNeedsRuntime[gid] = false;
+        }
+
+        // dma_repeat compatibility (S2MM mirror of MM2S check above).
+        if (!checkGroupDmaRepeatCompatibility("S2MM", conduits, nameToGroup,
+                                              groupCount)) {
+          signalPassFailure();
+          continue;
         }
 
         for (auto &ci : conduits) {
