@@ -1213,20 +1213,25 @@ void lowerPhase(ConduitToDMAState &state) {
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
-        // Direction 1a: release the previous live task on this channel
+        // Direction 1a: WAIT on the previous live task on this channel
         // (if any) BEFORE configuring the new one.  This bounds the per-
-        // channel BD lifetime to one in-flight transfer at a time, which
-        // — combined with the BD-ID interval allocator — lets a tile with
-        // N invocations of one channel use 1 BD slot rather than N.
+        // channel BD lifetime to one in-flight transfer at a time AND
+        // ensures the prior start's queued fires (under repeat_count > 0)
+        // have fully drained before the BD register is reprogrammed —
+        // which an immediate dma_free_task does NOT guarantee, because it
+        // releases the BD slot synchronously and the next configure can
+        // overwrite the still-firing shim BD register.
         // Channel-local; independent channels are unaffected and may
         // overlap with each other up to the per-tile BD pool size.
+        // BD-pool recycling is preserved by AIEAssignRuntimeSequenceBDIDs
+        // synthesizing a dma_free_task after each dma_await_task before
+        // its interval-collection walk, so the per-tile interval shape is
+        // unchanged from the prior free-only emission.
         {
           auto prevIt = prevPerChannel.find(conduitName);
           if (prevIt != prevPerChannel.end()) {
             const LiveTask &prev = prevIt->second;
-            mlir::OperationState rel(prev.loc, prev.isS2MM
-                                                   ? "aiex.dma_await_task"
-                                                   : "aiex.dma_free_task");
+            mlir::OperationState rel(prev.loc, "aiex.dma_await_task");
             rel.addOperands(prev.task);
             builder.create(rel);
           }
