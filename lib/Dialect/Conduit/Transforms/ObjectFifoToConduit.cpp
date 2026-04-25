@@ -64,8 +64,11 @@
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -210,18 +213,156 @@ struct TripResult {
   int64_t trip = 1;
 };
 
+// ---------------------------------------------------------------------------
+// Pattern D — RTP-driven `dma_repeat` constant fold
+// ---------------------------------------------------------------------------
+//
+// IRON's prefill GEMM (and softmax) drives outer-loop trip counts from a
+// runtime-parameter buffer rather than from a literal scf.for upper bound:
+//
+//     %rtp = aie.buffer ... {sym_name = "rtp0_0", use_write_rtp = true}
+//                     : memref<2xi32>
+//     ...
+//     aie.core(...) {
+//       aie.use_lock(%barrier, Acquire, 1)
+//       %i = arith.constant 1 : index
+//       %v = memref.load %rtp[%i] : memref<2xi32>
+//       %ub = arith.index_cast %v : i32 to index
+//       scf.for %k = %c0 to %ub step %c1 { ...acquire @chan; release... }
+//     }
+//
+//     aie.runtime_sequence() {
+//       aiex.npu.rtp_write(@rtp0_0, 1, 4)
+//       aiex.set_lock(%barrier, 1)
+//     }
+//
+// The host writes a compile-time integer literal into the RTP slot before
+// releasing the worker barrier — by the time the core's scf.for evaluates
+// its upper bound, the value is fixed.  `aiex.npu.rtp_write` carries this
+// value as an I32Attr directly, so Pass A can fold the load by walking the
+// runtime_sequence once and building a `(buffer_sym, index) -> value` map.
+//
+// The map keys on the RTP buffer's sym_name + index (both compile-time
+// constants).  Conflicting writes to the same key (e.g. two
+// `aiex.npu.rtp_write(@rtp, 0, X)` ops with different X values) mark the
+// entry ambiguous; subsequent lookups for that key fail and the bound
+// resolves to Dynamic with a remark explaining why.
+//
+// Lookups are gated to avoid false positives:
+//   * memref.load operand chain must be `arith.index_cast %load` where
+//     `%load = memref.load %rtp_buf[%idx_const]` (the canonical IRON
+//     shape).
+//   * `%rtp_buf` must trace to an `aie.buffer` with a sym_name attribute.
+//   * `%idx_const` must be a literal `arith.constant` of index/int type.
+//   * For scf.for, the lb is restricted to constant 0 and the step to
+//     constant 1 (matching IRON's `range_(N)` lowering); anything else
+//     falls through to Dynamic.
+// ---------------------------------------------------------------------------
+
+struct RtpConstantInfo {
+  int64_t value = 0;
+  bool ambiguous = false; // multiple writes with conflicting values
+};
+
+using RtpConstantMap =
+    llvm::DenseMap<std::pair<mlir::StringAttr, uint32_t>, RtpConstantInfo>;
+
+// Walk every `aiex.npu.rtp_write` directly nested in the device's
+// `aie.runtime_sequence` regions and record `((buffer_sym, index) -> value)`.
+// Writes inside nested control flow (scf.for / scf.if in the runtime
+// sequence) are conservatively ignored — IRON does not emit dynamic RTP
+// writes.  Conflicting-value writes for the same key flip the entry to
+// `ambiguous`, after which lookups for that key always miss.
+static RtpConstantMap collectRtpConstants(AIE::DeviceOp device) {
+  RtpConstantMap map;
+  device.walk([&](AIE::RuntimeSequenceOp rt) {
+    if (rt.getBody().empty())
+      return;
+    for (mlir::Operation &raw : rt.getBody().front()) {
+      auto rtpOp = mlir::dyn_cast<AIEX::NpuWriteRTPOp>(&raw);
+      if (!rtpOp)
+        continue;
+      auto bufRef = rtpOp.getBufferAttr();
+      if (!bufRef)
+        continue;
+      mlir::StringAttr key =
+          mlir::StringAttr::get(rtpOp.getContext(), bufRef.getValue());
+      uint32_t idx = rtpOp.getIndex();
+      // I32Attr stored as ui32 by the generated accessor; reinterpret as
+      // signed to preserve the user-visible value.
+      int64_t val =
+          static_cast<int64_t>(static_cast<int32_t>(rtpOp.getValue()));
+      auto it = map.find({key, idx});
+      if (it == map.end()) {
+        map[{key, idx}] = RtpConstantInfo{val, /*ambiguous=*/false};
+      } else if (!it->second.ambiguous && it->second.value != val) {
+        it->second.ambiguous = true;
+      }
+    }
+  });
+  return map;
+}
+
+// Try to resolve an scf.for/scf.parallel upper-bound SSA value as an RTP
+// constant.  Returns the folded integer when the chain matches the IRON
+// shape `arith.index_cast (memref.load %rtp_buf[%const_idx])` AND the
+// (buffer_sym, index) key is in `rtpMap` AND the entry is not ambiguous.
+static std::optional<int64_t> tryFoldRtpBound(mlir::Value bound,
+                                              const RtpConstantMap &rtpMap) {
+  mlir::Value cur = bound;
+  if (auto castOp = cur.getDefiningOp<mlir::arith::IndexCastOp>())
+    cur = castOp.getIn();
+  auto loadOp = cur.getDefiningOp<mlir::memref::LoadOp>();
+  if (!loadOp)
+    return std::nullopt;
+  if (loadOp.getIndices().size() != 1)
+    return std::nullopt;
+  auto bufOp = loadOp.getMemRef().getDefiningOp<AIE::BufferOp>();
+  if (!bufOp)
+    return std::nullopt;
+  mlir::StringAttr symAttr = bufOp.getSymNameAttr();
+  if (!symAttr)
+    return std::nullopt;
+  auto idxOpt = getConstIndexOrInt(loadOp.getIndices().front());
+  if (!idxOpt || *idxOpt < 0 ||
+      *idxOpt > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+    return std::nullopt;
+  auto it = rtpMap.find({symAttr, static_cast<uint32_t>(*idxOpt)});
+  if (it == rtpMap.end())
+    return std::nullopt;
+  if (it->second.ambiguous)
+    return std::nullopt;
+  return it->second.value;
+}
+
 // Static trip count of an scf.for / scf.parallel.  Anything else returns
 // NotALoop (caller treats as "skip this op while walking").
-static TripResult tripCountOfLoop(mlir::Operation *op) {
+static TripResult tripCountOfLoop(mlir::Operation *op,
+                                  const RtpConstantMap &rtpMap) {
   TripResult res;
   if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
     auto tc = forOp.getStaticTripCount();
-    if (!tc) {
-      res.status = TripStatus::Dynamic;
+    if (tc) {
+      res.status = TripStatus::Static;
+      res.trip = tc->getSExtValue();
       return res;
     }
-    res.status = TripStatus::Static;
-    res.trip = tc->getSExtValue();
+    // Pattern D: try RTP-constant fold on the upper bound.  Restricted to
+    // the canonical IRON shape: lb == 0, step == 1, ub from
+    // `arith.index_cast (memref.load %rtp_buf[%const])` where the buffer +
+    // index pair was written with a constant value in the runtime_sequence.
+    auto lbConst = getConstIndexOrInt(forOp.getLowerBound());
+    auto stepConst = getConstIndexOrInt(forOp.getStep());
+    if (lbConst && *lbConst == 0 && stepConst && *stepConst == 1) {
+      if (auto folded = tryFoldRtpBound(forOp.getUpperBound(), rtpMap)) {
+        if (*folded < 0)
+          *folded = 0;
+        res.status = TripStatus::Static;
+        res.trip = *folded;
+        return res;
+      }
+    }
+    res.status = TripStatus::Dynamic;
     return res;
   }
   if (auto parOp = mlir::dyn_cast<mlir::scf::ParallelOp>(op)) {
@@ -233,7 +374,25 @@ static TripResult tripCountOfLoop(mlir::Operation *op) {
       auto lb = getConstIndexOrInt(lbs[i]);
       auto ub = getConstIndexOrInt(ubs[i]);
       auto st = getConstIndexOrInt(sts[i]);
-      if (!lb || !ub || !st || *st == 0) {
+      // Pattern D fold for parallel-dim bounds: same restrictions
+      // (lb==0, step==1) and same RTP map lookup.  Falls through to the
+      // Dynamic exit if the fold misses on this dim.
+      if (lb && ub && st && *st != 0) {
+        // Fully-constant dim — proceed as before.
+      } else if (lb && *lb == 0 && st && *st == 1 && !ub) {
+        if (auto folded = tryFoldRtpBound(ubs[i], rtpMap)) {
+          int64_t span = *folded;
+          if (span <= 0) {
+            res.status = TripStatus::Static;
+            res.trip = 0;
+            return res;
+          }
+          total *= span;
+          continue;
+        }
+        res.status = TripStatus::Dynamic;
+        return res;
+      } else {
         res.status = TripStatus::Dynamic;
         return res;
       }
@@ -258,13 +417,14 @@ static TripResult tripCountOfLoop(mlir::Operation *op) {
 // scf.for / scf.parallel.  Dynamic anywhere → status = Dynamic.  No loops
 // in chain → status = Static, trip = 1.
 static TripResult productOfEnclosingLoops(mlir::Operation *op,
-                                          mlir::Operation *boundary) {
+                                          mlir::Operation *boundary,
+                                          const RtpConstantMap &rtpMap) {
   TripResult acc;
   acc.status = TripStatus::Static;
   acc.trip = 1;
   mlir::Operation *cur = op->getParentOp();
   while (cur && cur != boundary) {
-    TripResult t = tripCountOfLoop(cur);
+    TripResult t = tripCountOfLoop(cur, rtpMap);
     if (t.status == TripStatus::Dynamic) {
       acc.status = TripStatus::Dynamic;
       return acc;
@@ -331,9 +491,9 @@ struct PortAcquireBucket {
   llvm::SmallVector<mlir::Operation *> acquires;
 };
 
-static DmaRepeatInference inferDmaRepeatForChannel(AIE::DeviceOp device,
-                                                   llvm::StringRef channelName,
-                                                   int64_t fifoElemCount) {
+static DmaRepeatInference
+inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
+                         int64_t fifoElemCount, const RtpConstantMap &rtpMap) {
   DmaRepeatInference out;
 
   llvm::SmallVector<PortAcquireBucket, 2> prodSides;
@@ -378,8 +538,8 @@ static DmaRepeatInference inferDmaRepeatForChannel(AIE::DeviceOp device,
       if (p.acquires.empty())
         continue;
       AIE::CoreOp coreCopy = p.core;
-      TripResult tr =
-          productOfEnclosingLoops(p.acquires.front(), coreCopy.getOperation());
+      TripResult tr = productOfEnclosingLoops(p.acquires.front(),
+                                              coreCopy.getOperation(), rtpMap);
       if (tr.status == TripStatus::Dynamic)
         return SideStatus::Dynamic;
       int64_t trip = tr.trip;
@@ -542,6 +702,13 @@ struct ObjectFifoToConduitPass
   /// Names of objectfifos that use aie_stream routing.
   /// Mapped to the Core stream port index (from aie_stream_port attribute).
   llvm::DenseMap<mlir::StringAttr, int32_t> aieStreamFifoPort;
+
+  /// Pattern D — RTP-constant map for the current device, populated by
+  /// collectRtpConstants() at the top of transformFifos().  Walked by
+  /// inferDmaRepeatForChannel → productOfEnclosingLoops → tripCountOfLoop
+  /// to fold scf.for upper bounds whose value is loaded from an RTP buffer
+  /// the runtime_sequence wrote with a literal value.
+  RtpConstantMap rtpConstantMap;
 
   /// ObjectFifo create ops to erase after all rewrites complete.
   llvm::SmallVector<AIE::ObjectFifoCreateOp> fifosToErase;
@@ -798,6 +965,13 @@ struct ObjectFifoToConduitPass
     acquiresToErase.clear();
     releasesToErase.clear();
 
+    // Pattern D: build the device-scoped (rtp_buf_sym, index) → constant
+    // map once, before walking conduit.create candidates.  Consulted by
+    // inferDmaRepeatForChannel via tripCountOfLoop to fold scf.for upper
+    // bounds whose value is loaded from an RTP buffer the runtime_sequence
+    // wrote with a literal value (IRON gemm/softmax shape).
+    rtpConstantMap = collectRtpConstants(device);
+
     // Phase 2: rewrite each aie.objectfifo → conduit.create with typed attrs.
     // NOTE: do NOT erase the objectfifo op here — the AIE verifier requires
     // aie.objectfifo.acquire to reference a live objectfifo symbol.  Collect
@@ -901,8 +1075,8 @@ struct ObjectFifoToConduitPass
         routingSkipsDma = true;
 
       if (!iterCountAttr && !routingSkipsDma) {
-        auto inferred =
-            inferDmaRepeatForChannel(device, op.getSymName(), info.numElems);
+        auto inferred = inferDmaRepeatForChannel(device, op.getSymName(),
+                                                 info.numElems, rtpConstantMap);
         if (inferred.dmaRepeat) {
           iterCountAttr = mlir::IntegerAttr::get(
               mlir::IntegerType::get(ctx, 64), *inferred.dmaRepeat);
