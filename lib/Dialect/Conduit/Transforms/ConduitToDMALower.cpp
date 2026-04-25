@@ -1238,11 +1238,13 @@ void lowerPhase(ConduitToDMAState &state) {
                                  mlir::FlatSymbolRefAttr::get(ctx, allocSym));
         if (isS2MM)
           configState.addAttribute("issue_token", builder.getBoolAttr(true));
-        // Bug C / iter_count fix: surface dma_repeat to the shim DMA via
-        // the configure_task's repeat_count attribute (see comment block
-        // above).  Hardware fires the BD `repeat_count` total times per
-        // start_task, matching the per-core acquire count.
-        if (channelDmaRepeat > 1)
+        // Surface dma_repeat to the shim DMA via the configure_task's
+        // repeat_count attribute.  Any positive dma_repeat surfaces
+        // verbatim — including dma_repeat = 1, which IRON / firmware read
+        // as 2 fires per call (see CLAUDE.md "Convention-divergence" entry
+        // and AIEDmaToNpu.cpp packing).  Skipping `> 0` (default / absent)
+        // preserves the correct no-attr emission for unstamped channels.
+        if (channelDmaRepeat > 0)
           configState.addAttribute("repeat_count",
                                    builder.getI32IntegerAttr(
                                        static_cast<int32_t>(channelDmaRepeat)));
