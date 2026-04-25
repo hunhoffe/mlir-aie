@@ -23,6 +23,7 @@ add_mlir_dialect_library(ConduitTransforms
   ConduitInferModes.cpp
   ConduitInferRates.cpp
   ConduitLivenessCheck.cpp
+  LoopAnalysisUtils.cpp
   ConduitPairingCheck.cpp
   ConduitPlaceBuffers.cpp
   ConduitTileInference.cpp
