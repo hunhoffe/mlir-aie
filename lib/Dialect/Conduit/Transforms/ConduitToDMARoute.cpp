@@ -398,15 +398,18 @@ void routePhase(ConduitToDMAState &state) {
       // Skip lock allocation when disable_synchronization is set: the oracle
       // emits no locks or use_lock for these conduits.
       //
-      // Skip shim lock allocation for distribute link sources (shim→MemTile).
-      // For these conduits the shim DMA is fire-and-forget (managed by host
-      // runtime via aiex.npu.dma_memcpy_nd). The MemTile S2MM synchronization
-      // uses per-destination locks allocated on the MemTile by linkPhase
-      // (sliceProdLocks/sliceConsLocks). Allocating locks on the shim tile
-      // produces dead resources with wrong init values and wrong tile
-      // placement.
-      bool isDistributeLinkSrc = state.linkSrcNamesEarly.count(name) > 0;
-      if (isAIE2 && !info.noLocks && !isDistributeLinkSrc) {
+      // Allocate shim-side locks unconditionally for AIE2 (mirrors the
+      // symmetric S2MM consumer branch below at the shim-consumer site).
+      // For distribute-link sources (shim→MemTile→multiple consumers) the
+      // memtile-side per-slice _link_prod_lock_<N>/_link_cons_lock_<N>
+      // (allocated by linkPhase) throttle the memtile MM2S → compute hop,
+      // but they do NOT back-pressure the shim S2MM → memtile hop. The
+      // shim-side _prod_lock_0/_cons_lock_0 (init=0/init=0, programmed by
+      // host runtime aiex.npu.dma_memcpy_nd token signaling) gate
+      // completion of each shim BD fire on the memtile draining the prior
+      // fire's data. Without them, all repeat_count + 1 BDs fire back-to-
+      // back into the memtile S2MM port and compute reads stale data.
+      if (isAIE2 && !info.noLocks) {
         {
           int lockIdx = state.lockIdCounter[shimTile.getResult()]++;
           std::string symName = name + "_prod_lock_0";
