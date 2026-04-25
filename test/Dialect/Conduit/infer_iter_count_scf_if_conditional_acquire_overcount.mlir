@@ -1,13 +1,15 @@
-// RUN: aie-opt --objectfifo-to-conduit %s | FileCheck %s
+// RUN: aie-opt --objectfifo-to-conduit --verify-diagnostics %s | FileCheck %s
 //
 // Task #38 — Pass A `dma_repeat` over-counts when the acquire site sits
 // inside an `scf.if` branch whose condition is not provably constant.
 //
-// This test ISOLATES the bug — it pins the WRONG current behavior so the
-// eventual fix MUST update this CHECK (the test goes from pinning the bug
-// to pinning correct behavior, per the
-// `isolate-bug-with-lit-test-BEFORE-fixing` working convention added
-// 2026-04-24, see `CLAUDE.md` Working Conventions).
+// This test was authored under the
+// `isolate-bug-with-lit-test-BEFORE-fixing` working convention (CLAUDE.md
+// 2026-04-24).  It started pinning the WRONG current behavior
+// (`dma_repeat = 4`) and was flipped together with the fix to pin the
+// CORRECT post-fix behavior: Pass A treats the unfoldable `scf.if`
+// condition as introducing dynamic per-iteration acquire counts and
+// SKIPS dma_repeat inference with a remark.
 //
 // ---------------------------------------------------------------------------
 // Bug shape
@@ -57,71 +59,71 @@
 // together when the fix lands.
 //
 // ---------------------------------------------------------------------------
-// Expected post-fix behavior
+// Post-fix behavior (pinned below)
 // ---------------------------------------------------------------------------
 // Pass A treats an enclosing `scf.if` whose `%cond` is not provably
 // constant as introducing dynamic per-iteration acquire counts and SKIPS
-// `dma_repeat` inference with a remark, e.g.:
-//   "conduit-objectfifo: dma_repeat inference skipped: conditional acquire
-//    under scf.if; per-iteration count not statically known"
-// This re-uses the existing skip-with-remark machinery already wired
-// through `inferDmaRepeatForChannel` (see the
-// `SideStatus::Dynamic` branch at lines 560-563 which calls
-// `productOfEnclosingLoops` → `TripStatus::Dynamic` propagation).
+// `dma_repeat` inference, emitting the standard dynamic-loop-bounds
+// remark already wired through `inferDmaRepeatForChannel`'s
+// `SideStatus::Dynamic` branch (the productOfEnclosingLoops walk now
+// returns `TripStatus::Dynamic` instead of stepping transparently past
+// the scf.if and folding in the enclosing scf.for trip count).
 //
 // ---------------------------------------------------------------------------
-// Fix design (where the source change lands)
+// Fix design (landed in `productOfEnclosingLoops`)
 // ---------------------------------------------------------------------------
-// Cleanest home: `productOfEnclosingLoops` at
-// `ObjectFifoToConduit.cpp:419-437`.  Add a check: when `cur` is an
-// `scf::IfOp` AND the previous step's child sits inside `cur`'s then- or
-// else-region, attempt a constant-fold on `cur.getCondition()`:
+// `productOfEnclosingLoops` in `ObjectFifoToConduit.cpp` now special-cases
+// `scf::IfOp` during the parent walk.  Using `foldIfCondition`
+// (which delegates to `xilinx::conduit::evaluateConstantsInMap` from
+// `LoopAnalysisUtils.h` for the cmpi-of-constants case):
 //   * fold == true  AND child is in then-region  → continue walking
-//     (preserves the always-taken sub-case, which is exactly what
-//     `infer_iter_count_inside_if_branch.mlir` pins via
-//     `arith.constant true`).
+//     (preserves the always-taken `arith.constant true` shape pinned by
+//     `infer_iter_count_inside_if_branch.mlir`).
 //   * fold == false AND child is in else-region  → continue walking
 //     (symmetric always-taken).
-//   * otherwise → return `TripStatus::Dynamic` (caller emits skip remark).
-// Putting it in `productOfEnclosingLoops` (not `tripCountOfLoop`) is right
-// because the decision depends on which region the descending child is in,
-// and that information is naturally available during the parent-walk.
+//   * otherwise (unfoldable cond, e.g. cmpi over a loop IV via remui) →
+//     return `TripStatus::Dynamic` (caller emits skip remark).
+// Putting the check in `productOfEnclosingLoops` (not `tripCountOfLoop`)
+// is right because the decision depends on which region the descending
+// child sits in, and that information is naturally available during the
+// parent walk.
 //
 // ---------------------------------------------------------------------------
-// Cross-impact when the fix lands
+// Cross-impact (verified 2026-04-24)
 // ---------------------------------------------------------------------------
 //   * `test/Dialect/Conduit/infer_iter_count_inside_if_branch.mlir`: also
-//     pins the over-count today (`dma_repeat = 6`), but uses
-//     `%true = arith.constant true` as the guard.  Under the constant-fold-
-//     aware fix proposed above the existing test continues to pass (the
-//     always-taken sub-case survives).  If the fix lands as the simpler
-//     "any scf.if = Dynamic" variant (no constant fold), the existing
-//     test must be updated to expect a Dynamic skip remark + no
-//     `dma_repeat` attribute.  Decide at fix time.
+//     pinned the over-count, but uses `%true = arith.constant true` as the
+//     guard.  Under the constant-fold-aware fix the always-taken sub-case
+//     survives and that test still expects `dma_repeat = 6`.
 //   * No other `infer_iter_count_*.mlir` test exercises an `scf.if`
-//     inside a core (verified via Glob over the
-//     `test/Dialect/Conduit/infer_iter_count_*.mlir` set 2026-04-24).
+//     inside a core (Glob over the `infer_iter_count_*.mlir` set).
 //   * Real-world cross-ref: IRON `gemm` uses Python-level
 //     `if rtp_n_tiles_per_core > 1: loop = range_(...)` which can emit
 //     conditional IR shaped like this if the Python branch is replaced
-//     with an MLIR-level `scf.if`.
+//     with an MLIR-level `scf.if` — once the RTP slot value is observable
+//     (Pattern D), `foldIfCondition` will resolve that case via
+//     `tryFoldRtpBound` + `evaluateConstantsInMap`.
 
 // CHECK-LABEL: module @infer_scf_if_conditional_acquire_overcount
 // CHECK: conduit.create @chan
-// CHECK-SAME: dma_repeat = 4
+// CHECK-NOT: dma_repeat
 
 module @infer_scf_if_conditional_acquire_overcount {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: dynamic loop bounds in producer or consumer core}}
     aie.objectfifo @chan(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<8xbf16>>
 
     // Consumer: outer trip = 8; acquire fires only on even iterations
-    // (4 of 8) — but Pass A walks past scf.if transparently and folds in
-    // the full outer trip = 8, then divides by emissions = 2 → stamps
-    // dma_repeat = 4 (over-counted; should be Dynamic-skip).
+    // (4 of 8).  The scf.if condition is `arith.cmpi eq` over
+    // `arith.remui %i, %c2` — `foldIfCondition` cannot resolve the cmpi
+    // (loop-IV operand has no constant binding via `tryFoldRtpBound` or
+    // `getConstIndexOrInt`), so `productOfEnclosingLoops` returns
+    // Dynamic and Pass A skips dma_repeat with the dynamic-bounds remark
+    // pinned above.
     aie.core(%tile_0_2) {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index

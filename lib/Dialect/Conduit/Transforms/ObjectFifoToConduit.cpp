@@ -63,6 +63,7 @@
 
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 
+#include "LoopAnalysisUtils.h"
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
@@ -70,6 +71,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
@@ -412,25 +415,132 @@ static TripResult tripCountOfLoop(mlir::Operation *op,
   return res;
 }
 
+// Attempt to constant-fold an scf.if condition into a boolean.  Returns the
+// folded value when provably constant, std::nullopt for dynamic conditions.
+//
+//   * Direct `arith.constant` of i1 (or any integer that matches m_ConstantInt)
+//     folds trivially — covers the canonical `arith.constant true` guard.
+//   * `arith.cmpi <pred>, %a, %b` where both operands resolve to integer
+//     constants — either as literal `arith.constant` or via the RTP-fold map
+//     (`tryFoldRtpBound`) — is evaluated using
+//     `xilinx::conduit::evaluateConstantsInMap` over the affine expression
+//     `s0 - s1`, then the predicate sign is applied.  This catches the
+//     IRON-style `if rtp_n_tiles_per_core > 1` shape once the RTP slot value
+//     is observable.
+//   * Anything else (e.g., `arith.cmpi` whose operands depend on a loop IV
+//     such as `arith.remui %i, %c2`) returns std::nullopt → caller treats
+//     the enclosing scf.if as introducing dynamic per-iteration acquire
+//     counts and skips dma_repeat inference with a remark.
+static std::optional<bool> foldIfCondition(mlir::Value cond,
+                                           const RtpConstantMap &rtpMap) {
+  llvm::APInt lit;
+  if (mlir::matchPattern(cond, mlir::m_ConstantInt(&lit)))
+    return lit.getBoolValue();
+
+  auto cmp = cond.getDefiningOp<mlir::arith::CmpIOp>();
+  if (!cmp)
+    return std::nullopt;
+
+  auto resolve = [&](mlir::Value v) -> std::optional<int64_t> {
+    if (auto c = getConstIndexOrInt(v))
+      return c;
+    return tryFoldRtpBound(v, rtpMap);
+  };
+  auto lhs = resolve(cmp.getLhs());
+  auto rhs = resolve(cmp.getRhs());
+  if (!lhs || !rhs)
+    return std::nullopt;
+
+  mlir::MLIRContext *ctx = cmp.getContext();
+  auto map = mlir::AffineMap::get(/*dimCount=*/0, /*symbolCount=*/2,
+                                  mlir::getAffineSymbolExpr(0, ctx) -
+                                      mlir::getAffineSymbolExpr(1, ctx),
+                                  ctx);
+  llvm::SmallVector<std::optional<int64_t>, 2> inputs{lhs, rhs};
+  auto folded = xilinx::conduit::evaluateConstantsInMap(map, inputs, ctx);
+  if (!folded)
+    return std::nullopt;
+  int64_t diff = *folded;
+  switch (cmp.getPredicate()) {
+  case mlir::arith::CmpIPredicate::eq:
+    return diff == 0;
+  case mlir::arith::CmpIPredicate::ne:
+    return diff != 0;
+  case mlir::arith::CmpIPredicate::slt:
+  case mlir::arith::CmpIPredicate::ult:
+    return diff < 0;
+  case mlir::arith::CmpIPredicate::sle:
+  case mlir::arith::CmpIPredicate::ule:
+    return diff <= 0;
+  case mlir::arith::CmpIPredicate::sgt:
+  case mlir::arith::CmpIPredicate::ugt:
+    return diff > 0;
+  case mlir::arith::CmpIPredicate::sge:
+  case mlir::arith::CmpIPredicate::uge:
+    return diff >= 0;
+  }
+  return std::nullopt;
+}
+
 // Walk parent chain from `op` (exclusive) upward, stopping at `boundary`
 // (exclusive).  Multiplies the static trip counts of every enclosing
 // scf.for / scf.parallel.  Dynamic anywhere → status = Dynamic.  No loops
 // in chain → status = Static, trip = 1.
+//
+// scf.if handling (Task #38, fixes the over-count bug pinned by
+// `infer_iter_count_scf_if_conditional_acquire_overcount.mlir`): when
+// stepping through an `scf::IfOp`, attempt to constant-fold its condition.
+//   * Folded true  AND descending child sits in then-region → continue
+//     walking (always-taken; preserves the `arith.constant true` shape
+//     pinned by `infer_iter_count_inside_if_branch.mlir`).
+//   * Folded false AND descending child sits in else-region → continue
+//     walking (symmetric always-taken).
+//   * Otherwise (unfoldable condition OR child sits in the not-taken
+//     branch) → return Dynamic.  The caller emits a remark and skips
+//     dma_repeat stamping rather than over-counting acquires through a
+//     conditional that may not fire on every loop iteration.
 static TripResult productOfEnclosingLoops(mlir::Operation *op,
                                           mlir::Operation *boundary,
                                           const RtpConstantMap &rtpMap) {
   TripResult acc;
   acc.status = TripStatus::Static;
   acc.trip = 1;
+  // `prev` is always the most recent `cur` we stepped past — i.e., a direct
+  // child of the new `cur`.  When `cur` is an scf::IfOp, `prev` therefore
+  // sits directly in one of its regions, so `prev->getParentRegion()`
+  // identifies the then- vs else-region cleanly.
+  mlir::Operation *prev = op;
   mlir::Operation *cur = op->getParentOp();
   while (cur && cur != boundary) {
-    TripResult t = tripCountOfLoop(cur, rtpMap);
-    if (t.status == TripStatus::Dynamic) {
-      acc.status = TripStatus::Dynamic;
-      return acc;
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(cur)) {
+      auto folded = foldIfCondition(ifOp.getCondition(), rtpMap);
+      if (!folded) {
+        acc.status = TripStatus::Dynamic;
+        return acc;
+      }
+      mlir::Region *prevRegion = prev->getParentRegion();
+      bool inThen = (prevRegion == &ifOp.getThenRegion());
+      bool inElse = !ifOp.getElseRegion().empty() &&
+                    (prevRegion == &ifOp.getElseRegion());
+      bool taken = (*folded && inThen) || (!*folded && inElse);
+      if (!taken) {
+        // Provably not taken: the acquire is unreachable.  Stamping
+        // `dma_repeat = 0` would be wrong for a real workload, so signal
+        // Dynamic and let the caller back off with a remark.
+        acc.status = TripStatus::Dynamic;
+        return acc;
+      }
+      // Always-taken: fall through and continue walking past the if.
+    } else {
+      TripResult t = tripCountOfLoop(cur, rtpMap);
+      if (t.status == TripStatus::Dynamic) {
+        acc.status = TripStatus::Dynamic;
+        return acc;
+      }
+      if (t.status == TripStatus::Static)
+        acc.trip *= t.trip;
     }
-    if (t.status == TripStatus::Static)
-      acc.trip *= t.trip;
+    prev = cur;
     cur = cur->getParentOp();
   }
   return acc;
