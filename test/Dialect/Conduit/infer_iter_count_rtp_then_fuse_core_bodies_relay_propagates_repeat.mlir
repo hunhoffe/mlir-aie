@@ -28,9 +28,9 @@
 //
 // This test pins Pattern D's dma_repeat layer (verify dma_repeat=16 on
 // @input/@intermediate/@output) but does NOT exercise the fuse-core-bodies
-// relay path on RTP-folded trips today.  Not XFAIL: the test SHOULD pass
-// as written; the gap it documents is in fuse-core-bodies, not in Pattern
-// D source.
+// relay path on RTP-folded trips today.  This is NOT an expected-failure
+// (the test SHOULD pass as written); the gap it documents is in
+// fuse-core-bodies, not in Pattern D source.
 
 // CHECK-LABEL: module @infer_rtp_then_fuse_core_bodies_relay
 //

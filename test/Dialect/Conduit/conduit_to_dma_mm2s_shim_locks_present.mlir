@@ -52,13 +52,15 @@
 
 // CHECK-LABEL: aie.device
 
+// Shim DMA allocation comes first in emission order (Phase 4a).
+// CHECK: aie.shim_dma_allocation @src_shim_alloc(%shim_noc_tile_2_0, MM2S, 0)
+
 // Shim tile (2,0) prod/cons locks for the distribute-link source: init=0
 // for both, programmed by host runtime aiex.npu.dma_memcpy_nd token signaling.
 // CHECK: aie.lock(%shim_noc_tile_2_0, {{[0-9]+}}) {init = 0 : i32, sym_name = "src_prod_lock_0"
 // CHECK: aie.lock(%shim_noc_tile_2_0, {{[0-9]+}}) {init = 0 : i32, sym_name = "src_cons_lock_0"
 
-// Shim DMA allocation + flow shim→MemTile (Phase 4a).
-// CHECK: aie.shim_dma_allocation @src_shim_alloc(%shim_noc_tile_2_0, MM2S, 0)
+// Flow shim→MemTile.
 // CHECK: aie.flow(%shim_noc_tile_2_0, DMA : 0, %mem_tile_2_1, DMA : 0)
 
 // Memtile-side slice locks (one pair per distribute slice) emitted by linkPhase.
