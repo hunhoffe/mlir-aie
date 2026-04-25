@@ -93,9 +93,14 @@ static mlir::FlatSymbolRefAttr getAllocAttr(mlir::Operation *op) {
 // the attribute is absent (matching the AIEX.td default of 0 = "no replay").
 // ---------------------------------------------------------------------------
 static uint32_t getRepeatCountAttr(mlir::Operation *op) {
-  // Try inherent attr first (registered ops).
+  // Try inherent attr first (registered ops).  Note: `repeat_count` is
+  // declared `DefaultValuedOptionalAttr<I32Attr, "0">` in AIEX.td, which
+  // means the inherent storage entry exists even when the attribute is
+  // absent in source MLIR — but `*optAttr` is then a NULL Attribute.
+  // Use `dyn_cast_or_null` to handle that case (plain `dyn_cast` asserts
+  // on null in upstream Casting.h:650).
   if (auto optAttr = op->getInherentAttr("repeat_count"))
-    if (auto i = mlir::dyn_cast<mlir::IntegerAttr>(*optAttr))
+    if (auto i = mlir::dyn_cast_or_null<mlir::IntegerAttr>(*optAttr))
       return static_cast<uint32_t>(i.getInt());
 
   // Fallback: discardable attr dict (unregistered ops).
