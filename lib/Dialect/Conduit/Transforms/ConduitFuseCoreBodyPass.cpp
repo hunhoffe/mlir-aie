@@ -490,6 +490,11 @@ static mlir::scf::ForOp getOutermostFor(AIE::CoreOp core) {
 
 /// Check whether two cores have matching outermost loop structure.
 /// Both must have the same scf.for trip count, or both must have flat bodies.
+// TODO(#88): when consumer site is ready, lift the constant-UB requirement
+// using xilinx::conduit::evaluateConstantsInMap from LoopAnalysisUtils.h.
+// Currently pinned by infer_iter_count_rtp_then_fuse_core_bodies_relay_propagates_repeat.mlir
+// which CHECK-NOTs the relay create + COUNT-2 cores; flips to positive
+// @intermediate_relay when this lifts.
 static bool hasMatchingLoopStructure(AIE::CoreOp coreA, AIE::CoreOp coreB) {
   mlir::scf::ForOp forA = getOutermostFor(coreA);
   mlir::scf::ForOp forB = getOutermostFor(coreB);
