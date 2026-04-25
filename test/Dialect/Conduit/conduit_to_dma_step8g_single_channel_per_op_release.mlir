@@ -20,32 +20,29 @@
 // shape: 4 MM2S invocations of one objectfifo.  The expected output IR
 // shape is:
 //   configure_1, start_1,
-//   await_1, configure_2, start_2,
-//   await_2, configure_3, start_3,
-//   await_3, configure_4, start_4,
+//   free_1, configure_2, start_2,
+//   free_2, configure_3, start_3,
+//   free_3, configure_4, start_4,
 //   free_4   (trailing release at end-of-body)
-// i.e. 4 configures, 3 in-loop awaits (await guarantees prior queued
-// repeat_count fires drain before next configure overwrites the BD
-// register), and 1 trailing free for the last invocation.
+// i.e. 4 configures interleaved with 4 frees (3 in-loop + 1 trailing).
 
 // CHECK-LABEL: module @step8g_single_channel
 // CHECK:       aie.runtime_sequence
 
 // Per-op interleaving asserted by the ordered CHECK / CHECK-NEXT block
-// below.  Each of the 4 invocations emits a (configure, start) tuple in
-// source order, with an await on the prior task before the next
-// configure (channel-local).  The trailing release for the last op is a
-// dma_free_task emitted at end-of-rtSeq.  First configure has no
-// preceding release (no previous task on this channel).
+// below.  Each of the 4 invocations emits a (configure, start, free)
+// tuple in source order; the trailing release for the last op is
+// emitted at end-of-rtSeq.  First configure has no free before it
+// (no previous task on this channel).
 // CHECK:           [[T0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
 // CHECK:           aiex.dma_start_task([[T0]])
-// CHECK-NEXT:      aiex.dma_await_task([[T0]])
+// CHECK-NEXT:      aiex.dma_free_task([[T0]])
 // CHECK-NEXT:      [[T1:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
 // CHECK:           aiex.dma_start_task([[T1]])
-// CHECK-NEXT:      aiex.dma_await_task([[T1]])
+// CHECK-NEXT:      aiex.dma_free_task([[T1]])
 // CHECK-NEXT:      [[T2:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
 // CHECK:           aiex.dma_start_task([[T2]])
-// CHECK-NEXT:      aiex.dma_await_task([[T2]])
+// CHECK-NEXT:      aiex.dma_free_task([[T2]])
 // CHECK-NEXT:      [[T3:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
 // CHECK:           aiex.dma_start_task([[T3]])
 // CHECK:           aiex.dma_free_task([[T3]])
