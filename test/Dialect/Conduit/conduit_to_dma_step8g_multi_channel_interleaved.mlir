@@ -7,59 +7,55 @@
 
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-to-dma %s | FileCheck %s
 
-// Direction 1a (FS7 followup, Task #62) multi-channel interleaved variant:
-// per-op release on channel X is independent of channel Y.  Source order:
-//   in_1, out_1, in_2, out_2, in_3, out_3
-// Step 8g per-channel state should produce:
+// Path B regression (2026-04-25, supersedes FS7/Task #62) — multi-
+// channel variant.  --conduit-to-dma Step 8g must NOT emit any inline
+// release between same-channel configures; all releases are batched at
+// end-of-runtime_sequence in (channel-first-seen-order, then source-
+// order within each channel).
+//
+// Source order: in_data, out_data, in_data, out_data, in_data, out_data
+// (3 invocations per channel, alternating).
+//
+// Expected output shape (Path B):
 //   configure_in_a, start
 //   configure_out_a, start
-//   free_in_a,  configure_in_b, start
-//   await_out_a, configure_out_b, start
-//   free_in_b,  configure_in_c, start
-//   await_out_b, configure_out_c, start
-//   trailing: free_in_c, await_out_c
+//   configure_in_b, start
+//   configure_out_b, start
+//   configure_in_c, start
+//   configure_out_c, start
+//   trailing: free_in_a, free_in_b, free_in_c     (in_data MM2S, source order)
+//             await_out_a, await_out_b, await_out_c (out_data S2MM, source order)
+//
 // MM2S releases via dma_free_task; S2MM (issue_token=true) releases via
-// dma_await_task — matching the established convention from
-// conduit_to_dma_await_all_outputs.mlir and IRON's emission shape.
+// dma_await_task — matching the established release-by-direction
+// convention from conduit_to_dma_await_all_outputs.mlir and IRON's
+// emission shape.
 
 // CHECK-LABEL: module @step8g_multi_channel_interleaved
 // CHECK:       aie.runtime_sequence
 
-// Per-channel + per-op interleaving asserted by the ordered CHECK
-// block below.  Total expected ops (asserted indirectly via the
-// ordered shape): 6 configures (3 per channel), 3 frees (in_data
-// MM2S releases), 3 awaits (out_data S2MM releases).
-
-// First in/out pair: configure+start, no preceding release on either channel.
+// 6 configure+start pairs in source order (no inline releases).
 // CHECK:           [[IN0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
 // CHECK:           aiex.dma_start_task([[IN0]])
 // CHECK-NEXT:      [[OUT0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
 // CHECK:           aiex.dma_start_task([[OUT0]])
-
-// Second in: free of [[IN0]] precedes new configure (channel-local
-// release).  No await of [[OUT0]] yet (cross-channel independence).
-// CHECK-NEXT:      aiex.dma_free_task([[IN0]])
 // CHECK-NEXT:      [[IN1:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
 // CHECK:           aiex.dma_start_task([[IN1]])
-
-// Second out: await of [[OUT0]] precedes new configure (S2MM release).
-// CHECK-NEXT:      aiex.dma_await_task([[OUT0]])
 // CHECK-NEXT:      [[OUT1:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
 // CHECK:           aiex.dma_start_task([[OUT1]])
-
-// Third in: free of [[IN1]] precedes new configure.
-// CHECK-NEXT:      aiex.dma_free_task([[IN1]])
 // CHECK-NEXT:      [[IN2:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
 // CHECK:           aiex.dma_start_task([[IN2]])
-
-// Third out: await of [[OUT1]] precedes new configure.
-// CHECK-NEXT:      aiex.dma_await_task([[OUT1]])
 // CHECK-NEXT:      [[OUT2:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
 // CHECK:           aiex.dma_start_task([[OUT2]])
 
-// Trailing release: one per channel, in first-seen order (in_data then
-// out_data).
-// CHECK:           aiex.dma_free_task([[IN2]])
+// Trailing releases: first all in_data MM2S frees in source order
+// (in_data was first-seen channel), then all out_data S2MM awaits in
+// source order.
+// CHECK-NEXT:      aiex.dma_free_task([[IN0]])
+// CHECK-NEXT:      aiex.dma_free_task([[IN1]])
+// CHECK-NEXT:      aiex.dma_free_task([[IN2]])
+// CHECK-NEXT:      aiex.dma_await_task([[OUT0]])
+// CHECK-NEXT:      aiex.dma_await_task([[OUT1]])
 // CHECK-NEXT:      aiex.dma_await_task([[OUT2]])
 
 module @step8g_multi_channel_interleaved {
