@@ -36,11 +36,9 @@ evaluateConstantsInMap(mlir::AffineMap map,
                        llvm::ArrayRef<std::optional<int64_t>> symAndDimInputs,
                        mlir::MLIRContext *ctx);
 
-std::optional<int64_t>
-evaluateConstantsInMap(mlir::AffineMap map,
-                       llvm::ArrayRef<std::optional<int64_t>> symbolInputs,
-                       llvm::ArrayRef<std::optional<int64_t>> dimInputs,
-                       mlir::MLIRContext *ctx);
+std::optional<int64_t> evaluateConstantsInMap(
+    mlir::AffineMap map, llvm::ArrayRef<std::optional<int64_t>> symbolInputs,
+    llvm::ArrayRef<std::optional<int64_t>> dimInputs, mlir::MLIRContext *ctx);
 
 } // namespace conduit
 } // namespace xilinx

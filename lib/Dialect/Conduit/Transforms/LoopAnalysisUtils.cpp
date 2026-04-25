@@ -29,21 +29,18 @@ evaluateConstantsInMap(AffineMap map,
                        MLIRContext *ctx) {
   std::optional<int64_t> output = std::nullopt;
   if (map.getNumSymbols() == symAndDimInputs.size()) {
-    return evaluateConstantsInMap(map, symAndDimInputs,
-                                  llvm::ArrayRef<std::optional<int64_t>>{},
-                                  ctx);
-  } else if (map.getNumDims() == symAndDimInputs.size()) {
     return evaluateConstantsInMap(
-        map, llvm::ArrayRef<std::optional<int64_t>>{}, symAndDimInputs, ctx);
+        map, symAndDimInputs, llvm::ArrayRef<std::optional<int64_t>>{}, ctx);
+  } else if (map.getNumDims() == symAndDimInputs.size()) {
+    return evaluateConstantsInMap(map, llvm::ArrayRef<std::optional<int64_t>>{},
+                                  symAndDimInputs, ctx);
   } else
     return output;
 }
 
-std::optional<int64_t>
-evaluateConstantsInMap(AffineMap map,
-                       llvm::ArrayRef<std::optional<int64_t>> symbolInputs,
-                       llvm::ArrayRef<std::optional<int64_t>> dimInputs,
-                       MLIRContext *ctx) {
+std::optional<int64_t> evaluateConstantsInMap(
+    AffineMap map, llvm::ArrayRef<std::optional<int64_t>> symbolInputs,
+    llvm::ArrayRef<std::optional<int64_t>> dimInputs, MLIRContext *ctx) {
   std::optional<int64_t> output = std::nullopt;
   if (map.getNumSymbols() != symbolInputs.size())
     return output;

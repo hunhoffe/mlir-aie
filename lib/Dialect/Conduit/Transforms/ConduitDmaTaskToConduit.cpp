@@ -381,9 +381,9 @@ private:
           auto createIt = conduitCreateMap.find(conduitName);
           if (createIt != conduitCreateMap.end()) {
             Create createOp = createIt->second;
-            auto ironRepeatAttr = mlir::IntegerAttr::get(
-                mlir::IntegerType::get(ctx, 64),
-                static_cast<int64_t>(ironRepeatCount));
+            auto ironRepeatAttr =
+                mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64),
+                                       static_cast<int64_t>(ironRepeatCount));
             if (auto existing = createOp.getDmaRepeat()) {
               int64_t existingVal = static_cast<int64_t>(*existing);
               int64_t ironVal = static_cast<int64_t>(ironRepeatCount);
