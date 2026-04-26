@@ -45,7 +45,41 @@
 // (FS7 fix: the heuristic mis-bound output ops with non-zero `0xDEADBEE0`
 // patch markers to the input arg).
 //
-// All dma_start_task, dma_await_task, and dma_free_task ops are erased.
+// Async vs sync emission is CONDITIONAL on whether the configure has any
+// IRON `aiex.dma_await_task` or `aiex.dma_free_task` consumer in the same
+// runtime_sequence:
+//
+//   * Configure with await/free consumer  → emit *_async variant + record
+//                                           token in taskToConduitToken so
+//                                           the consumer rewrite below can
+//                                           synthesize a conduit.wait_all.
+//   * Configure with no await/free consumer → emit sync put/get_memref
+//                                           (existing Path B shape; no
+//                                           token plumbing needed).
+//
+// Async emission is only semantically warranted when there is an async
+// consumer (the wait_all).  Restricting it to that case keeps the well-
+// tested Path B sync shape for IR with no IRON releases (avoiding
+// Pattern A fuse/orchestrator stale CHECKs and Pattern D ConduitToDMACollect
+// putCount inference inflating tile aie.mem block counts linearly with
+// async-op count).
+//
+// dma_start_task is erased (the async submission is absorbed into
+// put/get_memref_async).  dma_await_task / dma_free_task on a configure
+// that took the async path are converted to `conduit.wait_all %tok
+// {token = ...}` so IRON's per-launch release boundaries are preserved as
+// Conduit IR instead of being erased and re-batched at end-of-runtime_sequence
+// by Pass C (which exhausts the per-channel BD pool on workloads with >16
+// same-channel invocations, e.g. Llama LM-head GEMM):
+//
+//   aiex.dma_await_task(%t) → conduit.wait_all %tok {token = true}
+//   aiex.dma_free_task (%t) → conduit.wait_all %tok {token = false}
+//
+// where %tok is the !conduit.dma.token returned by the put/get_memref_async
+// rewritten from the corresponding aiex.dma_configure_task_for(%t).  The
+// token attribute selects Pass C's lowering shape: token=true →
+// dma_await_task (configure stamped issue_token=true); token=false →
+// dma_free_task.  See Conduit.td WaitAllOp description for details.
 //
 //===----------------------------------------------------------------------===//
 
@@ -59,6 +93,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -266,6 +301,29 @@ private:
     llvm::SmallVector<mlir::Operation *> configOps;
     llvm::SmallVector<mlir::Operation *> userOps; // start/await/free
 
+    // Map: original aiex.dma_configure_task_for SSA result → newly-emitted
+    // !conduit.dma.token result of put/get_memref_async.  Lets us rewrite
+    // aiex.dma_await_task(%t) / aiex.dma_free_task(%t) into
+    // conduit.wait_all %tok {token = bool}.
+    llvm::DenseMap<mlir::Value, mlir::Value> taskToConduitToken;
+
+    // Pre-scan: collect the set of SSA values that are referenced as the
+    // task operand of `aiex.dma_await_task` / `aiex.dma_free_task` ops in
+    // this runtime_sequence.  Used below to pick async vs sync emission
+    // for each configure_task — async only when there is a wait_all
+    // consumer to be synthesized.  (Pre-scan rather than relying on walk
+    // order: configure ops can be visited before all of their consumers,
+    // and a single source-order pass cannot decide async-ness up front.)
+    llvm::DenseSet<mlir::Value> awaitedTaskResults;
+    rtSeq.walk([&](mlir::Operation *op) {
+      llvm::StringRef opName = op->getName().getStringRef();
+      if (opName != "aiex.dma_await_task" && opName != "aiex.dma_free_task")
+        return;
+      if (op->getNumOperands() < 1)
+        return;
+      awaitedTaskResults.insert(op->getOperand(0));
+    });
+
     rtSeq.walk([&](mlir::Operation *op) {
       llvm::StringRef opName = op->getName().getStringRef();
 
@@ -339,14 +397,51 @@ private:
         auto sizesAttr = mlir::DenseI64ArrayAttr::get(ctx, sizes);
         auto stridesAttr = mlir::DenseI64ArrayAttr::get(ctx, strides);
 
+        // Conditional emission: pick async vs sync based on whether this
+        // configure has any IRON dma_await_task / dma_free_task consumer.
+        // (See file header for rationale.)
+        bool hasAwaitConsumer = op->getNumResults() >= 1 &&
+                                awaitedTaskResults.contains(op->getResult(0));
+
+        // ASYMMETRY ALERT: arg_index attribute is INHERENT on sync
+        // PutMemref/GetMemref (declared in the op's `arguments` list in
+        // Conduit.td → must be passed as the last positional builder arg)
+        // but DISCARDABLE on the async PutMemrefAsync/GetMemrefAsync
+        // (not declared in the op's arguments → set via op->setAttr after
+        // create()).  Both downstream consumers (--conduit-to-dma's
+        // runtime-sequence rebuild + the fuse passes) look up arg_index
+        // via op->getAttrOfType which honors both inherent and discardable
+        // attrs, so the asymmetry is invisible to consumers — but it MUST
+        // be respected by the builder calls below or the C++ build fails
+        // with "no matching function for call to ::create".
+        //
+        // Async builder signature (auto-generated from .td (ins ...) order):
+        //   create(builder, loc, /*result*/ TokenType,
+        //          name, num_elems, offsets, sizes, strides,
+        //          /*deps*/ ValueRange, /*producer_dimensions*/ Attribute)
+        // (matches the AIR-side usage in
+        // mlir-air/.../AirChannelToConduit.cpp:1471-1489.)
+        // Sync builder signature: same shape minus the token result and
+        // the deps operand, PLUS arg_index as a final positional arg.
+        auto tokenTy = DMATokenType::get(ctx);
+        mlir::Value newToken;
         if (dir == AIE::DMAChannelDir::MM2S) {
-          // MM2S: shim sends data into the conduit → put_memref.
+          // MM2S: shim sends data into the conduit.
           // Pass through the BDDimLayout as producer_dimensions.
-          PutMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
-                            offsetsAttr, sizesAttr, stridesAttr, dimensions,
-                            argIndexAttr);
+          if (hasAwaitConsumer) {
+            auto putAsync = PutMemrefAsync::create(
+                builder, op->getLoc(), tokenTy, nameAttr, numElemsAttr,
+                offsetsAttr, sizesAttr, stridesAttr,
+                /*deps=*/mlir::ValueRange{}, dimensions);
+            putAsync->setAttr("arg_index", argIndexAttr);
+            newToken = putAsync.getToken();
+          } else {
+            PutMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
+                              offsetsAttr, sizesAttr, stridesAttr, dimensions,
+                              argIndexAttr);
+          }
         } else {
-          // S2MM: shim receives data from the conduit → get_memref.
+          // S2MM: shim receives data from the conduit.
           // Wrap the single BDDimLayout as a singleton-of-singleton
           // BDDimLayoutArrayArrayAttr so the round-trip rebuild in
           // --conduit-to-dma Step 8g can recover the full S2MM strided
@@ -355,10 +450,28 @@ private:
           AIE::BDDimLayoutArrayArrayAttr consumerDims;
           if (dimensions && !dimensions.empty())
             consumerDims = AIE::BDDimLayoutArrayArrayAttr::get(ctx, dimensions);
-          GetMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
-                            offsetsAttr, sizesAttr, stridesAttr, consumerDims,
-                            argIndexAttr);
+          if (hasAwaitConsumer) {
+            auto getAsync = GetMemrefAsync::create(
+                builder, op->getLoc(), tokenTy, nameAttr, numElemsAttr,
+                offsetsAttr, sizesAttr, stridesAttr,
+                /*deps=*/mlir::ValueRange{}, consumerDims);
+            getAsync->setAttr("arg_index", argIndexAttr);
+            newToken = getAsync.getToken();
+          } else {
+            GetMemref::create(builder, op->getLoc(), nameAttr, numElemsAttr,
+                              offsetsAttr, sizesAttr, stridesAttr, consumerDims,
+                              argIndexAttr);
+          }
         }
+        // Record the source aiex.dma_configure_task_for SSA → new conduit
+        // token (only set when async path was taken) so dma_await_task /
+        // dma_free_task can be lowered to wait_all{token=...} in the
+        // userOps loop below.  When the sync path was taken, no entry is
+        // recorded and the userOps loop's existing missing-key guard
+        // silently skips the consumer (which is then erased — sync emission
+        // means no per-launch release boundary needed in Conduit IR).
+        if (hasAwaitConsumer && op->getNumResults() >= 1)
+          taskToConduitToken[op->getResult(0)] = newToken;
 
         // Surface IRON's `repeat_count` attr from the source
         // aiex.dma_configure_task_for onto the conduit.create's
@@ -406,6 +519,44 @@ private:
         userOps.push_back(op);
       }
     });
+
+    // Convert dma_await_task / dma_free_task → conduit.wait_all with the
+    // appropriate `token` attribute so IRON's per-launch release boundaries
+    // survive into Conduit IR (instead of being erased and re-batched at
+    // end-of-runtime_sequence by Pass C).  dma_start_task is just erased —
+    // the start submission is absorbed into the put/get_memref_async we
+    // emitted above for the corresponding configure_task.
+    //
+    //   aiex.dma_await_task(%t) → conduit.wait_all %tok
+    //                             (default token = true; lowered to
+    //                              aiex.dma_await_task by Pass C Step 8g
+    //                              with issue_token=true on the configure)
+    //   aiex.dma_free_task (%t) → conduit.wait_all %tok {token = false}
+    //                             (lowered to aiex.dma_free_task by Step 8g)
+    for (auto *op : userOps) {
+      llvm::StringRef opName = op->getName().getStringRef();
+      if (opName == "aiex.dma_start_task")
+        continue; // pure erase below
+      if (op->getNumOperands() < 1)
+        continue;
+      mlir::Value taskOperand = op->getOperand(0);
+      auto it = taskToConduitToken.find(taskOperand);
+      if (it == taskToConduitToken.end()) {
+        // The await/free references a task whose configure was not converted
+        // (alloc not in allocMap, or no aie.dma_bd inside the body).  Leave
+        // the wait_all unsynthesized — falling back to the default Pass C
+        // trailing-release shape for any remaining unconverted configures.
+        continue;
+      }
+      builder.setInsertionPoint(op);
+      auto waitAll =
+          WaitAll::create(builder, op->getLoc(), mlir::ValueRange{it->second});
+      bool tokenAttrVal = (opName == "aiex.dma_await_task");
+      // Set explicitly even when true (the default) so the `token` attribute
+      // is round-trippable in lit IR even if a future printer change elides
+      // it; cheap, no behavior impact.
+      waitAll.setTokenAttr(builder.getBoolAttr(tokenAttrVal));
+    }
 
     // Erase user ops first (they reference the configure op results),
     // then configure ops.

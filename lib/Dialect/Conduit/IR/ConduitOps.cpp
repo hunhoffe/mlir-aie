@@ -644,7 +644,24 @@ static ::mlir::LogicalResult checkTokenOperandTypes(mlir::Operation *op,
   // constraint, which MLIR enforces before user verify() runs. Left in place
   // for defense-in-depth but may be dead code — the TableGen constraint fires
   // first.
-  return checkTokenOperandTypes(getOperation(), getTokens());
+  if (failed(checkTokenOperandTypes(getOperation(), getTokens())))
+    return ::mlir::failure();
+
+  // token=false (sync release marker) is only legal when ALL operands are
+  // !conduit.dma.token.  A release marker has no meaning for a Tier 2
+  // buffer-window acquire token (acquire_async / release_async); window
+  // tokens are released exclusively via the lock protocol in --conduit-to-dma
+  // Step 8c, not via wait_all{token=false}.  See Conduit.td WaitAllOp
+  // description for the lowering shapes.
+  if (!getToken()) {
+    for (auto operand : getTokens()) {
+      if (!::llvm::isa<DMATokenType>(operand.getType()))
+        return emitOpError(
+            "wait_all {token = false} requires all operands to be "
+            "!conduit.dma.token; window tokens cannot be sync-released");
+    }
+  }
+  return ::mlir::success();
 }
 ::mlir::LogicalResult WaitAllAsync::verify() {
   if (failed(checkTokenDoesNotEscape(getOperation(), getResult())))

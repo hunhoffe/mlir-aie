@@ -71,20 +71,22 @@
 // CHECK-SAME:    %{{[^,)]+}}: memref<128xbf16>
 // CHECK-SAME:    %{{[^,)]+}}: memref<128xbf16>
 
-// Surviving put_memref for @ext_inA (devA's input) — must bind to the
-// FIRST block arg (absolute index 0).
-// CHECK:       conduit.put_memref
+// Surviving put_memref_async for @ext_inA (devA's input) — must bind to
+// the FIRST block arg (absolute index 0).  Async because the input has
+// IRON dma_await_task / dma_free_task — see conditional emission in
+// --dma-task-to-conduit (ConduitDmaTaskToConduit.cpp file header).
+// CHECK:       conduit.put_memref_async
 // CHECK-SAME:    arg_index = 0
 // CHECK-SAME:    name = @ext_inA
 
-// Surviving put_memref for @ext_outB (devB's output, S2MM after fusion).
-// CRITICAL: pre-merge this op carried arg_index=1 against devB's seqB.
-// After the merge+trim, it MUST resolve to absolute index 1 of the merged
-// trimmed sequence (which is %a1-position-occupied-by-b1).  If the attr
-// stays at 1 by coincidence (devA's seg-A trim removed exactly one slot),
-// this passes.  If we ever change the merge ordering or the trim logic,
-// the attr must be explicitly re-projected.
-// CHECK:       conduit.get_memref
+// Surviving get_memref_async for @ext_outB (devB's output, S2MM after
+// fusion).  CRITICAL: pre-merge this op carried arg_index=1 against
+// devB's seqB.  After the merge+trim, it MUST resolve to absolute index 1
+// of the merged trimmed sequence (which is %a1-position-occupied-by-b1).
+// If the attr stays at 1 by coincidence (devA's seg-A trim removed exactly
+// one slot), this passes.  If we ever change the merge ordering or the
+// trim logic, the attr must be explicitly re-projected.
+// CHECK:       conduit.get_memref_async
 // CHECK-SAME:    arg_index = 1
 // CHECK-SAME:    name = @ext_outB
 

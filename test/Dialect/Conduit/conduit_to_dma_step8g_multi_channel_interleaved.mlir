@@ -6,57 +6,66 @@
 // (c) Copyright 2026 Advanced Micro Devices, Inc.
 
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-to-dma %s | FileCheck %s
+// Metafix Candidate 1 (basic Path C): also smoke through downstream
+// shim-allocation-substitution + BD-ID assignment passes.
+// RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
 
-// Path B regression (2026-04-25, supersedes FS7/Task #62) — multi-
-// channel variant.  --conduit-to-dma Step 8g must NOT emit any inline
-// release between same-channel configures; all releases are batched at
-// end-of-runtime_sequence in (channel-first-seen-order, then source-
-// order within each channel).
+// Basic Path C (2026-04-25, Task #18) — multi-channel variant.  IRON
+// emits per-iteration dma_await_task on S2MM (out_data) and dma_free_task
+// on MM2S (in_data); both survive through --dma-task-to-conduit as
+// conduit.wait_all{token = true|false} and are lowered by Step 8g back to
+// inline aiex.dma_await_task / aiex.dma_free_task at the wait_all source
+// locations — preserving IRON's per-iteration release shape.
 //
-// Source order: in_data, out_data, in_data, out_data, in_data, out_data
-// (3 invocations per channel, alternating).
+// Source order: in_a, out_a, await_out_a, free_in_a,
+//               in_b, out_b, await_out_b, free_in_b,
+//               in_c, out_c, await_out_c, free_in_c.
 //
-// Expected output shape (Path B):
+// Expected output shape:
 //   configure_in_a, start
-//   configure_out_a, start
-//   configure_in_b, start
-//   configure_out_b, start
-//   configure_in_c, start
-//   configure_out_c, start
-//   trailing: free_in_a, free_in_b, free_in_c     (in_data MM2S, source order)
-//             await_out_a, await_out_b, await_out_c (out_data S2MM, source order)
-//
-// MM2S releases via dma_free_task; S2MM (issue_token=true) releases via
-// dma_await_task — matching the established release-by-direction
-// convention from conduit_to_dma_await_all_outputs.mlir and IRON's
-// emission shape.
+//   configure_out_a {issue_token = true}, start
+//   await_out_a            (inline, from wait_all{token=true})
+//   free_in_a              (inline, from wait_all{token=false}; MM2S
+//                           configure NOT stamped with issue_token because
+//                           wait_all{token=false} does not require it)
+//   ... iteration b
+//   ... iteration c
+//   (no trailing releases — every task in releasedTasks)
 
 // CHECK-LABEL: module @step8g_multi_channel_interleaved
 // CHECK:       aie.runtime_sequence
 
-// 6 configure+start pairs in source order (no inline releases).
-// CHECK:           [[IN0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
-// CHECK:           aiex.dma_start_task([[IN0]])
-// CHECK-NEXT:      [[OUT0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
-// CHECK:           aiex.dma_start_task([[OUT0]])
-// CHECK-NEXT:      [[IN1:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
-// CHECK:           aiex.dma_start_task([[IN1]])
-// CHECK-NEXT:      [[OUT1:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
-// CHECK:           aiex.dma_start_task([[OUT1]])
-// CHECK-NEXT:      [[IN2:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
-// CHECK:           aiex.dma_start_task([[IN2]])
-// CHECK-NEXT:      [[OUT2:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
-// CHECK:           aiex.dma_start_task([[OUT2]])
+// Iteration 1.
+// CHECK:           [[INA:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
+// CHECK:           aiex.dma_start_task([[INA]])
+// CHECK:           [[OUTA:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
+// CHECK:           } {issue_token = true
+// CHECK:           aiex.dma_start_task([[OUTA]])
+// CHECK:           aiex.dma_await_task([[OUTA]])
+// CHECK-NEXT:      aiex.dma_free_task([[INA]])
 
-// Trailing releases: first all in_data MM2S frees in source order
-// (in_data was first-seen channel), then all out_data S2MM awaits in
-// source order.
-// CHECK-NEXT:      aiex.dma_free_task([[IN0]])
-// CHECK-NEXT:      aiex.dma_free_task([[IN1]])
-// CHECK-NEXT:      aiex.dma_free_task([[IN2]])
-// CHECK-NEXT:      aiex.dma_await_task([[OUT0]])
-// CHECK-NEXT:      aiex.dma_await_task([[OUT1]])
-// CHECK-NEXT:      aiex.dma_await_task([[OUT2]])
+// Iteration 2.
+// CHECK:           [[INB:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
+// CHECK:           aiex.dma_start_task([[INB]])
+// CHECK:           [[OUTB:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
+// CHECK:           } {issue_token = true
+// CHECK:           aiex.dma_start_task([[OUTB]])
+// CHECK:           aiex.dma_await_task([[OUTB]])
+// CHECK-NEXT:      aiex.dma_free_task([[INB]])
+
+// Iteration 3.
+// CHECK:           [[INC:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @in_data
+// CHECK:           aiex.dma_start_task([[INC]])
+// CHECK:           [[OUTC:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @out_data
+// CHECK:           } {issue_token = true
+// CHECK:           aiex.dma_start_task([[OUTC]])
+// CHECK:           aiex.dma_await_task([[OUTC]])
+// CHECK-NEXT:      aiex.dma_free_task([[INC]])
+
+// No trailing-release block at end-of-rtSeq — every configured task is
+// released by an explicit wait_all consumer.
+// CHECK-NOT:       aiex.dma_await_task
+// CHECK-NOT:       aiex.dma_free_task
 
 module @step8g_multi_channel_interleaved {
   aie.device(npu2) {

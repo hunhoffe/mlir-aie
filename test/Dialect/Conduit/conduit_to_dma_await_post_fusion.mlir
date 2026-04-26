@@ -29,20 +29,27 @@
 // CHECK-SAME:  memref<256xbf16>
 // CHECK-SAME:  memref<256xbf16>
 
-// Each per-column put/get pair emits a dma_configure_task_for.
-// ext_in (MM2S, 2 columns):
-// CHECK:       aiex.dma_configure_task_for
-// CHECK:       aiex.dma_configure_task_for
-// ext_up (MM2S, 2 columns):
-// CHECK:       aiex.dma_configure_task_for
-// CHECK:       aiex.dma_configure_task_for
-// ext_out (S2MM, 2 columns — these are the critical ones):
-// CHECK:       aiex.dma_configure_task_for
-// CHECK:       aiex.dma_configure_task_for
+// Each per-column put/get pair emits a dma_configure_task_for — total 6
+// (2 ext_in MM2S + 2 ext_up MM2S + 2 ext_out S2MM).  None silently skipped
+// (the original Bug 2 — block-arg index mismatch dropping ops at index >=
+// blockArgs.size()).
+// CHECK-COUNT-6: aiex.dma_configure_task_for
+// CHECK-NOT:     aiex.dma_configure_task_for
 
-// Both output S2MM tasks must have await (the race condition fix):
-// CHECK:       aiex.dma_await_task
-// CHECK:       aiex.dma_await_task
+// Every configured task must be released — exactly one await + five frees,
+// total 6, matching the configure count.  Under conditional async emission,
+// only the configure consumed by an IRON dma_await_task in source takes the
+// async/await path; the rest emit dma_free_task.  await + frees are
+// interleaved in source-relative position, so use CHECK-DAG to count
+// occurrences without pinning order.
+// CHECK-DAG:     aiex.dma_await_task
+// CHECK-DAG:     aiex.dma_free_task
+// CHECK-DAG:     aiex.dma_free_task
+// CHECK-DAG:     aiex.dma_free_task
+// CHECK-DAG:     aiex.dma_free_task
+// CHECK-DAG:     aiex.dma_free_task
+// CHECK-NOT:     aiex.dma_await_task
+// CHECK-NOT:     aiex.dma_free_task
 
 // No second device:
 // CHECK-NOT:   aie.device(npu2)

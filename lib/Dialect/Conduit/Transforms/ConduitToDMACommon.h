@@ -10,7 +10,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Shared types, structures, and helper declarations used across all split
-// files of the ConduitToDMA pass (Pass C).
+// files of the --conduit-to-dma pass.
 //
 //===----------------------------------------------------------------------===//
 
@@ -100,7 +100,8 @@ struct PacketIDAllocator {
 };
 
 // ---------------------------------------------------------------------------
-// PacketChannelState: module-level state for Step 3.5 packet DMA fallback.
+// PacketChannelState: module-level state for the packet-DMA fallback used
+// when circuit DMA channels are exhausted (mode=any selection).
 //
 // Tracks two pieces of information needed for safe packet-mode selection
 // when circuit DMA channels are exhausted (mode=any fallback):
@@ -113,12 +114,12 @@ struct PacketIDAllocator {
 //   portOccupancy: for each packet-mode MM2S channel (identified by an
 //     int64_t key combining tile ptr and channel index), the list of
 //     (flow_id, dst_tile_op*) pairs already routed through it.  Used for the
-//     convergence hazard check (Step 3.5d): two packet flows on the same
-//     physical channel that route to the same consumer tile D create an
-//     ordering hazard under sustained load.
+//     convergence hazard check: two packet flows on the same physical channel
+//     that route to the same consumer tile D create an ordering hazard under
+//     sustained load.
 //
-// Initialized in ConduitToDMAPass.cpp at Pass C entry.
-// Maintained across all conduits during Phase 4.5a flow emission.
+// Initialized in ConduitToDMAPass.cpp at pass entry.
+// Maintained across all conduits during non-adjacent flow emission.
 // ---------------------------------------------------------------------------
 struct PacketChannelState {
   // Per (tile_op_ptr, channel_index): is this MM2S channel packet-mode?
@@ -137,17 +138,17 @@ struct PacketChannelState {
 // ---------------------------------------------------------------------------
 // Per-conduit info gathered from conduit.create typed attributes.
 //
-// Populated incrementally across phases:
-//   Phase 1 (Collect): producerTileCoord, consumerTileCoords,
-//       shimConsumerTileCoords, depth, capacity, elemType, accessPattern,
-//       routingMode, fuseGroup
-//   Phase 2.5 (Collect): effectiveDepth
-//   Phase 3 (Alloc): buffers, prodLock, consLock, aie1Locks,
-//       consumerTileLocks, consumerTileBuffers, consumerTileAIE1Locks,
-//       rotationBuf, consumerTileRotationBufs, sharedMemory
+// Populated incrementally across pass phases:
+//   collectPhase:   producerTileCoord, consumerTileCoords,
+//                   shimConsumerTileCoords, depth, capacity, elemType,
+//                   accessPattern, routingMode, fuseGroup, effectiveDepth
+//   allocPhase:     buffers, prodLock, consLock, aie1Locks,
+//                   consumerTileLocks, consumerTileBuffers,
+//                   consumerTileAIE1Locks, rotationBuf,
+//                   consumerTileRotationBufs, sharedMemory
 // ---------------------------------------------------------------------------
 struct ConduitInfo {
-  // --- Populated by Phase 1 (collectConduitMap). ---
+  // --- Populated by collectPhase. ---
 
   // Original (unqualified) channel name from conduit.create sym_name.
   // When multiple aie.device ops have identically-named channels, the
@@ -166,16 +167,16 @@ struct ConduitInfo {
   llvm::SmallVector<std::pair<int64_t, int64_t>> shimConsumerTileCoords;
   int64_t depth = 1;
   // Element count per DMA transfer, from put/get_memref_async {num_elems=N}.
-  // Populated by Phase 1 collect; used by Phase 5.5 BD chain for Tier 3
+  // Populated by collectPhase; used by linkPhase BD-chain emission for Tier 3
   // channels to determine BD length from the async transfer descriptor.
   int64_t numElems = 0;
   mlir::Type elemType; // actual element memref type (may be null)
   // Cyclostatic (CSDF) access pattern from conduit.create access_pattern attr.
   // Empty = uniform SDF; non-empty = CSDF per-iteration acquire counts.
   llvm::SmallVector<int64_t> accessPattern;
-  // Routing mode enum. std::nullopt = "any" (absent / unresolved — Pass D
-  // resolves). Present values: Circuit, Packet, Cascade, Stream, SharedMemory,
-  // DMA.
+  // Routing mode enum. std::nullopt = "any" (absent / unresolved — resolved
+  // inline by --conduit-to-dma's routePhase). Present values: Circuit, Packet,
+  // Cascade, Stream, SharedMemory, DMA.
   std::optional<RoutingMode> routingMode;
   // Core stream port index for routing_mode="stream" (-1 if not stream).
   int32_t aieStreamPort = -1;
@@ -185,21 +186,21 @@ struct ConduitInfo {
   std::string fuseGroupS2MM;
 
   // Number of put_memref_async ops referencing this channel, inferred by
-  // Phase 1 (collectPhase).  When putCount > 1 and dmaRepeat == 0, Pass C
+  // collectPhase.  When putCount > 1 and dmaRepeat == 0, --conduit-to-dma
   // uses putCount as the BD chain length and emits a linear (one-shot) chain.
   // The --conduit-fuse-channels pass rewrites all non-canonical put/get ops
   // to the canonical channel name, so putCount naturally equals N for an
   // N-way temporal-multiplex group.  No explicit annotation is needed.
   int64_t putCount = 0;
 
-  // --- Populated by Phase 2.5 (computeEffectiveDepth). ---
+  // --- Populated by computeEffectiveDepth (within collectPhase). ---
 
   // Producer-side effective depth: min(depth, maxProdAcquire+1).
   // 0 means "use raw depth" (no optimization).
   int64_t effectiveDepth = 0;
 
   // Partial-release buffer count adjustment.
-  // Populated by Phase 2.6 in collectPhase.
+  // Populated by collectPhase (consumer-side acquire scan).
   //
   // maxConsumerAcquire: maximum acquire count seen across all Consume-port
   //   acquire/release pairs where acquireCount > releaseCount (sliding window).
@@ -220,14 +221,15 @@ struct ConduitInfo {
   // can drain one slot while the core holds the rest.
   int64_t maxProduceAcquire = 0;
 
-  // --- Populated by Phase 3 (allocateBuffersAndLocks). ---
+  // --- Populated by allocPhase (allocateBuffersAndLocks). ---
 
   // Shared memory flag: set when producer and consumer are adjacent tiles.
   // When true, buffers/locks go on the producer (or alloc) tile; no DMA.
   bool sharedMemory = false;
 
-  // Shim-tile locks for shim producer conduits (Phase 4a → Phase 5.5).
-  // Populated by Phase 4a when the producer tile is a shim.
+  // Shim-tile locks for shim producer conduits (allocated during routePhase
+  // shim-endpoint handling, consumed by linkPhase BD-chain emission).
+  // Populated by routePhase when the producer tile is a shim.
   AIE::LockOp shimProdLock;
   AIE::LockOp shimConsLock;
 
@@ -235,9 +237,9 @@ struct ConduitInfo {
   llvm::SmallVector<AIE::BufferOp> buffers; // depth-many on consumer_tile[0]
 
   // Per-consumer-tile lock pairs for multi-consumer (broadcast) correctness.
-  // Key: tile SSA Value.  Read by Phase 5.5 and Phase 6.
+  // Key: tile SSA Value.  Read by linkPhase (BD chains) and lowerPhase (use_lock).
   // NOTE: for sharedMemory conduits, LockOps are physically on the producer
-  // tile but keyed on the consumer tile for Phase 6 lookup.
+  // tile but keyed on the consumer tile for lowerPhase use_lock lookup.
   llvm::DenseMap<mlir::Value, std::pair<AIE::LockOp, AIE::LockOp>>
       consumerTileLocks; // tile → (prodLock, consLock)
 
@@ -277,7 +279,7 @@ struct ConduitInfo {
   llvm::DenseMap<mlir::Value, int64_t>
       producerTileRotationBufSlots; // tile → slot index for this conduit
 
-  // --- New feature flags (populated by Phase 1 from conduit.create attrs) ---
+  // --- New feature flags (populated by collectPhase from conduit.create attrs) ---
 
   // noLocks: suppress all lock allocation and use_lock ops.
   // Set when sync_mode == None on conduit.create.
@@ -312,9 +314,9 @@ struct ConduitInfo {
   // maxConsumerAcquire = 0 for normal SDF/CSDF (full release per step).
   int64_t nConsumerBuffers() const {
     // Annotation-free inference: putCount > 1 with no dma_repeat means N
-    // sequential puts were merged (by --conduit-fuse-channels or Pass B Phase
-    // 2d). dma_repeat wins if set (ObjectFIFO task-queue loops have
-    // putCount=1).
+    // sequential puts were merged (by --conduit-fuse-channels or by
+    // --air-channel-to-conduit's per-channel merge step). dma_repeat wins if
+    // set (ObjectFIFO task-queue loops have putCount=1).
     if (putCount > 1 && dmaRepeat == 0)
       return putCount;
     int64_t d = depth > 0 ? depth : 1;
@@ -357,7 +359,8 @@ struct ConduitInfo {
 // ---------------------------------------------------------------------------
 // Metadata for an acquire_async op, recorded before erasure so that
 // wait_window and wait_all can look up lock info after the op is gone.
-// Populated by Phase 8a, read by Phase 8b/8c.
+// Populated when async acquires are recorded; read by the wait_window /
+// wait_all lowering steps inside lowerPhase.
 // ---------------------------------------------------------------------------
 struct AsyncAcquireInfo {
   std::string conduitName;
@@ -503,7 +506,7 @@ struct ConduitToDMAState {
   llvm::DenseMap<mlir::Value, mlir::Value> tileRotationBuf;
   llvm::DenseMap<mlir::Value, int64_t> tileRotationBufNextSlot;
 
-  // Shim conduit names for Phase 4.5 symbol rewriting.
+  // Shim conduit names for symbol rewriting in routePhase.
   llvm::StringSet<> shimConduitNames;
 
   // Packet flow ID allocator (replaces raw counter; initialized in Pass shell).
@@ -511,17 +514,18 @@ struct ConduitToDMAState {
   // the module and architecture limit are known.
   std::optional<PacketIDAllocator> packetIDAllocator;
 
-  // Packet channel state for Step 3.5 mode=any fallback.
+  // Packet channel state for the mode=any (circuit-exhausted) fallback.
   // Tracks which MM2S channels have been designated for packet use, and which
   // (flow_id, dst_tile) pairs are routed through each packet-mode channel.
   PacketChannelState pktChannelState;
 
   // Per-tile BD budget used (number of BD slots consumed so far).
   // Incremented by `depth` whenever a conduit allocates BD chains on a tile.
-  // Used by Step 3.5b to check whether the BD budget allows a new flow.
+  // Used during the mode=any fallback to check whether the BD budget allows
+  // a new flow.
   llvm::DenseMap<mlir::Value, int32_t> tileBDUsed;
 
-  // Fuse group tracking for Phase 4.5a and Phase 5.5.
+  // Fuse group tracking for non-adjacent flow emission and BD-chain emission.
   llvm::StringMap<int32_t> fuseGroupMM2SChannel;
   llvm::StringMap<int32_t> fuseGroupS2MMChannel;
   llvm::StringMap<llvm::SmallVector<std::string, 4>> fuseGroupMembers;
@@ -530,30 +534,31 @@ struct ConduitToDMAState {
   // When multiple packet-mode channels target the same tile, they share
   // one physical S2MM port (differentiated by packet_id in BD headers).
   // Key: consumer tile SSA value.  Value: assigned S2MM channel index.
-  // Populated during Phase 4.5a packet-mode flow emission.
+  // Populated during routePhase packet-mode flow emission.
   llvm::DenseMap<mlir::Value, int32_t> pktTileS2MMChannel;
 
   // Packet-mode S2MM lock sharing: when multiple packet-mode conduits share
   // an S2MM port on a consumer tile (via pktTileS2MMChannel), they also share
   // a single lock pair.  This prevents lock ID overflow on tiles with many
   // packet-muxed channels (e.g., flash attention Q+K+V → 1 lock pair instead
-  // of 3).  Populated alongside pktTileS2MMChannel; consumed by Phase 5.5 BD
+  // of 3).  Populated alongside pktTileS2MMChannel; consumed by linkPhase BD
   // chain generation (via info.consumerTileLocks overwrite).
   llvm::DenseMap<mlir::Value, std::pair<mlir::Value, mlir::Value>>
       pktTileS2MMLock;
 
-  // Pre-computed used DMA channels per tile (populated before Phase 5.5).
+  // Pre-computed used DMA channels per tile (populated before linkPhase BD
+  // chain generation).
   llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedMM2SChannels;
   llvm::DenseMap<mlir::Value, llvm::DenseSet<int32_t>> preUsedS2MMChannels;
 
-  // BD range tracking for fused channel groups (Phase 5.5 post-pass).
+  // BD range tracking for fused channel groups (linkPhase post-pass).
   llvm::StringMap<std::pair<mlir::Block *, mlir::Block *>> conduitBDRange;
 
   // Per-conduit packet flow ID for MM2S BD packet headers (aie.dma_bd_packet).
   // For packet-mode channels, each MM2S BD needs a packet header matching the
   // packet flow ID so the switchbox can route data to the correct destination.
   // Key: conduit name; Value: packet ID (0-31).
-  // Populated by routePhase. Read by linkPhase for Phase 5.5 BD emission.
+  // Populated by routePhase. Read by linkPhase for BD chain emission.
   llvm::StringMap<uint8_t> conduitPacketID;
 
   // Async acquire metadata for Phase 8.

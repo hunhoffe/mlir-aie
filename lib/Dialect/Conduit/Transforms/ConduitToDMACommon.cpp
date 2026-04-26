@@ -228,7 +228,7 @@ void ConduitToDMAState::switchToDeviceIndex(int devIdx) {
     return;
   activeDevIdx = devIdx;
   AIE::DeviceOp dev = deviceOps[devIdx];
-  // FS2: keep state.deviceOp in sync with the active device.  Without this,
+  // Keep state.deviceOp in sync with the active device.  Without this,
   // SymbolTable lookups in routePhase (e.g. checking for a pre-existing
   // shim_dma_allocation) always ran against device 0, missed real matches in
   // non-first devices, and emitted duplicate symbols → "redefinition of
@@ -385,7 +385,7 @@ void ConduitToDMAState::emitBDBlock(mlir::Location loc, mlir::Block *block,
   if (!buffer) {
     mlir::emitError(loc,
                     "conduit-to-dma: emitBDBlock called with null buffer — "
-                    "internal allocation error in Phase 3");
+                    "internal allocation error during buffer-allocation phase");
     return;
   }
   builder->setInsertionPointToEnd(block);

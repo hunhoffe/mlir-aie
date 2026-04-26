@@ -785,8 +785,19 @@ void lowerPhase(ConduitToDMAState &state) {
     return;
 
   // Step 8c: Lower wait_all.
+  //
+  // wait_all ops inside an aie.runtime_sequence are handled by Step 8g
+  // (basic Path C, 2026-04-25): they reference !conduit.dma.token values
+  // produced by put/get_memref_async (rebuilt from IRON's
+  // aiex.dma_configure_task_for + dma_start_task), and Step 8g lowers
+  // them to aiex.dma_await_task / aiex.dma_free_task at their source
+  // locations to preserve IRON's per-launch BD release boundaries.
+  // Skipping rtSeq-scoped wait_all here prevents this pass from
+  // erasing them before Step 8g sees them.
   llvm::SmallVector<WaitAll> waitAllToErase;
   module.walk([&](WaitAll op) {
+    if (op->getParentOfType<AIE::RuntimeSequenceOp>())
+      return;
     builder.setInsertionPoint(op);
     for (mlir::Value tok : op.getTokens()) {
       auto ait = state.asyncAcquireMap.find(tok);
@@ -924,9 +935,16 @@ void lowerPhase(ConduitToDMAState &state) {
   // This mirrors the Tier 2 acquire/release protocol (Steps 2+4).
 
   // Step 8e: Lower PutMemrefAsync.
+  //
+  // Skip async ops inside an aie.runtime_sequence — Step 8g rebuilds them
+  // into aiex.dma_configure_task_for + dma_start_task and pairs each with
+  // its wait_all consumer.  Erasing them here would lose the source-order
+  // metadata Step 8g requires.
   {
     llvm::SmallVector<PutMemrefAsync> toErase;
     module.walk([&](PutMemrefAsync op) {
+      if (op->getParentOfType<AIE::RuntimeSequenceOp>())
+        return;
       llvm::StringRef conduitName = op.getName();
       ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
       if (cinfo) {
@@ -971,9 +989,13 @@ void lowerPhase(ConduitToDMAState &state) {
   }
 
   // Step 8f: Lower GetMemrefAsync.
+  //
+  // Skip async ops inside an aie.runtime_sequence — Step 8g handles them.
   {
     llvm::SmallVector<GetMemrefAsync> toErase;
     module.walk([&](GetMemrefAsync op) {
+      if (op->getParentOfType<AIE::RuntimeSequenceOp>())
+        return;
       llvm::StringRef conduitName = op.getName();
       ConduitInfo *cinfo = state.lookupConduit(conduitName, op);
       if (cinfo) {
@@ -1031,9 +1053,9 @@ void lowerPhase(ConduitToDMAState &state) {
   // from the original aie.dma_bd's BlockArgument index.  We use that
   // attribute as the authoritative binding when re-emitting aie.dma_bd.
   //
-  // FS7 history: an earlier version of this step grouped ops by an
+  // History: an earlier version of this step grouped ops by an
   // `offsets[0] == 0` heuristic ("a new arg group starts when offset is
-  // zero").  That heuristic is the bug — it mis-binds ops whose first
+  // zero").  That heuristic was the bug — it mis-binds ops whose first
   // offset is a non-zero patch marker (e.g. IRON's `0xDEADBEE0` runtime
   // patch markers used by StridedCopy/Repeat) to the previous group's
   // block arg, silently routing OUTPUT BDs to INPUT block args.  The
@@ -1069,11 +1091,21 @@ void lowerPhase(ConduitToDMAState &state) {
     });
 
     module.walk([&](AIE::RuntimeSequenceOp rtSeq) {
-      // Collect put/get_memref ops in source order.
+      // Collect put/get_memref AND put/get_memref_async ops in source order.
+      // Async variants are emitted by --dma-task-to-conduit (basic Path C,
+      // 2026-04-25) when IRON's dma_await_task / dma_free_task need to be
+      // preserved as conduit.wait_all{token=...} for per-launch BD release.
       llvm::SmallVector<mlir::Operation *> memrefOps;
+      // wait_all ops in source order — Step 8g lowers them to
+      // aiex.dma_await_task / aiex.dma_free_task at their source locations
+      // so IRON's per-launch BD release boundaries survive.
+      llvm::SmallVector<WaitAll> waitAllsInSeq;
       for (auto &op : rtSeq.getBody().front()) {
-        if (mlir::isa<PutMemref>(op) || mlir::isa<GetMemref>(op))
+        if (mlir::isa<PutMemref>(op) || mlir::isa<GetMemref>(op) ||
+            mlir::isa<PutMemrefAsync>(op) || mlir::isa<GetMemrefAsync>(op))
           memrefOps.push_back(&op);
+        else if (auto wa = mlir::dyn_cast<WaitAll>(op))
+          waitAllsInSeq.push_back(wa);
       }
       if (memrefOps.empty())
         return;
@@ -1081,28 +1113,22 @@ void lowerPhase(ConduitToDMAState &state) {
       auto blockArgs = rtSeq.getBody().front().getArguments();
       auto indexTy = mlir::IndexType::get(ctx);
 
-      // Per-channel live-task tracking for the trailing release.  Path B
-      // (2026-04-25, supersedes FS7/Task #62 inline-release design):
-      // matches stateful's emission pattern — NO inline release between
-      // same-channel configures; instead, every configured task gets a
-      // matching release emitted at end-of-rtSeq.  S2MM (issue_token=true)
-      // → aiex.dma_await_task; MM2S → aiex.dma_free_task.  The
-      // AIEAssignRuntimeSequenceBDIDs allocator (interval analysis) sees
-      // each per-task interval as [configure ... trailing-release] and
-      // assigns distinct BD IDs from the per-channel pool; if live
-      // intervals exceed the pool capacity (16 on shim) the allocator
-      // emits a diagnostic.  This avoids the bug-class-3 mid-flight BD
-      // overwrite that the prior eager-recycling design caused on
-      // multi-fire shim BDs (repeat_count > 0 queued fires draining
-      // while the next configure overwrote the BD register).
+      // Per-channel live-task tracking for the trailing release.  Emit
+      // no inline release between same-channel configures; every
+      // configured task gets a matching release at end-of-rtSeq instead
+      // (S2MM with issue_token=true → aiex.dma_await_task; MM2S →
+      // aiex.dma_free_task).  AIEAssignRuntimeSequenceBDIDs's interval
+      // analysis treats each task as [configure ... trailing-release]
+      // and assigns distinct BD IDs from the per-channel pool (16 on
+      // shim); pool exhaustion surfaces a clear diagnostic.
       struct LiveTask {
         mlir::Value task;
         bool isS2MM;
         mlir::Location loc;
       };
       // All configured tasks per channel, in source order.  Trailing
-      // release emits one release per stored task, preserving source
-      // order within each channel.
+      // release emits one release per stored task that was NOT already
+      // released by an explicit wait_all consumer.
       llvm::StringMap<llvm::SmallVector<LiveTask, 4>> tasksPerChannel;
       // Insertion-ordered channel keys so trailing release order is
       // deterministic (StringMap iteration order is hash-dependent and
@@ -1111,6 +1137,21 @@ void lowerPhase(ConduitToDMAState &state) {
       // not mutated here).  Channels are emitted in first-seen order;
       // tasks within a channel are emitted in source order.
       llvm::SmallVector<llvm::StringRef, 16> liveOrder;
+      // Map: !conduit.dma.token from put/get_memref_async → emitted task
+      // SSA value.  Used to lower wait_all ops to dma_await/free_task with
+      // the right operand.
+      llvm::DenseMap<mlir::Value, mlir::Value> conduitTokenToTask;
+      // Map: emitted task SSA → emitted aiex.dma_configure_task_for op.
+      // Lets us stamp `issue_token = true` after the fact when an MM2S
+      // task is awaited by a wait_all{token=true} consumer.  We use
+      // `Operation *` (not LiveTask *) to avoid dangling-pointer hazards
+      // when tasksPerChannel SmallVectors reallocate.
+      llvm::DenseMap<mlir::Value, mlir::Operation *> taskToConfigOp;
+      // Map: emitted task SSA → direction (for picking await vs free).
+      llvm::DenseMap<mlir::Value, bool> taskIsS2MM;
+      // Tasks that have been released by an explicit wait_all consumer —
+      // skipped by the trailing-release loop to avoid double-release.
+      llvm::DenseSet<mlir::Value> releasedTasks;
 
       for (unsigned i = 0; i < memrefOps.size(); ++i) {
         mlir::Operation *op = memrefOps[i];
@@ -1127,11 +1168,11 @@ void lowerPhase(ConduitToDMAState &state) {
         bool isS2MM = (conduitToDir[conduitName] == AIE::DMAChannelDir::S2MM);
 
         // Resolve block arg via the explicit arg_index attribute set by
-        // --dma-task-to-conduit.  The previous offsets[0]==0 grouping
-        // heuristic was the FS7 bug — it silently mis-bound output ops
-        // whose first offset is a non-zero patch marker to the input
-        // block arg.  arg_index is now the authoritative binding; missing
-        // arg_index is a hard error (signals upstream pipeline bug).
+        // --dma-task-to-conduit.  An earlier offsets[0]==0 grouping
+        // heuristic silently mis-bound output ops whose first offset is
+        // a non-zero patch marker to the input block arg; arg_index is
+        // now the authoritative binding; missing arg_index is a hard
+        // error (signals upstream pipeline bug).
         auto argIdxAttr = op->getAttrOfType<mlir::IntegerAttr>("arg_index");
         if (!argIdxAttr) {
           op->emitError("conduit-to-dma Step 8g: put/get_memref op is "
@@ -1171,9 +1212,9 @@ void lowerPhase(ConduitToDMAState &state) {
         //   * get_memref (S2MM) carries consumer_dimensions: a
         //     BDDimLayoutArrayArrayAttr (one entry per consumer tile).
         //     For shim S2MM rebuild, there is exactly one consumer (the
-        //     shim DMA), so we use the first inner array.  FS7 sub-fix:
-        //     this restores the strided write geometry (e.g. StridedCopy's
-        //     8×131072 scatter) that was previously dropped to nullptr.
+        //     shim DMA), so we use the first inner array.  This restores
+        //     the strided write geometry (e.g. StridedCopy's 8×131072
+        //     scatter) that was previously dropped to nullptr.
         AIE::BDDimLayoutArrayAttr dims;
         if (isS2MM) {
           if (auto consDimsAttr =
@@ -1222,21 +1263,13 @@ void lowerPhase(ConduitToDMAState &state) {
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
-        // Path B: NO inline release between same-channel configures.
-        // Matches stateful's pattern — releases are batched at end-of-rtSeq
-        // (see trailing-release loop below).  The AIEAssignRuntimeSequenceBDIDs
-        // allocator handles overlapping configure intervals natively by
-        // assigning distinct BD IDs from the per-channel pool; if the live
-        // interval set exceeds the pool capacity, the allocator emits a
-        // diagnostic instructing the producer to interleave await/free.
-        //
-        // Bug class 3 history (2026-04-25): the prior inline dma_free_task
-        // here recycled BD IDs eagerly while a still-firing shim BD's
-        // queued repeat_count > 0 fires drained, leading to mid-flight
-        // overwrite (N-stripe rollover at GEMM @ attn_query).  The Option-A
-        // swap to dma_await_task was rejected by aiecc legalization because
-        // MM2S configures lack issue_token = true.  Path B (this state)
-        // matches stateful exactly.
+        // No inline release between same-channel configures: releases
+        // are batched at end-of-rtSeq (see trailing-release loop below)
+        // so AIEAssignRuntimeSequenceBDIDs sees per-task intervals
+        // [configure ... trailing-release] and assigns distinct BD IDs
+        // from the per-channel pool.  Pool exhaustion surfaces a clear
+        // diagnostic instructing the producer to interleave await/free
+        // for finer-grained release.
 
         // Build aiex.dma_configure_task_for.
         mlir::OperationState configState(loc, "aiex.dma_configure_task_for");
@@ -1286,6 +1319,20 @@ void lowerPhase(ConduitToDMAState &state) {
           builder.create(startState);
         }
 
+        // Basic Path C tracking: record the task's configure op + direction
+        // so wait_all consumer lowering (below) can (a) emit the right
+        // release op (await for S2MM, await-or-free for MM2S depending on
+        // wait_all.token), and (b) stamp `issue_token = true` on the MM2S
+        // configure when a wait_all{token = true} consumer needs to await it.
+        // For the async variants, also map the conduit token result → task
+        // SSA so wait_all operands resolve correctly.
+        taskToConfigOp[taskResult] = configOp;
+        taskIsS2MM[taskResult] = isS2MM;
+        if (mlir::isa<PutMemrefAsync>(op) || mlir::isa<GetMemrefAsync>(op)) {
+          mlir::Value conduitToken = op->getResult(0);
+          conduitTokenToTask[conduitToken] = taskResult;
+        }
+
         // Append this task to the per-channel list (Path B: every
         // configured task gets a matching trailing release).  First time
         // this channel is seen, also record its key in liveOrder for
@@ -1301,16 +1348,79 @@ void lowerPhase(ConduitToDMAState &state) {
         }
       }
 
+      // wait_all consumer lowering inside aie.runtime_sequence.
+      // For each conduit.wait_all in the runtime sequence, emit an explicit
+      // per-task release op (aiex.dma_await_task or aiex.dma_free_task) at
+      // the wait_all's source location.  This preserves the per-launch BD
+      // release boundaries that IRON emits, so the
+      // AIEAssignRuntimeSequenceBDIDs allocator's per-channel live intervals
+      // shrink to [configure ... explicit-release] instead of spanning the
+      // whole runtime sequence.  Without this preservation, BD-pool
+      // exhaustion fires on workloads that exceed the per-shim 16-BD pool
+      // (e.g. Llama LM-head GEMM), even though IRON had already provided
+      // adequate release points in the source IR.
+      //
+      // Lowering rules:
+      //   wait_all{token = true}  → aiex.dma_await_task (one per operand);
+      //                             stamp `issue_token = true` on the
+      //                             corresponding configure_task (required
+      //                             by aiecc legalization for MM2S; S2MM
+      //                             already gets issue_token = true above).
+      //   wait_all{token = false} → aiex.dma_free_task (one per operand).
+      //
+      // Tasks released here are recorded in `releasedTasks` so the
+      // trailing-release loop below skips them (avoids double-release).
+      // Operands that don't resolve to a tracked task (e.g. window tokens
+      // mixed in, or tokens from a configure that was not lowered here)
+      // are skipped silently — those will fall back to the trailing-release
+      // path or be diagnosed by downstream verifiers.
+      for (WaitAll wa : waitAllsInSeq) {
+        bool wantAwait = wa.getToken();
+        builder.setInsertionPoint(wa);
+        for (mlir::Value tokenOperand : wa.getTokens()) {
+          auto tokIt = conduitTokenToTask.find(tokenOperand);
+          if (tokIt == conduitTokenToTask.end())
+            continue;
+          mlir::Value task = tokIt->second;
+
+          // For MM2S tasks awaited by wait_all{token = true}, ensure the
+          // corresponding configure_task was emitted with issue_token = true
+          // — the firmware requires it before dma_await_task may target the
+          // BD.  S2MM configures already get issue_token = true at emission
+          // time (see line ~1296 above), so this only affects MM2S.
+          if (wantAwait) {
+            auto s2mmIt = taskIsS2MM.find(task);
+            if (s2mmIt != taskIsS2MM.end() && !s2mmIt->second) {
+              auto cfgIt = taskToConfigOp.find(task);
+              if (cfgIt != taskToConfigOp.end())
+                cfgIt->second->setAttr("issue_token",
+                                       builder.getBoolAttr(true));
+            }
+          }
+
+          mlir::OperationState rel(wa.getLoc(),
+                                   wantAwait ? "aiex.dma_await_task"
+                                             : "aiex.dma_free_task");
+          rel.addOperands(task);
+          builder.create(rel);
+          releasedTasks.insert(task);
+        }
+      }
+
       // Trailing release: emit one release per configured task in
       // (channel-first-seen-order, then source-order within each channel).
       // S2MM (issue_token=true) → aiex.dma_await_task; MM2S →
-      // aiex.dma_free_task.  Matches stateful's emission pattern.
+      // aiex.dma_free_task.  Matches stateful's emission pattern.  Tasks
+      // already released by an explicit wait_all consumer are skipped to
+      // avoid double-release.
       builder.setInsertionPointToEnd(&rtSeq.getBody().front());
       for (llvm::StringRef channelKey : liveOrder) {
         auto trailIt = tasksPerChannel.find(channelKey);
         assert(trailIt != tasksPerChannel.end() &&
                "liveOrder out of sync with tasksPerChannel");
         for (const LiveTask &live : trailIt->second) {
+          if (releasedTasks.contains(live.task))
+            continue;
           mlir::OperationState rel(rtSeq.getLoc(),
                                    live.isS2MM ? "aiex.dma_await_task"
                                                : "aiex.dma_free_task");
@@ -1319,7 +1429,10 @@ void lowerPhase(ConduitToDMAState &state) {
         }
       }
 
-      // Erase the conduit put/get_memref ops.
+      // Erase the conduit wait_all ops first (they reference the async
+      // memref op results), then the put/get_memref ops.
+      for (WaitAll wa : waitAllsInSeq)
+        wa.erase();
       for (auto *op : llvm::reverse(memrefOps))
         op->erase();
     });

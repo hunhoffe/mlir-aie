@@ -82,7 +82,9 @@ module @dma_task_to_conduit_repeat_bd_nonzero_stride {
 // dim is peeled from sizes/strides; the inner addressable dims survive:
 //   sizes = [4, 32, 32], strides = [1024, 32, 1], product = 4096 = num_elems.
 //
-// CHECK:       conduit.put_memref
+// Async because the input has IRON dma_free_task — see conditional emission
+// in --dma-task-to-conduit (ConduitDmaTaskToConduit.cpp file header).
+// CHECK:       conduit.put_memref_async
 // CHECK-SAME:  name = @ext_in
 // CHECK-SAME:  num_elems = 4096
 // CHECK-SAME:  offsets = array<i64: 0, 0, 0>

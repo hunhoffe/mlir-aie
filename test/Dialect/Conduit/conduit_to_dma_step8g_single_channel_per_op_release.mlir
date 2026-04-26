@@ -6,50 +6,64 @@
 // (c) Copyright 2026 Advanced Micro Devices, Inc.
 
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-to-dma %s | FileCheck %s
+// Metafix Candidate 1 (basic Path C): also smoke through the downstream
+// shim-allocation-substitution + BD-ID assignment passes so dma_await_task
+// legalization (issue_token = true on MM2S configures) is exercised here,
+// not just at full-aiecc time.
+// RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
 
-// Path B regression (2026-04-25, supersedes FS7/Task #62 inline-release
-// design): --conduit-to-dma Step 8g must NOT emit any inline release
-// (aiex.dma_free_task / aiex.dma_await_task) between same-channel
-// configures.  All releases are batched at end-of-runtime_sequence,
-// matching stateful's emission pattern.
+// Basic Path C (2026-04-25, Task #18): IRON's per-launch
+// aiex.dma_await_task / aiex.dma_free_task in the source rtSeq survive
+// through --dma-task-to-conduit as conduit.wait_all{token=true|false}, and
+// --conduit-to-dma Step 8g lowers each wait_all back to an INLINE
+// aiex.dma_await_task / aiex.dma_free_task at the wait_all's source
+// location — preserving IRON's BD-release boundaries so the
+// AIEAssignRuntimeSequenceBDIDs allocator's per-channel live intervals
+// remain narrow ([configure ... explicit-release]).  Tasks released
+// inline are skipped by the trailing-release loop to avoid double-release.
 //
-// The prior eager-release design recycled BD IDs while still-firing
-// shim BDs' queued repeat_count > 0 fires drained, leading to
-// mid-flight register overwrite (bug class 3, N-stripe rollover at
-// GEMM @ attn_query — fixed by this change).
+// For wait_all{token = true} consumers on MM2S configures, Step 8g also
+// stamps `issue_token = true` on the configure_task — required by aiecc
+// legalization (and firmware-safe per Task #5 investigation).
 //
-// This single-channel test validates the trailing-release shape on the
-// simplest case: 4 MM2S invocations of one objectfifo.  Expected output
-// shape:
-//   configure_1, start_1,
-//   configure_2, start_2,
-//   configure_3, start_3,
-//   configure_4, start_4,
-//   free_1, free_2, free_3, free_4   (all trailing, source order)
-// i.e. 4 configures interleaved with NO releases, then 4 frees at end
-// in source order.  AIEAssignRuntimeSequenceBDIDs will assign 4 distinct
-// BD IDs from the per-channel pool (16 BDs on shim, easily fits 4).
+// This test pins the 4-invocation single-channel MM2S shape with explicit
+// IRON awaits.  Expected output:
+//   configure_1 {issue_token = true}, start_1
+//   configure_2 {issue_token = true}, start_2
+//   configure_3 {issue_token = true}, start_3
+//   configure_4 {issue_token = true}, start_4
+//   await_1, await_2, await_3, await_4   (inline at the original IRON
+//                                         await positions; trailing-release
+//                                         loop emits nothing because all
+//                                         tasks are in releasedTasks)
 
 // CHECK-LABEL: module @step8g_single_channel
 // CHECK:       aie.runtime_sequence
 
-// 4 configures + 4 starts in source order, no inline releases.
+// 4 configures + 4 starts in source order, with `issue_token = true`
+// stamped on each MM2S configure (driven by the wait_all{token = true}
+// consumers).
 // CHECK:           [[T0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
+// CHECK:           } {issue_token = true
 // CHECK:           aiex.dma_start_task([[T0]])
-// CHECK-NEXT:      [[T1:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
+// CHECK:           [[T1:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
+// CHECK:           } {issue_token = true
 // CHECK:           aiex.dma_start_task([[T1]])
-// CHECK-NEXT:      [[T2:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
+// CHECK:           [[T2:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
+// CHECK:           } {issue_token = true
 // CHECK:           aiex.dma_start_task([[T2]])
-// CHECK-NEXT:      [[T3:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
+// CHECK:           [[T3:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_in
+// CHECK:           } {issue_token = true
 // CHECK:           aiex.dma_start_task([[T3]])
 
-// Trailing releases: 4 frees in source order (channel ext_in is MM2S,
-// so dma_free_task; only one channel, so emission order matches source
-// configure order).
-// CHECK-NEXT:      aiex.dma_free_task([[T0]])
-// CHECK-NEXT:      aiex.dma_free_task([[T1]])
-// CHECK-NEXT:      aiex.dma_free_task([[T2]])
-// CHECK-NEXT:      aiex.dma_free_task([[T3]])
+// 4 inline awaits at the original IRON dma_await_task source positions
+// (end-of-rtSeq in source order).  No trailing free emissions — every
+// task was released by an explicit wait_all consumer.
+// CHECK:           aiex.dma_await_task([[T0]])
+// CHECK-NEXT:      aiex.dma_await_task([[T1]])
+// CHECK-NEXT:      aiex.dma_await_task([[T2]])
+// CHECK-NEXT:      aiex.dma_await_task([[T3]])
+// CHECK-NOT:       aiex.dma_free_task
 
 module @step8g_single_channel {
   aie.device(npu2) {
@@ -76,10 +90,9 @@ module @step8g_single_channel {
       aie.end
     } {link_with = "kernel.a"}
 
-    // Four invocations of the same channel.  IRON's pre-conduit
-    // emission interleaves awaits/frees per iteration;
-    // --dma-task-to-conduit drops the original sync ops, so Step 8g
-    // reconstructs exactly one trailing release per configured task.
+    // Four MM2S invocations of the same channel, with IRON's explicit
+    // dma_await_task per invocation.  Basic Path C preserves these as
+    // wait_all{token = true} → inline aiex.dma_await_task in the lowered IR.
     aie.runtime_sequence(%arg0: memref<512xbf16>) {
       %t0 = aiex.dma_configure_task_for @ext_in {
         aie.dma_bd(%arg0 : memref<512xbf16>, 0, 128) {burst_length = 0 : i32}

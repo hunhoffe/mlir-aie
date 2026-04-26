@@ -992,7 +992,7 @@ def Conduit_WaitWindow : Conduit_Op<"wait_window"> {
 }
 
 def Conduit_WaitAll : Conduit_Op<"wait_all"> {
-  let summary = "blocking fan-in wait — block until all tokens in the list are complete";
+  let summary = "blocking fan-in wait — block until all tokens in the list are complete; token=false marks a sync release boundary for DMA tokens";
   let description = [{
     Blocks the current thread until all tokens in the list are complete.  All
     specified async operations (DMA transfers, lock grants, releases) must
@@ -1007,9 +1007,40 @@ def Conduit_WaitAll : Conduit_Op<"wait_all"> {
       %w = conduit.acquire_async    ... : !conduit.window.token
       conduit.wait_all %d, %w   // hardware satisfies both in parallel
 
+    The optional `token` attribute (default `true`) selects the lowering
+    shape for !conduit.dma.token operands inside an aie.runtime_sequence
+    (basic Path C, 2026-04-25):
+
+      - token = true  (default): blocking completion wait + BD recycle.
+        Lowers to `aiex.dma_await_task`; the matched
+        `aiex.dma_configure_task_for` is stamped with `issue_token = true`
+        so the await is firmware-legal (MM2S + issue_token=true is
+        firmware-safe per the existing real-silicon CI in
+        test/npu-xrt/sync_task_complete_token/aie2.py).  Legal for any
+        operand token type.
+      - token = false: synchronous BD release marker (no completion wait —
+        the BD ID returns to the per-channel pool but the producer does
+        not block on transfer completion).  Lowers to
+        `aiex.dma_free_task`.  Legal ONLY when ALL operands are
+        !conduit.dma.token; a release marker has no meaning for a
+        Tier 2 buffer-window acquire token.
+
+    For !conduit.window.token operands (Tier 2) the `token` attribute is
+    ignored: the acquire port semantics determine the use_lock emission in
+    --conduit-to-dma Step 8c.
+
+    The `token` attribute exists so --dma-task-to-conduit can preserve
+    IRON's per-launch release boundaries (`aiex.dma_await_task` /
+    `aiex.dma_free_task`) inside Conduit IR rather than erasing them and
+    forcing Pass C to batch every release at end-of-runtime_sequence.
+    Per-launch boundaries keep the BD-ID live interval narrow, allowing
+    >16 same-channel invocations on a single shim DMA channel without
+    exhausting the 16-BD-per-channel pool (Llama LM-head GEMM).
+
     Maps to: air.wait_all [%tok0, %tok1, ...] (blocking, no result).
   }];
-  let arguments = (ins Variadic<Conduit_AnyTokenType>:$tokens);
+  let arguments = (ins Variadic<Conduit_AnyTokenType>:$tokens,
+                       DefaultValuedOptionalAttr<BoolAttr, "true">:$token);
   let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
   let hasVerifier = 1;
 }

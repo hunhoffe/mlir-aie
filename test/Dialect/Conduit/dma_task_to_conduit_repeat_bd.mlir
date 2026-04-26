@@ -72,14 +72,16 @@ module @dma_task_to_conduit_repeat_bd {
   }
 }
 
-// The MM2S BD lowers to a conduit.put_memref.
+// The MM2S BD lowers to a conduit.put_memref_async (async because the
+// input has IRON dma_free_task — see conditional emission in
+// --dma-task-to-conduit / ConduitDmaTaskToConduit.cpp file header).
 //
 // num_elems must equal `len` (128, the per-pass buffer count) and must equal
 // the product of `sizes`. After stripping stride=0 dims (repeat + filler
 // dims), only the inner <size=128, stride=1> dim survives, so:
 //   sizes = [128], strides = [1], product = 128 = num_elems. Verifier passes.
 //
-// CHECK:       conduit.put_memref
+// CHECK:       conduit.put_memref_async
 // CHECK-SAME:  name = @ext_in
 // CHECK-SAME:  num_elems = 128
 // CHECK-SAME:  offsets = array<i64: 0>

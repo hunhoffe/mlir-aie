@@ -72,7 +72,10 @@ module @dma_task_to_conduit_propagates_repeat_count_s2mm {
 // CHECK:       conduit.create @C_L2L3_0
 // CHECK-SAME:  dma_repeat = 1
 
-// CHECK:       conduit.get_memref
+// Async because the input has IRON dma_await_task / dma_free_task — see
+// conditional emission in --dma-task-to-conduit
+// (ConduitDmaTaskToConduit.cpp file header).
+// CHECK:       conduit.get_memref_async
 // CHECK-SAME:  name = @C_L2L3_0
 // CHECK-NOT:   dma_repeat
 // CHECK-NOT:   repeat_count

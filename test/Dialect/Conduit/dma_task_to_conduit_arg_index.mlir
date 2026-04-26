@@ -103,24 +103,35 @@ module @dma_task_to_conduit_arg_index {
   }
 }
 
-// The MM2S BD on %arg0 lowers to a put_memref carrying arg_index = 0
-// (block-arg 0 of the runtime_sequence).
+// The MM2S BD on %arg0 lowers to a put_memref_async carrying arg_index = 0
+// (block-arg 0 of the runtime_sequence).  Async because the input has
+// IRON dma_await_task / dma_free_task consumers — see conditional emission
+// in --dma-task-to-conduit (ConduitDmaTaskToConduit.cpp file header).
 //
-// CHECK:       conduit.put_memref
+// CHECK:       conduit.put_memref_async
 // CHECK-SAME:  arg_index = 0
 // CHECK-SAME:  name = @ext_in
 // CHECK-SAME:  num_elems = 128
 // CHECK-SAME:  offsets = array<i64: 0>
 //
 // The S2MM BD on %arg1 with the non-zero patch-marker offset lowers to a
-// get_memref carrying arg_index = 1 (block-arg 1 of the runtime_sequence).
-// Crucially the offsets[0] value (0xDEADBEE0 = 3735929056) is preserved on
-// the conduit op without affecting the arg binding.  Under the old
-// heuristic this op would have been mis-bound to %arg0.
+// get_memref_async carrying arg_index = 1 (block-arg 1 of the
+// runtime_sequence).  Crucially the offsets[0] value (0xDEADBEE0 =
+// 3735929056) is preserved on the conduit op without affecting the arg
+// binding.  Under the old heuristic this op would have been mis-bound to
+// %arg0.
 //
-// CHECK:       conduit.get_memref
+// CHECK:       conduit.get_memref_async
 // CHECK-SAME:  arg_index = 1
 // CHECK-SAME:  name = @ext_out
 // CHECK-SAME:  num_elems = 128
 // CHECK-SAME:  offsets = array<i64: -559038240>
 // (= 0xDEADBEE0 sign-interpreted as i64 — MLIR prints DenseArrayAttr<i64> as signed)
+//
+// IRON's dma_await_task / dma_free_task consumers survive as
+// conduit.wait_all ops with the appropriate token attribute (token=true
+// for await, token=false for free).
+//
+// CHECK:       conduit.wait_all
+// CHECK:       conduit.wait_all
+// CHECK:       conduit.wait_all

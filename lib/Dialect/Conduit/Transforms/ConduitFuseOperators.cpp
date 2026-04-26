@@ -772,8 +772,18 @@ struct ConduitFuseOperatorsPass
         // the intermediate LPDDR5 crossing; after spatial fusion the
         // intermediate lives in shared tile memory and needs no shim DMA.
         // Erase them now so they are not cloned into the merged sequence.
+        //
+        // For the `_async` variants, the op's token result may be consumed
+        // by `conduit.wait_all` ops.  When fusion eliminates the
+        // intermediate DMA, the wait_all on its token is also no longer
+        // semantically meaningful (no separate transfer = no sync point),
+        // so we erase those wait_alls first.  If a wait_all has a single
+        // operand pointing at the to-be-erased token, erase the wait_all
+        // entirely; if it has multiple operands, drop just the dead one
+        // by rebuilding the wait_all with the surviving operands.
         auto eraseFusedMemrefOps = [&](AIE::DeviceOp device) {
           llvm::SmallVector<mlir::Operation *> toErase;
+          llvm::SmallPtrSet<mlir::Operation *, 8> targetAsyncOps;
           device.walk([&](mlir::Operation *op) {
             llvm::StringRef opName = op->getName().getStringRef();
             if (opName != "conduit.put_memref" &&
@@ -782,9 +792,47 @@ struct ConduitFuseOperatorsPass
                 opName != "conduit.get_memref_async")
               return;
             auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
-            if (nameAttr && nameAttr.getValue() == fusedName)
+            if (nameAttr && nameAttr.getValue() == fusedName) {
               toErase.push_back(op);
+              if (opName == "conduit.put_memref_async" ||
+                  opName == "conduit.get_memref_async")
+                targetAsyncOps.insert(op);
+            }
           });
+          // Pre-pass: drop dead token operands from wait_all consumers,
+          // erasing the wait_all entirely if no operands survive.
+          if (!targetAsyncOps.empty()) {
+            llvm::SmallVector<WaitAll> waitAllsToErase;
+            llvm::SmallVector<std::pair<WaitAll, llvm::SmallVector<mlir::Value, 4>>>
+                waitAllsToShrink;
+            device.walk([&](WaitAll wa) {
+              llvm::SmallVector<mlir::Value, 4> survivors;
+              bool hadDead = false;
+              for (mlir::Value tok : wa.getTokens()) {
+                mlir::Operation *defOp = tok.getDefiningOp();
+                if (defOp && targetAsyncOps.contains(defOp)) {
+                  hadDead = true;
+                  continue;
+                }
+                survivors.push_back(tok);
+              }
+              if (!hadDead)
+                return;
+              if (survivors.empty())
+                waitAllsToErase.push_back(wa);
+              else
+                waitAllsToShrink.push_back({wa, std::move(survivors)});
+            });
+            for (auto &[wa, survivors] : waitAllsToShrink) {
+              mlir::OpBuilder builder(wa);
+              auto rebuilt = WaitAll::create(builder, wa.getLoc(), survivors);
+              if (auto tokenAttr = wa.getTokenAttr())
+                rebuilt.setTokenAttr(tokenAttr);
+              wa.erase();
+            }
+            for (WaitAll wa : waitAllsToErase)
+              wa.erase();
+          }
           for (auto *op : toErase)
             op->erase();
         };

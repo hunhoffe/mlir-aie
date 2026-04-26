@@ -1,0 +1,37 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit Path B (--use-conduit, fix landed at e2ea0ab450) end-to-end
+// xfail for the per-launch release BD-pool pattern.  npu2 only (Path B
+// sprint context: npu2 is the LM-head target).
+//
+// --dma-task-to-conduit ERASES the IRON-emitted inline await/free ops
+// (ConduitDmaTaskToConduit.cpp:48,403-415).  --conduit-to-dma re-emits
+// all releases at end-of-rtSeq (Step 8g, "Path B").  At this shape
+// (4 launches × 5 same-channel MM2S = 20 same-channel configures, no
+// inline release between them) the per-channel BD live-interval set
+// fully overlaps and exceeds the 16-BD per-channel shim pool on npu2.
+//
+// Expected today: aiecc.py exits non-zero with the verbatim allocator
+// diagnostic from
+// lib/Dialect/AIEX/Transforms/AIEAssignRuntimeSequenceBDIDs.cpp:106-113
+// (`emitOpError` is on the runtime_sequence's containing op which lives
+// on shim tile (0, 0); MM2S input channel index is 0).
+//
+// AFTER PATH C LANDS (basic Path C is in flight at Task #18; full Path
+// C will preserve IRON's release boundaries via
+// conduit.wait_all{token = bool}), this lit MUST be flipped: replace
+// the `not aiecc + FileCheck` block below with the same `clang
+// %S/test.cpp ... ; %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE
+// -i insts.bin` block from stateful.lit.  After Path C the test
+// verifies conduit produces byte-equivalent output to stateful at this
+// shape.
+//
+// REQUIRES: ryzen_ai
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% not %python aiecc.py --no-aiesim --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir 2>&1 | FileCheck %s
+
+// CHECK: Allocator exhausted available buffer descriptor IDs for channel 0 on tile (0, 0)
+// CHECK: Live BD intervals exceed the per-channel pool capacity
