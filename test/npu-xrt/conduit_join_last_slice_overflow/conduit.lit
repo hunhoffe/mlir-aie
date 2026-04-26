@@ -1,0 +1,33 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit) end-to-end run for the JOIN last-slice
+// BD-length overflow pattern.  The fix has been applied in this working
+// tree (ConduitToDMALink.cpp:574-595 — derive joinDstPerBufForLen from
+// the JOIN buffer's MemRefType element count instead of the shim
+// consumer's per-dispatch num_elems).
+//
+// PASS expectation: dispatch completes and output bytes match the
+// stateful reference computed by test.cpp.
+//
+// Pre-fix behavior (kept here for context, NOT the current state of the
+// tree): Pass C emits dma_bd len = 448 against memref<128xbf16> memtile
+// JOIN buffers (4× overflow).  The cross-buffer write hangs firmware
+// and the dispatch never returns a completion token; the host wait would
+// TIMEOUT (this lit would be a hang/timeout, not a wrong-bytes mismatch).
+//
+// npu2 only: this is the LM-head GEMM target where the bug surfaces in
+// Llama; npu1's per-channel pool / BD topology is not the regression
+// surface for this fix.
+//
+// NOTE: this lit is intentionally NOT marked XFAIL.  If the post-fix
+// build hangs or fails on hardware, that is a real signal that the fix
+// needs further work — DO NOT silence by adding XFAIL.
+//
+// REQUIRES: ryzen_ai
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %python aiecc.py --no-aiesim --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

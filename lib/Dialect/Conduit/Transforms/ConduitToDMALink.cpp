@@ -471,14 +471,20 @@ void linkPhase(ConduitToDMAState &state) {
 
     int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
     // perBufLen: number of elements per physical buffer for this source
-    // conduit. Prefer numElems (from put_memref_async descriptors), then derive
-    // from elemType (e.g. memref<48xi32> → 48), otherwise fall back to 1.
+    // conduit at the memtile.
+    //
+    // Derive memtile buffer length from elemType (the actual memtile buffer
+    // element count) FIRST, NOT from srcInfo.numElems. The latter is the
+    // SHIM aggregated per-dispatch window which can exceed the per-buffer
+    // size, causing last-slice BD length overflow at the memtile in the
+    // DISTRIBUTE MM2S/S2MM last-slice fall-through arms (mirrors the JOIN
+    // path fix below). Fall back to numElems only when elemType is not a
+    // MemRefType from which we can read getNumElements().
     int64_t perBufLen = 1;
-    if (srcInfo.numElems > 0) {
+    if (auto mref = mlir::dyn_cast_or_null<mlir::MemRefType>(srcInfo.elemType)) {
+      perBufLen = mref.getNumElements();
+    } else if (srcInfo.numElems > 0) {
       perBufLen = srcInfo.numElems;
-    } else if (srcInfo.elemType) {
-      if (auto mref = mlir::dyn_cast<mlir::MemRefType>(srcInfo.elemType))
-        perBufLen = mref.getNumElements();
     }
 
     // Per-destination independent lock pairs on the MemTile
@@ -582,14 +588,23 @@ void linkPhase(ConduitToDMAState &state) {
             << jDstName << "' not found — BD lengths defaulting to 1";
       } else {
         int64_t jDstDepth = jDstInfo->depth > 0 ? jDstInfo->depth : 1;
-        if (jDstInfo->numElems > 0) {
+
+        // Derive memtile JOIN buffer length from intBufTy (the actual memtile
+        // buffer element count), NOT from jDstInfo->numElems. The latter is
+        // the SHIM aggregated per-dispatch window which can exceed the
+        // per-buffer size, causing last-slice BD length overflow at the
+        // memtile (e.g. shim consumer with num_elems = N × per-slice across
+        // a multi-dispatch transfer makes the last-slice fall-through arm
+        // emit dma_bd len = num_elems - lastOffset, far larger than the
+        // actual memtile buffer). Fall back to numElems only when elemType
+        // is not a MemRefType from which we can read getNumElements().
+        mlir::Type intBufTy = jDstInfo->elemType;
+        if (auto mref = mlir::dyn_cast_or_null<mlir::MemRefType>(intBufTy)) {
+          joinDstPerBufForLen = mref.getNumElements();
+        } else if (jDstInfo->numElems > 0) {
           joinDstPerBufForLen = jDstInfo->numElems;
-        } else if (jDstInfo->elemType) {
-          if (auto mref = mlir::dyn_cast<mlir::MemRefType>(jDstInfo->elemType))
-            joinDstPerBufForLen = mref.getNumElements();
         }
 
-        mlir::Type intBufTy = jDstInfo->elemType;
         if (!intBufTy)
           intBufTy = mlir::MemRefType::get({joinDstPerBufForLen},
                                            mlir::IntegerType::get(ctx, 32));
