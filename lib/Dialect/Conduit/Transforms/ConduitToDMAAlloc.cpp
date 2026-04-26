@@ -270,23 +270,40 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
   // same tile as the core; AIEAssignBuffers will assign it an address and
   // an _anonymous name.  Init stores (zeroing) are emitted inside the core
   // body by the lowering phase (ConduitToDMALower.cpp).
+  //
+  // MULTI-DEVICE: walk the tile's PARENT device, not state.deviceBody.
+  // state.deviceBody is whatever device was last switchToDeviceIndex'd to;
+  // in multi-device fused MLIR, tiles in earlier devices wouldn't be
+  // found if we walked the last device's body, leading to silent skipping
+  // of rotation buffer allocation for those devices' cores. The fix
+  // unblocks Llama decode E2E (USER-LOCKED 2026-04-25): without it, the
+  // first ~19 of 20 fused-decode device blocks silently get no rotation
+  // → cores read only buff_0 → wrong data → firmware deadlock at dispatch.
   for (auto &[tileVal, count] : tileSlotCount) {
     if (count <= 0)
       continue;
     auto counterTy =
         mlir::MemRefType::get({count}, mlir::IntegerType::get(ctx, 32));
-    // Find the core op that owns this tile.
+    // Find the core op that owns this tile.  Look up via the tile's own
+    // parent device — NOT state.deviceBody, which only points at the last
+    // switched-to device in multi-device mode.
     AIE::CoreOp coreOp = nullptr;
-    state.deviceBody->walk([&](AIE::CoreOp core) {
-      if (core.getTile() == tileVal)
-        coreOp = core;
-    });
+    auto *tileDefOp = tileVal.getDefiningOp();
+    auto tileParentDev = tileDefOp
+                             ? tileDefOp->getParentOfType<AIE::DeviceOp>()
+                             : AIE::DeviceOp{};
+    if (tileParentDev) {
+      tileParentDev.walk([&](AIE::CoreOp core) {
+        if (core.getTile() == tileVal)
+          coreOp = core;
+      });
+    }
     if (!coreOp)
       continue; // shim or memory tile without core — no buffer needed
     // Insert aie.buffer at device level, just before the core op.
     mlir::OpBuilder bufBuilder(coreOp);
     auto bufOp = AIE::BufferOp::create(
-        bufBuilder, state.deviceOp.getLoc(), counterTy, tileVal,
+        bufBuilder, tileParentDev.getLoc(), counterTy, tileVal,
         /*sym_name=*/mlir::StringAttr{}, /*address=*/mlir::IntegerAttr{},
         /*initial_value=*/mlir::ElementsAttr{},
         /*mem_bank=*/mlir::IntegerAttr{});
