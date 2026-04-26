@@ -139,11 +139,6 @@ createConduitCheckLoopBalancePass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitFuseOperatorsPass();
 
-/// Buffer placement: assign mem_bank = i % 4 on aie.buffer ops emitted by
-/// Pass C (ConduitToDMAAlloc) for DMA-aware SRAM bank staggering.
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
-createConduitPlaceBuffersPass();
-
 /// DMA task → Conduit: convert aiex.dma_configure_task_for / dma_start_task /
 /// dma_await_task / dma_free_task in aie.runtime_sequence into
 /// conduit.put_memref or conduit.get_memref ops.

@@ -103,6 +103,20 @@ void lowerPhase(ConduitToDMAState &state) {
                     ? idx % static_cast<int64_t>(tileBuffers->size())
                     : 0;
             int64_t numBufs = static_cast<int64_t>(tileBuffers->size());
+            // Defense-in-depth: at numBufs>1 with no rotation counter,
+            // we'd silently emit static buff[0] selection — the
+            // multi-device-rotation bug class fixed by c09973b389. ERROR
+            // here so future regressions surface at compile time instead
+            // of as wrong-data on hardware.
+            if (numBufs > 1 && !tileRotationBuf) {
+              op.emitError(
+                  "conduit-to-dma: depth>1 buffer rotation requires a "
+                  "rotation counter, but none was allocated. This is the "
+                  "multi-device rotation bug class — check "
+                  "ConduitToDMAAlloc.cpp prescanAndCreateRotationBufs.");
+              state.passFailed = true;
+              return;
+            }
             bool useStaticSelection = (numBufs <= 1 || !tileRotationBuf);
             if (useStaticSelection) {
               mlir::Value bufVal = (*tileBuffers)[bufIdx].getResult();

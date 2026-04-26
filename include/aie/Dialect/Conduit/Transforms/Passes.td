@@ -665,33 +665,6 @@ def ConduitCheckLoopBalance : Pass<"conduit-check-loop-balance", "::mlir::Module
 }
 
 //===----------------------------------------------------------------------===//
-// --conduit-place-buffers — DMA-aware mem_bank assignment
-//===----------------------------------------------------------------------===//
-
-def ConduitPlaceBuffers
-    : Pass<"conduit-place-buffers", "::mlir::ModuleOp"> {
-  let summary = "Assign mem_bank attributes on aie.buffer ops for DMA-aware "
-                "bank staggering";
-  let description = [{
-    Runs between --conduit-to-dma and --aie-assign-buffer-addresses.
-    For each group of aie.buffer ops emitted by Pass C (ConduitToDMAAlloc)
-    (named `<chan>_cons_buff_<N>`), assigns:
-
-      buf[i].mem_bank = i % numBanks
-
-    so that consecutive FIFO slots land in different SRAM banks.  This
-    eliminates the DMA↔core bank conflicts that degrade throughput when
-    producer and consumer access the same bank simultaneously.
-
-    Requires --conduit-to-dma to have run first.
-  }];
-  let constructor = "xilinx::conduit::createConduitPlaceBuffersPass()";
-  let dependentDialects = [
-    "xilinx::conduit::ConduitDialect",
-    "xilinx::AIE::AIEDialect",
-  ];
-}
-
 //===----------------------------------------------------------------------===//
 // DMA Task → Conduit — dma-task-to-conduit
 //===----------------------------------------------------------------------===//
