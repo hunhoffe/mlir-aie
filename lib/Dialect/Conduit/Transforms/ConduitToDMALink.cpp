@@ -25,6 +25,26 @@
 
 namespace xilinx::conduit {
 
+// Derive the per-buffer BD transfer length for a Pass C BD descriptor.
+//
+// MUST agree with the actual buffer the BD writes into (intBufTy). The legacy
+// `numElems` value is the SHIM aggregated per-dispatch window from
+// --dma-task-to-conduit, which can exceed the per-tile buffer when an inner
+// core loop reuses the same FIFO slot multiple times. Using numElems for BD
+// length causes overflow at the memtile / compute tile (see commits
+// 7569b3e8e6 and follow-up — JOIN-overflow + Llama RMSNorm distribution).
+//
+// Single source of truth: prefer intBufTy.getNumElements(), fall back to
+// numElems only when intBufTy is not a MemRefType from which we can read
+// the element count. Default 1 if neither yields a usable value.
+static int64_t deriveBdLength(mlir::Type intBufTy, int64_t numElemsFallback) {
+  if (auto mref = mlir::dyn_cast_or_null<mlir::MemRefType>(intBufTy))
+    return mref.getNumElements();
+  if (numElemsFallback > 0)
+    return numElemsFallback;
+  return 1;
+}
+
 void linkPhase(ConduitToDMAState &state) {
   if (!state.deviceOp)
     return;
@@ -251,13 +271,8 @@ void linkPhase(ConduitToDMAState &state) {
         }
       }
 
-      int64_t relayPerBufLen = 1;
-      if (coreRelaySrc.numElems > 0) {
-        relayPerBufLen = coreRelaySrc.numElems;
-      } else if (coreRelaySrc.elemType) {
-        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(coreRelaySrc.elemType))
-          relayPerBufLen = mref.getNumElements();
-      }
+      int64_t relayPerBufLen =
+          deriveBdLength(coreRelaySrc.elemType, coreRelaySrc.numElems);
 
       // Retrieve the S2MM channel pre-assigned by Phase 4a.
       int32_t relaySrcS2MMCh = -1;
@@ -471,21 +486,11 @@ void linkPhase(ConduitToDMAState &state) {
 
     int64_t linkDepth = srcInfo.depth > 0 ? srcInfo.depth : 1;
     // perBufLen: number of elements per physical buffer for this source
-    // conduit at the memtile.
-    //
-    // Derive memtile buffer length from elemType (the actual memtile buffer
-    // element count) FIRST, NOT from srcInfo.numElems. The latter is the
-    // SHIM aggregated per-dispatch window which can exceed the per-buffer
-    // size, causing last-slice BD length overflow at the memtile in the
-    // DISTRIBUTE MM2S/S2MM last-slice fall-through arms (mirrors the JOIN
-    // path fix below). Fall back to numElems only when elemType is not a
-    // MemRefType from which we can read getNumElements().
-    int64_t perBufLen = 1;
-    if (auto mref = mlir::dyn_cast_or_null<mlir::MemRefType>(srcInfo.elemType)) {
-      perBufLen = mref.getNumElements();
-    } else if (srcInfo.numElems > 0) {
-      perBufLen = srcInfo.numElems;
-    }
+    // conduit at the memtile. See deriveBdLength comment for the
+    // single-source-of-truth rationale (avoid SHIM-window overflow at the
+    // memtile in DISTRIBUTE last-slice fall-through arms; mirrors the JOIN
+    // path fix below).
+    int64_t perBufLen = deriveBdLength(srcInfo.elemType, srcInfo.numElems);
 
     // Per-destination independent lock pairs on the MemTile
     // (distribute/forward).
@@ -589,21 +594,11 @@ void linkPhase(ConduitToDMAState &state) {
       } else {
         int64_t jDstDepth = jDstInfo->depth > 0 ? jDstInfo->depth : 1;
 
-        // Derive memtile JOIN buffer length from intBufTy (the actual memtile
-        // buffer element count), NOT from jDstInfo->numElems. The latter is
-        // the SHIM aggregated per-dispatch window which can exceed the
-        // per-buffer size, causing last-slice BD length overflow at the
-        // memtile (e.g. shim consumer with num_elems = N × per-slice across
-        // a multi-dispatch transfer makes the last-slice fall-through arm
-        // emit dma_bd len = num_elems - lastOffset, far larger than the
-        // actual memtile buffer). Fall back to numElems only when elemType
-        // is not a MemRefType from which we can read getNumElements().
+        // Derive memtile JOIN buffer length via deriveBdLength to avoid the
+        // SHIM aggregated per-dispatch window overflowing the per-buffer
+        // size in the last-slice fall-through arm.
         mlir::Type intBufTy = jDstInfo->elemType;
-        if (auto mref = mlir::dyn_cast_or_null<mlir::MemRefType>(intBufTy)) {
-          joinDstPerBufForLen = mref.getNumElements();
-        } else if (jDstInfo->numElems > 0) {
-          joinDstPerBufForLen = jDstInfo->numElems;
-        }
+        joinDstPerBufForLen = deriveBdLength(intBufTy, jDstInfo->numElems);
 
         if (!intBufTy)
           intBufTy = mlir::MemRefType::get({joinDstPerBufForLen},
@@ -1424,13 +1419,7 @@ void linkPhase(ConduitToDMAState &state) {
       pConsLock = lockIt->second.second;
     }
 
-    int64_t perBufLen = 1;
-    if (info.numElems > 0) {
-      perBufLen = info.numElems;
-    } else if (info.elemType) {
-      if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
-        perBufLen = mref.getNumElements();
-    }
+    int64_t perBufLen = deriveBdLength(info.elemType, info.numElems);
     int64_t nBufs = static_cast<int64_t>(prodBufs.size());
 
     // Reuse MM2S channel allocated by Phase 5 flow emission, if present.
@@ -1591,13 +1580,7 @@ void linkPhase(ConduitToDMAState &state) {
       if (!prodTile)
         continue;
 
-      int64_t perBufLen = 1;
-      if (info.numElems > 0) {
-        perBufLen = info.numElems;
-      } else if (info.elemType) {
-        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
-          perBufLen = mref.getNumElements();
-      }
+      int64_t perBufLen = deriveBdLength(info.elemType, info.numElems);
       mlir::Value prodTileVal = prodTile.getResult();
 
       // Check for an existing aie.mem for this tile (e.g. created by Phase 5.5
@@ -1750,13 +1733,7 @@ void linkPhase(ConduitToDMAState &state) {
               !bufIt->second.empty()) {
             llvm::SmallVector<AIE::BufferOp> &prodBuffers = bufIt->second;
             int64_t depth = info.depth > 0 ? info.depth : 1;
-            int64_t perBufLen = 1;
-            if (info.numElems > 0) {
-              perBufLen = info.numElems;
-            } else if (info.elemType) {
-              if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
-                perBufLen = mref.getNumElements();
-            }
+            int64_t perBufLen = deriveBdLength(info.elemType, info.numElems);
 
             // Look up packet flow ID for packet-mode channels.
             // When set, each MM2S BD emits aie.dma_bd_packet so the switchbox
@@ -2033,13 +2010,7 @@ void linkPhase(ConduitToDMAState &state) {
       if (prodRow < 2)
         continue;
 
-      int64_t perBufLen = 1;
-      if (info.numElems > 0) {
-        perBufLen = info.numElems;
-      } else if (info.elemType) {
-        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
-          perBufLen = mref.getNumElements();
-      }
+      int64_t perBufLen = deriveBdLength(info.elemType, info.numElems);
 
       mlir::Value prodTileVal = dmaHostTile.getResult();
 
@@ -2232,13 +2203,7 @@ void linkPhase(ConduitToDMAState &state) {
       if (info.consumerTileCoords.empty())
         continue;
 
-      int64_t perBufLen = 1;
-      if (info.numElems > 0) {
-        perBufLen = info.numElems;
-      } else if (info.elemType) {
-        if (auto mref = mlir::dyn_cast<mlir::MemRefType>(info.elemType))
-          perBufLen = mref.getNumElements();
-      }
+      int64_t perBufLen = deriveBdLength(info.elemType, info.numElems);
       // nConsumerBuffers() >= depth; extra slots support sliding-window
       // patterns.
       int64_t nBufs = info.nConsumerBuffers();
