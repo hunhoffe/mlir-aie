@@ -446,4 +446,70 @@ ConduitInfo *ConduitToDMAState::lookupConduit(mlir::StringRef name,
   return lookupConduit(name);
 }
 
+int32_t ConduitToDMAState::lookupS2MMChannel(mlir::StringRef name,
+                                             unsigned consIdx,
+                                             mlir::Operation *contextOp) {
+  // Try the device-qualified key first (matches Phase 4a/4b writes that
+  // iterate `conduitMap` whose keys are produced by `makeConduitKey`).
+  if (contextOp && isMultiDevice()) {
+    std::string key = makeConduitKey(name, contextOp);
+    auto it = conduitConsS2MMChannel.find({key, consIdx});
+    if (it != conduitConsS2MMChannel.end())
+      return it->second;
+  }
+  // Fallback to the unqualified IR symbol name (single-device or any
+  // remaining write site that has not yet been migrated to qualified keys).
+  auto it = conduitConsS2MMChannel.find({name.str(), consIdx});
+  if (it != conduitConsS2MMChannel.end())
+    return it->second;
+  return -1;
+}
+
+int32_t ConduitToDMAState::lookupMM2SChannel(mlir::StringRef name,
+                                             mlir::Operation *contextOp) {
+  if (contextOp && isMultiDevice()) {
+    std::string key = makeConduitKey(name, contextOp);
+    auto it = conduitMM2SChannel.find(key);
+    if (it != conduitMM2SChannel.end())
+      return it->second;
+  }
+  auto it = conduitMM2SChannel.find(name);
+  if (it != conduitMM2SChannel.end())
+    return it->second;
+  return -1;
+}
+
+int32_t ConduitToDMAState::lookupPacketID(mlir::StringRef name,
+                                          mlir::Operation *contextOp) {
+  if (contextOp && isMultiDevice()) {
+    std::string key = makeConduitKey(name, contextOp);
+    auto it = conduitPacketID.find(key);
+    if (it != conduitPacketID.end())
+      return static_cast<int32_t>(it->second);
+  }
+  auto it = conduitPacketID.find(name);
+  if (it != conduitPacketID.end())
+    return static_cast<int32_t>(it->second);
+  return -1;
+}
+
+void ConduitToDMAState::insertS2MMChannel(mlir::StringRef name,
+                                          unsigned consIdx, int32_t ch,
+                                          mlir::Operation *contextOp) {
+  std::string key = makeConduitKey(name, contextOp);
+  conduitConsS2MMChannel[{key, consIdx}] = ch;
+}
+
+void ConduitToDMAState::insertMM2SChannel(mlir::StringRef name, int32_t ch,
+                                          mlir::Operation *contextOp) {
+  std::string key = makeConduitKey(name, contextOp);
+  conduitMM2SChannel[key] = ch;
+}
+
+void ConduitToDMAState::insertPacketID(mlir::StringRef name, uint8_t pktID,
+                                       mlir::Operation *contextOp) {
+  std::string key = makeConduitKey(name, contextOp);
+  conduitPacketID[key] = pktID;
+}
+
 } // namespace xilinx::conduit

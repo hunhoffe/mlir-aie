@@ -275,14 +275,12 @@ void linkPhase(ConduitToDMAState &state) {
           deriveBdLength(coreRelaySrc.elemType, coreRelaySrc.numElems);
 
       // Retrieve the S2MM channel pre-assigned by Phase 4a.
-      int32_t relaySrcS2MMCh = -1;
-      {
-        auto chIt = state.conduitConsS2MMChannel.find({coreRelayName, 0u});
-        if (chIt != state.conduitConsS2MMChannel.end())
-          relaySrcS2MMCh = chIt->second;
-        else
-          relaySrcS2MMCh = state.tileNextS2MMChannel[relayTileVal]++;
-      }
+      // Use the device-qualified-then-unqualified helper so multi-device
+      // modules find the channel that Phase 4 wrote under the qualified key.
+      int32_t relaySrcS2MMCh =
+          state.lookupS2MMChannel(coreRelayName, 0u, linkOp.op);
+      if (relaySrcS2MMCh < 0)
+        relaySrcS2MMCh = state.tileNextS2MMChannel[relayTileVal]++;
 
       // Always use DMA relay for CoreTile relay links.
       // Phase 3c now skips linkDstNames conduits, so dst conduits are never
@@ -391,7 +389,7 @@ void linkPhase(ConduitToDMAState &state) {
                 continue;
               mlir::Value consTileVal = consTile.getResult();
               int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
-              state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+              state.insertS2MMChannel(dstName, consIdx, s2mmCh, linkOp.op);
               builder.setInsertionPoint(state.deviceBody->getTerminator());
               builder.create<AIE::FlowOp>(
                   loc, relayTileVal, AIE::WireBundle::DMA, mm2sCh, consTileVal,
@@ -679,12 +677,11 @@ void linkPhase(ConduitToDMAState &state) {
     if (isDistribute) {
       // If Phase 4 assigned a S2MM channel for the link source's memtile
       // consumer, reuse it.  Otherwise allocate one now (compute producer).
-      auto it = state.conduitConsS2MMChannel.find({srcName, 0u});
-      if (it != state.conduitConsS2MMChannel.end()) {
-        ingestS2MMCh = it->second;
-      } else {
+      // Device-qualified-then-unqualified lookup so multi-device modules
+      // find the channel that Phase 4 wrote under the qualified key.
+      ingestS2MMCh = state.lookupS2MMChannel(srcName, 0u, linkOp.op);
+      if (ingestS2MMCh < 0)
         ingestS2MMCh = state.tileNextS2MMChannel[memtileVal]++;
-      }
     }
 
     // Distribute: per-destination MM2S channels on the memtile.
@@ -697,12 +694,12 @@ void linkPhase(ConduitToDMAState &state) {
       for (unsigned i = 0; i < numDsts; ++i) {
         std::string dstName =
             mlir::cast<mlir::FlatSymbolRefAttr>(dsts[i]).getValue().str();
-        auto chIt = state.conduitMM2SChannel.find(dstName);
-        if (chIt != state.conduitMM2SChannel.end()) {
-          distMM2SChannels.push_back(chIt->second);
-        } else {
-          distMM2SChannels.push_back(state.tileNextMM2SChannel[memtileVal]++);
-        }
+        // Device-qualified-then-unqualified lookup so multi-device modules
+        // find the channel that Phase 4b wrote under the qualified key.
+        int32_t ch = state.lookupMM2SChannel(dstName, linkOp.op);
+        if (ch < 0)
+          ch = state.tileNextMM2SChannel[memtileVal]++;
+        distMM2SChannels.push_back(ch);
       }
     }
 
@@ -720,9 +717,12 @@ void linkPhase(ConduitToDMAState &state) {
         if (sInfo) {
           auto [sp, sr] = sInfo->producerTileCoord;
           if (sp >= 0 && sr >= 0 && targetModel.isMemTile(sp, sr)) {
-            auto chIt = state.conduitConsS2MMChannel.find({sName, 0u});
-            if (chIt != state.conduitConsS2MMChannel.end()) {
-              joinS2MMChannels.push_back(chIt->second);
+            // Device-qualified-then-unqualified lookup so multi-device
+            // modules find the channel that Phase 4 wrote under the
+            // qualified key.
+            int32_t ch = state.lookupS2MMChannel(sName, 0u, linkOp.op);
+            if (ch >= 0) {
+              joinS2MMChannels.push_back(ch);
               reused = true;
             }
           }
@@ -735,7 +735,11 @@ void linkPhase(ConduitToDMAState &state) {
           // appears as a broadcast consumer (or in a subsequent link group),
           // the lookup in Phase 4a/4.5a finds the same channel instead of
           // allocating a new one and mismatching the upstream flow.
-          state.conduitConsS2MMChannel[{sName, 0u}] = ch;
+          // Multi-device fix: write under the device-qualified key so the
+          // qualified-then-unqualified helper used by other read sites finds
+          // the entry (matches the Phase 4 writer convention that iterates
+          // `conduitMap` whose keys are produced by `makeConduitKey`).
+          state.insertS2MMChannel(sName, 0u, ch, linkOp.op);
         }
       }
     }
@@ -747,12 +751,11 @@ void linkPhase(ConduitToDMAState &state) {
     if (!isDistribute && !dsts.empty()) {
       std::string dstName0 =
           mlir::cast<mlir::FlatSymbolRefAttr>(dsts[0]).getValue().str();
-      auto it = state.conduitMM2SChannel.find(dstName0);
-      if (it != state.conduitMM2SChannel.end()) {
-        joinMM2SCh = it->second;
-      } else {
+      // Device-qualified-then-unqualified lookup so multi-device modules
+      // find the channel that Phase 4b wrote under the qualified key.
+      joinMM2SCh = state.lookupMM2SChannel(dstName0, linkOp.op);
+      if (joinMM2SCh < 0)
         joinMM2SCh = state.tileNextMM2SChannel[memtileVal]++;
-      }
     }
 
     // -----------------------------------------------------------------------
@@ -790,7 +793,7 @@ void linkPhase(ConduitToDMAState &state) {
             state.passFailed = true;
             return;
           }
-          state.conduitPacketID[dstName] = *pktID;
+          state.insertPacketID(dstName, *pktID, linkOp.op);
 
           auto pktFlow = builder.create<AIE::PacketFlowOp>(
               state.deviceOp.getLoc(), static_cast<int8_t>(*pktID),
@@ -836,7 +839,7 @@ void linkPhase(ConduitToDMAState &state) {
               if (!s2mmGrp.empty())
                 state.fuseGroupS2MMChannel[s2mmGrp] = s2mmCh;
             }
-            state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+            state.insertS2MMChannel(dstName, consIdx, s2mmCh, linkOp.op);
 
             // Lock sharing: only share locks when channels share an S2MM
             // port (same dma_channel_group).
@@ -874,7 +877,7 @@ void linkPhase(ConduitToDMAState &state) {
 
             mlir::Value consTileVal = dstConsTile.getResult();
             int32_t s2mmCh = state.tileNextS2MMChannel[consTileVal]++;
-            state.conduitConsS2MMChannel[{dstName, consIdx}] = s2mmCh;
+            state.insertS2MMChannel(dstName, consIdx, s2mmCh, linkOp.op);
 
             state.emitFlow(dstRoutingMode, memtileVal, AIE::WireBundle::DMA,
                            mm2sCh, dstConsTile.getResult(),
@@ -904,7 +907,7 @@ void linkPhase(ConduitToDMAState &state) {
               // chain generation uses the same channel, and in
               // preUsedMM2SChannels so other phases avoid conflicts.
               srcPort = state.tileNextMM2SChannel[srcProdTile.getResult()]++;
-              state.conduitMM2SChannel[srcName] = srcPort;
+              state.insertMM2SChannel(srcName, srcPort, linkOp.op);
               state.preUsedMM2SChannels[srcProdTile.getResult()].insert(
                   srcPort);
             }
@@ -946,7 +949,7 @@ void linkPhase(ConduitToDMAState &state) {
         // (distribute source) avoids conflicts on the same tile.
         int32_t srcMM2SCh =
             state.tileNextMM2SChannel[srcProdTile.getResult()]++;
-        state.conduitMM2SChannel[sName] = srcMM2SCh;
+        state.insertMM2SChannel(sName, srcMM2SCh, linkOp.op);
         state.preUsedMM2SChannels[srcProdTile.getResult()].insert(srcMM2SCh);
         builder.create<AIE::FlowOp>(state.deviceOp.getLoc(),
                                     srcProdTile.getResult(),
@@ -976,7 +979,7 @@ void linkPhase(ConduitToDMAState &state) {
               // lookup in conduitConsS2MMChannel fails, causing a new S2MM
               // channel to be allocated — leading to flow/DMAStartOp channel
               // mismatch and potential MemTile S2MM overflow (>6 channels).
-              state.conduitConsS2MMChannel[{dstName, ci}] = consS2MM;
+              state.insertS2MMChannel(dstName, ci, consS2MM, linkOp.op);
               builder.create<AIE::FlowOp>(state.deviceOp.getLoc(), memtileVal,
                                           AIE::WireBundle::DMA, joinMM2SCh,
                                           consTile.getResult(),
@@ -1261,9 +1264,9 @@ void linkPhase(ConduitToDMAState &state) {
             if (dstInfo->bdRepeat > 1)
               mm2sDstRepeat = dstInfo->bdRepeat;
           }
-          auto pktIt = state.conduitPacketID.find(dstName2);
-          if (pktIt != state.conduitPacketID.end())
-            dstPktID = static_cast<int>(pktIt->second);
+          int32_t pktLookup = state.lookupPacketID(dstName2, linkOp.op);
+          if (pktLookup >= 0)
+            dstPktID = pktLookup;
         }
         // Unroll by bd_repeat: each source buffer is sent repeat times.
         int64_t thisDstEffective = thisDstDepth * mm2sDstRepeat;

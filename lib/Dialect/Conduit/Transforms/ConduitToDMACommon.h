@@ -638,6 +638,68 @@ struct ConduitToDMAState {
   /// falls back to the unqualified name for single-device compatibility.
   ConduitInfo *lookupConduit(mlir::StringRef name, mlir::Operation *contextOp);
 
+  /// Device-aware lookup for the per-conduit S2MM consumer channel.
+  ///
+  /// Mirrors lookupConduit's qualified-then-unqualified fallback for the
+  /// `conduitConsS2MMChannel` map.  Phase 4a/4b in routePhase iterate
+  /// `conduitMap` and write each channel under the device-qualified key
+  /// (`name__d<idx>` from `makeConduitKey`); linkPhase reads with the raw
+  /// (unqualified) IR symbol pulled from a Scatter/Gather attribute. In
+  /// multi-device modules the unqualified read MISSES the qualified write,
+  /// silently falling through to a stale `tileNextS2MMChannel++` counter
+  /// and emitting a channel that does not match the Phase 4 flow.
+  ///
+  /// Returns the assigned channel index, or -1 if neither the qualified
+  /// nor the unqualified key is present.  Callers that previously used
+  /// `state.conduitConsS2MMChannel.find(...)` and on miss fell through to
+  /// `tileNextS2MMChannel[tile]++` should preserve that fallback when the
+  /// helper returns -1.
+  ///
+  /// PRECONDITION: contextOp must be inside the same aie.device as the
+  /// conduit (true by MLIR symbol scoping for any op resolving `name` as a
+  /// SymbolRefAttr in the same scope).  A caller from a different device
+  /// silently mis-keys and re-introduces the multi-device bug class.
+  int32_t lookupS2MMChannel(mlir::StringRef name, unsigned consIdx,
+                            mlir::Operation *contextOp);
+
+  /// Device-aware lookup for the per-conduit MM2S producer channel.
+  /// See `lookupS2MMChannel` for the rationale; same qualified-then-
+  /// unqualified fallback for the `conduitMM2SChannel` map.
+  /// Returns -1 on miss.
+  /// PRECONDITION: same as lookupS2MMChannel.
+  int32_t lookupMM2SChannel(mlir::StringRef name,
+                            mlir::Operation *contextOp);
+
+  /// Device-aware lookup for the per-conduit packet ID.
+  /// See `lookupS2MMChannel` for the rationale; same qualified-then-
+  /// unqualified fallback for the `conduitPacketID` map.
+  /// Returns -1 on miss.
+  /// PRECONDITION: same as lookupS2MMChannel.
+  int32_t lookupPacketID(mlir::StringRef name,
+                         mlir::Operation *contextOp);
+
+  /// Device-aware insert for the per-conduit S2MM consumer channel.
+  /// Stores `ch` under the device-qualified key produced by
+  /// `makeConduitKey(name, contextOp)` so that subsequent reads via
+  /// `lookupS2MMChannel` find the entry across multi-device modules.
+  /// Mirrors `lookupS2MMChannel`'s qualified-then-unqualified fallback by
+  /// always writing the qualified key.
+  /// PRECONDITION: same as lookupS2MMChannel.
+  void insertS2MMChannel(mlir::StringRef name, unsigned consIdx, int32_t ch,
+                         mlir::Operation *contextOp);
+
+  /// Device-aware insert for the per-conduit MM2S producer channel.
+  /// See `insertS2MMChannel`.
+  /// PRECONDITION: same as lookupS2MMChannel.
+  void insertMM2SChannel(mlir::StringRef name, int32_t ch,
+                         mlir::Operation *contextOp);
+
+  /// Device-aware insert for the per-conduit packet ID.
+  /// See `insertS2MMChannel`.
+  /// PRECONDITION: same as lookupS2MMChannel.
+  void insertPacketID(mlir::StringRef name, uint8_t pktID,
+                      mlir::Operation *contextOp);
+
   /// Emit DMA BD block content into an existing block:
   ///   1. UseLockOp (acquire) — skipped if acqLock is null
   ///   2. DMABDPACKETOp — skipped if pktID < 0; sets packet header for
