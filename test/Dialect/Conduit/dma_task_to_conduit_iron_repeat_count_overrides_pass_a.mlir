@@ -1,29 +1,28 @@
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --verify-diagnostics %s | FileCheck %s
 //
 // =============================================================================
-// REGRESSION: when Pass A (--objectfifo-to-conduit) infers `dma_repeat = X`
-// AND IRON explicitly emits `aiex.dma_configure_task_for {repeat_count = Y}`
-// for the same channel, the IRON value WINS — `--dma-task-to-conduit`
-// overwrites the Pass A stamp (verbatim) and emits a remark documenting the
-// override.
+// REGRESSION: when IRON explicitly emits `aiex.dma_configure_task_for
+// {repeat_count = N}` for a shim-bearing channel, `--dma-task-to-conduit`
+// stamps `dma_repeat = N` on the conduit.create (verbatim).
 // =============================================================================
 //
-// Rationale: IRON is closer to the source-of-truth about the runtime
-// sequence's actual replay count.  Pass A's inference is a derived quantity
-// from the core-side acquire count and the per-channel emit count; the
-// IRON-emitted attribute is the authored-by-the-operator-author value.
-// When both are present, defer to IRON.
+// HISTORY: this fixture originally pinned a CONFLICT path — it expected
+// Pass A's `inferDmaRepeatForChannel` to stamp `dma_repeat = 4` on the
+// conduit.create (because emit.count > 1), and then `--dma-task-to-conduit`
+// to OVERRIDE that with IRON's explicit `repeat_count = 7`, emitting a
+// remark documenting the override.  Per Task #40 / #42 (2026-04-28), Pass A
+// no longer infers `dma_repeat` for ANY shim-bearing channel — the
+// host-side `num_invocations` is invisible to the IR and the inference
+// over-fires the shim BD by exactly that factor.  So the conflict path
+// is gone (nothing for IRON to override), but the IRON-explicit
+// surfacing path still must work — that's what this fixture now pins.
 //
 // Geometry (cribbed from passC_shim_bd_dma_repeat_uses_configure_task_repeat):
 //   * Core loop trip count = 8; 2 configure_task emissions for @chan
-//   * Pass A inferDmaRepeatForChannel = (8 / 2) / 1 = 4
-//   * IRON explicit: repeat_count = 7  (Y != X to make the override visible)
-// Expected: dma_repeat = 7 on the conduit.create (IRON wins).
-//
-// Note: the remark fires once per IRON-emitted configure_task that triggers
-// an override.  With two emissions both setting repeat_count = 7, the second
-// is a no-op overwrite (both sides equal), so only the FIRST one fires the
-// remark.
+//   * Pass A inference: SKIPPED (shim-bearing channel) — no stamp.
+//   * IRON explicit:    repeat_count = 7
+// Expected: `dma_repeat = 7` on the conduit.create (IRON-explicit value
+// flows through unaltered).
 
 // CHECK-LABEL: module @dma_task_to_conduit_iron_repeat_count_overrides_pass_a
 module @dma_task_to_conduit_iron_repeat_count_overrides_pass_a {
@@ -31,6 +30,7 @@ module @dma_task_to_conduit_iron_repeat_count_overrides_pass_a {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (shim-bearing channel); deferring dma_repeat to runtime}}
     aie.objectfifo @chan(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<256xbf16>>
 
@@ -39,7 +39,9 @@ module @dma_task_to_conduit_iron_repeat_count_overrides_pass_a {
       %c8 = arith.constant 8 : index
       %c1 = arith.constant 1 : index
       // 8 acquires total; 2 configure_task emissions below → emit.count = 2.
-      // Pass A would infer dma_repeat = (8 / 2) / 1 = 4.
+      // Post Task #42: Pass A SKIPS inference for any shim-bearing channel
+      // (regardless of emit.count) since host-side num_invocations is
+      // invisible.  IRON-explicit repeat_count surfaces unconditionally.
       scf.for %i = %c0 to %c8 step %c1 {
         %sub = aie.objectfifo.acquire @chan (Consume, 1)
             : !aie.objectfifosubview<memref<256xbf16>>
@@ -51,7 +53,8 @@ module @dma_task_to_conduit_iron_repeat_count_overrides_pass_a {
     }
 
     aie.runtime_sequence(%a0: memref<256xbf16>) {
-      // expected-remark @below {{dma-task-to-conduit: IRON explicit repeat_count = 7 on @chan overrides Pass A inferred dma_repeat = 4}}
+      // No override remark post Task #42: Pass A no longer stamps
+      // dma_repeat on shim-bearing channels, so IRON's value lands fresh.
       %t0 = aiex.dma_configure_task_for @chan {
         aie.dma_bd(%a0 : memref<256xbf16>, 0, 256,
             [<size = 1, stride = 0>,

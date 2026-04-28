@@ -34,10 +34,10 @@ module @infer_per_channel {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (shim-bearing channel); deferring dma_repeat to runtime}}
     aie.objectfifo @chanA(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<128xbf16>>
-    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (shim-bearing channel); deferring dma_repeat to runtime}}
     aie.objectfifo @chanB(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<64xbf16>>
 

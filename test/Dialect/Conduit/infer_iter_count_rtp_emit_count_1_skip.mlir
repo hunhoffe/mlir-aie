@@ -32,7 +32,7 @@ module @infer_rtp_emit_count_1_skip {
 
     %my_rtp = aie.buffer(%tile_0_2) {sym_name = "my_rtp", use_write_rtp = true} : memref<2xi32>
 
-    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (shim-bearing channel); deferring dma_repeat to runtime}}
     aie.objectfifo @chan(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<8xbf16>>
 

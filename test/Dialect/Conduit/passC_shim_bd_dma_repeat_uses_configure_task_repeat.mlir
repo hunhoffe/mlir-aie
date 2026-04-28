@@ -22,14 +22,17 @@
 // NpuPushQueueOp.repeat_count → NPU command word) and is unaffected by the
 // BD's dim count.
 //
-// Geometry note (post-#74): Pass A only stamps dma_repeat when
-// emit.count >= 2 on the channel (single shim BD def is host-loop-
-// ambiguous and SKIPped — see ObjectFifoToConduit.cpp emit.count==1 skip
-// block).  This test therefore issues TWO aiex.dma_configure_task_for
-// emissions for @chan with identical BD shape so emit.count = 2 and
-// dma_repeat = (8 / 2) / 1 = 4 is inferred and propagated to Pass C.
-// The two emissions match the IRON gemv-style host-loop pattern where
-// rt.sequence Python iterates and emits per-batch BDs.
+// Geometry note (post Task #42, 2026-04-28): Pass A no longer infers
+// dma_repeat for ANY shim-bearing channel (the host-side num_invocations
+// is invisible to the IR and the inference over-fires the shim BD by
+// exactly that factor — see ObjectFifoToConduit.cpp emit.count >= 1 skip
+// block).  To exercise the Pass C TAP-preservation path under a positive
+// dma_repeat, this fixture now sources the value from IRON-EXPLICIT
+// `aiex.dma_configure_task_for {repeat_count = 4}` attributes, which
+// `--dma-task-to-conduit` surfaces verbatim onto the conduit.create's
+// `dma_repeat`.  The Pass C invariant being tested is unchanged:
+// regardless of where dma_repeat originated, Pass C must NOT mutate the
+// BD's TAP — it surfaces dma_repeat via configure_task.repeat_count only.
 //
 //===----------------------------------------------------------------------===//
 
@@ -63,7 +66,8 @@ module @passC_shim_bd_dma_repeat_uses_configure_task_repeat {
       %c0 = arith.constant 0 : index
       %c8 = arith.constant 8 : index
       %c1 = arith.constant 1 : index
-      // 8 acquires total; emit.count = 2 → dma_repeat = (8 / 2) / 1 = 4.
+      // 8 acquires total; Pass A SKIPS inference (shim-bearing channel).
+      // dma_repeat = 4 sourced from IRON-explicit repeat_count below.
       scf.for %i = %c0 to %c8 step %c1 {
         %sub = aie.objectfifo.acquire @chan (Consume, 1)
             : !aie.objectfifosubview<memref<256xbf16>>
@@ -77,9 +81,11 @@ module @passC_shim_bd_dma_repeat_uses_configure_task_repeat {
     // IRON-idiomatic 4-dim shim BD: 3 leading <1,0> placeholder slots
     // plus one inner <256, 1> walk.  Pass C must NOT touch this TAP —
     // it must apply dma_repeat=4 via configure_task.repeat_count.
-    // Two identical emissions (emit.count=2) so Pass A's dma_repeat
-    // inference fires post-#74; both Pass C output configure_tasks
-    // carry repeat_count=4 (the CHECK pattern matches the first one).
+    // The IRON-explicit `repeat_count = 4` on each configure_task is
+    // surfaced by --dma-task-to-conduit onto the conduit.create's
+    // dma_repeat attribute, which Pass C then re-emits verbatim onto
+    // each output configure_task.repeat_count (matching the IRON
+    // gemv-style host-loop pattern).
     aie.runtime_sequence(%a0: memref<256xbf16>) {
       %t0 = aiex.dma_configure_task_for @chan {
         aie.dma_bd(%a0 : memref<256xbf16>, 0, 256,
@@ -88,7 +94,7 @@ module @passC_shim_bd_dma_repeat_uses_configure_task_repeat {
              <size = 1, stride = 0>,
              <size = 256, stride = 1>]) {burst_length = 0 : i32}
         aie.end
-      }
+      } {repeat_count = 4 : i32}
       aiex.dma_start_task(%t0)
       aiex.dma_await_task(%t0)
       aiex.dma_free_task(%t0)
@@ -99,7 +105,7 @@ module @passC_shim_bd_dma_repeat_uses_configure_task_repeat {
              <size = 1, stride = 0>,
              <size = 256, stride = 1>]) {burst_length = 0 : i32}
         aie.end
-      }
+      } {repeat_count = 4 : i32}
       aiex.dma_start_task(%t1)
       aiex.dma_await_task(%t1)
       aiex.dma_free_task(%t1)

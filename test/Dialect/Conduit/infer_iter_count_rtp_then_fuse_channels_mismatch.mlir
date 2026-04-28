@@ -1,4 +1,4 @@
-// RUN: aie-opt --objectfifo-to-conduit --conduit-fuse-channels --verify-diagnostics %s
+// RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels --verify-diagnostics %s
 //
 // Pattern D (Task #16) × fuse-channels (`1ac3119912`) cross-pass guard.
 //
@@ -9,25 +9,24 @@
 // `arith.constant 64 : index`.  Pins that RTP-folded trips flow through
 // the dma_repeat compatibility check identically to literal-folded trips.
 //
-// Geometry (mirrors the literal-trip sibling so dma_repeat math matches):
+// Geometry (post Task #42, 2026-04-28):
 //   * Both consumer acquires share ONE outer `scf.for` body block —
 //     `ConduitFuseChannels.cpp::assignGroups` walks per-block, so the two
 //     channels MUST live in the same body block to be compared and the
-//     mismatch detected.  (The previous version of this test split them
-//     across two separate scf.for blocks → assignGroups never compared
-//     them → no error fired.)
+//     mismatch detected.
 //   * Outer trip = `index_cast (load %my_rtp[%c0])` = 64.
-//   * chan_a fifo elem = memref<2xbf16>, BD len = 32 →
-//       acquires_per_BD = 16 → dma_repeat = (64 / 2) / 16 = 2.
-//   * chan_b fifo elem = memref<2xbf16>, BD len = 4  →
-//       acquires_per_BD = 2  → dma_repeat = (64 / 2) / 2  = 16.
-//   * Two BD emissions per channel (emit.count = 2 each, identical
-//     per-channel BD shape) so the `dc792ebbd5` single-shim-BD stamp skip
-//     does NOT fire and Pass A stamps a real dma_repeat for each channel.
+//   * dma_repeat SOURCING: post Task #42 (#40 root cause) Pass A no longer
+//     infers dma_repeat for any shim-bearing channel (host-side
+//     num_invocations is invisible to the IR).  This fixture now sources
+//     dma_repeat from IRON-EXPLICIT `repeat_count` attributes on the
+//     `aiex.dma_configure_task_for` ops, which `--dma-task-to-conduit`
+//     surfaces verbatim onto the conduit.create's `dma_repeat`:
+//       - chan_a IRON repeat_count = 2  → conduit.create dma_repeat = 2
+//       - chan_b IRON repeat_count = 16 → conduit.create dma_repeat = 16
 //
-// EXPECTED BEHAVIOR (Task #45): --conduit-fuse-channels rejects the
-// mismatched group with an error on the second (offending) conduit.create
-// and signalPassFailure.
+// EXPECTED BEHAVIOR (Task #45, unchanged): --conduit-fuse-channels rejects
+// the mismatched group with an error on the second (offending)
+// conduit.create and signalPassFailure.
 
 module @infer_rtp_then_fuse_channels_mismatch {
   aie.device(npu1_1col) {
@@ -36,9 +35,11 @@ module @infer_rtp_then_fuse_channels_mismatch {
 
     %my_rtp = aie.buffer(%tile_0_2) {sym_name = "my_rtp", use_write_rtp = true} : memref<2xi32>
 
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (shim-bearing channel); deferring dma_repeat to runtime}}
     aie.objectfifo @chan_a(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<2xbf16>>
-    // expected-error@+1 {{fuse-channels: cannot group channels with mismatched dma_repeat values 2 vs 16 (S2MM group)}}
+    // expected-error@+2 {{fuse-channels: cannot group channels with mismatched dma_repeat values 2 vs 16 (S2MM group)}}
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (shim-bearing channel); deferring dma_repeat to runtime}}
     aie.objectfifo @chan_b(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<2xbf16>>
 
@@ -76,7 +77,7 @@ module @infer_rtp_then_fuse_channels_mismatch {
            <size = 1, stride = 0>, <size = 32, stride = 1>])
             {burst_length = 0 : i32}
         aie.end
-      }
+      } {repeat_count = 2 : i32}
       aiex.dma_start_task(%tA0)
       aiex.dma_await_task(%tA0)
       aiex.dma_free_task(%tA0)
@@ -86,7 +87,7 @@ module @infer_rtp_then_fuse_channels_mismatch {
            <size = 1, stride = 0>, <size = 32, stride = 1>])
             {burst_length = 0 : i32}
         aie.end
-      }
+      } {repeat_count = 2 : i32}
       aiex.dma_start_task(%tA1)
       aiex.dma_await_task(%tA1)
       aiex.dma_free_task(%tA1)
@@ -97,7 +98,7 @@ module @infer_rtp_then_fuse_channels_mismatch {
            <size = 1, stride = 0>, <size = 4, stride = 1>])
             {burst_length = 0 : i32}
         aie.end
-      }
+      } {repeat_count = 16 : i32}
       aiex.dma_start_task(%tB0)
       aiex.dma_await_task(%tB0)
       aiex.dma_free_task(%tB0)
@@ -107,7 +108,7 @@ module @infer_rtp_then_fuse_channels_mismatch {
            <size = 1, stride = 0>, <size = 4, stride = 1>])
             {burst_length = 0 : i32}
         aie.end
-      }
+      } {repeat_count = 16 : i32}
       aiex.dma_start_task(%tB1)
       aiex.dma_await_task(%tB1)
       aiex.dma_free_task(%tB1)

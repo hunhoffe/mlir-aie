@@ -12,14 +12,15 @@
 //     BD len = M = 4 elements; fifo elem-type is memref<1xbf16>
 //     → acquires_per_BD = 4.
 //
-// EXPECTED BEHAVIOR (post-#74): with emit.count == 1 the runtime shape
-// is ambiguous between (A) replay-per-dispatch and (C) host-side
-// num_invocations loop with one BD fire each.  IRON Softmax lowers to
-// (C); a stamped dma_repeat = 4 would over-fire the shim BD and stall
-// the NPU (Bug C).  Pass A SKIPs the dma_repeat stamp and emits a
-// remark; runtime defaults to dma_repeat = 1.  See
-// infer_iter_count_multi_emission_gemv_pattern.mlir for the
-// emit.count > 1 case where inference IS sound and remains live.
+// EXPECTED BEHAVIOR (post Task #42, 2026-04-28): for any shim-bearing
+// channel (emit.count >= 1) the runtime shape is ambiguous between (A)
+// replay-per-dispatch and (C) host-side num_invocations loop with one BD
+// fire each.  IRON Softmax lowers to (C); a stamped dma_repeat = 4 would
+// over-fire the shim BD and stall the NPU (Bug C).  Pass A SKIPs the
+// dma_repeat stamp and emits a remark; runtime defaults to dma_repeat = 1.
+// See infer_iter_count_multi_emission_gemv_pattern.mlir for the
+// multi-emission analogue (the inference path is now SKIPPED there too —
+// see .claude/plans/repeat-count-overfire-rootcause.md).
 
 // CHECK-LABEL: module @infer_flattened_loop_softmax
 // CHECK: conduit.create @softmax_in
@@ -31,7 +32,7 @@ module @infer_flattened_loop_softmax {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (single shim BD def); deferring dma_repeat to runtime}}
+    // expected-remark@+1 {{conduit-objectfifo: dma_repeat inference skipped: host-side num_invocations not observable in IR (shim-bearing channel); deferring dma_repeat to runtime}}
     aie.objectfifo @softmax_in(%tile_0_0, {%tile_0_2}, 2 : i32)
         : !aie.objectfifo<memref<1xbf16>>
 

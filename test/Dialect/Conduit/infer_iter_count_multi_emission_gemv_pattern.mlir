@@ -1,10 +1,11 @@
 // RUN: aie-opt --objectfifo-to-conduit %s | FileCheck %s
 //
-// Task #11 — Pass A dma_repeat inference under multi-emission per channel
-// (gemv-multi-batch pattern, two Llama decode call sites, num_batches=32).
+// Task #42 (was Task #11) — Pass A dma_repeat inference under multi-emission
+// per channel (gemv-multi-batch pattern, two Llama decode call sites,
+// num_batches=32).
 //
 // Geometry (downscaled for the test):
-//   * nv = num_invocations = 2
+//   * nv = num_invocations = 2  (host-side run() loop, INVISIBLE to IR)
 //   * N  = num_batches      = 2  (→ 2 aiex.dma_configure_task_for emissions)
 //   * K  = per-batch inner walk = 4
 //   * Core: outer scf.for(0, nv*N=4) wrapping inner scf.for(0, K=4)
@@ -12,16 +13,30 @@
 //   * Each host BD: len = K = 4 elements, fifo elem = memref<1xbf16>
 //          → acquires_per_BD = 4
 //   * rt_emissions_per_channel = 2
-//   * Three-factor formula: dma_repeat = (16 / 2) / 4 = 2 = nv ✓
 //
-// IRON gemv emits one `rt.fill` per batch via Python-side `for batch in
-// range(num_batches)`, so the runtime_sequence holds N distinct
-// `aiex.dma_configure_task_for` ops on the same channel name.  This pins
-// that the inference COUNTS those emissions (not just one) for the divisor.
+// HISTORY: this fixture originally pinned `dma_repeat = 2 = nv ✓` (the
+// three-factor formula `(16 / 2) / 4 = 2`).  That encoded a BUG: Pass A's
+// formula is only valid when the host dispatches the rt_seq exactly once,
+// but IRON's `num_invocations = N` host-side `run()` loop is INVISIBLE
+// in the IR.  The formula under-divides by num_invocations and inflates
+// `dma_repeat` by exactly that factor.  Pass C surfaces the inflated value
+// onto the shim's `repeat_count`, and firmware reads `repeat_count = N`
+// as N+1 fires per call → over-fire of the shim BD.  Llama op7_GEMV +
+// op11_GEMV (both num_batches=32, num_invocations=16) hit this and
+// over-fired by 16-17×.
+//
+// FIX (Task #42, 2026-04-28): Pass A's `inferDmaRepeatForChannel` now
+// extends its existing `emit.count == 1` shim skip to `emit.count >= 1`
+// — i.e. NO inferred `dma_repeat` for any shim-bearing channel
+// (regardless of multi-emission count).  Compute-to-compute channels
+// (`emit.count == 0`) keep the legacy outer-loop-drives-dma_repeat path.
+// This fixture now pins the FIX: no `dma_repeat` attribute should appear
+// on the shim-bearing `conduit.create @A`.  See
+// `.claude/plans/repeat-count-overfire-rootcause.md`.
 
 // CHECK-LABEL: module @infer_multi_emission_gemv
 // CHECK: conduit.create @A
-// CHECK-SAME: dma_repeat = 2
+// CHECK-NOT: dma_repeat
 
 module @infer_multi_emission_gemv {
   aie.device(npu1) {
