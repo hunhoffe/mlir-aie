@@ -43,6 +43,29 @@ bool isConduitFeasibleSharedMemory(const AIE::AIETargetModel &targetModel,
 }
 
 // ---------------------------------------------------------------------------
+// Defensive HW-cap check for BD chain length.  See header for rationale.
+// ---------------------------------------------------------------------------
+bool checkBDChainCap(ConduitToDMAState &state, mlir::Value tile,
+                     int64_t chainLen, llvm::StringRef channelName) {
+  if (!state.targetModel || !tile)
+    return true;
+  auto tileOp = tile.getDefiningOp<AIE::TileOp>();
+  if (!tileOp)
+    return true;
+  uint32_t cap = state.targetModel->getNumBDs(
+      static_cast<int>(tileOp.getCol()), static_cast<int>(tileOp.getRow()));
+  if (chainLen <= static_cast<int64_t>(cap))
+    return true;
+  state.deviceOp.emitError()
+      << "conduit-to-dma: BD chain length " << chainLen << " on tile ("
+      << tileOp.getCol() << "," << tileOp.getRow() << ") exceeds cap " << cap
+      << " for tile type; channel '" << channelName
+      << "' — collapse via dma_repeat or split channel";
+  state.passFailed = true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // PacketIDAllocator
 // ---------------------------------------------------------------------------
 

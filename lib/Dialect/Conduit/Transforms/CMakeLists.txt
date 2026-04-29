@@ -10,6 +10,11 @@ add_mlir_dialect_library(ConduitTransforms
   ConduitCombineDevicePass.cpp
   ConduitCheckChannels.cpp
   ConduitCheckDeps.cpp
+  CanonicalizeChannelPuts.cpp
+  CanonicalizeChannelPutsUtils.cpp
+  ChannelPutsExpand.cpp
+  patterns/HomogeneousRepeatPattern.cpp
+  patterns/ArithProgressionPattern.cpp
   ConduitCheckLoopBalance.cpp
   ConduitCheckOrdering.cpp
   ConduitCheckTiers.cpp

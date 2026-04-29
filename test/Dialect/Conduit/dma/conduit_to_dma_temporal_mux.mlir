@@ -1,6 +1,13 @@
 // RUN: aie-opt --conduit-to-dma %s -split-input-file | FileCheck %s
+// RUN: aie-opt --conduit-canonicalize-channel-puts --conduit-to-dma %s -split-input-file | FileCheck %s
 //
 // Pass C test: putCount inference → linear (one-shot) S2MM BD chain.
+//
+// The second RUN line verifies that --conduit-canonicalize-channel-puts
+// does NOT collapse the puts in tm_count2 / tm_count3 (their offsets differ:
+// 0/64 and 0/32/64) — full-pattern atomic match requires structurally-
+// identical offsets/sizes/strides.  Canon must be a no-op on heterogeneous
+// puts; downstream Pass C IR must be byte-identical with and without canon.
 //
 // When multiple put_memref_async ops reference the same conduit.create
 // (after --conduit-fuse-channels rewrites non-canonical names to the

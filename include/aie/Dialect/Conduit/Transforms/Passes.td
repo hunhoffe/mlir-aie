@@ -703,6 +703,99 @@ def ConduitDmaTaskToConduit
 }
 
 //===----------------------------------------------------------------------===//
+// Channel Put Canonicalization — conduit-canonicalize-channel-puts
+//===----------------------------------------------------------------------===//
+
+def ConduitCanonicalizeChannelPuts
+    : Pass<"conduit-canonicalize-channel-puts", "::mlir::ModuleOp"> {
+  let summary = "Collapse N structurally-identical conduit.put/get_memref_async ops "
+                "on one channel into 1 op + channel-level dma_repeat=N";
+  let description = [{
+    Detects N structurally-identical `conduit.put_memref_async` ops on a
+    single channel — paired with N matching `conduit.wait_all` await/free
+    ops — and collapses them to a single put + channel-level
+    `dma_repeat = N` on the `conduit.create` op.  Symmetric handling for
+    `conduit.get_memref_async`.
+
+    Match condition (full-pattern atomic; if any constraint fails, the pass
+    does NOT fire on this channel):
+
+      1. N >= 2 PutMemrefAsync ops in IR order on the same channel name,
+         all sharing one parent block.
+      2. All N puts are structurally identical: same num_elems, offsets,
+         sizes, strides, producer_dimensions; no $deps operands.
+      3. Each put's token is consumed by the same shape of WaitAll chain
+         (single-token WaitAll ops on that one token only).  The shape
+         must match across all N puts.
+      4. The channel's existing `dma_repeat` is unset (or equals 1).
+      5. `N <= targetModel.getNumBDs(producerTile)` — the per-tile BD
+         capacity.  If `N` exceeds the cap, the pass refuses to collapse,
+         emits a warning, and leaves the IR un-collapsed (downstream
+         Pass C still surfaces the underlying issue).
+
+    Action when match holds:
+      * Set `dma_repeat = N` on the `conduit.create` op.
+      * Erase puts [1..N-1] and their entire WaitAll chains.
+      * Keep put [0] and its chain to preserve per-cycle release semantics.
+
+    Symmetric for GetMemrefAsync with the same constraints applied to
+    consumer-side gets.
+
+    The companion utility pass `conduit-expand-channel-puts` reverses
+    the canonicalization (1 put + dma_repeat=N → N puts + N chains) for
+    fusion passes that need per-batch IR-level mutation.
+
+    Pipeline placement: immediately after `--dma-task-to-conduit`, before
+    fusion / depth-promote / Pass C.
+
+    This pass runs by default under `--use-conduit`.
+
+    Run with:  aie-opt --conduit-canonicalize-channel-puts <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitCanonicalizeChannelPutsPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Channel Put Expansion — conduit-expand-channel-puts
+//===----------------------------------------------------------------------===//
+
+def ConduitExpandChannelPuts
+    : Pass<"conduit-expand-channel-puts", "::mlir::ModuleOp"> {
+  let summary = "Reverse conduit-canonicalize-channel-puts: expand 1 put + "
+                "dma_repeat=N back to N structurally-identical puts";
+  let description = [{
+    Companion utility pass to `--conduit-canonicalize-channel-puts`.
+
+    For each `conduit.create` whose `dma_repeat` is set to N >= 2 AND which
+    is referenced by exactly one `conduit.put_memref_async` (or
+    `conduit.get_memref_async`) op, replicates the put/get and its WaitAll
+    sync chain N times, then clears the `dma_repeat` attribute (or resets
+    to 1).
+
+    Intended use:
+      * Round-trip lit testing of `--conduit-canonicalize-channel-puts`.
+      * Fusion passes that need per-batch IR-level mutation (call
+        `expandLoopUnrollPuts(channel, builder)` directly via the helper
+        utility instead of invoking the pass).
+
+    Run with:  aie-opt --conduit-expand-channel-puts <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitExpandChannelPutsPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // Core-Body Fusion — conduit-fuse-core-bodies
 //===----------------------------------------------------------------------===//
 

@@ -1274,6 +1274,31 @@ void lowerPhase(ConduitToDMAState &state) {
         if (auto *info = state.lookupConduit(conduitName, op))
           channelDmaRepeat = info->dmaRepeat;
 
+        // Derive an additional repeat_count contribution from the BD's
+        // outer wrap+stride dim, when canon's ArithProgressionPattern
+        // stamped a multi-cycle outer dim.  BD descriptor's iteration_size
+        // alone is insufficient on the shim NPU command path: the
+        // push-queue's repeat_count must also be N.  This mirrors the
+        // npu.dma_memcpy_nd convention (AIEDmaToNpu.cpp:380-393), which
+        // sets BOTH iteration_size = sizes[3] AND push-queue
+        // repeat_count = sizes[3].  Empirically (homogeneous_repeat NPU
+        // smoke), without this only 1 of N iterations fires even though
+        // the BD descriptor's iteration_size is correct.
+        //
+        // Canon's ArithProgressionPattern deliberately does NOT also stamp
+        // dma_repeat=N on the channel (would double-multiply with the
+        // outer dim's iteration on the channel-DMA / memtile paths), so
+        // channelDmaRepeat and outerRepeat cannot both be > 0 for the
+        // same configure on the shim path here.  Combine via max() as a
+        // belt-and-braces guard.
+        int64_t outerRepeat = 0;
+        if (dims && !dims.getValue().empty()) {
+          uint32_t outerSize = dims.getValue().front().getSize();
+          if (outerSize > 1)
+            outerRepeat = static_cast<int64_t>(outerSize);
+        }
+        int64_t effectiveRepeat = std::max(channelDmaRepeat, outerRepeat);
+
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
 
@@ -1297,10 +1322,10 @@ void lowerPhase(ConduitToDMAState &state) {
         // as 2 fires per call (see CLAUDE.md "Convention-divergence" entry
         // and AIEDmaToNpu.cpp packing).  Skipping `> 0` (default / absent)
         // preserves the correct no-attr emission for unstamped channels.
-        if (channelDmaRepeat > 0)
+        if (effectiveRepeat > 0)
           configState.addAttribute("repeat_count",
                                    builder.getI32IntegerAttr(
-                                       static_cast<int32_t>(channelDmaRepeat)));
+                                       static_cast<int32_t>(effectiveRepeat)));
         configState.addTypes(indexTy);
         configState.addRegion();
         mlir::Operation *configOp = builder.create(configState);
@@ -1314,12 +1339,78 @@ void lowerPhase(ConduitToDMAState &state) {
         bodyRegion.push_back(bdBlock);
         builder.setInsertionPointToEnd(bdBlock);
 
-        if (dims && !dims.getValue().empty())
+        // AIEX runtime-sequence verifier (AIEDMATasksToNPU.cpp:432-454)
+        // requires lower-3 dim sizes' product == BD len.  When canon's
+        // ArithProgressionPattern stamps a single outer wrap+stride dim,
+        // the lone dim lands in input_sizes[0] (innermost) under the
+        // verifier's reverse-index mapping (j = K-1-i), failing the lower-3
+        // == len check (e.g. canon emits dimensions=[<size=4,stride=64>] +
+        // len=64 → verifier sees lower-3 product=4, len=128 bytes for bf16).
+        //
+        // Pad to K=4 so the canon-prepended outer dim lands in
+        // input_sizes[3] (iteration slot), with size-1 stride-1 padding
+        // dims filling the gap and the existing innermost dim (or a
+        // fabricated <num_elems,1> when no existing inner dim) at
+        // input_sizes[0].  Lower-3 product becomes:
+        //   K_existing >= 1: product of existing.sizes (preserved invariant
+        //                    from pre-canon valid input)
+        //   K_existing == 0: 1 × 1 × num_elems (fabricated inner)
+        // both equal num_elems.
+        //
+        // Safe to pad here because runtime-sequence dma_bd ops bypass the
+        // AIEDialect dma_bd verifier (AIEDialect.cpp:2194 parent-class
+        // skip), so the AIE 3-dim cap on non-MemTile parents doesn't
+        // apply.  Compute-tile / memtile dma_bd emit sites in Link.cpp
+        // must NOT use this padding — canon's defensive cap check refuses
+        // arith collapse when the producer (puts) or consumer (gets) is
+        // a compute tile, preventing the 4-dim form from reaching those
+        // paths.
+        if (dims && !dims.getValue().empty()) {
+          llvm::ArrayRef<AIE::BDDimLayoutAttr> existingDims = dims.getValue();
+          size_t K = existingDims.size();
+          AIE::BDDimLayoutArrayAttr emitDims = dims;
+          if (K < 4) {
+            llvm::SmallVector<AIE::BDDimLayoutAttr> newDims;
+            newDims.reserve(4);
+            // Outer (canon-prepended iteration dim, or user's outermost).
+            newDims.push_back(existingDims.front());
+            // Inner block size: existing inner dims (K-1) when K > 1,
+            // else 1 fabricated <num_elems, 1>. Total must equal 4.
+            // Padding fills the gap between outer and inner: 4 - 1 (outer)
+            // - innerCount.
+            size_t innerCount = (K == 1) ? 1 : (K - 1);
+            size_t padCount = 4 - 1 - innerCount;
+            // AIE HW requires stride × elem_size_bytes divisible by 4.
+            // Padding dims have size=1 (no effective addressing), so stride
+            // value is mathematically irrelevant — but verifier still checks.
+            // Pick the smallest stride satisfying the constraint for the
+            // current element type.
+            auto memrefTy = mlir::cast<mlir::MemRefType>(bufArg.getType());
+            unsigned elemBits = memrefTy.getElementType().getIntOrFloatBitWidth();
+            unsigned elemBytes = std::max(1U, elemBits / 8);
+            uint32_t padStride = std::max(1U, 4U / elemBytes);
+            for (size_t i = 0; i < padCount; ++i)
+              newDims.push_back(AIE::BDDimLayoutAttr::get(
+                  ctx, /*size=*/1, /*stride=*/padStride));
+            if (K == 1) {
+              // No existing inner dim — fabricate <num_elems, 1> as
+              // innermost so lower-3 product == num_elems.
+              newDims.push_back(AIE::BDDimLayoutAttr::get(
+                  ctx, static_cast<uint32_t>(numElems), /*stride=*/1));
+            } else {
+              // Preserve existing inner block (existingDims[1..K-1]) at
+              // the inner end so their lower-3 product invariant holds.
+              for (size_t i = 1; i < K; ++i)
+                newDims.push_back(existingDims[i]);
+            }
+            emitDims = AIE::BDDimLayoutArrayAttr::get(ctx, newDims);
+          }
           builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
-                                       static_cast<int>(numElems), dims);
-        else
+                                       static_cast<int>(numElems), emitDims);
+        } else {
           builder.create<AIE::DMABDOp>(loc, bufArg, bdOffset,
                                        static_cast<int>(numElems));
+        }
         // Set burst_length = 0 on the dma_bd.
         bdBlock->back().setAttr("burst_length", builder.getI32IntegerAttr(0));
         builder.create<AIE::EndOp>(loc);

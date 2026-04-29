@@ -748,6 +748,19 @@ bool isConduitFeasibleSharedMemory(const AIE::AIETargetModel &targetModel,
                                    std::optional<RoutingMode> routingMode);
 
 // ---------------------------------------------------------------------------
+// Defensive HW-cap check for BD chain length, applied at every Pass C
+// BD-emit site.  Returns true on cap-OK (caller proceeds), false on
+// cap-exceeded (caller bails after setting state.passFailed=true).
+// On overflow, emits a structured Pass C diagnostic naming the channel,
+// tile, requested length, and per-tile cap (replacing the late
+// AIEDialect verifier crash `'aie.mem' op has more than 16 blocks`).
+// Returns true (no-op) when targetModel/tile is unavailable, so existing
+// tests without a target model are unaffected.
+// ---------------------------------------------------------------------------
+bool checkBDChainCap(ConduitToDMAState &state, mlir::Value tile,
+                     int64_t chainLen, llvm::StringRef channelName);
+
+// ---------------------------------------------------------------------------
 // Phase function declarations.  Each phase function modifies state in place.
 // If a phase detects an error, it sets state.passFailed = true.
 // ---------------------------------------------------------------------------

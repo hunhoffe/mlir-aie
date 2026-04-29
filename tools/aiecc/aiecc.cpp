@@ -1491,6 +1491,15 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
     // symbol.  The pass is a no-op when no aiex.dma_task ops are present, so
     // unconditional inclusion is safe.
     conduitPipeline += ",dma-task-to-conduit";
+    // Canonicalize IRON's `for batch in range(N)` host-side Python-unroll —
+    // collapse N structurally-identical conduit.put_memref_async (or
+    // get_memref_async) ops on one channel + matching wait_all chains into
+    // 1 op + channel-level dma_repeat=N.  Keeps Pass C BD-chain emit aware
+    // of channel-level repeats only (not host-emit accounting); matches
+    // upstream stateful's compute-tile rotation behavior.  Must run AFTER
+    // dma-task-to-conduit (we collapse the round-tripped form) and BEFORE
+    // any fusion or depth-promote pass.
+    conduitPipeline += ",conduit-canonicalize-channel-puts";
     if (conduitFuseCoreBodies)
       conduitPipeline +=
           ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";

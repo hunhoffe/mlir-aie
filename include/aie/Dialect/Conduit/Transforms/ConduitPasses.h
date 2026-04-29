@@ -60,6 +60,8 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITDMATASKTOCONDUIT
 #define GEN_PASS_DECL_CONDUITFUSECOREBODIES
 #define GEN_PASS_DECL_CONDUITCOMBINEDEVICE
+#define GEN_PASS_DECL_CONDUITCANONICALIZECHANNELPUTS
+#define GEN_PASS_DECL_CONDUITEXPANDCHANNELPUTS
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -157,6 +159,37 @@ createConduitFuseCoreBodyPass();
 /// fusion passes.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitCombineDevicePass();
+
+/// Channel put canonicalization: collapse N structurally-identical
+/// conduit.put_memref_async / get_memref_async ops on one channel + their
+/// matching wait_all sync chains into 1 op + channel-level dma_repeat=N.
+/// Refuses collapse when N exceeds the producer/consumer tile's BD cap.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitCanonicalizeChannelPutsPass();
+
+/// Inverse of --conduit-canonicalize-channel-puts: expand 1 put + dma_repeat=N
+/// back to N replicated puts + chains. Used for round-trip lit testing and by
+/// fusion authors that need per-batch IR-level mutation.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitExpandChannelPutsPass();
+
+/// Returns the effective put count for `channel`: the number of raw
+/// PutMemrefAsync ops that reference its name, multiplied by the channel's
+/// dma_repeat attribute (default 1 when absent). Allows fusion authors to
+/// reason about pre-canon emit count without relying on a particular
+/// canonicalization state.
+int64_t getEffectivePutCount(::xilinx::conduit::Create channel);
+
+/// Symmetric to getEffectivePutCount, for GetMemrefAsync.
+int64_t getEffectiveGetCount(::xilinx::conduit::Create channel);
+
+/// Replicate a single PutMemrefAsync (or GetMemrefAsync) op + its WaitAll
+/// sync chain on `channel` to N copies based on the channel's dma_repeat=N.
+/// Clears the dma_repeat attribute on success. Returns failure (and leaves
+/// IR unchanged) when the channel is not in canonicalized form (no
+/// dma_repeat, dma_repeat<=1, or != 1 raw put/get on the channel).
+mlir::LogicalResult expandLoopUnrollPuts(::xilinx::conduit::Create channel,
+                                         mlir::OpBuilder &builder);
 
 //===----------------------------------------------------------------------===//
 // Pass registration (generated from Passes.td)

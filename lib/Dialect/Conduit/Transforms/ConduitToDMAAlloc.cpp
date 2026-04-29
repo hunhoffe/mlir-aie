@@ -656,17 +656,6 @@ void allocPhase(ConduitToDMAState &state) {
 
       mlir::Value consTileVal = consTile.getResult();
 
-      // MemTile relay buffer cap: when the consumer is a MemTile acting as a
-      // relay, the putCount-inflated nConsumerBuffers() is wrong — the
-      // ShimTile's runtime sequence put count drives the shim BD chain length,
-      // not the MemTile relay's buffering.  The relay uses a repeating BD
-      // chain whose buffer count is the conduit depth, not putCount.
-      int64_t consNBufs = nBufs;
-      if (targetModel.isMemTile(consCol, consRow) && info.putCount > 1 &&
-          info.dmaRepeat == 0) {
-        consNBufs = depth;
-      }
-
       // Use indexed naming when total consumers (compute + shim) > 1 to avoid
       // symbol collisions between Phase 3 (compute consumer) and Phase 4b
       // (shim consumer) lock names.
@@ -681,7 +670,7 @@ void allocPhase(ConduitToDMAState &state) {
       llvm::SmallVector<AIE::BufferOp> consBuffers;
       if (!preMaterialized) {
         consBuffers =
-            state.allocateBuffers(consTileVal, consPrefix, bufTy, consNBufs);
+            state.allocateBuffers(consTileVal, consPrefix, bufTy, nBufs);
         // Intentionally assigned before the linkSrcNamesEarly branch so the
         // branch's continue does not skip it.
         if (consIdx == 0)
@@ -751,16 +740,16 @@ void allocPhase(ConduitToDMAState &state) {
       // Allocate lock(s) on the consumer tile (skip if
       // disable_synchronization).
       //
-      // Consumer-tile prod_lock init = consNBufs (number of buffer slots,
+      // Consumer-tile prod_lock init = nBufs (number of buffer slots,
       // including any extra for sliding-window partial release). bd_repeat
       // does NOT multiply here: the DMA BD chain fires bd_repeat times per
       // buffer slot, but the bd_repeat scaling belongs only on the
       // producer-side lock (allocated in Phase 3d below).
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.noLocks) {
-        int64_t prodInit = consNBufs;
-        auto consLocks = state.allocateLockPair(consTileVal, consPrefix,
-                                                consNBufs, prodInit);
+        int64_t prodInit = nBufs;
+        auto consLocks = state.allocateLockPair(consTileVal, consPrefix, nBufs,
+                                                prodInit);
         thisProdLock = consLocks.prodLock;
         thisConsLock = consLocks.consLock;
         if (consIdx == 0) {

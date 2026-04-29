@@ -1465,6 +1465,8 @@ void linkPhase(ConduitToDMAState &state) {
         return;
       }
 
+      if (!checkBDChainCap(state, prodTileVal, nBufs, name))
+        return;
       auto addBlock = [&]() -> mlir::Block * {
         return builder.createBlock(&memRegion);
       };
@@ -1504,6 +1506,8 @@ void linkPhase(ConduitToDMAState &state) {
       mlir::Region *memRegion = &memOp.getBody();
       tileToDMARegion[prodTileVal] = memRegion;
 
+      if (!checkBDChainCap(state, prodTileVal, nBufs, name))
+        return;
       auto addMemBlock = [&]() -> mlir::Block * {
         return builder.createBlock(memRegion);
       };
@@ -1635,6 +1639,8 @@ void linkPhase(ConduitToDMAState &state) {
         }
         {
           int64_t nBufs = info.nConsumerBuffers();
+          if (!checkBDChainCap(state, prodTileVal, nBufs, name))
+            return;
           auto addBlock = [&]() -> mlir::Block * {
             return builder.createBlock(memRegion);
           };
@@ -1681,6 +1687,8 @@ void linkPhase(ConduitToDMAState &state) {
         tileToDMARegion[prodTileVal] = memRegion; // register for later phases
 
         int64_t nBufs = info.nConsumerBuffers();
+        if (!checkBDChainCap(state, prodTileVal, nBufs, name))
+          return;
         auto addMemBlock = [&]() -> mlir::Block * {
           return builder.createBlock(memRegion);
         };
@@ -1824,6 +1832,8 @@ void linkPhase(ConduitToDMAState &state) {
                   return;
                 }
                 {
+                  if (!checkBDChainCap(state, prodTileVal, effectiveBDs, name))
+                    return;
                   auto addBlock = [&]() -> mlir::Block * {
                     return builder.createBlock(&memRegion);
                   };
@@ -1927,6 +1937,8 @@ void linkPhase(ConduitToDMAState &state) {
                 }
                 tileToDMARegion[prodTileVal] = dmaRegionPtr;
                 mlir::Region &memRegion = *dmaRegionPtr;
+                if (!checkBDChainCap(state, prodTileVal, effectiveBDs, name))
+                  return;
                 auto addBlock = [&]() -> mlir::Block * {
                   return builder.createBlock(&memRegion);
                 };
@@ -2053,6 +2065,8 @@ void linkPhase(ConduitToDMAState &state) {
           return;
         }
         {
+          if (!checkBDChainCap(state, prodTileVal, caseBEffectiveBDs, name))
+            return;
           auto addMemBlock = [&]() -> mlir::Block * {
             return builder.createBlock(&memRegion);
           };
@@ -2131,6 +2145,8 @@ void linkPhase(ConduitToDMAState &state) {
             builder.create<AIE::MemOp>(state.deviceOp.getLoc(), prodTileVal);
         mlir::Region &memRegion = memOp.getBody();
         tileToDMARegion[prodTileVal] = &memRegion;
+        if (!checkBDChainCap(state, prodTileVal, caseBEffectiveBDs, name))
+          return;
         auto addMemBlock = [&]() -> mlir::Block * {
           return builder.createBlock(&memRegion);
         };
@@ -2345,6 +2361,8 @@ void linkPhase(ConduitToDMAState &state) {
                                      ? static_cast<int32_t>(info.dmaRepeat - 1)
                                      : 0;
 
+        if (!checkBDChainCap(state, consTileVal2, nBufs, name))
+          return;
         llvm::SmallVector<mlir::Block *> bdBlocks;
         for (int64_t i = 0; i < nBufs; ++i)
           bdBlocks.push_back(addMemBlock());
