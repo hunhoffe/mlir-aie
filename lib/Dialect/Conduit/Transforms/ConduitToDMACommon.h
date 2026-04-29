@@ -237,9 +237,10 @@ struct ConduitInfo {
   llvm::SmallVector<AIE::BufferOp> buffers; // depth-many on consumer_tile[0]
 
   // Per-consumer-tile lock pairs for multi-consumer (broadcast) correctness.
-  // Key: tile SSA Value.  Read by linkPhase (BD chains) and lowerPhase (use_lock).
-  // NOTE: for sharedMemory conduits, LockOps are physically on the producer
-  // tile but keyed on the consumer tile for lowerPhase use_lock lookup.
+  // Key: tile SSA Value.  Read by linkPhase (BD chains) and lowerPhase
+  // (use_lock). NOTE: for sharedMemory conduits, LockOps are physically on the
+  // producer tile but keyed on the consumer tile for lowerPhase use_lock
+  // lookup.
   llvm::DenseMap<mlir::Value, std::pair<AIE::LockOp, AIE::LockOp>>
       consumerTileLocks; // tile → (prodLock, consLock)
 
@@ -279,7 +280,8 @@ struct ConduitInfo {
   llvm::DenseMap<mlir::Value, int64_t>
       producerTileRotationBufSlots; // tile → slot index for this conduit
 
-  // --- New feature flags (populated by collectPhase from conduit.create attrs) ---
+  // --- New feature flags (populated by collectPhase from conduit.create attrs)
+  // ---
 
   // noLocks: suppress all lock allocation and use_lock ops.
   // Set when sync_mode == None on conduit.create.
@@ -667,16 +669,14 @@ struct ConduitToDMAState {
   /// unqualified fallback for the `conduitMM2SChannel` map.
   /// Returns -1 on miss.
   /// PRECONDITION: same as lookupS2MMChannel.
-  int32_t lookupMM2SChannel(mlir::StringRef name,
-                            mlir::Operation *contextOp);
+  int32_t lookupMM2SChannel(mlir::StringRef name, mlir::Operation *contextOp);
 
   /// Device-aware lookup for the per-conduit packet ID.
   /// See `lookupS2MMChannel` for the rationale; same qualified-then-
   /// unqualified fallback for the `conduitPacketID` map.
   /// Returns -1 on miss.
   /// PRECONDITION: same as lookupS2MMChannel.
-  int32_t lookupPacketID(mlir::StringRef name,
-                         mlir::Operation *contextOp);
+  int32_t lookupPacketID(mlir::StringRef name, mlir::Operation *contextOp);
 
   /// Device-aware insert for the per-conduit S2MM consumer channel.
   /// Stores `ch` under the device-qualified key produced by

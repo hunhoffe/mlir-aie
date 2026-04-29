@@ -94,7 +94,8 @@ mlir::DenseI64ArrayAttr makeOffsetsWithHead(mlir::MLIRContext *ctx,
 template <typename OpTy>
 struct DimsTraits;
 
-template <> struct DimsTraits<PutMemrefAsync> {
+template <>
+struct DimsTraits<PutMemrefAsync> {
   using DimsAttr = AIE::BDDimLayoutArrayAttr;
   static DimsAttr getOpDims(PutMemrefAsync op) {
     return mlir::dyn_cast_or_null<DimsAttr>(op.getProducerDimensionsAttr());
@@ -126,7 +127,8 @@ template <> struct DimsTraits<PutMemrefAsync> {
   }
 };
 
-template <> struct DimsTraits<GetMemrefAsync> {
+template <>
+struct DimsTraits<GetMemrefAsync> {
   using DimsAttr = AIE::BDDimLayoutArrayArrayAttr;
   static DimsAttr getOpDims(GetMemrefAsync op) {
     return mlir::dyn_cast_or_null<DimsAttr>(op.getConsumerDimensionsAttr());
@@ -258,8 +260,7 @@ mlir::LogicalResult expandOne(Create createOp, mlir::OpBuilder &builder) {
   mlir::Operation *insertAfter = origOp.getOperation();
   for (WaitAll w : *chain)
     if (w->isBeforeInBlock(insertAfter) == false &&
-        w->getBlock() == origOp->getBlock() &&
-        insertAfter->isBeforeInBlock(w))
+        w->getBlock() == origOp->getBlock() && insertAfter->isBeforeInBlock(w))
       insertAfter = w.getOperation();
 
   for (int64_t i = 1; i < N; ++i) {

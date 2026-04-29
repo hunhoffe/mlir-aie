@@ -1323,9 +1323,9 @@ void lowerPhase(ConduitToDMAState &state) {
         // and AIEDmaToNpu.cpp packing).  Skipping `> 0` (default / absent)
         // preserves the correct no-attr emission for unstamped channels.
         if (effectiveRepeat > 0)
-          configState.addAttribute("repeat_count",
-                                   builder.getI32IntegerAttr(
-                                       static_cast<int32_t>(effectiveRepeat)));
+          configState.addAttribute(
+              "repeat_count",
+              builder.getI32IntegerAttr(static_cast<int32_t>(effectiveRepeat)));
         configState.addTypes(indexTy);
         configState.addRegion();
         mlir::Operation *configOp = builder.create(configState);
@@ -1386,7 +1386,8 @@ void lowerPhase(ConduitToDMAState &state) {
             // Pick the smallest stride satisfying the constraint for the
             // current element type.
             auto memrefTy = mlir::cast<mlir::MemRefType>(bufArg.getType());
-            unsigned elemBits = memrefTy.getElementType().getIntOrFloatBitWidth();
+            unsigned elemBits =
+                memrefTy.getElementType().getIntOrFloatBitWidth();
             unsigned elemBytes = std::max(1U, elemBits / 8);
             uint32_t padStride = std::max(1U, 4U / elemBytes);
             for (size_t i = 0; i < padCount; ++i)
@@ -1503,9 +1504,9 @@ void lowerPhase(ConduitToDMAState &state) {
             }
           }
 
-          mlir::OperationState rel(wa.getLoc(),
-                                   wantAwait ? "aiex.dma_await_task"
-                                             : "aiex.dma_free_task");
+          mlir::OperationState rel(wa.getLoc(), wantAwait
+                                                    ? "aiex.dma_await_task"
+                                                    : "aiex.dma_free_task");
           rel.addOperands(task);
           builder.create(rel);
           releasedTasks.insert(task);
@@ -1526,9 +1527,9 @@ void lowerPhase(ConduitToDMAState &state) {
         for (const LiveTask &live : trailIt->second) {
           if (releasedTasks.contains(live.task))
             continue;
-          mlir::OperationState rel(rtSeq.getLoc(),
-                                   live.isS2MM ? "aiex.dma_await_task"
-                                               : "aiex.dma_free_task");
+          mlir::OperationState rel(rtSeq.getLoc(), live.isS2MM
+                                                       ? "aiex.dma_await_task"
+                                                       : "aiex.dma_free_task");
           rel.addOperands(live.task);
           builder.create(rel);
         }

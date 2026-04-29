@@ -289,9 +289,8 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     // switched-to device in multi-device mode.
     AIE::CoreOp coreOp = nullptr;
     auto *tileDefOp = tileVal.getDefiningOp();
-    auto tileParentDev = tileDefOp
-                             ? tileDefOp->getParentOfType<AIE::DeviceOp>()
-                             : AIE::DeviceOp{};
+    auto tileParentDev = tileDefOp ? tileDefOp->getParentOfType<AIE::DeviceOp>()
+                                   : AIE::DeviceOp{};
     if (tileParentDev) {
       tileParentDev.walk([&](AIE::CoreOp core) {
         if (core.getTile() == tileVal)
@@ -748,8 +747,8 @@ void allocPhase(ConduitToDMAState &state) {
       AIE::LockOp thisProdLock, thisConsLock;
       if (!info.noLocks) {
         int64_t prodInit = nBufs;
-        auto consLocks = state.allocateLockPair(consTileVal, consPrefix, nBufs,
-                                                prodInit);
+        auto consLocks =
+            state.allocateLockPair(consTileVal, consPrefix, nBufs, prodInit);
         thisProdLock = consLocks.prodLock;
         thisConsLock = consLocks.consLock;
         if (consIdx == 0) {

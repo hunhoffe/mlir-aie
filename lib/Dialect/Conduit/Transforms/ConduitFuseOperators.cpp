@@ -803,7 +803,8 @@ struct ConduitFuseOperatorsPass
           // erasing the wait_all entirely if no operands survive.
           if (!targetAsyncOps.empty()) {
             llvm::SmallVector<WaitAll> waitAllsToErase;
-            llvm::SmallVector<std::pair<WaitAll, llvm::SmallVector<mlir::Value, 4>>>
+            llvm::SmallVector<
+                std::pair<WaitAll, llvm::SmallVector<mlir::Value, 4>>>
                 waitAllsToShrink;
             device.walk([&](WaitAll wa) {
               llvm::SmallVector<mlir::Value, 4> survivors;

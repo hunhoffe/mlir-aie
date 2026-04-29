@@ -148,9 +148,9 @@ bool getsArithCompatible(GetMemrefAsync a, GetMemrefAsync b) {
 // Build a fresh BDDimLayoutArrayAttr with `outer` prepended to `existing`.
 // `existing` may be null/empty.  Returns nullptr only on failure modes the
 // caller should never trigger.
-AIE::BDDimLayoutArrayAttr
-prependDim(MLIRContext *ctx, AIE::BDDimLayoutArrayAttr existing,
-           AIE::BDDimLayoutAttr outer) {
+AIE::BDDimLayoutArrayAttr prependDim(MLIRContext *ctx,
+                                     AIE::BDDimLayoutArrayAttr existing,
+                                     AIE::BDDimLayoutAttr outer) {
   llvm::SmallVector<AIE::BDDimLayoutAttr> dims;
   dims.push_back(outer);
   if (existing)
@@ -163,8 +163,7 @@ prependDim(MLIRContext *ctx, AIE::BDDimLayoutArrayAttr existing,
 // prepend `outer` to each inner array.  When absent, produce a single
 // inner array containing only `outer`.
 AIE::BDDimLayoutArrayArrayAttr
-prependDimArrayArray(MLIRContext *ctx,
-                     AIE::BDDimLayoutArrayArrayAttr existing,
+prependDimArrayArray(MLIRContext *ctx, AIE::BDDimLayoutArrayArrayAttr existing,
                      AIE::BDDimLayoutAttr outer) {
   llvm::SmallVector<AIE::BDDimLayoutArrayAttr> outer_arrays;
   if (existing && !existing.getValue().empty()) {
@@ -270,8 +269,8 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
   // parents would reject Pass C's 4-dim padded form).
   if (isComputeTile(scope, producerTile)) {
     createOp.emitWarning()
-        << "canonicalize-loop-unroll-puts: refusing to collapse "
-        << N << " puts on @" << chanName
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " puts on @" << chanName
         << " — producer is a compute tile and the outer wrap+stride dim "
            "would emit on a compute-tile dma_bd that the AIEDialect "
            "verifier caps at 3 dims";
@@ -289,9 +288,9 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
   }
   if (capKnown && N > static_cast<int64_t>(worstCap)) {
     createOp.emitWarning()
-        << "canonicalize-loop-unroll-puts: refusing to collapse "
-        << N << " puts on @" << chanName << " — exceeds tile BD cap of "
-        << worstCap << " (downstream Pass C will surface the underlying issue)";
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " puts on @" << chanName << " — exceeds tile BD cap of " << worstCap
+        << " (downstream Pass C will surface the underlying issue)";
     return false;
   }
 
@@ -302,12 +301,14 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
   AIE::BDDimLayoutAttr outer = AIE::BDDimLayoutAttr::get(
       ctx, static_cast<uint32_t>(N), static_cast<uint32_t>(stride));
   AIE::BDDimLayoutArrayAttr putNewDims =
-      prependDim(ctx, mlir::dyn_cast_or_null<AIE::BDDimLayoutArrayAttr>(
-                          ref.getProducerDimensionsAttr()),
+      prependDim(ctx,
+                 mlir::dyn_cast_or_null<AIE::BDDimLayoutArrayAttr>(
+                     ref.getProducerDimensionsAttr()),
                  outer);
   AIE::BDDimLayoutArrayAttr createNewDims =
-      prependDim(ctx, mlir::dyn_cast_or_null<AIE::BDDimLayoutArrayAttr>(
-                          createOp.getProducerDimensionsAttr()),
+      prependDim(ctx,
+                 mlir::dyn_cast_or_null<AIE::BDDimLayoutArrayAttr>(
+                     createOp.getProducerDimensionsAttr()),
                  outer);
 
   // Erase puts[1..N-1] and their chains via the rewriter so the greedy
@@ -318,7 +319,8 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
     rewriter.eraseOp(puts[i]);
   }
 
-  rewriter.modifyOpInPlace(ref, [&] { ref.setProducerDimensionsAttr(putNewDims); });
+  rewriter.modifyOpInPlace(ref,
+                           [&] { ref.setProducerDimensionsAttr(putNewDims); });
   rewriter.modifyOpInPlace(createOp, [&] {
     // The outer wrap+stride dim encodes BOTH cycle count (N) AND per-cycle
     // offset variation (stride).  DO NOT also set dma_repeat=N — that would
@@ -409,8 +411,8 @@ bool tryCollapseArithGets(Create createOp, PatternRewriter &rewriter) {
   // refuse — see isComputeTile comment for rationale.
   if (isComputeTile(scope, consumerTile)) {
     createOp.emitWarning()
-        << "canonicalize-loop-unroll-puts: refusing to collapse "
-        << N << " gets on @" << chanName
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " gets on @" << chanName
         << " — consumer is a compute tile and the outer wrap+stride dim "
            "would emit on a compute-tile dma_bd that the AIEDialect "
            "verifier caps at 3 dims";
@@ -428,9 +430,9 @@ bool tryCollapseArithGets(Create createOp, PatternRewriter &rewriter) {
   }
   if (capKnown && N > static_cast<int64_t>(worstCap)) {
     createOp.emitWarning()
-        << "canonicalize-loop-unroll-puts: refusing to collapse "
-        << N << " gets on @" << chanName << " — exceeds tile BD cap of "
-        << worstCap << " (downstream Pass C will surface the underlying issue)";
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " gets on @" << chanName << " — exceeds tile BD cap of " << worstCap
+        << " (downstream Pass C will surface the underlying issue)";
     return false;
   }
 
@@ -453,7 +455,8 @@ bool tryCollapseArithGets(Create createOp, PatternRewriter &rewriter) {
     rewriter.eraseOp(gets[i]);
   }
 
-  rewriter.modifyOpInPlace(ref, [&] { ref.setConsumerDimensionsAttr(getNewDims); });
+  rewriter.modifyOpInPlace(ref,
+                           [&] { ref.setConsumerDimensionsAttr(getNewDims); });
   rewriter.modifyOpInPlace(createOp, [&] {
     // The outer wrap+stride dim encodes BOTH cycle count (N) AND per-cycle
     // offset variation (stride).  DO NOT also set dma_repeat=N — that would

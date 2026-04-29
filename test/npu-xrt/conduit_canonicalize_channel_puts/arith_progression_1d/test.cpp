@@ -39,12 +39,12 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-constexpr int N_PUTS    = 4;
-constexpr int SLICE     = 64;
-constexpr int INPUT_LEN  = N_PUTS * SLICE;         // 256
-constexpr int OUTPUT_LEN = N_PUTS * SLICE;         // 256
+constexpr int N_PUTS = 4;
+constexpr int SLICE = 64;
+constexpr int INPUT_LEN = N_PUTS * SLICE;  // 256
+constexpr int OUTPUT_LEN = N_PUTS * SLICE; // 256
 
-constexpr int INPUT_SIZE  = INPUT_LEN  * static_cast<int>(sizeof(uint16_t));
+constexpr int INPUT_SIZE = INPUT_LEN * static_cast<int>(sizeof(uint16_t));
 constexpr int OUTPUT_SIZE = OUTPUT_LEN * static_cast<int>(sizeof(uint16_t));
 
 static uint16_t float_to_bf16(float f) {
@@ -95,7 +95,7 @@ int main(int argc, const char *argv[]) {
   auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(int),
                           XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
   auto bo_input =
-      xrt::bo(device, INPUT_SIZE,  XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
+      xrt::bo(device, INPUT_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
   auto bo_output =
       xrt::bo(device, OUTPUT_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
 
@@ -146,10 +146,10 @@ int main(int argc, const char *argv[]) {
   for (int i = 0; i < OUTPUT_LEN; i++) {
     if (buf_output[i] != ref[i]) {
       if (errors < 16) {
-        std::cout << "Mismatch at output[" << i << "]: expected 0x"
-                  << std::hex << std::setw(4) << std::setfill('0') << ref[i]
-                  << " actual 0x" << std::setw(4) << std::setfill('0')
-                  << buf_output[i] << std::dec << std::endl;
+        std::cout << "Mismatch at output[" << i << "]: expected 0x" << std::hex
+                  << std::setw(4) << std::setfill('0') << ref[i] << " actual 0x"
+                  << std::setw(4) << std::setfill('0') << buf_output[i]
+                  << std::dec << std::endl;
       }
       errors++;
     }

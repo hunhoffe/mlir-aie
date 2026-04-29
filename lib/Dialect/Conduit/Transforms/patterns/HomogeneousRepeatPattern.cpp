@@ -119,9 +119,9 @@ bool tryCollapsePuts(Create createOp, PatternRewriter &rewriter) {
   }
   if (capKnown && N > static_cast<int64_t>(worstCap)) {
     createOp.emitWarning()
-        << "canonicalize-loop-unroll-puts: refusing to collapse "
-        << N << " puts on @" << chanName << " — exceeds tile BD cap of "
-        << worstCap << " (downstream Pass C will surface the underlying issue)";
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " puts on @" << chanName << " — exceeds tile BD cap of " << worstCap
+        << " (downstream Pass C will surface the underlying issue)";
     return false;
   }
 
@@ -212,9 +212,9 @@ bool tryCollapseGets(Create createOp, PatternRewriter &rewriter) {
   }
   if (capKnown && N > static_cast<int64_t>(worstCap)) {
     createOp.emitWarning()
-        << "canonicalize-loop-unroll-puts: refusing to collapse "
-        << N << " gets on @" << chanName << " — exceeds tile BD cap of "
-        << worstCap << " (downstream Pass C will surface the underlying issue)";
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " gets on @" << chanName << " — exceeds tile BD cap of " << worstCap
+        << " (downstream Pass C will surface the underlying issue)";
     return false;
   }
 

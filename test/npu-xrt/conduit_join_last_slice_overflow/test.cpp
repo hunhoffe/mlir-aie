@@ -49,10 +49,10 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-constexpr int N_SLICES   = 4;
+constexpr int N_SLICES = 4;
 constexpr int PER_SOURCE = 64;
-constexpr int PER_SLICE  = 2 * PER_SOURCE;          // 128
-constexpr int OUTPUT_LEN = N_SLICES * PER_SLICE;    // 512
+constexpr int PER_SLICE = 2 * PER_SOURCE;        // 128
+constexpr int OUTPUT_LEN = N_SLICES * PER_SLICE; // 512
 
 // bf16 = 2 bytes; we store/compare via raw uint16_t bit patterns since
 // every value we ever write (integers 0..127) is bf16-exact.
@@ -152,10 +152,10 @@ int main(int argc, const char *argv[]) {
   for (int i = 0; i < OUTPUT_LEN; i++) {
     if (buf_output[i] != ref[i]) {
       if (errors < 16) {
-        std::cout << "Mismatch at output[" << i << "]: expected 0x"
-                  << std::hex << std::setw(4) << std::setfill('0') << ref[i]
-                  << " actual 0x" << std::setw(4) << std::setfill('0')
-                  << buf_output[i] << std::dec << std::endl;
+        std::cout << "Mismatch at output[" << i << "]: expected 0x" << std::hex
+                  << std::setw(4) << std::setfill('0') << ref[i] << " actual 0x"
+                  << std::setw(4) << std::setfill('0') << buf_output[i]
+                  << std::dec << std::endl;
       }
       errors++;
     }
