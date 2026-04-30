@@ -102,7 +102,8 @@ conduit.create @cas_c3_src {depth = 1 : i64,
 conduit.create @cas_c3_dst {depth = 1 : i64
                 }
 func.func @case3_cascade_scatter_src() {
-  conduit.scatter{src = @cas_c3_src, dsts = [@cas_c3_dst] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @cas_c3_src, dsts = [@cas_c3_dst], memtile = %mt}
   return
 }
 }

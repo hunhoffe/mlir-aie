@@ -31,8 +31,9 @@ conduit.create @j_src_norates {                element_type = memref<4xi32>,
 conduit.create @j_dst_norates {                element_type = memref<4xi32>,
                 depth = 1 : i64}
 func.func @join_unannotated_srcs_pass() {
+  %mt = aie.tile(0, 1)
   // No expected-error: unannotated → skip path → PASS.
-  conduit.gather{srcs = [@j_src_norates], dst = @j_dst_norates {memtile = "tile(0,1)"}}
+  conduit.gather{srcs = [@j_src_norates], dst = @j_dst_norates, memtile = %mt}
   return
 }
 }
@@ -56,8 +57,9 @@ conduit.create @j2_dst {                element_type = memref<4xi32>,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}
 func.func @join_all_balanced_link_check() {
+  %mt = aie.tile(0, 1)
   // No error expected: all rates balanced.
-  conduit.gather{srcs = [@j2_src], dst = @j2_dst {memtile = "tile(0,1)"}}
+  conduit.gather{srcs = [@j2_src], dst = @j2_dst, memtile = %mt}
   return
 }
 }

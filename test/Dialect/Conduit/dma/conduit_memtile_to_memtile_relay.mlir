@@ -75,10 +75,10 @@ module @memtile_to_memtile_relay {
     }
 
     // Relay #1: forward @src → @mid at MemTile(0,1)
-    conduit.scatter{src = @src, dsts = [@mid] {memtile = "tile(0,1)"}}
+    conduit.scatter{src = @src, dsts = [@mid], memtile = %mem_tile_0_1}
 
     // Relay #2: forward @mid → @dst at MemTile(1,1)
-    conduit.scatter{src = @mid, dsts = [@dst] {memtile = "tile(1,1)"}}
+    conduit.scatter{src = @mid, dsts = [@dst], memtile = %mem_tile_1_1}
 
     %core_prod = aie.core(%tile_0_2) {
       %c0 = arith.constant 0 : index

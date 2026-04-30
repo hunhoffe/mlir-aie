@@ -180,7 +180,7 @@ struct ConduitFuseRelayPass
       auto dsts = scatterOp.getDsts();
 
       auto transposeOp = builder.create<TransposeOp>(
-          gatherOp.getLoc(), srcs, dsts, gatherOp.getMemtileAttr(),
+          gatherOp.getLoc(), srcs, dsts, gatherOp.getMemtile(),
           mlir::DenseI64ArrayAttr::get(ctx, offsets));
       (void)transposeOp;
 

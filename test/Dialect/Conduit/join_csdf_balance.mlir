@@ -36,7 +36,8 @@ conduit.create @j_dst {                element_type = memref<8xi32>,
                 producer_rates = array<i64: 4>,
                 consumer_rates = array<i64: 4>}
 func.func @join_all_balanced() {
-  conduit.gather{srcs = [@j_src1, @j_src2], dst = @j_dst {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@j_src1, @j_src2], dst = @j_dst, memtile = %mt}
   return
 }
 }
@@ -73,7 +74,8 @@ conduit.create @j2_dst {                element_type = memref<i32>,
                 producer_rates = array<i64: 3>,
                 consumer_rates = array<i64: 1, 2>}
 func.func @join_dst_rates_imbalanced() {
-  conduit.gather{srcs = [@j2_src1, @j2_src2], dst = @j2_dst {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@j2_src1, @j2_src2], dst = @j2_dst, memtile = %mt}
   return
 }
 }
@@ -103,7 +105,8 @@ conduit.create @j3_dst {                element_type = memref<i32>,
                 producer_rates = array<i64: 3, 1>,
                 consumer_rates = array<i64: 2>}
 func.func @join_dst_buffer_undersized() {
-  conduit.gather{srcs = [@j3_src1, @j3_src2], dst = @j3_dst {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@j3_src1, @j3_src2], dst = @j3_dst, memtile = %mt}
   return
 }
 }

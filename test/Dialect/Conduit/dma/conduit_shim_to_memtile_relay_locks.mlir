@@ -66,7 +66,7 @@ module @shim_to_memtile_relay_locks {
     }
 
     // Relay: scatter stage1 → weights (1-to-1 forward through MemTile).
-    conduit.scatter{src = @weights_stage1, dsts = [@weights] {memtile = "tile(0,1)"}}
+    conduit.scatter{src = @weights_stage1, dsts = [@weights], memtile = %memtile}
 
     // Shim DMA pre-declaration.
     aie.shim_dma_allocation @weights_stage1_shim_alloc(%shim, MM2S, 0)

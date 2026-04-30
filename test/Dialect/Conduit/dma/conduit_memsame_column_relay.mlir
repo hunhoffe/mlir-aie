@@ -43,7 +43,7 @@ module @memsame_column_relay {
     conduit.create @relay_dst1 {element_type = memref<256xi8>, depth = 2 : i64}
 
     // Distribute link: split 512B buffer into two 256B slices at MemTile(2,1)
-    conduit.scatter{src = @relay_in, dsts = [@relay_dst0, @relay_dst1] {memtile = "tile(2,1)", offsets = array<i64: 0, 256>}}
+    conduit.scatter{src = @relay_in, dsts = [@relay_dst0, @relay_dst1], memtile = %mem_tile_2_1, offsets = [0, 256]}
 
     // Shim producer allocation for ingress channel.
     aie.shim_dma_allocation @relay_in_shim_alloc(%shim_2_0, MM2S, 0) {conduit_channel = @relay_in}

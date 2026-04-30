@@ -27,7 +27,7 @@
 //
 // Scatter relay.
 // CHECK:   conduit.scatter{src = @fifo, dsts = [@fifo_relay]
-// CHECK-SAME: memtile = "tile(0,1)"
+// CHECK-SAME: memtile = %mem_tile_0_1
 //
 // Producer acquire unchanged — still references @fifo.
 // CHECK:   conduit.acquire

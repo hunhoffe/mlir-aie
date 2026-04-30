@@ -29,11 +29,13 @@
 // Non-uniform offsets select time-multiplexed unicast in Pass C.
 // CHECK-LABEL: func.func @scatter_packet_4tile_parses
 func.func @scatter_packet_4tile_parses() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @A_src
   // CHECK-SAME: dsts = [@A_tile0, @A_tile1, @A_tile2, @A_tile3]
-  // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.scatter{src = @A_src, dsts = [@A_tile0, @A_tile1, @A_tile2, @A_tile3] {memtile = "tile(0,1)"}}
+  // CHECK-SAME: memtile = %[[MT]]
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @A_src, dsts = [@A_tile0, @A_tile1, @A_tile2, @A_tile3], memtile = %mt}
   return
 }
 
@@ -42,11 +44,13 @@ func.func @scatter_packet_4tile_parses() {
 // Valid conduit.scatter: 1 src → 1 dst (N=1 relay / forward case).
 // CHECK-LABEL: func.func @scatter_packet_relay_parses
 func.func @scatter_packet_relay_parses() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @in_src
   // CHECK-SAME: dsts = [@out_dst]
-  // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.scatter{src = @in_src, dsts = [@out_dst] {memtile = "tile(0,1)"}}
+  // CHECK-SAME: memtile = %[[MT]]
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @in_src, dsts = [@out_dst], memtile = %mt}
   return
 }
 

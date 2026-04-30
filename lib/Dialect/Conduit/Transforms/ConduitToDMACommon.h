@@ -133,8 +133,6 @@ struct PacketChannelState {
       portOccupancy;
 };
 
-// parseTileCoord is defined in ConduitTileInference.h (included above).
-
 // ---------------------------------------------------------------------------
 // Per-conduit info gathered from conduit.create typed attributes.
 //
@@ -570,13 +568,6 @@ struct ConduitToDMAState {
   bool passFailed = false;
 
   // --- Helper methods ---
-
-  AIE::TileOp lookupTile(llvm::StringRef coord) {
-    auto [col, row] = parseTileCoord(coord);
-    if (col < 0)
-      return {};
-    return lookupTileByCoord(col, row);
-  }
 
   AIE::TileOp lookupTileByCoord(int64_t col, int64_t row);
 

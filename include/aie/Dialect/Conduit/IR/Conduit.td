@@ -751,7 +751,9 @@ def Conduit_ScatterOp : Conduit_Op<"scatter", []> {
   let summary = "1:N fan-out relay — routes one source channel to N destination channels via a MemTile";
   let description = [{
     Routes data from one source channel to N destination channels through a MemTile
-    DMA relay. The memtile operand is a FlatSymbolRef to an aie.tile op (row=1).
+    DMA relay. The memtile operand is the SSA result of an aie.tile op.
+    Note: the operand is named "memtile" historically; it may be any relay tile
+    (memtile or compute tile). Pass C handles both.
     offsets: optional per-destination element offsets into the MemTile buffer
     (absent = uniform — all destinations start at offset 0, full buffer length).
     Each relay edge (compute→MemTile or MemTile→compute) may carry a fusion_group
@@ -760,15 +762,35 @@ def Conduit_ScatterOp : Conduit_Op<"scatter", []> {
   let arguments = (ins
     FlatSymbolRefAttr:$src,
     Conduit_FlatSymbolRefArrayAttr:$dsts,
-    // memtile: "tile(col,row)" string identifying the MemTile relay tile.
-    // TODO (post-Sprint 6): migrate to FlatSymbolRefAttr once AIE tile ops
-    // carry sym_names. The current StrAttr format is validated by the verifier.
-    StrAttr:$memtile,
+    Index:$memtile,
     OptionalAttr<DenseI64ArrayAttr>:$offsets
   );
   let assemblyFormat = [{
-    `{` `src` `=` $src `,` `dsts` `=` $dsts attr-dict `}`
+    `{` `src` `=` $src `,` `dsts` `=` $dsts `,`
+    `memtile` `=` $memtile (`,` `offsets` `=` $offsets^)? `}` attr-dict
   }];
+  let extraClassDeclaration = [{
+    ::xilinx::AIE::TileOp getMemtileOp() {
+      return ::mlir::cast<::xilinx::AIE::TileOp>(getMemtile().getDefiningOp());
+    }
+    int getMemtileCol() { return getMemtileOp().getCol(); }
+    int getMemtileRow() { return getMemtileOp().getRow(); }
+  }];
+  let builders = [
+    OpBuilder<(ins "::mlir::FlatSymbolRefAttr":$src,
+                   "::mlir::ArrayAttr":$dsts,
+                   "int":$col, "int":$row,
+                   "::mlir::DenseI64ArrayAttr":$offsets), [{
+      auto *parentOp = $_builder.getInsertionBlock()->getParentOp();
+      ::xilinx::AIE::DeviceOp device =
+          ::llvm::dyn_cast<::xilinx::AIE::DeviceOp>(parentOp);
+      if (!device)
+        device = parentOp->getParentOfType<::xilinx::AIE::DeviceOp>();
+      auto memtile = ::xilinx::AIE::TileOp::getOrCreate(
+          $_builder, device, col, row).getResult();
+      build($_builder, $_state, src, dsts, memtile, offsets);
+    }]>
+  ];
   let hasVerifier = 1;
 }
 
@@ -777,16 +799,42 @@ def Conduit_GatherOp : Conduit_Op<"gather", []> {
   let description = [{
     Collects data from N source channels into one destination channel through a
     MemTile DMA relay. offsets: optional per-source element offsets (absent = uniform).
+    The memtile operand is the SSA result of an aie.tile op.
+    Note: the operand is named "memtile" historically; it may be any relay tile
+    (memtile or compute tile). Pass C handles both.
   }];
   let arguments = (ins
     Conduit_FlatSymbolRefArrayAttr:$srcs,
     FlatSymbolRefAttr:$dst,
-    StrAttr:$memtile,
+    Index:$memtile,
     OptionalAttr<DenseI64ArrayAttr>:$offsets
   );
   let assemblyFormat = [{
-    `{` `srcs` `=` $srcs `,` `dst` `=` $dst attr-dict `}`
+    `{` `srcs` `=` $srcs `,` `dst` `=` $dst `,`
+    `memtile` `=` $memtile (`,` `offsets` `=` $offsets^)? `}` attr-dict
   }];
+  let extraClassDeclaration = [{
+    ::xilinx::AIE::TileOp getMemtileOp() {
+      return ::mlir::cast<::xilinx::AIE::TileOp>(getMemtile().getDefiningOp());
+    }
+    int getMemtileCol() { return getMemtileOp().getCol(); }
+    int getMemtileRow() { return getMemtileOp().getRow(); }
+  }];
+  let builders = [
+    OpBuilder<(ins "::mlir::ArrayAttr":$srcs,
+                   "::mlir::FlatSymbolRefAttr":$dst,
+                   "int":$col, "int":$row,
+                   "::mlir::DenseI64ArrayAttr":$offsets), [{
+      auto *parentOp = $_builder.getInsertionBlock()->getParentOp();
+      ::xilinx::AIE::DeviceOp device =
+          ::llvm::dyn_cast<::xilinx::AIE::DeviceOp>(parentOp);
+      if (!device)
+        device = parentOp->getParentOfType<::xilinx::AIE::DeviceOp>();
+      auto memtile = ::xilinx::AIE::TileOp::getOrCreate(
+          $_builder, device, col, row).getResult();
+      build($_builder, $_state, srcs, dst, memtile, offsets);
+    }]>
+  ];
   let hasVerifier = 1;
 }
 
@@ -797,16 +845,42 @@ def Conduit_TransposeOp : Conduit_Op<"transpose", []> {
     MemTile using time-multiplexed DMA. offsets (required): N*M element offsets
     encoding the redistribution map — offsets[i*M + j] is the MemTile offset for
     source i to destination j. Packet ID budget: N*M <= 32 (AIE2 packet ID space).
+    The memtile operand is the SSA result of an aie.tile op.
+    Note: the operand is named "memtile" historically; it may be any relay tile
+    (memtile or compute tile). Pass C handles both.
   }];
   let arguments = (ins
     Conduit_FlatSymbolRefArrayAttr:$srcs,
     Conduit_FlatSymbolRefArrayAttr:$dsts,
-    StrAttr:$memtile,
+    Index:$memtile,
     DenseI64ArrayAttr:$offsets
   );
   let assemblyFormat = [{
-    `{` `srcs` `=` `[` $srcs `]` `,` `dsts` `=` `[` $dsts `]` attr-dict `}`
+    `{` `srcs` `=` `[` $srcs `]` `,` `dsts` `=` `[` $dsts `]` `,`
+    `memtile` `=` $memtile `,` `offsets` `=` $offsets `}` attr-dict
   }];
+  let extraClassDeclaration = [{
+    ::xilinx::AIE::TileOp getMemtileOp() {
+      return ::mlir::cast<::xilinx::AIE::TileOp>(getMemtile().getDefiningOp());
+    }
+    int getMemtileCol() { return getMemtileOp().getCol(); }
+    int getMemtileRow() { return getMemtileOp().getRow(); }
+  }];
+  let builders = [
+    OpBuilder<(ins "::mlir::ArrayAttr":$srcs,
+                   "::mlir::ArrayAttr":$dsts,
+                   "int":$col, "int":$row,
+                   "::mlir::DenseI64ArrayAttr":$offsets), [{
+      auto *parentOp = $_builder.getInsertionBlock()->getParentOp();
+      ::xilinx::AIE::DeviceOp device =
+          ::llvm::dyn_cast<::xilinx::AIE::DeviceOp>(parentOp);
+      if (!device)
+        device = parentOp->getParentOfType<::xilinx::AIE::DeviceOp>();
+      auto memtile = ::xilinx::AIE::TileOp::getOrCreate(
+          $_builder, device, col, row).getResult();
+      build($_builder, $_state, srcs, dsts, memtile, offsets);
+    }]>
+  ];
   let hasVerifier = 1;
 }
 

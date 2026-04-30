@@ -75,8 +75,9 @@ func.func @eligible_loop_fifo(%result: memref<8xi32>) {
 }
 
 func.func @linked_conduit_not_promoted() {
+  %mt = aie.tile(0, 1)
   // This link causes both "linked_fifo" and "linked_out" to be excluded.
-  conduit.scatter{src = @linked_fifo, dsts = [@linked_out] {memtile = "tile(0,1)"}}
+  conduit.scatter{src = @linked_fifo, dsts = [@linked_out], memtile = %mt}
   return
 }
 

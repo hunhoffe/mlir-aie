@@ -246,7 +246,7 @@ func.func @depth2_excluded() {
 // CHECK:       conduit.create @lk_dst {
 // CHECK-NOT:   dma_channel_group
 // CHECK-LABEL: func.func @link_src_excluded
-aie.device(npu1) {
+aie.device(npu2) {
 conduit.create @lk1 {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 conduit.create @lk2 {                element_type = memref<4096xbf16>,
@@ -254,7 +254,8 @@ conduit.create @lk2 {                element_type = memref<4096xbf16>,
 conduit.create @lk_dst {                element_type = memref<4096xbf16>,
                 depth = 1 : i64}
 func.func @link_src_excluded() {
-  conduit.scatter{src = @lk1, dsts = [@lk_dst] {memtile = "tile(6,1)"}}
+  %mt = aie.tile(6, 1)
+  conduit.scatter{src = @lk1, dsts = [@lk_dst], memtile = %mt}
 
   %ta = conduit.put_memref_async {name = @lk1, num_elems = 4096 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 4096>,

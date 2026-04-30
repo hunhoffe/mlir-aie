@@ -50,7 +50,7 @@ module @oc_merge_join {
     conduit.create @oc_dst {element_type = memref<256xi8>, depth = 2 : i64}
 
     // Join link: 4 sources at byte offsets 0, 64, 128, 192 at MemTile(0,1)
-    conduit.gather{srcs = [@oc_src0, @oc_src1, @oc_src2, @oc_src3], dst = @oc_dst {memtile = "tile(0,1)", offsets = array<i64: 0, 64, 128, 192>}}
+    conduit.gather{srcs = [@oc_src0, @oc_src1, @oc_src2, @oc_src3], dst = @oc_dst, memtile = %mem_tile_0_1, offsets = [0, 64, 128, 192]}
 
     // Shim consumer allocation for join output.
     aie.shim_dma_allocation @oc_dst_shim_alloc(%shim_0_0, S2MM, 0) {conduit_channel = @oc_dst}

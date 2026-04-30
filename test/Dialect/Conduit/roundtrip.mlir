@@ -57,11 +57,13 @@ func.func @window_ops() {
 
 // CHECK-LABEL: func.func @scatter_op
 func.func @scatter_op() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.scatter{src = @in, dsts = [@out0, @out1]
-  // CHECK-SAME: memtile = "tile(0,1)"
-  // CHECK-SAME: offsets = array<i64: 0, 1024>
-  conduit.scatter{src = @in, dsts = [@out0, @out1] {memtile = "tile(0,1)",
-                   offsets = array<i64: 0, 1024>}}
+  // CHECK-SAME: memtile = %[[MT]]
+  // CHECK-SAME: offsets = [0, 1024]
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @in, dsts = [@out0, @out1], memtile = %mt,
+                   offsets = [0, 1024]}
   return
 }
 

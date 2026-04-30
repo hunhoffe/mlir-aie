@@ -35,7 +35,8 @@ conduit.create @rm_d2 {                element_type = memref<i32>,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 func.func @distribute_dst_imbalanced() {
-  conduit.scatter{src = @rm_src, dsts = [@rm_d1_bad, @rm_d2] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @rm_src, dsts = [@rm_d1_bad, @rm_d2], memtile = %mt}
   return
 }
 }
@@ -59,7 +60,8 @@ conduit.create @rm2_d1 {                element_type = memref<i32>,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 func.func @distribute_src_imbalanced() {
-  conduit.scatter{src = @rm2_src_bad, dsts = [@rm2_d1] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @rm2_src_bad, dsts = [@rm2_d1], memtile = %mt}
   return
 }
 }

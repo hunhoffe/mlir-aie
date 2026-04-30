@@ -105,6 +105,11 @@ peano_tools_dir = os.path.join(config.peano_install_dir, "bin")
 LitConfigHelper.prepend_path(llvm_config, config.llvm_tools_dir)
 LitConfigHelper.prepend_path(llvm_config, peano_tools_dir)
 LitConfigHelper.prepend_path(llvm_config, config.aie_tools_dir)
+# Prepend ironenv/bin so %pytest substitution resolves regardless of whether
+# the shell that invoked lit had `source ironenv/bin/activate` already run.
+ironenv_bin_dir = os.path.join(config.aie_src_root, "ironenv", "bin")
+if os.path.isdir(ironenv_bin_dir):
+    LitConfigHelper.prepend_path(llvm_config, ironenv_bin_dir)
 config.substitutions.append(("%LLVM_TOOLS_DIR", config.llvm_tools_dir))
 
 tool_dirs = [config.aie_tools_dir, config.llvm_tools_dir]

@@ -35,7 +35,8 @@ conduit.create @cc_d2 {                element_type = memref<4xi32>,
                 producer_rates = array<i64: 2>,
                 consumer_rates = array<i64: 2>}
 func.func @distribute_composed_uniform_pass() {
-  conduit.scatter{src = @cc_src, dsts = [@cc_d1, @cc_d2] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @cc_src, dsts = [@cc_d1, @cc_d2], memtile = %mt}
   return
 }
 }
@@ -72,7 +73,8 @@ conduit.create @mx_d3 {                element_type = memref<6xi32>,
                 producer_rates = array<i64: 3>,
                 consumer_rates = array<i64: 3>}
 func.func @distribute_composed_mixed_pass() {
-  conduit.scatter{src = @mx_src, dsts = [@mx_d1, @mx_d2, @mx_d3] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @mx_src, dsts = [@mx_d1, @mx_d2, @mx_d3], memtile = %mt}
   return
 }
 }
@@ -104,7 +106,8 @@ conduit.create @sl_d2 {                element_type = memref<4xi32>,
                 producer_rates = array<i64: 1, 1>,
                 consumer_rates = array<i64: 1, 1>}
 func.func @distribute_composed_slow_consumer_pass() {
-  conduit.scatter{src = @sl_src, dsts = [@sl_d1, @sl_d2] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @sl_src, dsts = [@sl_d1, @sl_d2], memtile = %mt}
   return
 }
 }

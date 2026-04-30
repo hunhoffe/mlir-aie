@@ -91,7 +91,7 @@ module @link_distribute_offsets {
     conduit.create @link4 {element_type = memref<12xi32>, depth = 2 : i64}
 
     // Distribute link: MemTile(2,1) splits link1 into link2/link3/link4
-    conduit.scatter{src = @link1, dsts = [@link2, @link3, @link4] {memtile = "tile(2,1)", offsets = array<i64: 0, 16, 36>}}
+    conduit.scatter{src = @link1, dsts = [@link2, @link3, @link4], memtile = %tile21, offsets = [0, 16, 36]}
 
     // Shim producer allocation for ingress channel.
     aie.shim_dma_allocation @link1_shim_alloc(%tile20, MM2S, 0) {conduit_channel = @link1}

@@ -77,25 +77,31 @@ func.func @routing_mode_stream() {
 
 // CHECK-LABEL: func.func @relay_scatter
 func.func @relay_scatter() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.scatter{src = @src, dsts = [@dst0, @dst1]
-  // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.scatter{src = @src, dsts = [@dst0, @dst1] {memtile = "tile(0,1)"}}
+  // CHECK-SAME: memtile = %[[MT]]
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @src, dsts = [@dst0, @dst1], memtile = %mt}
   return
 }
 
 // CHECK-LABEL: func.func @relay_gather
 func.func @relay_gather() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.gather{srcs = [@src0, @src1], dst = @dst
-  // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.gather{srcs = [@src0, @src1], dst = @dst {memtile = "tile(0,1)"}}
+  // CHECK-SAME: memtile = %[[MT]]
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@src0, @src1], dst = @dst, memtile = %mt}
   return
 }
 
 // CHECK-LABEL: func.func @relay_scatter_forward
 func.func @relay_scatter_forward() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.scatter{src = @in_fwd, dsts = [@out_fwd]
-  // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.scatter{src = @in_fwd, dsts = [@out_fwd] {memtile = "tile(0,1)"}}
+  // CHECK-SAME: memtile = %[[MT]]
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @in_fwd, dsts = [@out_fwd], memtile = %mt}
   return
 }
 

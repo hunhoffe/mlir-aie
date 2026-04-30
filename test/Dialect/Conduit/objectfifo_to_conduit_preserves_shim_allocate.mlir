@@ -32,7 +32,7 @@
 // CHECK: conduit.scatter
 // CHECK-SAME: src = @chan
 // CHECK-SAME: dsts = [@chan_relay]
-// CHECK-SAME: memtile = "tile(0,1)"
+// CHECK-SAME: memtile = %mem_tile_0_1
 //
 // Phase 4.5 still emits the shim DMA allocation under the renamed symbol.
 // CHECK: aie.shim_dma_allocation @chan_shim_alloc

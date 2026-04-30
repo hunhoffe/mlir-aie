@@ -73,7 +73,7 @@ module @path_c_join_mm2s_overlong_bd_chain_heterogeneous {
     }
 
     // Gather: [@joinA, @joinB] → @joinDst via memtile(0,1).
-    conduit.gather{srcs = [@joinA, @joinB], dst = @joinDst {memtile = "tile(0,1)"}}
+    conduit.gather{srcs = [@joinA, @joinB], dst = @joinDst, memtile = %tile_0_1}
 
     // Shim consumes @joinDst (S2MM ch 0) — anchors the gather pipeline.
     aie.shim_dma_allocation @joinDst_shim_alloc(%tile_0_0, S2MM, 0) {conduit_channel = @joinDst}

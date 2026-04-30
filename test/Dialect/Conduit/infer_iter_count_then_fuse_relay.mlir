@@ -51,7 +51,7 @@
 // CHECK:       conduit.transpose
 // CHECK-SAME:  srcs = {{[[]}}[@s0, @s1]{{[]]}}
 // CHECK-SAME:  dsts = {{[[]}}[@d0, @d1]{{[]]}}
-// CHECK-SAME:  memtile = "tile(0,1)"
+// CHECK-SAME:  memtile = %mem_tile_0_1
 
 module @infer_then_fuse_relay {
   aie.device(npu1_1col) {

@@ -39,7 +39,7 @@ module {
     conduit.create @src {element_type = memref<64xi32>, depth = 2 : i64}
     conduit.create @dst {element_type = memref<64xi32>, depth = 2 : i64}
 
-    conduit.scatter{src = @src, dsts = [@dst] {memtile = "tile(0,1)"}}
+    conduit.scatter{src = @src, dsts = [@dst], memtile = %mem_tile_0_1}
 
     aie.shim_dma_allocation @src_shim_alloc(%shim_0_0, MM2S, 0) {conduit_channel = @src}
 

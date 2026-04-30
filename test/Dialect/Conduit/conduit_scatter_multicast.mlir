@@ -31,11 +31,13 @@
 // Pass C emits: 1 MM2S, 1 BD, aie.packet_flow with 4 aie.packet_dest entries.
 // CHECK-LABEL: func.func @scatter_multicast_4tile_parses
 func.func @scatter_multicast_4tile_parses() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @B_src
   // CHECK-SAME: dsts = [@B_tile0, @B_tile1, @B_tile2, @B_tile3]
-  // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.scatter{src = @B_src, dsts = [@B_tile0, @B_tile1, @B_tile2, @B_tile3] {memtile = "tile(0,1)"}}
+  // CHECK-SAME: memtile = %[[MT]]
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @B_src, dsts = [@B_tile0, @B_tile1, @B_tile2, @B_tile3], memtile = %mt}
   return
 }
 
@@ -44,11 +46,13 @@ func.func @scatter_multicast_4tile_parses() {
 // Valid conduit.scatter: 1 src → 2 dsts, no offsets (minimal multicast).
 // CHECK-LABEL: func.func @scatter_multicast_2tile_parses
 func.func @scatter_multicast_2tile_parses() {
+  // CHECK: %[[MT:.*]] = aie.tile(0, 1)
   // CHECK: conduit.scatter
   // CHECK-SAME: src = @bcast
   // CHECK-SAME: dsts = [@c0, @c1]
-  // CHECK-SAME: memtile = "tile(0,1)"
-  conduit.scatter{src = @bcast, dsts = [@c0, @c1] {memtile = "tile(0,1)"}}
+  // CHECK-SAME: memtile = %[[MT]]
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @bcast, dsts = [@c0, @c1], memtile = %mt}
   return
 }
 

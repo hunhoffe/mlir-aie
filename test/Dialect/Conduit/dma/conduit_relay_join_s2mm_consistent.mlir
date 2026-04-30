@@ -40,7 +40,7 @@ module @conduit_relay_join_s2mm_consistent {
     conduit.create @join_out {element_type = memref<128xi8>, depth = 2 : i64}
 
     // Join link: combine src_a + src_b → join_out
-    conduit.gather{srcs = [@src_a, @src_b], dst = @join_out {memtile = "tile(2,1)", offsets = array<i64: 0, 64>}}
+    conduit.gather{srcs = [@src_a, @src_b], dst = @join_out, memtile = %mem_tile, offsets = [0, 64]}
 
     // Shim consumer allocation for join output.
     aie.shim_dma_allocation @join_out_shim_alloc(%shim, S2MM, 0) {conduit_channel = @join_out}

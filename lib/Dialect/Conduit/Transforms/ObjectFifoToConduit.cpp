@@ -1443,7 +1443,7 @@ struct ObjectFifoToConduitPass
       // always correct because in an objectfifo.link, each dst fifo's
       // producer IS the relay tile.  Falls back to consumer of first src
       // if no dst fifo info is available.
-      std::string memtileStr = "unknown";
+      int64_t memtileCol = -1, memtileRow = -1;
       bool found = false;
 
       // Primary: producer of the first dst fifo.
@@ -1452,12 +1452,8 @@ struct ObjectFifoToConduitPass
         auto nameAttr = mlir::StringAttr::get(ctx, firstDstSym.getValue());
         auto it = fifoInfoMap.find(nameAttr);
         if (it != fifoInfoMap.end() && it->second.producerTileArr.size() >= 2) {
-          int64_t col = it->second.producerTileArr[0];
-          int64_t row = it->second.producerTileArr[1];
-          std::string s;
-          llvm::raw_string_ostream os(s);
-          os << "tile(" << col << "," << row << ")";
-          memtileStr = os.str();
+          memtileCol = it->second.producerTileArr[0];
+          memtileRow = it->second.producerTileArr[1];
           found = true;
         }
       }
@@ -1469,13 +1465,18 @@ struct ObjectFifoToConduitPass
         auto it = fifoInfoMap.find(nameAttr);
         if (it != fifoInfoMap.end() &&
             it->second.consumerTilesArr.size() >= 2) {
-          int64_t col = it->second.consumerTilesArr[0];
-          int64_t row = it->second.consumerTilesArr[1];
-          std::string s;
-          llvm::raw_string_ostream os(s);
-          os << "tile(" << col << "," << row << ")";
-          memtileStr = os.str();
+          memtileCol = it->second.consumerTilesArr[0];
+          memtileRow = it->second.consumerTilesArr[1];
+          found = true;
         }
+      }
+
+      if (!found) {
+        op.emitError("objectfifo-to-conduit: cannot infer relay tile for "
+                     "link op");
+        signalPassFailure();
+        passFailed = true;
+        return;
       }
 
       // Extract offsets from the link op.
@@ -1496,15 +1497,18 @@ struct ObjectFifoToConduitPass
 
       mlir::ArrayAttr srcsArr = mlir::ArrayAttr::get(ctx, srcAttrs);
       mlir::ArrayAttr dstsArr = mlir::ArrayAttr::get(ctx, dstAttrs);
-      mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
+      // Builder overload calls AIE::TileOp::getOrCreate internally — keeps the
+      // relay tile alive past Pass A DCE (F1b invariant).
       if (isDistribute) {
         auto srcRef = mlir::cast<mlir::FlatSymbolRefAttr>(srcAttrs[0]);
-        builder.create<ScatterOp>(loc, srcRef, dstsArr, memtileAttr,
-                                  offsetsAttr);
+        builder.create<ScatterOp>(loc, srcRef, dstsArr,
+                                  static_cast<int>(memtileCol),
+                                  static_cast<int>(memtileRow), offsetsAttr);
       } else {
         auto dstRef = mlir::cast<mlir::FlatSymbolRefAttr>(dstAttrs[0]);
-        builder.create<GatherOp>(loc, srcsArr, dstRef, memtileAttr,
-                                 offsetsAttr);
+        builder.create<GatherOp>(loc, srcsArr, dstRef,
+                                 static_cast<int>(memtileCol),
+                                 static_cast<int>(memtileRow), offsetsAttr);
       }
 
       op.erase();
@@ -2384,18 +2388,17 @@ struct ObjectFifoToConduitPass
           /*consumer_dimensions=*/nullptr);
 
       // Step 3: Emit conduit.scatter { src=@fifo, dsts=[@fifo_relay] }.
-      std::string memtileStr;
-      {
-        llvm::raw_string_ostream os(memtileStr);
-        os << "tile(" << delegateCol << "," << delegateRow << ")";
-      }
+      // Builder overload uses TileOp::getOrCreate internally so the relay tile
+      // cannot be DCE'd after Pass A when its only SSA users are the lowered
+      // objectfifos (F1b invariant).
       mlir::FlatSymbolRefAttr srcRef =
           mlir::FlatSymbolRefAttr::get(ctx, fifoName);
       mlir::ArrayAttr dstsArr = mlir::ArrayAttr::get(
           ctx, {mlir::FlatSymbolRefAttr::get(ctx, relayName)});
-      mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
       builder.create<ScatterOp>(srcCreateOp.getLoc(), srcRef, dstsArr,
-                                memtileAttr, /*offsets=*/nullptr);
+                                static_cast<int>(delegateCol),
+                                static_cast<int>(delegateRow),
+                                /*offsets=*/nullptr);
 
       // Step 4: Rewrite consumer-side ops from @fifo to @fifo_relay.
       mlir::FlatSymbolRefAttr origNameRef =

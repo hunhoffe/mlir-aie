@@ -18,14 +18,16 @@ conduit.create @dst0 {element_type = memref<64xi32>, depth = 0 : i64}
 conduit.create @dst1 {element_type = memref<64xi32>, depth = 0 : i64}
 // CHECK-NOT:   conduit.create @intermediate
 // CHECK-LABEL: func.func @fuse_gather_scatter_basic
+// CHECK:       %[[MT:.*]] = aie.tile(0, 1)
 // CHECK:       conduit.transpose
 // CHECK-SAME:  srcs = {{[[]}}[@src0, @src1]{{[]]}}
 // CHECK-SAME:  dsts = {{[[]}}[@dst0, @dst1]{{[]]}}
-// CHECK-SAME:  memtile = "tile(0,1)"
-// CHECK-SAME:  offsets = array<i64: 0, 0, 0, 0>
+// CHECK-SAME:  memtile = %[[MT]]
+// CHECK-SAME:  offsets = [0, 0, 0, 0]
 func.func @fuse_gather_scatter_basic() {
-  conduit.gather{srcs = [@src0, @src1], dst = @intermediate {memtile = "tile(0,1)"}}
-  conduit.scatter{src = @intermediate, dsts = [@dst0, @dst1] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@src0, @src1], dst = @intermediate, memtile = %mt}
+  conduit.scatter{src = @intermediate, dsts = [@dst0, @dst1], memtile = %mt}
   return
 }
 }
@@ -42,8 +44,10 @@ conduit.create @b0 {element_type = memref<64xi32>, depth = 0 : i64}
 // CHECK:       conduit.gather
 // CHECK:       conduit.scatter
 func.func @no_fuse_different_memtile() {
-  conduit.gather{srcs = [@a0], dst = @relay {memtile = "tile(0,1)"}}
-  conduit.scatter{src = @relay, dsts = [@b0] {memtile = "tile(1,1)"}}
+  %mt01 = aie.tile(0, 1)
+  %mt11 = aie.tile(1, 1)
+  conduit.gather{srcs = [@a0], dst = @relay, memtile = %mt01}
+  conduit.scatter{src = @relay, dsts = [@b0], memtile = %mt11}
   return
 }
 }
@@ -60,8 +64,9 @@ conduit.create @y0 {element_type = memref<64xi32>, depth = 0 : i64}
 // CHECK:       conduit.gather
 // CHECK:       conduit.scatter
 func.func @no_fuse_intermediate_has_users() {
-  conduit.gather{srcs = [@x0], dst = @relay_used {memtile = "tile(0,1)"}}
-  conduit.scatter{src = @relay_used, dsts = [@y0] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@x0], dst = @relay_used, memtile = %mt}
+  conduit.scatter{src = @relay_used, dsts = [@y0], memtile = %mt}
   // This acquire on the intermediate channel should block fusion.
   %w = conduit.acquire {name = @relay_used, count = 1 : i64, port = #conduit.port<Consume>}
        : !conduit.window<memref<128xi32>>
@@ -92,8 +97,9 @@ conduit.create @d5 {element_type = memref<16xi32>, depth = 0 : i64}
 // CHECK:       conduit.gather
 // CHECK:       conduit.scatter
 func.func @no_fuse_budget_overflow() {
-  conduit.gather{srcs = [@s0, @s1, @s2, @s3, @s4, @s5], dst = @mid {memtile = "tile(0,1)"}}
-  conduit.scatter{src = @mid, dsts = [@d0, @d1, @d2, @d3, @d4, @d5] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@s0, @s1, @s2, @s3, @s4, @s5], dst = @mid, memtile = %mt}
+  conduit.scatter{src = @mid, dsts = [@d0, @d1, @d2, @d3, @d4, @d5], memtile = %mt}
   return
 }
 }

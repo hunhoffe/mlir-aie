@@ -15,8 +15,8 @@
 // CHECK:     conduit.create @link3
 // CHECK:     conduit.create @link4
 // CHECK:     conduit.scatter{src = @link1, dsts = [@link2, @link3, @link4]
-// CHECK-SAME:   memtile = "tile(2,1)"
-// CHECK-SAME:   offsets = array<i64: 0, 16, 36>
+// CHECK-SAME:   memtile = %mem_tile_2_1
+// CHECK-SAME:   offsets = [0, 16, 36]
 // CHECK-NOT: aie.objectfifo
 // CHECK-NOT: aie.objectfifo.link
 // CHECK-NOT: conduit.annotate

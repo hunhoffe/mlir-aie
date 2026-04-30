@@ -729,7 +729,7 @@ static mlir::Block &getCoreBodyBlock(AIE::CoreOp core) {
 
 /// Emit the conduit.create relay channel and conduit.scatter op for MemTile
 /// relay routing. Returns the relay channel name.
-static std::string emitMemTileRelay(FusableCorePair &pair, AIE::DeviceOp device,
+static std::string emitMemTileRelay(FusableCorePair &pair,
                                     mlir::OpBuilder &builder,
                                     mlir::MLIRContext *ctx) {
   Create intermediateConduit = pair.intermediateConduit;
@@ -761,20 +761,16 @@ static std::string emitMemTileRelay(FusableCorePair &pair, AIE::DeviceOp device,
       /*producer_dimensions=*/nullptr,
       /*consumer_dimensions=*/nullptr);
 
-  // Emit conduit.scatter { src=@channel, dsts=[@channel_relay],
-  //                        memtile="tile(col,1)" }.
-  std::string memtileStr;
-  {
-    llvm::raw_string_ostream os(memtileStr);
-    os << "tile(" << col << ",1)";
-  }
+  // Emit conduit.scatter { src=@channel, dsts=[@channel_relay], memtile=%t }.
+  // Builder overload uses TileOp::getOrCreate internally so the relay tile
+  // cannot be DCE'd after Pass A when its only SSA users are the lowered
+  // objectfifos (F1b invariant).
   mlir::FlatSymbolRefAttr srcRef =
       mlir::FlatSymbolRefAttr::get(ctx, channelName);
   mlir::ArrayAttr dstsArr =
       mlir::ArrayAttr::get(ctx, {mlir::FlatSymbolRefAttr::get(ctx, relayName)});
-  mlir::StringAttr memtileAttr = mlir::StringAttr::get(ctx, memtileStr);
   builder.create<ScatterOp>(intermediateConduit.getLoc(), srcRef, dstsArr,
-                            memtileAttr, /*offsets=*/nullptr);
+                            static_cast<int>(col), 1, /*offsets=*/nullptr);
 
   return relayName;
 }
@@ -922,7 +918,7 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
     // Emit relay channel and scatter op in the device body.
     // Producer-side conduit ops stay as-is (write to @intermediate).
     // Consumer-side ops will be renamed to @intermediate_relay during cloning.
-    relayName = emitMemTileRelay(pair, device, builder, ctx);
+    relayName = emitMemTileRelay(pair, builder, ctx);
   }
 
   // ---------------------------------------------------------------

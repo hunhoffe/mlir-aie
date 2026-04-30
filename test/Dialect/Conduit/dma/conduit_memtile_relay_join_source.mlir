@@ -62,10 +62,10 @@ module @memtile_relay_join_source {
     conduit.create @join_out {element_type = memref<128xi8>, depth = 2 : i64}
 
     // Relay link at MemTile(3,1): forward prod_a → relay
-    conduit.scatter{src = @prod_a, dsts = [@relay] {memtile = "tile(3,1)"}}
+    conduit.scatter{src = @prod_a, dsts = [@relay], memtile = %mem_tile_3_1}
 
     // Join link at MemTile(5,1): combine relay + prod_b → join_out
-    conduit.gather{srcs = [@relay, @prod_b], dst = @join_out {memtile = "tile(5,1)", offsets = array<i64: 0, 64>}}
+    conduit.gather{srcs = [@relay, @prod_b], dst = @join_out, memtile = %mem_tile_5_1, offsets = [0, 64]}
 
     // Shim consumer allocation for join output.
     aie.shim_dma_allocation @join_out_shim_alloc(%shim_5_0, S2MM, 0) {conduit_channel = @join_out}

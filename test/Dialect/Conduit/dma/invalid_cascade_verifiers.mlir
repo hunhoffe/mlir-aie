@@ -28,7 +28,8 @@ conduit.create @dst {depth = 1 : i64,
                 element_type = memref<64xi32>
                 }
 func.func @scatter_cascade_src_parse_ok() {
-  conduit.scatter{src = @src, dsts = [@dst] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @src, dsts = [@dst], memtile = %mt}
   return
 }
 }

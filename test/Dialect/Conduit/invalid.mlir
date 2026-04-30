@@ -40,8 +40,9 @@ func.func @bad_subview_cross_block() {
 // M3-scatter: conduit.scatter with zero dsts is rejected by verifier
 aie.device(npu1) {
 func.func @bad_scatter_zero_dsts() {
+  %mt = aie.tile(0, 1)
   // expected-error@+1 {{'conduit.scatter' op scatter requires at least 1 dst, got 0}}
-  conduit.scatter{src = @in, dsts = [] {memtile = "tile(0,1)"}}
+  conduit.scatter{src = @in, dsts = [], memtile = %mt}
   return
 }
 }

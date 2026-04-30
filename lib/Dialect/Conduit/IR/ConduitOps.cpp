@@ -794,40 +794,15 @@ static ::mlir::LogicalResult verifyMemrefDmaOp(
 }
 
 //===----------------------------------------------------------------------===//
-// Relay op memtile verifier helper
-//
-// memtile is a StrAttr "tile(col,row)". Validated here at verify time.
-// TODO (post-Sprint 6): migrate to FlatSymbolRefAttr once aie.tile ops have
-// sym_names, then this helper can be replaced by MLIR symbol resolution.
-//===----------------------------------------------------------------------===//
-
-static std::pair<int64_t, int64_t>
-parseTileCoordForVerifier(llvm::StringRef s) {
-  if (!s.starts_with("tile(") || !s.ends_with(")"))
-    return {-1, -1};
-  auto inner = s.drop_front(5).drop_back(1); // "COL,ROW"
-  auto [colStr, rowStr] = inner.split(',');
-  int64_t col, row;
-  if (colStr.trim().getAsInteger(10, col) ||
-      rowStr.trim().getAsInteger(10, row))
-    return {-1, -1};
-  return {col, row};
-}
-
-static ::mlir::LogicalResult verifyMemtileStr(mlir::Operation *op,
-                                              llvm::StringRef memtile) {
-  if (parseTileCoordForVerifier(memtile).first == -1)
-    return op->emitOpError(
-               "memtile attribute must be of the form 'tile(col,row)', got '")
-           << memtile << "'";
-  return ::mlir::success();
-}
-
-//===----------------------------------------------------------------------===//
 // ScatterOp
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult ScatterOp::verify() {
+  auto memtileTile = getMemtile().getDefiningOp<AIE::TileOp>();
+  if (!memtileTile)
+    return emitOpError("memtile operand must be defined by an aie.tile op");
+  // Note: the operand is named "memtile" historically; it may be any relay
+  // tile (memtile or compute tile). Pass C handles both.
   auto dsts = getDsts();
   if (dsts.empty())
     return emitOpError("scatter requires at least 1 dst, got 0");
@@ -836,8 +811,6 @@ static ::mlir::LogicalResult verifyMemtileStr(mlir::Operation *op,
     return emitOpError("scatter DMA budget exceeded: 1 src + ")
            << dsts.size() << " dsts = " << (1 + dsts.size())
            << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
-  if (failed(verifyMemtileStr(getOperation(), getMemtile())))
-    return ::mlir::failure();
   return ::mlir::success();
 }
 
@@ -846,6 +819,11 @@ static ::mlir::LogicalResult verifyMemtileStr(mlir::Operation *op,
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult GatherOp::verify() {
+  auto memtileTile = getMemtile().getDefiningOp<AIE::TileOp>();
+  if (!memtileTile)
+    return emitOpError("memtile operand must be defined by an aie.tile op");
+  // Note: the operand is named "memtile" historically; it may be any relay
+  // tile (memtile or compute tile). Pass C handles both.
   auto srcs = getSrcs();
   if (srcs.empty())
     return emitOpError("gather requires at least 1 src, got 0");
@@ -854,8 +832,6 @@ static ::mlir::LogicalResult verifyMemtileStr(mlir::Operation *op,
     return emitOpError("gather DMA budget exceeded: ")
            << srcs.size() << " srcs + 1 dst = " << (srcs.size() + 1)
            << " channels, maximum is 12 (MemTile has 6 MM2S + 6 S2MM)";
-  if (failed(verifyMemtileStr(getOperation(), getMemtile())))
-    return ::mlir::failure();
   return ::mlir::success();
 }
 
@@ -864,6 +840,11 @@ static ::mlir::LogicalResult verifyMemtileStr(mlir::Operation *op,
 //===----------------------------------------------------------------------===//
 
 ::mlir::LogicalResult TransposeOp::verify() {
+  auto memtileTile = getMemtile().getDefiningOp<AIE::TileOp>();
+  if (!memtileTile)
+    return emitOpError("memtile operand must be defined by an aie.tile op");
+  // Note: the operand is named "memtile" historically; it may be any relay
+  // tile (memtile or compute tile). Pass C handles both.
   auto srcs = getSrcs();
   auto dsts = getDsts();
   auto offsets = getOffsets();
@@ -887,8 +868,6 @@ static ::mlir::LogicalResult verifyMemtileStr(mlir::Operation *op,
     return emitOpError("transpose packet ID budget exceeded: ")
            << srcs.size() << " * " << dsts.size() << " = " << expectedOffsets
            << ", maximum is 32 (AIE2 packet ID space)";
-  if (failed(verifyMemtileStr(getOperation(), getMemtile())))
-    return ::mlir::failure();
   return ::mlir::success();
 }
 

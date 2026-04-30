@@ -24,7 +24,8 @@ conduit.create @out0 {                element_type = memref<4xi32>,
 conduit.create @out1 {                element_type = memref<4xi32>,
                 depth = 1 : i64}
 func.func @scatter_with_cascade_src() {
-  conduit.scatter{src = @casc_src, dsts = [@out0, @out1] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @casc_src, dsts = [@out0, @out1], memtile = %mt}
   return
 }
 }
@@ -41,7 +42,8 @@ conduit.create @casc_dst {                element_type = memref<4xi32>,
                 depth = 1 : i64,
                 routing_mode = #conduit.routing_mode<cascade>}
 func.func @gather_with_cascade_dst() {
-  conduit.gather{srcs = [@in0, @in1], dst = @casc_dst {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@in0, @in1], dst = @casc_dst, memtile = %mt}
   return
 }
 }

@@ -48,7 +48,8 @@ conduit.create @js_dst {                element_type = memref<16xi32>,
                 producer_rates = array<i64: 8>,
                 consumer_rates = array<i64: 8>}
 func.func @join_three_sources_pass() {
-  conduit.gather{srcs = [@js_s1, @js_s2, @js_s3], dst = @js_dst {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@js_s1, @js_s2, @js_s3], dst = @js_dst, memtile = %mt}
   return
 }
 }
@@ -71,7 +72,8 @@ conduit.create @ji_dst {                element_type = memref<i32>,
                 producer_rates = array<i64: 1>,
                 consumer_rates = array<i64: 1>}
 func.func @join_src_imbalanced() {
-  conduit.gather{srcs = [@ji_s1_bad], dst = @ji_dst {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@ji_s1_bad], dst = @ji_dst, memtile = %mt}
   return
 }
 }

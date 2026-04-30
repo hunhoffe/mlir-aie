@@ -32,7 +32,8 @@ conduit.create @ov_d2 {                element_type = memref<6xi32>,
                 producer_rates = array<i64: 1, 1, 1>,
                 consumer_rates = array<i64: 1, 1, 1>}
 func.func @distribute_slow_consumer_overflow() {
-  conduit.scatter{src = @ov_src, dsts = [@ov_d1, @ov_d2] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @ov_src, dsts = [@ov_d1, @ov_d2], memtile = %mt}
   return
 }
 }
@@ -64,7 +65,8 @@ conduit.create @t3_d3 {                element_type = memref<8xi32>,
                 producer_rates = array<i64: 1, 1, 1, 1>,
                 consumer_rates = array<i64: 1, 1, 1, 1>}
 func.func @distribute_three_consumer_overflow() {
-  conduit.scatter{src = @t3_src, dsts = [@t3_d1, @t3_d2, @t3_d3] {memtile = "tile(0,1)"}}
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @t3_src, dsts = [@t3_d1, @t3_d2, @t3_d3], memtile = %mt}
   return
 }
 }

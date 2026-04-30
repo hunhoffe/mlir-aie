@@ -38,21 +38,6 @@
 namespace xilinx::conduit {
 
 // ---------------------------------------------------------------------------
-// Helper: parse "tile(col,row)" → (col, row).  Returns {-1,-1} on failure.
-// ---------------------------------------------------------------------------
-inline std::pair<int64_t, int64_t> parseTileCoord(llvm::StringRef s) {
-  if (!s.starts_with("tile("))
-    return {-1, -1};
-  s = s.drop_front(5); // drop "tile("
-  s = s.drop_back(1);  // drop ")"
-  auto [colStr, rowStr] = s.split(',');
-  int64_t col, row;
-  if (colStr.getAsInteger(10, col) || rowStr.getAsInteger(10, row))
-    return {-1, -1};
-  return {col, row};
-}
-
-// ---------------------------------------------------------------------------
 // Per-conduit inferred tiles.
 //
 // Stores mlir::Value tile op references (aie.tile or aie.logical_tile

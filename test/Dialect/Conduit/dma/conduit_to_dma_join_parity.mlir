@@ -57,7 +57,7 @@ module @link_join_parity {
     conduit.create @link4 {element_type = memref<48xi32>, depth = 2 : i64}
 
     // Join link at MemTile(2,1)
-    conduit.gather{srcs = [@link1, @link2, @link3], dst = @link4 {memtile = "tile(2,1)", offsets = array<i64: 0, 16, 36>}}
+    conduit.gather{srcs = [@link1, @link2, @link3], dst = @link4, memtile = %tile21, offsets = [0, 16, 36]}
 
     // Shim consumer allocation for join output.
     aie.shim_dma_allocation @link4_shim_alloc(%tile20, S2MM, 0) {conduit_channel = @link4}

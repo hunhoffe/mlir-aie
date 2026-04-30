@@ -80,7 +80,7 @@ void linkPhase(ConduitToDMAState &state) {
     mlir::Operation *op;
     mlir::ArrayAttr srcs;
     mlir::ArrayAttr dsts;
-    llvm::StringRef memtileStr;
+    mlir::Value memtile;
     bool isDistribute; // true for Scatter; false for Gather
     std::optional<llvm::ArrayRef<int64_t>> offsets;
     int deviceIndex = -1; // Multi-device: owning device index.
@@ -102,22 +102,7 @@ void linkPhase(ConduitToDMAState &state) {
     a.op = scatterOp.getOperation();
     a.srcs = builder.getArrayAttr({scatterOp.getSrcAttr()});
     a.dsts = scatterOp.getDsts();
-    // Read memtile from the op's explicit memtile attr (set by Sprint 1
-    // verifier; format "tile(col,row)"). Fall back to producer-tile inference
-    // for Scatter ops that predate the attr addition.
-    if (!scatterOp.getMemtile().empty()) {
-      a.memtileStr = scatterOp.getMemtile();
-    } else {
-      llvm::StringRef srcName = scatterOp.getSrc();
-      ConduitInfo *srcInfo = state.lookupConduit(srcName, scatterOp);
-      if (srcInfo && srcInfo->producerTileCoord.first >= 0) {
-        int64_t col = srcInfo->producerTileCoord.first;
-        std::string tileStr = "tile(" + std::to_string(col) + ",1)";
-        a.memtileStr = mlir::StringAttr::get(ctx, tileStr).getValue();
-      } else {
-        a.memtileStr = "";
-      }
-    }
+    a.memtile = scatterOp.getMemtile();
     a.isDistribute = true; // scatter = 1→N distribute
     a.offsets = scatterOp.getOffsets();
     // Multi-device: determine owning device index.
@@ -136,24 +121,7 @@ void linkPhase(ConduitToDMAState &state) {
     a.op = gatherOp.getOperation();
     a.srcs = gatherOp.getSrcs();
     a.dsts = builder.getArrayAttr({gatherOp.getDstAttr()});
-    // Read memtile from the op's explicit attr; fall back to inference.
-    if (!gatherOp.getMemtile().empty()) {
-      a.memtileStr = gatherOp.getMemtile();
-    } else {
-      llvm::StringRef memStr;
-      for (auto s : gatherOp.getSrcs()) {
-        llvm::StringRef sName =
-            mlir::cast<mlir::FlatSymbolRefAttr>(s).getValue();
-        ConduitInfo *sInfo = state.lookupConduit(sName, gatherOp);
-        if (sInfo && sInfo->producerTileCoord.first >= 0) {
-          int64_t col = sInfo->producerTileCoord.first;
-          std::string tileStr = "tile(" + std::to_string(col) + ",1)";
-          memStr = mlir::StringAttr::get(ctx, tileStr).getValue();
-          break;
-        }
-      }
-      a.memtileStr = memStr;
-    }
+    a.memtile = gatherOp.getMemtile();
     a.isDistribute = false; // gather = N→1 join
     a.offsets = gatherOp.getOffsets();
     // Multi-device: determine owning device index.
@@ -183,13 +151,16 @@ void linkPhase(ConduitToDMAState &state) {
 
     auto srcs = linkOp.srcs;
     auto dsts = linkOp.dsts;
-    llvm::StringRef memtileStr = linkOp.memtileStr;
     auto offsets = linkOp.offsets;
 
-    AIE::TileOp memtile = state.lookupTile(memtileStr);
+    // memtile is now an SSA operand of the relay op (Index type, defining op
+    // is aie.tile).  By construction (Pass A uses TileOp::getOrCreate), this
+    // must be an AIE::TileOp result; the SSA edge keeps the tile from being
+    // DCE'd.
+    AIE::TileOp memtile = linkOp.memtile.getDefiningOp<AIE::TileOp>();
     if (!memtile) {
-      linkOp.emitError("conduit-to-dma: relay tile '" + memtileStr.str() +
-                       "' not found — cannot lower link op");
+      linkOp.emitError("conduit-to-dma: relay-op memtile operand is not the "
+                       "result of an aie.tile op");
       state.passFailed = true;
       continue;
     }
@@ -227,10 +198,13 @@ void linkPhase(ConduitToDMAState &state) {
       auto relayBufIt = coreRelaySrc.consumerTileBuffers.find(relayTileVal);
       if (relayBufIt == coreRelaySrc.consumerTileBuffers.end() ||
           relayBufIt->second.empty()) {
+        std::string memtileStr =
+            "tile(" + std::to_string(memtile.getCol()) + "," +
+            std::to_string(memtile.getRow()) + ")";
         linkOp.emitError("conduit-to-dma: CoreTile relay: relay buffers for "
                          "src conduit '" +
                          coreRelayName + "' not found on relay tile '" +
-                         memtileStr.str() + "'");
+                         memtileStr + "'");
         state.passFailed = true;
         continue;
       }

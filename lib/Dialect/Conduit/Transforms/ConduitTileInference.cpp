@@ -30,6 +30,15 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
     return llvm::find(vec, v) != vec.end();
   };
 
+  // Build a (col, row) → aie.tile Value cache by walking the scope once.
+  // Used by Source 7 (MemTile enumeration) and Source 8b (air_*_tile attr
+  // lookup) to resolve coordinates to existing aie.tile SSA values.  Mirrors
+  // the pattern in ConduitInferModes.cpp.
+  llvm::DenseMap<std::pair<int64_t, int64_t>, mlir::Value> tileCache;
+  scope->walk([&](AIE::TileOp tileOp) {
+    tileCache[{tileOp.getCol(), tileOp.getRow()}] = tileOp.getResult();
+  });
+
   // -------------------------------------------------------------------------
   // Source 1 & 2: Walk aie.core ops for Acquire and GetMemrefAsync.
   //
@@ -163,31 +172,11 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
   // Source 5: Walk conduit.scatter, conduit.gather, and conduit.transpose
   // for relay MemTiles.
   //
-  // The $memtile attribute is a string "tile(col,row)".  We resolve it to
-  // the aie.tile SSA Value via a tile cache built from the scope.
+  // The $memtile operand is the SSA result of an aie.tile op (Index type).
   // -------------------------------------------------------------------------
 
-  // Build tile cache: (col, row) → tile Value.
-  llvm::DenseMap<std::pair<int64_t, int64_t>, mlir::Value> tileCache;
-  scope->walk([&](AIE::TileOp tileOp) {
-    int64_t col = static_cast<int64_t>(tileOp.getCol());
-    int64_t row = static_cast<int64_t>(tileOp.getRow());
-    tileCache[{col, row}] = tileOp.getResult();
-  });
-
-  // Helper: resolve a "tile(col,row)" string to a Value via the cache.
-  auto resolveTileStr = [&](llvm::StringRef memtileStr) -> mlir::Value {
-    auto [col, row] = parseTileCoord(memtileStr);
-    if (col < 0)
-      return {};
-    auto it = tileCache.find({col, row});
-    if (it == tileCache.end())
-      return {};
-    return it->second;
-  };
-
   scope->walk([&](ScatterOp scatterOp) {
-    mlir::Value memtileVal = resolveTileStr(scatterOp.getMemtile());
+    mlir::Value memtileVal = scatterOp.getMemtile();
     if (!memtileVal)
       return;
 
@@ -212,7 +201,7 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
   });
 
   scope->walk([&](GatherOp gatherOp) {
-    mlir::Value memtileVal = resolveTileStr(gatherOp.getMemtile());
+    mlir::Value memtileVal = gatherOp.getMemtile();
     if (!memtileVal)
       return;
 
@@ -275,7 +264,7 @@ llvm::StringMap<InferredTiles> inferAllTiles(mlir::Operation *scope) {
 
   // TransposeOp: N:M relay with $srcs (array) and $dsts (array).
   scope->walk([&](TransposeOp transposeOp) {
-    mlir::Value memtileVal = resolveTileStr(transposeOp.getMemtile());
+    mlir::Value memtileVal = transposeOp.getMemtile();
     if (!memtileVal)
       return;
 
