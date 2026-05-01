@@ -233,6 +233,34 @@ static void prescanAndCreateRotationBufs(ConduitToDMAState &state) {
     if (!prodTile)
       continue;
     mlir::Value prodTileVal = prodTile.getResult();
+
+    // Self-loop case: the producer tile is also one of the consumer tiles.
+    // The normal consumer loop path counts only a CONSUMER-side slot for this
+    // tile, but a depth>1 self-loop with a producer-side acquire also needs
+    // a PRODUCER-side rotation slot (otherwise ConduitToDMALower.cpp:111 trips
+    // with "depth>1 buffer rotation requires a rotation counter").  The
+    // needsProdSide guard below would otherwise skip self-loops because
+    // isConduitFeasibleSharedMemory returns true for tile-to-itself.
+    // Tier-3 (no producer-side acquire) is filtered by the existing
+    // conduitNamesWithProducerAcquire guard.
+    bool isSelfLoop = false;
+    for (auto [cCol, cRow] : info.consumerTileCoords) {
+      if (cCol == prodCol && cRow == prodRow) {
+        isSelfLoop = true;
+        break;
+      }
+    }
+    if (isSelfLoop) {
+      int64_t depth = info.depth > 0 ? info.depth : 1;
+      int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      int64_t prodDepth = (info.maxProduceAcquire > 0)
+                              ? std::max(effDepth, info.maxProduceAcquire + 1)
+                              : effDepth;
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+        addProducerSlot(prodTileVal);
+      continue;
+    }
+
     if (info.consumerTileBuffers.count(prodTileVal))
       continue;
 
@@ -805,6 +833,31 @@ void allocPhase(ConduitToDMAState &state) {
     if (!prodTile)
       continue;
     mlir::Value prodTileVal = prodTile.getResult();
+
+    // Self-loop case: see prescan companion above for rationale.  Consumer
+    // loop already allocated buffers + locks on this tile and assigned the
+    // CONSUMER rotation slot, but did NOT assign the PRODUCER rotation slot.
+    // The early-skip below would skip via consumerTileBuffers, and the
+    // needsProdSide guard further down would skip via shared-memory
+    // feasibility.  Handle the producer slot here without re-allocating
+    // buffers/locks.
+    bool isSelfLoop = false;
+    for (auto [cCol, cRow] : info.consumerTileCoords) {
+      if (cCol == prodCol && cRow == prodRow) {
+        isSelfLoop = true;
+        break;
+      }
+    }
+    if (isSelfLoop) {
+      int64_t depth = info.depth > 0 ? info.depth : 1;
+      int64_t effDepth = info.effectiveDepth > 0 ? info.effectiveDepth : depth;
+      int64_t prodDepth = (info.maxProduceAcquire > 0)
+                              ? std::max(effDepth, info.maxProduceAcquire + 1)
+                              : effDepth;
+      if (prodDepth > 1 && state.conduitNamesWithProducerAcquire.count(name))
+        assignProducerRotationSlot(state, info, prodTileVal);
+      continue;
+    }
 
     if (info.consumerTileBuffers.count(prodTileVal))
       continue;
