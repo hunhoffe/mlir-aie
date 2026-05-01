@@ -14,16 +14,19 @@
 
 // CHECK-LABEL: module @infer_then_fuse_channels
 
-// Both channels keep dma_repeat = 4 AND gain S2MM fusion annotations.
-// MLIR sorts attrs alphabetically: dma_channel_group_s2mm < dma_repeat.
-// CHECK-SAME order matches that left-to-right ordering.
+// (#99) cross-producer S2MM groups skip annotation; same-producer pin lives in fuse_channels_s2mm_same_producer.mlir
+// chan_a producer = tile(0,2); chan_b producer = tile(0,3); both consume on
+// tile(0,4) -> Path c predicate suppresses dma_channel_group_s2mm.  Both
+// channels still keep dma_repeat = 4 — the original purpose of this fixture
+// (dma_repeat inference survives objectfifo-to-conduit + fuse-channels).
 // CHECK:       conduit.create @chan_a
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
 // CHECK-SAME:  dma_repeat = 4
 
 // CHECK:       conduit.create @chan_b
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
 // CHECK-SAME:  dma_repeat = 4
+
+// CHECK-NOT:   dma_channel_group_s2mm
+// CHECK-NOT:   fuse_mode_s2mm
 
 module @infer_then_fuse_channels {
   aie.device(npu1_1col) {

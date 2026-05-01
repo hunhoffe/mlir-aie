@@ -38,16 +38,19 @@
 // CHECK:       aie.device(npu2) @devA
 // CHECK-NOT:   aie.device
 
-// fuse-channels' S2MM annotations on chan_a / chan_b are preserved.
+// (#99) cross-producer S2MM groups skip annotation; same-producer pin lives in fuse_channels_s2mm_same_producer.mlir
+// chan_a producer = tile(0,2); chan_b producer = tile(0,3); both consume on
+// tile(0,4) -> Path c predicate suppresses dma_channel_group_s2mm /
+// fuse_mode_s2mm.  dma_repeat = 4 still survives the chain — the original
+// purpose of this fixture (fuse-operators preservation through fuse-channels).
 // CHECK:       conduit.create @chan_a
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
 // CHECK-SAME:  dma_repeat = 4
-// CHECK-SAME:  fuse_mode_s2mm = "static"
 
 // CHECK:       conduit.create @chan_b
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
 // CHECK-SAME:  dma_repeat = 4
-// CHECK-SAME:  fuse_mode_s2mm = "static"
+
+// CHECK-NOT:   dma_channel_group_s2mm
+// CHECK-NOT:   fuse_mode_s2mm
 
 // fuse-operators emitted a single fused_intermediate; inter_out and
 // inter_in are gone.

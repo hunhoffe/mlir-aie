@@ -590,12 +590,41 @@ struct ConduitFuseChannelsPass
           continue;
         }
 
+        // Path c (#99): cross-producer S2MM groups would emit duplicate
+        // dst-port circuit flows in Pass C routePhase Sub-case 4a (two
+        // aie.flow ops targeting the same consumer-tile DMA:N), which
+        // aie-routing rejects.  Until packet routing lands (Sprint N+4),
+        // restrict the dma_channel_group_s2mm annotation to groups whose
+        // members all share the same producer tile.  The producer-tile
+        // lookup mirrors the MM2S step's inferredMap + extractCoord
+        // pattern (lines 320-324 above).  Iterates over nameToGroup so
+        // the predicate domain matches exactly the annotation loop below.
+        llvm::DenseMap<unsigned, std::pair<int64_t, int64_t>> groupProducer;
+        llvm::DenseMap<unsigned, bool> groupCrossProducer;
+        for (auto &[name, gid] : nameToGroup) {
+          std::pair<int64_t, int64_t> prod = {-1, -1};
+          auto tileIt = inferredMap.find(name);
+          if (tileIt != inferredMap.end() && tileIt->second.producerTile)
+            prod = extractCoord(tileIt->second.producerTile);
+          auto pit = groupProducer.find(gid);
+          if (pit == groupProducer.end())
+            groupProducer[gid] = prod;
+          else if (pit->second != prod)
+            groupCrossProducer[gid] = true;
+        }
+
         for (auto &ci : conduits) {
           auto it = nameToGroup.find(ci.name);
           if (it == nameToGroup.end())
             continue;
           unsigned gid = it->second;
           if (groupCount[gid] < 2)
+            continue;
+
+          // Path c (#99): skip cross-producer groups; deferred to packet
+          // routing (Sprint N+4).
+          auto crossIt = groupCrossProducer.find(gid);
+          if (crossIt != groupCrossProducer.end() && crossIt->second)
             continue;
 
           if (nameIsTier3.count(ci.name) && nameIsTier3[ci.name]) {

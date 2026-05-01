@@ -1,33 +1,39 @@
 // RUN: aie-opt --conduit-fuse-channels %s | FileCheck %s
 //
-// Regression test: S2MM consumer-side fusion in --conduit-fuse-channels.
+// Regression test: S2MM consumer-side fusion in --conduit-fuse-channels —
+// CROSS-PRODUCER suppression case (Path c, bug #99).
 //
-// Before this sprint's fix, --conduit-fuse-channels only performed MM2S
-// (producer-side) fusion.  S2MM fusion was added to handle the symmetric
-// case: two conduits consumed on the same tile with non-overlapping
-// acquire/release intervals can share one S2MM DMA channel.
+// Before the #99 fix, --conduit-fuse-channels would annotate
+// dma_channel_group_s2mm on any S2MM group sharing a consumer tile,
+// regardless of how many distinct producer tiles the group spanned.
+// Pass C routePhase Sub-case 4a then emitted per-conduit aie.flow ops
+// without honoring the grouping, producing two flows targeting the same
+// consumer-tile DMA destination port — which aie-routing rejects.
 //
-// Topology:
+// Path c restricts the dma_channel_group_s2mm annotation to groups whose
+// members all share the same producer tile.  Cross-producer groups are
+// punted to a future packet-routing path (Sprint N+4) and are NOT
+// annotated by this pass.
+//
+// Topology (cross-producer, suppression case):
 //   tile(0,2) = producer of chan_a
-//   tile(1,2) = producer of chan_b
+//   chan_b    = no producer core (producerTile null → treated as unknown,
+//               distinct from tile(0,2))
 //   tile(0,4) = shared consumer tile for BOTH chan_a and chan_b
 //
 // The consumer core on tile(0,4) acquires/releases chan_a, then
-// acquires/releases chan_b — strictly sequential.  The pass should
-// annotate both conduit.create ops with dma_channel_group_s2mm = "group0"
-// and fuse_mode_s2mm = "static".
+// acquires/releases chan_b — strictly sequential, so the live-interval
+// pass would by itself coalesce them.  The Path c predicate suppresses
+// the annotation because the producer tiles differ.
+//
+// The same-producer POSITIVE case is pinned in
+// fuse_channels_s2mm_same_producer.mlir.
 
 // CHECK-LABEL: module @fuse_channels_s2mm_test
 
-// chan_a gets S2MM fusion annotation:
-// CHECK:       conduit.create @chan_a
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
-// CHECK-SAME:  fuse_mode_s2mm = "static"
-
-// chan_b gets S2MM fusion annotation (same group):
-// CHECK:       conduit.create @chan_b
-// CHECK-SAME:  dma_channel_group_s2mm = "group0"
-// CHECK-SAME:  fuse_mode_s2mm = "static"
+// Path c suppression: NEITHER channel may carry the S2MM fuse annotation.
+// CHECK-NOT:   dma_channel_group_s2mm
+// CHECK-NOT:   fuse_mode_s2mm
 
 module @fuse_channels_s2mm_test {
   aie.device(npu1_1col) {
