@@ -161,6 +161,33 @@ std::optional<uint32_t> tileBDCap(Operation *scope, Value tile) {
                       static_cast<int>(tileOp.getRow()));
 }
 
+std::optional<uint32_t> tileBDDimCap(Operation *scope, Value tile) {
+  AIE::DeviceOp dev = scope->getParentOfType<AIE::DeviceOp>();
+  if (!dev)
+    dev = dyn_cast<AIE::DeviceOp>(scope);
+  if (!dev)
+    return std::nullopt;
+  if (!tile)
+    return std::nullopt;
+  auto tileOp = tile.getDefiningOp<AIE::TileOp>();
+  if (!tileOp)
+    return std::nullopt;
+  const AIE::AIETargetModel &tm = AIE::getTargetModel(dev);
+  int col = static_cast<int>(tileOp.getCol());
+  int row = static_cast<int>(tileOp.getRow());
+  // Authoritative caps:
+  //   compute/core tile dma_bd  -> 3 (AIEDialect.cpp:2233-2236, default branch)
+  //   MemTile dma_bd            -> 4 (AIEDialect.cpp:2233-2236, MemTileDMAOp)
+  //   Shim runtime-sequence BD  -> 4 (AIEDMATasksToNPU.cpp:347-350)
+  if (tm.isCoreTile(col, row))
+    return 3;
+  if (tm.isMemTile(col, row))
+    return 4;
+  if (tm.isShimNOCorPLTile(col, row))
+    return 4;
+  return std::nullopt;
+}
+
 } // namespace xilinx::conduit::detail
 
 //===----------------------------------------------------------------------===//

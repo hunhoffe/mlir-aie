@@ -72,6 +72,12 @@ mlir::Value lookupConsumerTile(mlir::Operation *scope,
 // the cap cannot be determined.
 std::optional<uint32_t> tileBDCap(mlir::Operation *scope, mlir::Value tile);
 
+// Return the per-BD data-layout-dim cap for `tile` (3 for compute/core tiles,
+// 4 for MemTile and Shim, nullopt when the tile type cannot be determined).
+// Mirrors AIEDialect.cpp:2233-2236 (compute/MemTile dma_bd verifier) and
+// AIEDMATasksToNPU.cpp:347-350 (shim runtime-sequence cap).
+std::optional<uint32_t> tileBDDimCap(mlir::Operation *scope, mlir::Value tile);
+
 } // namespace xilinx::conduit::detail
 
 #endif // AIE_DIALECT_CONDUIT_TRANSFORMS_CANONICALIZECHANNELPUTSUTILS_H

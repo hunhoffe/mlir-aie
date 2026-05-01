@@ -294,6 +294,39 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
     return false;
   }
 
+  // HW per-BD data-layout-dim cap.  Collapse will prepend ONE outer
+  // wrap+stride dim to producer_dimensions, so the post-collapse literal
+  // dim count is K_existing + 1.  Refuse if either side's dim cap would
+  // be violated.  K_existing is the literal stamped attr length — see
+  // ArithProgressionPattern.cpp:301 (prependDim) for the prepend op, and
+  // ConduitToDMALower.cpp BD emit which consumes producer_dimensions
+  // verbatim before AIEDialect's dim-count verifier runs.
+  //
+  // TODO Sprint N+2 canon unification: replace dims.size() with
+  // stripTrailingPadding(dims).size() to allow collapse on op7-shape
+  // inputs whose effective geometry is 1-dim despite 4-dim literal padding.
+  uint32_t worstDimCap = std::numeric_limits<uint32_t>::max();
+  bool dimCapKnown = false;
+  if (auto pdc = tileBDDimCap(scope, producerTile)) {
+    worstDimCap = std::min(worstDimCap, *pdc);
+    dimCapKnown = true;
+  }
+  if (auto cdc = tileBDDimCap(scope, consumerTile)) {
+    worstDimCap = std::min(worstDimCap, *cdc);
+    dimCapKnown = true;
+  }
+  size_t kExisting = 0;
+  if (auto refDims = mlir::dyn_cast_or_null<AIE::BDDimLayoutArrayAttr>(
+          ref.getProducerDimensionsAttr()))
+    kExisting = refDims.getValue().size();
+  if (dimCapKnown && (kExisting + 1) > static_cast<size_t>(worstDimCap)) {
+    createOp.emitWarning()
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " puts on @" << chanName << " — post-collapse dim count "
+        << (kExisting + 1) << " exceeds per-BD dim cap of " << worstDimCap;
+    return false;
+  }
+
   // Match holds — perform collapse.
   // Build the outer wrap+stride BDDimLayoutAttr and prepend on (a) the
   // surviving put's producer_dimensions, (b) the channel-level
@@ -433,6 +466,40 @@ bool tryCollapseArithGets(Create createOp, PatternRewriter &rewriter) {
         << "canonicalize-loop-unroll-puts: refusing to collapse " << N
         << " gets on @" << chanName << " — exceeds tile BD cap of " << worstCap
         << " (downstream Pass C will surface the underlying issue)";
+    return false;
+  }
+
+  // HW per-BD data-layout-dim cap on the consumer side.  consumer_dimensions
+  // is BDDimLayoutArrayArrayAttr — one inner array per consumer.  Collapse
+  // prepends ONE outer wrap+stride dim to EACH inner array (see
+  // prependDimArrayArray), so the post-collapse literal dim count for each
+  // consumer is innerSize + 1.  Refuse if any inner array would overflow.
+  // Use the longest inner array as the worst case.
+  //
+  // TODO Sprint N+2 canon unification: replace dims.size() with
+  // stripTrailingPadding(dims).size() to allow collapse on op7-shape
+  // inputs whose effective geometry is 1-dim despite 4-dim literal padding.
+  uint32_t worstDimCap = std::numeric_limits<uint32_t>::max();
+  bool dimCapKnown = false;
+  if (auto pdc = tileBDDimCap(scope, producerTile)) {
+    worstDimCap = std::min(worstDimCap, *pdc);
+    dimCapKnown = true;
+  }
+  if (auto cdc = tileBDDimCap(scope, consumerTile)) {
+    worstDimCap = std::min(worstDimCap, *cdc);
+    dimCapKnown = true;
+  }
+  size_t kExisting = 0;
+  if (auto refDims = mlir::dyn_cast_or_null<AIE::BDDimLayoutArrayArrayAttr>(
+          ref.getConsumerDimensionsAttr())) {
+    for (AIE::BDDimLayoutArrayAttr inner : refDims.getValue())
+      kExisting = std::max(kExisting, inner.getValue().size());
+  }
+  if (dimCapKnown && (kExisting + 1) > static_cast<size_t>(worstDimCap)) {
+    createOp.emitWarning()
+        << "canonicalize-loop-unroll-puts: refusing to collapse " << N
+        << " gets on @" << chanName << " — post-collapse dim count "
+        << (kExisting + 1) << " exceeds per-BD dim cap of " << worstDimCap;
     return false;
   }
 
