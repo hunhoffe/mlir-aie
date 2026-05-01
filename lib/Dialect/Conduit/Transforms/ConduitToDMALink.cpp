@@ -1541,6 +1541,32 @@ void linkPhase(ConduitToDMAState &state) {
     if (!info.noLocks && (!info.prodLock || !info.consLock))
       continue;
 
+    // Same-tile depth=1 self-loop: pure shared-memory access (the core
+    // reads/writes its own tile-local buffer directly via the buffer +
+    // locks allocated in ConduitToDMAAlloc.cpp's `sameTile` carve-out at
+    // line 128).  No DMA needed — skip BD-chain emit for both Case C
+    // (producer MM2S) and Case A (consumer S2MM) downstream.  Restricted
+    // to depth==1 so the depth>1 self-loop rotation path fixed by #92 is
+    // unaffected (rotation counters require real BD chains).  Mirrors
+    // --aie-objectFifo-stateful-transform's emit on the same shape
+    // (captured 2026-05-01).  Pre-fix this loop emitted a spurious
+    // producer-side MM2S BD chain (Case C) plus a consumer-side S2MM 0
+    // BD chain (Case A); the latter collided with @ext_in's S2MM 0
+    // assignment and corrupted the device program (XRT status 8 ABORT
+    // observed in test/npu-xrt/fuse_channels_npu/aie.mlir).
+    {
+      auto [pCol, pRow] = info.producerTileCoord;
+      if (info.consumerTileCoords.size() == 1 &&
+          info.shimConsumerTileCoords.empty()) {
+        auto [cCol, cRow] = info.consumerTileCoords[0];
+        if (pCol == cCol && pRow == cRow) {
+          int64_t depth = info.depth > 0 ? info.depth : 1;
+          if (depth == 1)
+            continue;
+        }
+      }
+    }
+
     // Handle link source conduits: emit aie.mem MM2S on producer compute tile.
     // Stream conduits: skip entirely — the producer uses a Core stream port,
     // not a DMA engine. No aie.mem or BD chain on the producer tile.
