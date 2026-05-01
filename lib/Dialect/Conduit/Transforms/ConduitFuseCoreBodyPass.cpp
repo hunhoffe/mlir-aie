@@ -966,10 +966,21 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
   // clone-from for but used INSIDE it (e.g., arith.constant ops defined
   // in an outer for body or the core body). This ensures the IRMapping
   // has entries for these values before we clone the for body.
+  //
+  // Walk RECURSIVELY through nested regions of the clone-from body, not
+  // just the direct children: a constant defined in the core's top block
+  // may be used inside a nested scf.for / scf.if / nested region that
+  // lives several levels below the clone-from block. If we only inspect
+  // operands of direct children, the deep `builder.clone(*outerOp, mapping)`
+  // below will faithfully copy the nested op tree but leave its uses of
+  // the un-pre-cloned constant pointing at the original op in the consumer
+  // core. cleanUpDeadOps then erases the consumer core (including the
+  // original constant), leaving the cloned use dangling — manifests as
+  // `LLVM ERROR: operation destroyed but still has uses`.
   if (consumerCloneFrom) {
     llvm::DenseSet<mlir::Operation *> alreadyCloned;
-    for (mlir::Operation &innerOp : *consumerCloneFrom.getBody()) {
-      for (mlir::Value operand : innerOp.getOperands()) {
+    consumerCloneFrom.getBody()->walk([&](mlir::Operation *op) {
+      for (mlir::Value operand : op->getOperands()) {
         mlir::Operation *defOp = operand.getDefiningOp();
         if (!defOp)
           continue;
@@ -981,7 +992,7 @@ static mlir::LogicalResult composeCoresBodies(FusableCorePair &pair,
           builder.clone(*defOp, mapping);
         }
       }
-    }
+    });
   }
 
   // Collect ops to clone from the consumer's clone-from for body (inner
