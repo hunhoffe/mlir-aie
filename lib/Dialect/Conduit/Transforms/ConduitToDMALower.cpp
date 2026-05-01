@@ -1355,8 +1355,8 @@ void lowerPhase(ConduitToDMAState &state) {
         //     surfaces. Same value #89 manual patch produced.
         if (effectiveRepeat > 0)
           configState.addAttribute(
-              "repeat_count", builder.getI32IntegerAttr(
-                                  static_cast<int32_t>(effectiveRepeat)));
+              "repeat_count",
+              builder.getI32IntegerAttr(static_cast<int32_t>(effectiveRepeat)));
         configState.addTypes(indexTy);
         configState.addRegion();
         mlir::Operation *configOp = builder.create(configState);

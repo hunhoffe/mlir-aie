@@ -108,8 +108,7 @@ struct ConduitResourceModel {
 ///   * Tile coordinates that cannot be extracted (extractCoord returns
 ///     col == -1) are skipped silently.
 void populateConduitResourceModel(
-    mlir::ModuleOp module,
-    const llvm::StringMap<InferredTiles> &inferredMap,
+    mlir::ModuleOp module, const llvm::StringMap<InferredTiles> &inferredMap,
     ConduitResourceModel &model);
 
 } // namespace xilinx::conduit

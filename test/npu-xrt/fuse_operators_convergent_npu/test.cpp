@@ -162,8 +162,8 @@ int main(int argc, const char *argv[]) {
       if (errors < 16) {
         std::cout << "Mismatch at output[" << j << "]: expected 0x" << std::hex
                   << std::setw(4) << std::setfill('0') << ref[j] << " actual 0x"
-                  << std::setw(4) << std::setfill('0') << buf_out[j]
-                  << std::dec << std::endl;
+                  << std::setw(4) << std::setfill('0') << buf_out[j] << std::dec
+                  << std::endl;
       }
       errors++;
     }

@@ -41,9 +41,9 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-constexpr int SLICE = 256;        // ints per BD walk
-constexpr int N_WALKS = 2;        // BD outer dim size per configure
-constexpr int N_CONFIGURES = 2;   // configures per runtime sequence
+constexpr int SLICE = 256;      // ints per BD walk
+constexpr int N_WALKS = 2;      // BD outer dim size per configure
+constexpr int N_CONFIGURES = 2; // configures per runtime sequence
 constexpr int OUTPUT_LEN = N_CONFIGURES * N_WALKS * SLICE; // 1024
 
 using DTYPE = int32_t;
@@ -143,11 +143,15 @@ int main(int argc, const char *argv[]) {
   // sees iters 4..7; second BD walk per configure overwrites the first.
   std::vector<DTYPE> bug_ref(OUTPUT_LEN, 0);
   // Configure 1: walks 1+2 written, then walks 3+4 overwrite.
-  for (int j = 0; j < SLICE; j++) bug_ref[0 * SLICE + j] = 2;
-  for (int j = 0; j < SLICE; j++) bug_ref[1 * SLICE + j] = 3;
+  for (int j = 0; j < SLICE; j++)
+    bug_ref[0 * SLICE + j] = 2;
+  for (int j = 0; j < SLICE; j++)
+    bug_ref[1 * SLICE + j] = 3;
   // Configure 2: walks 1+2 written, then walks 3+4 overwrite.
-  for (int j = 0; j < SLICE; j++) bug_ref[2 * SLICE + j] = 6;
-  for (int j = 0; j < SLICE; j++) bug_ref[3 * SLICE + j] = 7;
+  for (int j = 0; j < SLICE; j++)
+    bug_ref[2 * SLICE + j] = 6;
+  for (int j = 0; j < SLICE; j++)
+    bug_ref[3 * SLICE + j] = 7;
 
   int errors = 0;
   int sentinel_holes = 0;

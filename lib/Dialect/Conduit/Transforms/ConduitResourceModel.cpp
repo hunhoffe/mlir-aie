@@ -34,8 +34,7 @@ int64_t estimateSingleSlotBytes(mlir::Type elemType) {
 }
 
 void populateConduitResourceModel(
-    mlir::ModuleOp module,
-    const llvm::StringMap<InferredTiles> &inferredMap,
+    mlir::ModuleOp module, const llvm::StringMap<InferredTiles> &inferredMap,
     ConduitResourceModel &model) {
   module.walk([&](Create op) {
     // Cascade conduits use no buffers, locks, or BDs — skip resource counting.
@@ -51,8 +50,7 @@ void populateConduitResourceModel(
     // for channels outside aie.core (e.g. in func.func or hand-written IR).
     llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
     auto tileIt = inferredMap.find(op.getName().str());
-    if (tileIt != inferredMap.end() &&
-        !tileIt->second.consumerTiles.empty()) {
+    if (tileIt != inferredMap.end() && !tileIt->second.consumerTiles.empty()) {
       for (mlir::Value tv : tileIt->second.consumerTiles) {
         auto [col, row] = extractCoord(tv);
         if (col >= 0)
@@ -66,8 +64,7 @@ void populateConduitResourceModel(
       model.lockCount[key] += 2; // prod + cons lock pair
       model.bdCount[key] += depth;
       if (elemTypeAttr) {
-        int64_t perSlotBytes =
-            estimateSingleSlotBytes(elemTypeAttr.getValue());
+        int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
         model.memUsed[key] += perSlotBytes * depth;
       }
     }
@@ -81,8 +78,7 @@ void populateConduitResourceModel(
       model.lockCount[key] += 2;
       model.bdCount[key] += depth;
       if (elemTypeAttr) {
-        int64_t perSlotBytes =
-            estimateSingleSlotBytes(elemTypeAttr.getValue());
+        int64_t perSlotBytes = estimateSingleSlotBytes(elemTypeAttr.getValue());
         model.memUsed[key] += perSlotBytes * depth;
       }
     }

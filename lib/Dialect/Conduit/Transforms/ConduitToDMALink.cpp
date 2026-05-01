@@ -198,9 +198,8 @@ void linkPhase(ConduitToDMAState &state) {
       auto relayBufIt = coreRelaySrc.consumerTileBuffers.find(relayTileVal);
       if (relayBufIt == coreRelaySrc.consumerTileBuffers.end() ||
           relayBufIt->second.empty()) {
-        std::string memtileStr =
-            "tile(" + std::to_string(memtile.getCol()) + "," +
-            std::to_string(memtile.getRow()) + ")";
+        std::string memtileStr = "tile(" + std::to_string(memtile.getCol()) +
+                                 "," + std::to_string(memtile.getRow()) + ")";
         linkOp.emitError("conduit-to-dma: CoreTile relay: relay buffers for "
                          "src conduit '" +
                          coreRelayName + "' not found on relay tile '" +

@@ -875,8 +875,7 @@ struct ConduitFuseOperatorsPass
       // (@inter_gate, @ext_in_up) — destroying the surviving @ext_in_up
       // and burning a `fused_intermediate_N` slot, leaving K-1 fused
       // intermediates instead of K.
-      if (matched.empty() &&
-          !convergentDevices.contains(devA.getOperation()) &&
+      if (matched.empty() && !convergentDevices.contains(devA.getOperation()) &&
           !convergentDevices.contains(devB.getOperation())) {
         llvm::DenseSet<mlir::Operation *> consumedInputs;
         for (Create outCh : outputChannels) {
