@@ -29,3 +29,8 @@ utils/vitisVariables.config
 runtime_lib/xaiengine/src
 /ironenv
 /.cache
+
+# Captured reproducer drops are scaffolding, not durable artifacts. Extract
+# canonical cases as lit pins / lit-NPU smokes, then delete the raw drop.
+# See CLAUDE.md "Captured-reproducer extraction" rule.
+/tests/captured_reproducers/
