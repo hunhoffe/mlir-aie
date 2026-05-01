@@ -8,30 +8,38 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Regression test: --conduit-to-dma surfaces `repeat_count = 1` onto the
-// OUTPUT (S2MM) shim `aiex.dma_configure_task_for` when the source
-// `conduit.create` carries `dma_repeat = 1`.
+// Regression test: --conduit-to-dma surfaces a properly subtract-1
+// adjusted `repeat_count = 0` onto the OUTPUT (S2MM) shim
+// `aiex.dma_configure_task_for` when the source `conduit.create`
+// carries `dma_repeat = 1`.
 //
-// Convention: IRON / firmware read `repeat_count = N` as N+1 fires (see
-// CLAUDE.md "Convention-divergence" entry; AIEDmaToNpu.cpp packs the
-// value verbatim into the NPU command word).  So `repeat_count = 1` →
-// 2 fires per call, matching stateful and IRON's intent.
+// v5 convention (locked 2026-04-30): firmware push_queue `repeat_count`
+// is 0-indexed — emit value N causes the BD to fire N+1 times.  The
+// CHANNEL-side `dma_repeat = N` represents the user's intended fire
+// count (N total fires, not N+1).  Pass C subtracts 1 at the
+// configure_task emit site to translate user-intent → firmware-encoding.
+// So `dma_repeat = 1` (user wants 1 fire) → `repeat_count = 0` on the
+// configure_task → firmware fires once.  Empirical proof that the
+// subtract-1 is correct: #89 captured-IR rc=4→3 patch + iron_stride_zero
+// NPU smoke patched rc=4→3 → byte-equivalent / PASS, both 2026-04-30.
 //
 // Pipeline check:
 //   1. Pass A (--objectfifo-to-conduit): SHIM channel sees emit.count = 1
 //      and skips stamping `dma_repeat` per dc792ebbd5.  ✓
 //   2. --dma-task-to-conduit: surfaces IRON's literal `repeat_count = 1`
 //      onto the conduit.create as `dma_repeat = 1`.  ✓
-//   3. Pass C (--conduit-to-dma): ConduitToDMALower.cpp guard `> 0`
-//      surfaces the value verbatim onto the output configure_task.  ✓
+//   3. Pass C (--conduit-to-dma): ConduitToDMALower.cpp v5 emit gate
+//      `effectiveRepeat >= 1` surfaces `effectiveRepeat - 1` onto the
+//      output configure_task.  ✓
 //
-// History: this test was the BUG isolation for the GEMM @ attn_query
-// 1.95M-wrong-rows (50%-zero) numerical bug observed post-shim-locks-
-// fix `0ab9554ce5`.  Pre-fix the guard was `> 1` and silently dropped
-// `dma_repeat = 1`; firmware then fired output BDs once per call instead
-// of twice, leaving half the output rows zero.  Pinned originally as
+// History: this test was originally the BUG isolation for the GEMM
+// @ attn_query 1.95M-wrong-rows (50%-zero) numerical bug.  The
+// historical "fix" surfaced repeat_count verbatim (`= 1`) — that
+// over-fired by 1 in firmware; the v5 fix corrects the semantic
+// translation.  Pinned originally as
 // `passC_drops_dma_repeat_1_on_output_configure_task_BUG.mlir` at
-// `a8c83780dd`; flipped to this regression form when the fix landed.
+// `a8c83780dd`; flipped to its prior verbatim-surface form, then
+// re-pinned at v5 (subtract-1) on 2026-04-30.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,8 +47,13 @@
 
 // CHECK-LABEL: aie.device(npu2)
 
-// The output configure_task carries `repeat_count = 1` to match
-// stateful and IRON's intent (2 fires per call).
+// The output configure_task emits effective repeat_count = 0 (v5:
+// subtract-1 at emit; user's IRON `repeat_count = 1` → 1 fire on
+// hardware = firmware default).  The MLIR printer elides default-zero
+// integer attrs, so `repeat_count` does not appear in the textual
+// output — verified absence is the correct pin.  Pre-v5 this slot
+// carried `repeat_count = 1 : i32` (verbatim surface, over-fired by 1
+// in firmware).
 // CHECK:       aiex.dma_configure_task_for @C_shim_alloc
 // CHECK:         aie.dma_bd
 // CHECK:       } {issue_token = true, repeat_count = 1 : i32}

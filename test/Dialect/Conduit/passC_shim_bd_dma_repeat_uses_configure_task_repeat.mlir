@@ -40,9 +40,17 @@
 
 // CHECK-LABEL: aie.device(npu1)
 
-// configure_task carries repeat_count = 4.  The BD's TAP is preserved
-// verbatim (still 4 dims, still <1,0>x3 + <256,1> walk); BD len is the
-// original 256, NOT scaled by 4.
+// configure_task carries repeat_count = 3 — v5 (2026-04-30) emits
+// channelDmaRepeat - 1 because firmware push_queue is 0-indexed
+// ("emit N → BD fires N+1 times").  IRON-explicit repeat_count = 4
+// flows through --dma-task-to-conduit verbatim onto channel
+// dma_repeat = 4, then Pass C subtracts 1 at the configure_task emit
+// to produce the 4-fires-per-dispatch firmware behavior the user
+// intended.  Empirical proof: #89 captured-IR rc=4→3 patch +
+// iron_stride_zero NPU smoke patched rc=4→3 → PASS, both 2026-04-30.
+//
+// The BD's TAP is preserved verbatim (still 4 dims, still <1,0>x3 +
+// <256,1> walk); BD len is the original 256, NOT scaled by 4.
 // CHECK:       aiex.dma_configure_task_for @chan_shim_alloc
 // CHECK:         aie.dma_bd
 // CHECK-SAME:    , 256

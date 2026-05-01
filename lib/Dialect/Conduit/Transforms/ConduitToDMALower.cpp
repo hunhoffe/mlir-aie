@@ -1274,30 +1274,37 @@ void lowerPhase(ConduitToDMAState &state) {
         if (auto *info = state.lookupConduit(conduitName, op))
           channelDmaRepeat = info->dmaRepeat;
 
-        // Derive an additional repeat_count contribution from the BD's
-        // outer wrap+stride dim, when canon's ArithProgressionPattern
-        // stamped a multi-cycle outer dim.  BD descriptor's iteration_size
-        // alone is insufficient on the shim NPU command path: the
-        // push-queue's repeat_count must also be N.  This mirrors the
-        // npu.dma_memcpy_nd convention (AIEDmaToNpu.cpp:380-393), which
-        // sets BOTH iteration_size = sizes[3] AND push-queue
-        // repeat_count = sizes[3].  Empirically (homogeneous_repeat NPU
-        // smoke), without this only 1 of N iterations fires even though
-        // the BD descriptor's iteration_size is correct.
+        // v5 (2026-04-30, empirically locked):
+        // Uniform rule: effectiveRepeat = channelDmaRepeat. The push-queue
+        // `repeat_count` attr in firmware is 0-indexed: emit N → BD fires
+        // N+1 times. channelDmaRepeat already represents the desired
+        // firmware push count (Pass A surfaces IRON-explicit repeat_count
+        // verbatim onto the channel attr).
         //
-        // Canon's ArithProgressionPattern deliberately does NOT also stamp
-        // dma_repeat=N on the channel (would double-multiply with the
-        // outer dim's iteration on the channel-DMA / memtile paths), so
-        // channelDmaRepeat and outerRepeat cannot both be > 0 for the
-        // same configure on the shim path here.  Combine via max() as a
-        // belt-and-braces guard.
-        int64_t outerRepeat = 0;
-        if (dims && !dims.getValue().empty()) {
-          uint32_t outerSize = dims.getValue().front().getSize();
-          if (outerSize > 1)
-            outerRepeat = static_cast<int64_t>(outerSize);
-        }
-        int64_t effectiveRepeat = std::max(channelDmaRepeat, outerRepeat);
+        // What about outer.stride==0 ("IRON broadcast encoding")? Empirically
+        // confirmed today that `--dma-task-to-conduit` already populates
+        // channelDmaRepeat with the same N as outerSize for these channels
+        // (production-form invariant), so the simple `effectiveRepeat =
+        // channelDmaRepeat` correctly emits N regardless of outer-dim
+        // encoding.
+        //
+        // What about outer.stride>0 ("real outer iteration")? BD walks N
+        // times per fire (real address motion); push-queue should NOT
+        // additionally multiply. channelDmaRepeat alone drives the count.
+        //
+        // Verified empirically 2026-04-30 by:
+        // - #89: manually patching gate-2a captured IR `repeat_count=4→3`
+        //   and `2→1` → byte-equivalent to stateful (0/2097152 bytes
+        //   differ).
+        // - iron_stride_zero NPU smoke patched rc=4→3 → PASSes (firmware
+        //   fires BD 4 times when emit is 3).
+        //
+        // History: v2 added defensive error (broke gate-2a compile). v3
+        // proposed push_queue=channelDmaRepeat for stride>0 (right idea but
+        // dropped attr when channelDmaRepeat=0). v4 added stride-
+        // discriminator (preserved case d outerSize → over-fired by 1).
+        // v5 = simplest correct rule.
+        int64_t effectiveRepeat = channelDmaRepeat;
 
         builder.setInsertionPoint(op);
         mlir::Location loc = op->getLoc();
@@ -1317,15 +1324,39 @@ void lowerPhase(ConduitToDMAState &state) {
         if (isS2MM)
           configState.addAttribute("issue_token", builder.getBoolAttr(true));
         // Surface dma_repeat to the shim DMA via the configure_task's
-        // repeat_count attribute.  Any positive dma_repeat surfaces
-        // verbatim — including dma_repeat = 1, which IRON / firmware read
-        // as 2 fires per call (see CLAUDE.md "Convention-divergence" entry
-        // and AIEDmaToNpu.cpp packing).  Skipping `> 0` (default / absent)
-        // preserves the correct no-attr emission for unstamped channels.
+        // repeat_count attribute.  v5 (2026-04-30): firmware push_queue
+        // `repeat_count` is 0-indexed — emit value N causes BD to fire
+        // N+1 times.  Subtract 1 from the desired fire count
+        // (effectiveRepeat = channelDmaRepeat = "intended fires") VERBATIM
+        // at the emit site.  Skip when effectiveRepeat == 0 (no attr →
+        // firmware default).  No subtraction: Pass A's
+        // --dma-task-to-conduit already preserves IRON's repeat_count on
+        // the channel as dma_repeat verbatim, and stateful's lowering
+        // path does the same verbatim preservation.  Pass C's role here
+        // is just to re-stamp that same value back onto the
+        // configure_task on the conduit-side emit.
+        //
+        // Empirically vindicated by:
+        //   - #89 gate-2a captured-IR rc=4→3 / 2→1 patch byte-equivalent
+        //     to stateful (0/2097152 differing bytes); the patched
+        //     values were exactly channelDmaRepeat for each channel.
+        //   - Stateful's runtime-sequence emit preserves IRON's
+        //     repeat_count verbatim through to the dispatched configure.
+        //
+        // History (v2/v3/v4/v5 all wrong; v6 = bug-removal not new design):
+        //   - pre-v6 had `effectiveRepeat = max(channelDmaRepeat, outerSize)`,
+        //     over-picking outerSize when present (over-fire by 1).
+        //   - v2 added defensive error (broke gate-2a compile).
+        //   - v3 stride discriminator (broke per-pattern smokes).
+        //   - v4 case-d preservation (broke gate-2a A_L3L2 still over-fired).
+        //   - v5 subtract-1-at-emit (under-fired uniformly).
+        //   - v6 (this version): just don't transform — emit channelDmaRepeat
+        //     verbatim. Same value stateful preserves. Same value Pass A
+        //     surfaces. Same value #89 manual patch produced.
         if (effectiveRepeat > 0)
           configState.addAttribute(
-              "repeat_count",
-              builder.getI32IntegerAttr(static_cast<int32_t>(effectiveRepeat)));
+              "repeat_count", builder.getI32IntegerAttr(
+                                  static_cast<int32_t>(effectiveRepeat)));
         configState.addTypes(indexTy);
         configState.addRegion();
         mlir::Operation *configOp = builder.create(configState);
