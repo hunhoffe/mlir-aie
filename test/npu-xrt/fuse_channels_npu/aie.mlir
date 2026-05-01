@@ -104,7 +104,17 @@ module {
       %c0   = arith.constant 0 : index
       %c1   = arith.constant 1 : index
       %c64  = arith.constant 64 : index
-      %cmax = arith.constant 0xFFFFFE : index
+      // NUM_INVOCATIONS in test.cpp is 4 (line 63); core acquires must
+      // match host dispatch count or core blocks waiting for buffers
+      // that never arrive (XRT timeout / status 8). Fixture as authored
+      // at 4c0611e4e6 had %cmax = 0xFFFFFE = 16,777,214 — Pass A's
+      // dma_repeat inference (ObjectFifoToConduit.cpp:1200-1203) reads
+      // this directly into @inter's dma_repeat, blocking core on the
+      // 5th iteration. Pre-#99 the fixture failed at compile time
+      // (aie-routing duplicate-dst on the multi-source-S2MM case);
+      // #99 closure (commit 4012ed56be) exposed the latent runtime
+      // bound bug. Bound to NUM_INVOCATIONS via constant.
+      %cmax = arith.constant 4 : index
       %cone = arith.constant 1.0 : bf16
       %ctwo = arith.constant 2.0 : bf16
       scf.for %niter = %c0 to %cmax step %c1 {
