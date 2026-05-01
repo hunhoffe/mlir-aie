@@ -14,11 +14,19 @@
 // and Python-harness sibling
 //   iron_operator_mlir/fusion_npu_regression/fuse_channels_smoke.py.
 //
+// SCOPE NOTE (post-#99 closure, 2026-05-01): HW coverage here is the
+// @inter / @ext_out producer-side fold ONLY (single shim input, single
+// shim output, with one self-loop intermediate).  The earlier two-shim-
+// input shape was migrated to the pure-lit pin
+//   test/Dialect/Conduit/passc_dup_dst_feasibility_error.mlir
+// because its consumer-side S2MM fold trips Pass C's new duplicate-dst
+// feasibility check (#99).  The Mul section now multiplies by an inline
+// 2.0 constant rather than a second shim input.
+//
 // Inputs:
 //   in_a[j] = (j % 16)  — bf16 ramp.
-//   in_d[j] = 2.0       — bf16 constant.
 // Output:
-//   out[j]  = (in_a[j] + 1.0) * in_d[j].
+//   out[j]  = (in_a[j] + 1.0) * 2.0.
 //
 // Multi-invocation: the harness dispatches the merged kernel 4 times
 // (mirroring the Python harness's num_invocations=4) so the smoke catches
@@ -111,10 +119,8 @@ int main(int argc, const char *argv[]) {
                           XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
   auto bo_a =
       xrt::bo(device, IO_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
-  auto bo_d =
-      xrt::bo(device, IO_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
   auto bo_out =
-      xrt::bo(device, IO_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
+      xrt::bo(device, IO_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
 
   // Bf16 ramp: in_a[j] = (j % 16), bf16-exact.
   uint16_t *buf_a = bo_a.map<uint16_t *>();
@@ -124,15 +130,6 @@ int main(int argc, const char *argv[]) {
   }
   std::memcpy(buf_a, input_a.data(), IO_SIZE);
 
-  // Bf16 constant: in_d[j] = 2.0, bf16-exact.
-  uint16_t *buf_d = bo_d.map<uint16_t *>();
-  std::vector<uint16_t> input_d(IO_LEN);
-  uint16_t two_bf = float_to_bf16(2.0f);
-  for (int j = 0; j < IO_LEN; j++) {
-    input_d[j] = two_bf;
-  }
-  std::memcpy(buf_d, input_d.data(), IO_SIZE);
-
   uint16_t *buf_out = bo_out.map<uint16_t *>();
 
   void *buf_instr = bo_instr.map<void *>();
@@ -140,26 +137,23 @@ int main(int argc, const char *argv[]) {
 
   bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_a.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_d.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
   unsigned int opcode = 3;
   auto run = xrt::run(kernel);
   run.set_arg(0, opcode);
   run.set_arg(1, bo_instr);
   run.set_arg(2, instr_v.size());
-  // arg 3 / 4 / 5 = runtime-sequence args of @addmul_seq, in source-order:
-  // a_in (ext_in_a), d_in (ext_in_d), o_out (ext_out).  fuse-channels is
-  // annotation-only and does NOT erase or reorder the runtime-sequence args.
+  // arg 3 / 4 = runtime-sequence args of @addmul_seq, in source-order:
+  // a_in (ext_in_a), o_out (ext_out).  fuse-channels is annotation-only
+  // and does NOT erase or reorder the runtime-sequence args.
   run.set_arg(3, bo_a);
-  run.set_arg(4, bo_d);
-  run.set_arg(5, bo_out);
+  run.set_arg(4, bo_out);
 
-  // Reference: out[j] = (in_a[j] + 1.0) * in_d[j], all bf16-exact ints.
+  // Reference: out[j] = (in_a[j] + 1.0) * 2.0, all bf16-exact ints.
   std::vector<uint16_t> ref(IO_LEN, 0);
   for (int j = 0; j < IO_LEN; j++) {
     float a = bf16_to_float(input_a[j]);
-    float d = bf16_to_float(input_d[j]);
-    ref[j] = float_to_bf16((a + 1.0f) * d);
+    ref[j] = float_to_bf16((a + 1.0f) * 2.0f);
   }
 
   int total_errors = 0;

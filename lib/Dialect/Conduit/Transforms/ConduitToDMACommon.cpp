@@ -323,6 +323,57 @@ void ConduitToDMAState::emitFlow(std::optional<RoutingMode> routingMode,
     builder->create<AIE::EndOp>(loc);
     builder->setInsertionPointAfter(pktFlow);
   } else {
+    // Circuit flow: detect duplicate-dst (distinct sources circuit-routing
+    // to the same (consTile, consDstBundle, consDstChan)).  `aie-routing`
+    // rejects such cases as duplicate-dst circuit connects, and silent
+    // emission would corrupt routing.  Packet flows take the branch above
+    // and are NOT tracked here (packet routing legally multiplexes distinct
+    // sources onto a shared dst via packet IDs).
+    auto *dstTileOp = dstTile.getDefiningOp();
+    auto *srcTileOp = srcTile.getDefiningOp();
+    auto dstKey = std::make_tuple(dstTileOp, static_cast<int>(dstBundle),
+                                  dstChan);
+    auto srcVal = std::make_tuple(srcTileOp, static_cast<int>(srcBundle),
+                                  srcChan);
+    if (dstTileOp) {
+      auto it = circuitDstPortOwner.find(dstKey);
+      if (it != circuitDstPortOwner.end()) {
+        if (it->second == srcVal) {
+          // Same (src,dst) re-emitted — legal silent dedup.  Encountered when
+          // fuse-group partner conduits or compute+shim broadcast siblings
+          // resolve to the same physical (src port, dst port) pair; a single
+          // FlowOp suffices and emitting another would create exactly the
+          // duplicate that `aie-routing` rejects.  Match what aie-routing
+          // would dedupe anyway, so callers don't have to track this state.
+          return;
+        }
+        // Different source targeting the same dst port — fatal for circuit
+        // routing.  Emit a diagnostic naming both source ports and the
+        // shared dst port so the user can correlate to conduit names by
+        // inspecting IR.  Use packet routing or single-source fold to fix.
+        auto fmtTile = [](mlir::Operation *op) -> std::string {
+          if (auto t = mlir::dyn_cast_or_null<AIE::TileOp>(op))
+            return "(" + std::to_string(t.getCol()) + "," +
+                   std::to_string(t.getRow()) + ")";
+          return "(?,?)";
+        };
+        mlir::Operation *prevSrcOp = std::get<0>(it->second);
+        int32_t prevSrcChan = std::get<2>(it->second);
+        // Attach the diagnostic to the dst tile op so verify-diagnostics
+        // pins are line-stable (the dst tile is the natural source location:
+        // it is the over-subscribed port, and both colliding flows share it).
+        mlir::emitError(dstTileOp->getLoc())
+            << "conduit-to-dma: cannot circuit-route distinct sources to "
+            << fmtTile(dstTileOp) << ", DMA:" << dstChan
+            << ": new source on " << fmtTile(srcTileOp)
+            << ", DMA:" << srcChan << "; already routed by source on "
+            << fmtTile(prevSrcOp) << ", DMA:" << prevSrcChan
+            << ". Use packet routing or single-source fold.";
+        passFailed = true;
+        return;
+      }
+      circuitDstPortOwner[dstKey] = srcVal;
+    }
     builder->create<AIE::FlowOp>(loc, srcTile, srcBundle, srcChan, dstTile,
                                  dstBundle, dstChan);
   }

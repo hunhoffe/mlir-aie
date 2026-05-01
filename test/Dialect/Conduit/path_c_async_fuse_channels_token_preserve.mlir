@@ -8,8 +8,21 @@
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels %s | FileCheck %s
 // Metafix Candidate 1 (Path C async): also smoke through downstream
 // shim-allocation-substitution + BD-ID assignment so legalization traps
-// are caught at lit time, not first NPU contact.
-// RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
+// are caught at lit time, not first NPU contact.  Per #99 closure
+// (commit landing this comment), the cross-producer-MM2S → shared-S2MM
+// shape this fixture uses is now diagnosed at Pass C as a duplicate-dst
+// circuit-route infeasibility (see emitFlow in ConduitToDMACommon.cpp +
+// the dedicated pin passc_dup_dst_feasibility_error.mlir).  Two distinct
+// shim MM2S sources both reach (0,2) DMA:0 after fuse-channels folds the
+// consumer-side S2MM port — `aie-routing` would reject this as a
+// duplicate-dst circuit connect, so Pass C now reports cleanly at emit
+// time.  The metafix RUN therefore expects-error rather than passes;
+// this preserves the test of "fuse-channels annotation + Pass C lowering
+// reach the documented infeasibility outcome on this exact IR shape"
+// while remaining a pinned regression check.  The first FileCheck RUN
+// above continues to pin the fuse-channels token-preservation invariants
+// (its IR doesn't reach Pass C, so the new check is irrelevant there).
+// RUN: aie-opt --verify-diagnostics --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
 
 // Path C async fuse-pass interaction pin (Task #33, design from
 // path-c-test-matrix.md §1.1).
@@ -59,6 +72,7 @@
 module @path_c_async_fuse_channels_token_preserve {
   aie.device(npu2) {
     %shim = aie.tile(0, 0)
+    // expected-error @below {{conduit-to-dma: cannot circuit-route distinct sources to (0,2)}}
     %tile = aie.tile(0, 2)
 
     // depth=1 so --conduit-fuse-channels actually triggers fusion

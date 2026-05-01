@@ -582,6 +582,25 @@ struct ConduitToDMAState {
   // Populated by routePhase. Read by linkPhase for BD chain emission.
   llvm::StringMap<uint8_t> conduitPacketID;
 
+  // Circuit-flow destination port ownership tracking — owned + maintained
+  // exclusively by `emitFlow`.  Detects the case where two distinct sources
+  // attempt to circuit-route to the same destination port (consTile,
+  // consDstBundle, consDstChan), which `aie-routing` rejects as a duplicate-
+  // dst circuit connect.  See emitFlow body for the full predicate (silent
+  // dedup for same-source re-emission, error for distinct-source collision).
+  // Packet flows are intentionally NOT recorded here — packet routing legally
+  // multiplexes distinct sources onto a shared dst via packet IDs.
+  // Op* keys make this naturally device-scoped (each device's tile ops have
+  // distinct identity), so the map accumulates safely across multi-device
+  // modules with no per-device reset, mirroring `tileNextS2MMChannel` /
+  // `fuseGroupS2MMChannel`.
+  // Key:   (dstTileOp*, dstBundle, dstChan)
+  // Value: (srcTileOp*, srcBundle, srcChan) — first-emitter info for the
+  //        diagnostic on collision.
+  std::map<std::tuple<mlir::Operation *, int, int32_t>,
+           std::tuple<mlir::Operation *, int, int32_t>>
+      circuitDstPortOwner;
+
   // Async acquire metadata for Phase 8.
   llvm::DenseMap<mlir::Value, AsyncAcquireInfo> asyncAcquireMap;
 

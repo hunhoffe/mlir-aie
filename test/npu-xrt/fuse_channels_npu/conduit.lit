@@ -8,13 +8,19 @@
 // and Python-harness sibling
 //   iron_operator_mlir/fusion_npu_regression/fuse_channels_smoke.py.
 //
-// Pre-pass: 4 conduits in one device on one tile (tile(0,2)) — `@ext_in_a`
-// and `@ext_in_d` produced by shim, `@inter` self-loop on tile(0,2),
-// `@ext_out` produced by tile(0,2) to shim.  Add → Mul chain inside one
-// core's body block (Add: ext_in_a + 1.0 → inter; Mul: inter * ext_in_d →
-// ext_out), sequenced so the two PRODUCER-side conduits on tile(0,2) —
-// `@inter` and `@ext_out` — have non-overlapping live windows in the same
-// parent block.  After `--conduit-fuse-channels` (injected by `--conduit-
+// SCOPE NOTE (post-#99 closure, 2026-05-01): HW coverage here is the
+// @inter / @ext_out producer-side fold ONLY (single shim input + single
+// shim output, with one self-loop intermediate).  The earlier two-shim-
+// input shape (consumer-side S2MM fold) was migrated to pure-lit pin
+//   test/Dialect/Conduit/passc_dup_dst_feasibility_error.mlir
+// because it now trips Pass C's duplicate-dst feasibility check (#99).
+//
+// Pre-pass: 3 conduits in one device on one tile (tile(0,2)) — `@ext_in_a`
+// produced by shim, `@inter` self-loop on tile(0,2), `@ext_out` produced
+// by tile(0,2) to shim.  Add → Mul chain inside one core's body block
+// (Add: ext_in_a + 1.0 → inter; Mul: inter * 2.0 → ext_out), sequenced
+// so the two PRODUCER-side conduits on tile(0,2) — `@inter` and
+// `@ext_out` — have non-overlapping live windows in the same parent block.  After `--conduit-fuse-channels` (injected by `--conduit-
 // fuse-channels-flag`, see `aiecc.cpp:1515`) those two producer-side
 // conduits are stamped with matching `dma_channel_group="groupN"` and
 // `fuse_mode="static"` annotations.  Pass C downstream consumes the
@@ -32,8 +38,8 @@
 // window-disjointness) discovered automatically.
 //
 // PASS expectation: every dispatch (4 invocations) completes; output bytes
-// match reference computed by test.cpp (out[j] = (in_a[j]+1.0)*in_d[j],
-// in_a[j] = (j%16), in_d[j] = 2.0 — equivalent to (j%16+1)*2).  Because
+// match reference computed by test.cpp (out[j] = (in_a[j]+1.0)*2.0,
+// in_a[j] = (j%16) — equivalent to (j%16+1)*2).  Because
 // fuse-channels is annotation-only, output MUST also be byte-identical to
 // a bare `--use-conduit` pipeline (no fuse-channels flag) on the same IR;
 // any divergence is a Pass C consumer-side bug surfaced by the grouping

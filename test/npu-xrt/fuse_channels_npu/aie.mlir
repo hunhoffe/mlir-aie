@@ -14,6 +14,18 @@
 // and Python-harness sibling
 //   iron_operator_mlir/fusion_npu_regression/fuse_channels_smoke.py.
 //
+// SCOPE NOTE (post-#99 closure, 2026-05-01): this fixture's HW coverage is
+// the @inter / @ext_out producer-side fold ONLY (single shim input + single
+// shim output, with one self-loop intermediate).  The earlier two-shim-input
+// shape (@ext_in_a + @ext_in_d both shim→tile(0,2)) was migrated to the
+// pure-lit pin
+//   test/Dialect/Conduit/passc_dup_dst_feasibility_error.mlir
+// because its consumer-side S2MM fold tripped Pass C's new duplicate-dst
+// feasibility check (#99) — the two shim-MM2S sources colliding at the same
+// (tile(0,2), DMA:0) S2MM port now error at Pass C, before HW.  Pure-lit
+// pin covers that error path; this HW smoke covers the producer-side fold
+// that still lowers cleanly.
+//
 // The fuse-channels pass is ANNOTATION-ONLY: it walks producer-side conduits
 // on the same tile that occupy non-overlapping windows in the same basic
 // block, stamps `dma_channel_group="groupN"` + `fuse_mode="static"` on each
@@ -31,8 +43,8 @@
 // compute/release sections:
 //   * Add section:  acquire @ext_in_a (Consume), acquire @inter (Produce),
 //                   inline `add 1.0`, release both.
-//   * Mul section:  acquire @inter (Consume), acquire @ext_in_d (Consume),
-//                   acquire @ext_out (Produce), inline `multiply`, release.
+//   * Mul section:  acquire @inter (Consume), acquire @ext_out (Produce),
+//                   inline `multiply by 2.0`, release.
 // The two PRODUCE-side conduits on tile(0,2) — `@inter` and `@ext_out` —
 // are the fuse-channels candidates: same producer tile, same parent block,
 // disjoint live windows (Add's `@inter` release happens before Mul's
@@ -53,7 +65,7 @@
 // self-contained — no peano/chess link step required.
 //
 // Reference (test.cpp computes this):
-//   in_a[j] = (j % 16),  in_d[j] = 2.0,  out[j] = (in_a[j] + 1.0) * in_d[j].
+//   in_a[j] = (j % 16),  out[j] = (in_a[j] + 1.0) * 2.0.
 // Choice keeps every value bf16-exact: max value (15+1)*2 = 32 ≤ 256, and
 // integers in [0, 256) are exact in bf16.
 //
@@ -62,24 +74,20 @@
 // fuse_channels_smoke.py docstring) are detailed in conduit.lit header.
 
 module {
-  // One device, one compute tile, four conduits.  The two producer-side
+  // One device, one compute tile, three conduits.  The two producer-side
   // conduits ON tile(0,2) — @inter and @ext_out — are the fuse-channels
-  // grouping candidates.  @ext_in_a and @ext_in_d are produced by the shim
-  // (different tile), so they are not part of this group.
+  // grouping candidates.  @ext_in_a is produced by the shim (different tile),
+  // so it is not part of this group.
   aie.device(NPUDEVICE) {
 
     %shim = aie.tile(0, 0)
     %tile = aie.tile(0, 2)
 
-    // Inputs from shim (consumer-side on tile(0,2)):
+    // Input from shim (consumer-side on tile(0,2)):
     // Depth=1 per fuse-channels' Tier-3-depth=1 design intent (commit
     // 14eb385272: depth>1 + Tier 3 puts/gets is declined by the pass +
-    // would violate BD-ring ordering when chained).  Pre-fix this
-    // fixture used depth=2, surfaced a separate latent Pass C bug with
-    // multi-S2MM-on-one-tile that's tracked in a separate lit pin.
+    // would violate BD-ring ordering when chained).
     aie.objectfifo @ext_in_a (%shim, {%tile}, 1 : i32)
-        : !aie.objectfifo<memref<64xbf16>>
-    aie.objectfifo @ext_in_d (%shim, {%tile}, 1 : i32)
         : !aie.objectfifo<memref<64xbf16>>
 
     // Intermediate self-loop on tile(0,2) — Add produces, Mul consumes.
@@ -98,6 +106,7 @@ module {
       %c64  = arith.constant 64 : index
       %cmax = arith.constant 0xFFFFFE : index
       %cone = arith.constant 1.0 : bf16
+      %ctwo = arith.constant 2.0 : bf16
       scf.for %niter = %c0 to %cmax step %c1 {
 
         // ---- Add section: ext_in_a + 1.0 -> inter ----
@@ -120,7 +129,7 @@ module {
         aie.objectfifo.release @inter     (Produce, 1)
         aie.objectfifo.release @ext_in_a  (Consume, 1)
 
-        // ---- Mul section: inter * ext_in_d -> ext_out ----
+        // ---- Mul section: inter * 2.0 -> ext_out ----
         // Sequential after Add section's releases, so @inter (consume side)
         // and @ext_out (produce side) windows are disjoint from the
         // preceding @inter (produce side) window — fuse-channels eligibility
@@ -130,11 +139,6 @@ module {
         %elem_int_c = aie.objectfifo.subview.access %sv_int_c[0]
             : !aie.objectfifosubview<memref<64xbf16>> -> memref<64xbf16>
 
-        %sv_d = aie.objectfifo.acquire @ext_in_d (Consume, 1)
-            : !aie.objectfifosubview<memref<64xbf16>>
-        %elem_d = aie.objectfifo.subview.access %sv_d[0]
-            : !aie.objectfifosubview<memref<64xbf16>> -> memref<64xbf16>
-
         %sv_o = aie.objectfifo.acquire @ext_out (Produce, 1)
             : !aie.objectfifosubview<memref<64xbf16>>
         %elem_o = aie.objectfifo.subview.access %sv_o[0]
@@ -142,31 +146,23 @@ module {
 
         scf.for %j = %c0 to %c64 step %c1 {
           %vi = memref.load %elem_int_c[%j] : memref<64xbf16>
-          %vd = memref.load %elem_d[%j]     : memref<64xbf16>
-          %r  = arith.mulf %vi, %vd         : bf16
+          %r  = arith.mulf %vi, %ctwo       : bf16
           memref.store %r, %elem_o[%j]      : memref<64xbf16>
         }
 
         aie.objectfifo.release @ext_out   (Produce, 1)
-        aie.objectfifo.release @ext_in_d  (Consume, 1)
         aie.objectfifo.release @inter     (Consume, 1)
       }
       aie.end
     }
 
     aie.runtime_sequence @addmul_seq(%a_in  : memref<64xbf16>,
-                                     %d_in  : memref<64xbf16>,
                                      %o_out : memref<64xbf16>) {
       %ta_a = aiex.dma_configure_task_for @ext_in_a {
         aie.dma_bd(%a_in : memref<64xbf16>, 0, 64) {burst_length = 0 : i32}
         aie.end
       }
       aiex.dma_start_task(%ta_a)
-      %ta_d = aiex.dma_configure_task_for @ext_in_d {
-        aie.dma_bd(%d_in : memref<64xbf16>, 0, 64) {burst_length = 0 : i32}
-        aie.end
-      }
-      aiex.dma_start_task(%ta_d)
       %ta_o = aiex.dma_configure_task_for @ext_out {
         aie.dma_bd(%o_out : memref<64xbf16>, 0, 64) {burst_length = 0 : i32}
         aie.end
@@ -174,7 +170,6 @@ module {
       aiex.dma_start_task(%ta_o)
       aiex.dma_await_task(%ta_o)
       aiex.dma_free_task(%ta_a)
-      aiex.dma_free_task(%ta_d)
     }
   }
 }

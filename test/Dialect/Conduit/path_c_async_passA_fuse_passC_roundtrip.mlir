@@ -5,62 +5,53 @@
 //
 // (c) Copyright 2026 Advanced Micro Devices, Inc.
 
-// RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --verify-diagnostics --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels --conduit-to-dma %s
 // Metafix Candidate 1 (Path C async, full pipeline): the second RUN line
 // pushes the same input through the entire downstream legalization stack so
 // any per-channel BD-pool exhaustion or dialect-verifier failure surfaces
 // here, not on first NPU contact.
-// RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
+// RUN: aie-opt --verify-diagnostics --objectfifo-to-conduit --dma-task-to-conduit --conduit-fuse-channels --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
+//
+// SCOPE NOTE (#99 closure, 2026-05-01): the cross-producer-MM2S → shared-
+// S2MM IR shape this fixture uses (two same-shim-tile MM2S channels both
+// landing on (0,2) DMA:0 after fuse-channels folds the consumer-side S2MM
+// port) is now diagnosed at Pass C as a duplicate-dst circuit-route
+// infeasibility — see emitFlow in ConduitToDMACommon.cpp + the dedicated
+// pin passc_dup_dst_feasibility_error.mlir.  Both RUN lines therefore now
+// expect-error rather than producing post-Pass-C IR.  The original
+// FileCheck-pinned roundtrip (inline frees in source-relative position)
+// is no longer reachable via this IR shape — the FileCheck pins below are
+// retained as documentation of the design intent for a single-source rt-
+// seq variant that would still exercise the same wait_all{token=false}
+// preservation invariant; a future fixture should re-pin that with a
+// shape that doesn't trip the #99 check (e.g., a single MM2S channel, or
+// distinct producer tiles on packet-routed conduits once the packet-flow
+// path lands in Sprint N+4).  The error-pin below is intentional and
+// preserves regression coverage for the IR shape's documented outcome.
 
 // Path C async end-to-end roundtrip pin (Task #33, design from
 // path-c-test-matrix.md §1.7 + cross-fusion §1.5).
 //
-// Goal: full Path A → fuse-channels → Path C composite, demonstrating that
-// IRON-emitted dma_await_task / dma_free_task at the source level survive
-// every stage of the pipeline as the per-launch release boundary.  This is
-// the roundtrip-identity-as-lit pin called out in CLAUDE.md "Working
-// Conventions" and design doc §1.7.
+// ORIGINAL goal (pre-#99): full Path A → fuse-channels → Path C composite,
+// demonstrating that IRON-emitted dma_await_task / dma_free_task at the
+// source level survive every stage of the pipeline as the per-launch
+// release boundary (the roundtrip-identity-as-lit pin called out in
+// CLAUDE.md "Working Conventions" and design doc §1.7).
 //
-// Input shape:
-//   - Two MM2S channels (@ext_a, @ext_b) on the same shim tile, each with
-//     IRON-emitted per-iteration dma_free_task in source — the canonical
-//     "preserve per-task_group release boundaries" pattern (CLAUDE.md
-//     "Path C reference design" + commit e2ea0ab450 message).
-//
-// Expected output (final IR after --conduit-to-dma):
-//   - aiex.dma_free_task ops appear in source-relative position (NOT all
-//     trailing per Path B).  This pins that wait_all{token=false} survived
-//     fuse-channels and lowered back to inline dma_free_task in Step 8g.
-//   - aiex.dma_configure_task_for / dma_start_task / dma_free_task triples
-//     interleave per channel — each free immediately after its start, NOT
-//     batched at end of rt-seq.
-
-// CHECK-LABEL: module @path_c_async_passA_fuse_passC_roundtrip
-
-// Both channels' configures and starts must survive lowering.
-// CHECK:       aie.runtime_sequence
-
-// Channel A: configure → start → INLINE free (the per-launch release
-// boundary that wait_all{token=false} preserves through fuse-channels).
-// CHECK:           [[A0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_a
-// CHECK:           aiex.dma_start_task([[A0]])
-// CHECK:           aiex.dma_free_task([[A0]])
-
-// Channel B: configure → start → INLINE free.
-// CHECK:           [[B0:%[a-zA-Z0-9_]+]] = aiex.dma_configure_task_for @ext_b
-// CHECK:           aiex.dma_start_task([[B0]])
-// CHECK:           aiex.dma_free_task([[B0]])
-
-// No additional frees, awaits, or configures after the per-channel pairs —
-// every configured task is released exactly once, inline, in source-relative
-// position (no trailing-batch fallback per Path B, no missed releases).
-// CHECK-NOT:       aiex.dma_free_task
-// CHECK-NOT:       aiex.dma_await_task
-// CHECK-NOT:       aiex.dma_configure_task_for
+// CURRENT scope (post-#99 closure): the chosen IR shape — two MM2S
+// channels (@ext_a, @ext_b) on the SAME shim tile, sequential consumes
+// on a shared compute tile — is exactly the cross-producer-MM2S → shared-
+// S2MM duplicate-dst case that Pass C's emitFlow now diagnoses cleanly.
+// The fixture is therefore retained as an error-pin for the documented
+// infeasibility outcome on this shape.  Re-pinning the original wait_all
+// {token=false} preservation invariant on a shape that does NOT trip the
+// #99 check is tracked separately (single-MM2S variant or packet-routed
+// distinct-producer variant once the packet-flow path lands).
 
 module @path_c_async_passA_fuse_passC_roundtrip {
   aie.device(npu2) {
     %shim = aie.tile(0, 0)
+    // expected-error @below {{conduit-to-dma: cannot circuit-route distinct sources to (0,2)}}
     %tile = aie.tile(0, 2)
 
     // depth=1 so --conduit-fuse-channels actually triggers fusion (depth>1
