@@ -346,6 +346,12 @@ static cl::opt<bool> conduitFuseChannels(
         "With --use-conduit, inject --conduit-fuse-channels (relay fusion)"),
     cl::init(false), cl::cat(aieCompilerOptions));
 
+static cl::opt<bool> conduitFuseRelay(
+    "conduit-fuse-relay-flag",
+    cl::desc("With --use-conduit, inject --conduit-fuse-relay "
+             "(gather/scatter relay fusion)"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
                                     cl::init(false),
@@ -1514,6 +1520,8 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
       conduitPipeline += ",conduit-fuse-operators";
     if (conduitFuseChannels)
       conduitPipeline += ",conduit-fuse-channels";
+    if (conduitFuseRelay)
+      conduitPipeline += ",conduit-fuse-relay";
     conduitPipeline += ",conduit-depth-promote,conduit-to-dma";
     if (verbose) {
       llvm::outs() << "Conduit pipeline: " << conduitPipeline << "\n";
