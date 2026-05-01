@@ -96,8 +96,9 @@ bool tryCollapsePuts(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
-  // Existing dma_repeat must be unset or equal 1. Refuse to multiply.
-  if (getDmaRepeatOr1(createOp) != 1)
+  // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
+  // Refuse to multiply.  0-indexed convention per Bug #98 / Task #39.
+  if (getDmaRepeatOr0(createOp) != 0)
     return false;
 
   // HW-cap check: refuse collapse if N exceeds EITHER the producer-tile
@@ -135,11 +136,19 @@ bool tryCollapsePuts(Create createOp, PatternRewriter &rewriter) {
     rewriter.eraseOp(puts[i]);
   }
 
-  // Set dma_repeat = N on the create. The mutation must happen inside the
-  // modifyOpInPlace callback so the rewriter notifies the driver correctly.
+  // Stamp dma_repeat = N - 1 on the create (0-indexed convention; Bug #98 /
+  // Task #39).  IRON's convention (aiex.py:289-291) is "repeat_count =
+  // sizes[0] - 1" = "additional fires beyond the initial one"; canon must
+  // match so Pass C's verbatim surface to configure_task.repeat_count
+  // (ConduitToDMALower.cpp:1356-1359) yields the right firmware fire count
+  // (`value + 1` per AIEDmaToNpu.cpp:180-183).  N >= 2 is guaranteed by
+  // the `puts.size() < 2 → return false` early-out above, so N - 1 >= 1
+  // and we never stamp a no-op `dma_repeat = 0`.  The mutation must
+  // happen inside the modifyOpInPlace callback so the rewriter notifies
+  // the driver correctly.
   rewriter.modifyOpInPlace(createOp, [&] {
     Builder b(createOp.getContext());
-    createOp.setDmaRepeatAttr(b.getI64IntegerAttr(N));
+    createOp.setDmaRepeatAttr(b.getI64IntegerAttr(N - 1));
   });
   return true;
 }
@@ -194,7 +203,9 @@ bool tryCollapseGets(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
-  if (getDmaRepeatOr1(createOp) != 1)
+  // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
+  // 0-indexed convention per Bug #98 / Task #39.
+  if (getDmaRepeatOr0(createOp) != 0)
     return false;
 
   int64_t N = static_cast<int64_t>(gets.size());
@@ -224,9 +235,12 @@ bool tryCollapseGets(Create createOp, PatternRewriter &rewriter) {
     rewriter.eraseOp(gets[i]);
   }
 
+  // Stamp dma_repeat = N - 1 on the create (0-indexed convention; symmetric
+  // to tryCollapsePuts above; see Bug #98 / Task #39).  N >= 2 guaranteed
+  // by the `gets.size() < 2 → return false` early-out so N - 1 >= 1.
   rewriter.modifyOpInPlace(createOp, [&] {
     Builder b(createOp.getContext());
-    createOp.setDmaRepeatAttr(b.getI64IntegerAttr(N));
+    createOp.setDmaRepeatAttr(b.getI64IntegerAttr(N - 1));
   });
   return true;
 }

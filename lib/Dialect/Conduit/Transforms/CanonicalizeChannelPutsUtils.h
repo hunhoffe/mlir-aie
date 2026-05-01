@@ -35,8 +35,17 @@ class Operation;
 
 namespace xilinx::conduit::detail {
 
-// Read the optional channel-level dma_repeat as int64.  Absent → 1.
-int64_t getDmaRepeatOr1(::xilinx::conduit::Create createOp);
+// Read the optional channel-level dma_repeat as int64.  Absent → 0.
+//
+// Convention (USER-LOCKED 2026-05-01 via Task #39 / Bug #98): dma_repeat is
+// 0-INDEXED — the field encodes "additional fires beyond the initial one,"
+// matching IRON's `aiex.dma_configure_task_for.repeat_count` semantic
+// (see `aiex.py:289-291` where IRON sets `repeat_count = sizes[0] - 1`).
+// Total fires = 1 + dma_repeat.  Absent attribute = 0 = single fire (the
+// default DMA dispatch).  Pass C surfaces dma_repeat verbatim onto
+// configure_task.repeat_count, which firmware reads as "BD fires value+1
+// times" via NpuPushQueueOp (AIEDmaToNpu.cpp:180-183).
+int64_t getDmaRepeatOr0(::xilinx::conduit::Create createOp);
 
 // Returns true iff two PutMemrefAsync ops are structurally identical for the
 // purpose of loop-unroll collapse.

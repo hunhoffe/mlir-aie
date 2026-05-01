@@ -1,40 +1,40 @@
 // RUN: aie-opt --conduit-canonicalize-channel-puts %s | FileCheck %s
 //
-// Pin the basic collapse behavior of --conduit-canonicalize-channel-puts:
-//   * 4 structurally-identical conduit.put_memref_async ops on @chan with
-//     matching wait_all{token=true} await + wait_all{token=false} free chains
-//     → collapsed to 1 put + 1 await + 1 free
-//   * conduit.create @chan gains dma_repeat = 3 (0-indexed convention;
-//     "additional fires beyond the initial one" → total fires = 4).  See
-//     `CanonicalizeChannelPutsUtils.h::getDmaRepeatOr0` + Bug #98 / Task #39
-//     + IRON's matching aiex.py:289-291 (`repeat_count = sizes[0] - 1`).
+// Bug #98 / Task #39 pin: `--conduit-canonicalize-channel-puts` stamps
+// `dma_repeat` using the 0-INDEXED convention ("additional fires beyond
+// the initial one" → total fires = dma_repeat + 1).  This matches IRON's
+// `aiex.dma_configure_task_for.repeat_count` semantic (aiex.py:289-291,
+// `repeat_count = sizes[0] - 1`) so Pass C's verbatim surface to
+// `configure_task.repeat_count` (ConduitToDMALower.cpp:1356-1359) yields
+// the correct firmware fire count (`value + 1` per
+// AIEDmaToNpu.cpp:180-183).
 //
-// This is the canonical IRON `for batch in range(4)` shape that the IRON
-// `task_group` / `finish_task_group` lowering produces after the upstream
-// --dma-task-to-conduit pass round-trips it into Conduit IR.
+// Before #98: canon stamped `dma_repeat = N` (1-indexed = "fire N
+// times"), Pass C surfaced verbatim → firmware fired N+1 times = over-fire
+// by 1.  Masked by canon NPU smokes' separate structural bug (wrap-in-BD
+// vs N dispatches), but real Llama-scale risk.
 //
 // Geometry: shim(0,0) producer → compute(0,2) consumer, depth=2,
-//           memref<16xi32>, 4 host dispatches.
+//           memref<16xi32>, 4 host dispatches → canon stamps
+//           dma_repeat = 3 (= 4 total fires).
+//
+// Companion fixture `canonicalize_channel_puts/homogeneous_repeat_collapse.mlir`
+// pins the surrounding collapse semantics (single surviving put + chain
+// preservation) and is updated to pin `dma_repeat = 3` post-#98.  This
+// fixture's role is to be the named-by-the-fix lit-pin so future
+// convention drift is caught at this exact site.
 
 // CHECK-LABEL: aie.device(npu1)
 
 // CHECK: conduit.create @chan
 // CHECK-SAME: dma_repeat = 3
 
-// Exactly one surviving put_memref_async on @chan.
+// Exactly one surviving put_memref_async on @chan (collapse worked).
 // CHECK: conduit.put_memref_async
 // CHECK-SAME: name = @chan
 // CHECK-NOT: conduit.put_memref_async{{.*}}name = @chan
 
-// One await + one free on the surviving token; canon kept the matched pair.
-// The await keeps the put[0] release-marker semantic (token defaults to true,
-// printer omits the attr when default per Conduit.td:994
-// DefaultValuedOptionalAttr<BoolAttr, "true">).  The free is explicit
-// {token = false}.
-// CHECK: conduit.wait_all %{{[^ ]+}} : !conduit.dma.token
-// CHECK-NEXT: conduit.wait_all %{{[^ ]+}} {token = false} : !conduit.dma.token
-
-module @conduit_canonicalize_loop_unroll_puts_collapse {
+module @canon_homogeneous_repeat_zero_indexed {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
@@ -62,7 +62,8 @@ module @conduit_canonicalize_loop_unroll_puts_collapse {
     } {dynamic_objfifo_lowering = true}
 
     func.func @sequence(%arg0: memref<16xi32>) {
-      // 4 IRON-pattern identical puts, each with await + free.
+      // 4 IRON-pattern identical puts.  Canon collapses to:
+      //   1 surviving put + dma_repeat = 3 (= 4 total fires).
       %t0 = conduit.put_memref_async {name = @chan, num_elems = 16 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 16>,
             strides = array<i64: 1>} : !conduit.dma.token

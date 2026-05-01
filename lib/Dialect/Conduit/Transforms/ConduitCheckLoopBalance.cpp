@@ -103,16 +103,19 @@ struct ConduitCheckLoopBalancePass
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
 
-    // Build a map from channel name → total DMA send count (dma_repeat only).
-    // dma_repeat=N means the DMA fires exactly N times total.  bd_repeat
-    // is a per-BD unroll factor and is NOT the total send count; it is not
-    // checked here.  Only channels with dma_repeat set are candidates.
-    // ODS generates std::optional<uint64_t> for I64Attr optional accessors.
+    // Build a map from channel name → total DMA send count.  dma_repeat
+    // is 0-indexed (= "additional fires beyond the initial one"; see
+    // CanonicalizeChannelPutsUtils.h::getDmaRepeatOr0 + Bug #98 / Task #39),
+    // so total fires = dma_repeat + 1.  bd_repeat is a per-BD unroll factor
+    // and is NOT the total send count; it is not checked here.  Only
+    // channels with dma_repeat set are candidates.  ODS generates
+    // std::optional<uint64_t> for I64Attr optional accessors.
     llvm::StringMap<int64_t> channelDmaRepeat;
 
     module.walk([&](Create createOp) {
       if (auto ic = createOp.getDmaRepeat())
-        channelDmaRepeat[createOp.getSymName()] = static_cast<int64_t>(*ic);
+        channelDmaRepeat[createOp.getSymName()] =
+            static_cast<int64_t>(*ic) + 1;
     });
 
     if (channelDmaRepeat.empty())
@@ -132,7 +135,9 @@ struct ConduitCheckLoopBalancePass
       if (it == channelDmaRepeat.end())
         return; // channel has no dma_repeat — skip
 
-      int64_t dmaRepeat = it->second;
+      // `totalFires` = dma_repeat + 1 (0-indexed convention; see map-build
+      // comment above).  Compare loop trip count against total fires.
+      int64_t totalFires = it->second;
 
       // Walk upward to find an enclosing scf.for.
       mlir::scf::ForOp forOp = findEnclosingForOp(acqOp);
@@ -143,17 +148,18 @@ struct ConduitCheckLoopBalancePass
       if (tripCount < 0)
         return; // dynamic bounds — cannot check statically
 
-      if (tripCount > dmaRepeat) {
+      if (tripCount > totalFires) {
         // Find the conduit.create to attach the warning to the declaration.
         module.walk([&](Create createOp) {
           if (createOp.getSymName() != chanName)
             return;
           createOp.emitWarning()
               << "conduit-check-loop-balance: channel '@" << chanName
-              << "' has dma_repeat " << dmaRepeat
-              << " (total DMA sends) but consumer acquire is inside a loop"
+              << "' fires " << totalFires
+              << " total DMA sends (dma_repeat = " << (totalFires - 1)
+              << ", 0-indexed) but consumer acquire is inside a loop"
               << " with trip count " << tripCount
-              << " — consumer will stall after " << dmaRepeat
+              << " — consumer will stall after " << totalFires
               << " iterations (token deficit)";
         });
       }

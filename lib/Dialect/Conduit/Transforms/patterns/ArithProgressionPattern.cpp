@@ -235,8 +235,9 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
-  // Existing dma_repeat must be unset or 1.
-  if (getDmaRepeatOr1(createOp) != 1)
+  // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
+  // 0-indexed convention per Bug #98 / Task #39.
+  if (getDmaRepeatOr0(createOp) != 0)
     return false;
 
   // Arith-progression on offsets[0]: offsets[i][0] == base + i × stride.
@@ -415,7 +416,9 @@ bool tryCollapseArithGets(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
-  if (getDmaRepeatOr1(createOp) != 1)
+  // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
+  // 0-indexed convention per Bug #98 / Task #39.
+  if (getDmaRepeatOr0(createOp) != 0)
     return false;
 
   ArrayRef<int64_t> firstOff = ref.getOffsetsAttr().asArrayRef();

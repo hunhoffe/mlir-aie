@@ -214,22 +214,28 @@ mlir::LogicalResult expandOne(Create createOp, mlir::OpBuilder &builder) {
 
   // Detect canonical form via mutually-exclusive markers ("two encodings,
   // two paths" — mirrors stateful's repeat_count vs dimensions split):
-  //   - Homogeneous repeat:  conduit.create has dma_repeat = N (> 1);
-  //     producer/consumer_dimensions untouched.  Pass C reads dma_repeat
-  //     into DMAStartOp::repeat_count (Link.cpp:1807, 1901, 2356).
+  //   - Homogeneous repeat:  conduit.create has dma_repeat > 0
+  //     ("additional fires beyond 1" — 0-indexed, per Bug #98 / Task #39);
+  //     producer/consumer_dimensions untouched.  Total fires = dma_repeat
+  //     + 1.  Pass C surfaces dma_repeat verbatim onto
+  //     configure_task.repeat_count (ConduitToDMALower.cpp:1356-1359);
+  //     firmware fires `value + 1` times (AIEDmaToNpu.cpp:180-183).
   //   - Arith-progression:   surviving op's leading BDDimLayoutAttr has
   //     size > 1 AND stride != 0; dma_repeat ABSENT.  Pass C reads the
   //     outer dim as in-BD TAP wrap+stride.
-  // Setting BOTH on one channel double-multiplies transfers (N × N), so
-  // canon stamps only one marker per channel — expand detects which.
+  // Setting BOTH on one channel double-multiplies transfers, so canon
+  // stamps only one marker per channel — expand detects which.
   // Detection order: dma_repeat first (homogeneous wins on ambiguous IR);
-  // arith only fires when dma_repeat is absent/1.
+  // arith only fires when dma_repeat is absent.
   bool isArith = false;
-  int64_t N = detail::getDmaRepeatOr1(createOp);
+  int64_t additional = detail::getDmaRepeatOr0(createOp);
+  int64_t N = 0;
   int64_t base = 0;
   int64_t stride = 0;
-  if (N > 1) {
-    // Homogeneous form: replicate N copies at identical offsets.
+  if (additional > 0) {
+    // Homogeneous form: replicate (additional + 1) total copies at
+    // identical offsets.  N = total fires = additional + 1.
+    N = additional + 1;
   } else if (AIE::BDDimLayoutAttr lead =
                  Traits::leadingDim(Traits::getOpDims(origOp))) {
     if (lead.getSize() > 1 && lead.getStride() != 0) {

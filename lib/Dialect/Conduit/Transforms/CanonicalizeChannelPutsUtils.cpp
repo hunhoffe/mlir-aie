@@ -52,10 +52,19 @@ bool optionalAttrEq(Attribute a, Attribute b) {
 
 namespace xilinx::conduit::detail {
 
-int64_t getDmaRepeatOr1(Create createOp) {
+int64_t getDmaRepeatOr0(Create createOp) {
+  // 0-indexed convention (Bug #98 / Task #39): dma_repeat encodes
+  // "additional fires beyond the initial one."  Absent attribute = 0 =
+  // single fire.  Pass A's IRON path stamps via
+  // ConduitDmaTaskToConduit.cpp:511 with the value IRON computed as
+  // `sizes[0] - 1` per aiex.py:289-291; canon's HomogeneousRepeatPattern
+  // stamps `N - 1` for N collapsed puts; Pass C surfaces the value
+  // verbatim onto configure_task.repeat_count → firmware fires
+  // `value + 1` times (AIEDmaToNpu.cpp:180-183 packs verbatim into the
+  // NPU push-queue command word).
   if (auto rep = createOp.getDmaRepeat())
     return static_cast<int64_t>(*rep);
-  return 1;
+  return 0;
 }
 
 bool putsAreStructurallyIdentical(PutMemrefAsync a, PutMemrefAsync b) {
@@ -210,7 +219,9 @@ int64_t getEffectivePutCount(Create channel) {
     if (p.getName() == name)
       ++raw;
   });
-  return raw * detail::getDmaRepeatOr1(channel);
+  // dma_repeat is 0-indexed ("additional fires"); total fires = 1 + value.
+  // See getDmaRepeatOr0 docstring.  Bug #98 / Task #39.
+  return raw * (1 + detail::getDmaRepeatOr0(channel));
 }
 
 int64_t getEffectiveGetCount(Create channel) {
@@ -227,7 +238,9 @@ int64_t getEffectiveGetCount(Create channel) {
     if (g.getName() == name)
       ++raw;
   });
-  return raw * detail::getDmaRepeatOr1(channel);
+  // dma_repeat is 0-indexed ("additional fires"); total fires = 1 + value.
+  // See getDmaRepeatOr0 docstring.  Bug #98 / Task #39.
+  return raw * (1 + detail::getDmaRepeatOr0(channel));
 }
 
 } // namespace xilinx::conduit
