@@ -17,6 +17,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ConduitToDMACommon.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 
 namespace xilinx::conduit {
 
@@ -446,6 +447,41 @@ void collectPhase(ConduitToDMAState &state) {
     // AcquireAsync is always consumer-side.
     std::string qname = state.makeConduitKey(acqOp.getName(), acqOp);
     state.conduitNamesWithConsumerAcquire.insert(qname);
+  });
+
+  // Discriminator for nConsumerBuffers() temporal-mux override:
+  // set consumerGetsInLoop = true when ANY consumer-side op
+  // (get_memref_async, acquire(Consume), acquire_async) has a
+  // LoopLikeOpInterface ancestor.  Used by the helper to distinguish:
+  //   - Straight-line gets (each put = distinct concurrent output, needs
+  //     putCount slots — temporal mux pattern)
+  //   - In-loop gets (CSDF/SDF iteration reusing depth-many slots — must
+  //     stay depth-sized regardless of putCount)
+  module.walk([&](GetMemrefAsync op) {
+    if (op->getParentOfType<mlir::LoopLikeOpInterface>()) {
+      std::string key = state.makeConduitKey(op.getName(), op);
+      auto it = state.conduitMap.find(key);
+      if (it != state.conduitMap.end())
+        it->second.consumerGetsInLoop = true;
+    }
+  });
+  module.walk([&](Acquire acqOp) {
+    if (acqOp.getPort() != Port::Consume)
+      return;
+    if (acqOp->getParentOfType<mlir::LoopLikeOpInterface>()) {
+      std::string key = state.makeConduitKey(acqOp.getName(), acqOp);
+      auto it = state.conduitMap.find(key);
+      if (it != state.conduitMap.end())
+        it->second.consumerGetsInLoop = true;
+    }
+  });
+  module.walk([&](AcquireAsync acqOp) {
+    if (acqOp->getParentOfType<mlir::LoopLikeOpInterface>()) {
+      std::string key = state.makeConduitKey(acqOp.getName(), acqOp);
+      auto it = state.conduitMap.find(key);
+      if (it != state.conduitMap.end())
+        it->second.consumerGetsInLoop = true;
+    }
   });
 
   // -----------------------------------------------------------------------

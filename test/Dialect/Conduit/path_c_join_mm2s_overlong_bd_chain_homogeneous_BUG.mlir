@@ -79,6 +79,17 @@
 //
 // (See companion `..._heterogeneous_BUG.mlir` — canon refuses on
 // non-identical puts, so that variant pins the cap-helper need; Task #15.)
+//
+// Sprint N+2 Tier 0 status (2026-04-30):
+//   Tier 0 only adds a loop-context discriminator to nConsumerBuffers() in
+//   ConduitToDMACommon.h — fixes Case A consumer S2MM (op7/op11 GEMV) by
+//   suppressing the putCount override when consumer gets are inside a loop.
+//   Join MM2S is the gather-source PRODUCER side; @joinA's downstream
+//   consumer (memtile relay tile) has no consumer-side conduit ops at all
+//   (consumerGetsInLoop = false), so the override still fires →
+//   nConsumerBuffers() = 17 → BD chain length 17 > 16 cap.  Tier 0 does
+//   NOT fix this BUG pin.  Flip → `_canonical.mlir` only after canon
+//   collapse lands in the Pass C pre-pipeline.
 
 module @path_c_join_mm2s_overlong_bd_chain_homogeneous {
   // expected-error@+1 {{conduit-to-dma: BD chain length}}

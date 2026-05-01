@@ -184,12 +184,25 @@ struct ConduitInfo {
   std::string fuseGroupS2MM;
 
   // Number of put_memref_async ops referencing this channel, inferred by
-  // collectPhase.  When putCount > 1 and dmaRepeat == 0, --conduit-to-dma
-  // uses putCount as the BD chain length and emits a linear (one-shot) chain.
+  // collectPhase.  When putCount > 1 and dmaRepeat == 0 AND consumer gets
+  // are NOT inside a loop (consumerGetsInLoop == false), --conduit-to-dma
+  // uses putCount as the BD chain length and emits a linear (one-shot) chain
+  // — this is the temporal-multiplex semantics where each put feeds one of
+  // N straight-line consumer gets, each needing its own logical slot.
   // The --conduit-fuse-channels pass rewrites all non-canonical put/get ops
   // to the canonical channel name, so putCount naturally equals N for an
   // N-way temporal-multiplex group.  No explicit annotation is needed.
   int64_t putCount = 0;
+
+  // True when ANY consumer-side op (get_memref_async / acquire(Consume) /
+  // acquire_async) on this channel has a LoopLikeOpInterface ancestor.
+  // Discriminates two consumer shapes that both can have putCount > 1:
+  //   - In-loop gets (CSDF/SDF iteration): consumer reuses depth-many slots
+  //     cyclically across iterations; BD chain is depth-many circular.
+  //   - Straight-line gets (temporal mux): each put corresponds to a distinct
+  //     concurrent logical output — needs putCount slots, linear BD chain.
+  // Populated by collectPhase via getParentOfType<LoopLikeOpInterface>().
+  bool consumerGetsInLoop = false;
 
   // --- Populated by computeEffectiveDepth (within collectPhase). ---
 
@@ -305,19 +318,27 @@ struct ConduitInfo {
   // --- Helper methods ---
 
   // Compute the consumer-side buffer count for this conduit.
-  // For the sliding-window pattern (acquire_count > release_count on a paired
-  // acquire/release), extra buffer slots are needed to hold the unreleased
-  // elements while the DMA pre-fills the next slot.
-  // Formula: max(depth, maxConsumerAcquire + 1)
-  // Derivation: a K-tap sliding window needs K+1 physical buffers minimum
-  // (K held by consumer + 1 for DMA). If depth > K+1, depth is used.
-  // maxConsumerAcquire = 0 for normal SDF/CSDF (full release per step).
+  //
+  // Two cases:
+  // (1) Temporal-multiplex override: putCount > 1, dmaRepeat == 0, AND
+  //     consumer gets are STRAIGHT-LINE (not in a loop).  Each put feeds
+  //     a distinct concurrent logical output → putCount slots, linear chain.
+  //     Used by --conduit-fuse-channels temporal-mux groups (e.g. tm_count2
+  //     case in conduit_to_dma_temporal_mux.mlir).
+  // (2) Standard SDF/CSDF: max(depth, maxConsumerAcquire + 1).
+  //     For the sliding-window pattern (acquire_count > release_count on a
+  //     paired acquire/release), extra buffer slots hold the unreleased
+  //     elements while the DMA pre-fills the next slot.
+  //     Derivation: a K-tap sliding window needs K+1 physical buffers minimum
+  //     (K held by consumer + 1 for DMA). If depth > K+1, depth is used.
+  //     maxConsumerAcquire = 0 for normal SDF/CSDF (full release per step).
+  //
+  // The consumerGetsInLoop discriminator gates the override — without it,
+  // putCount-driven sizing would over-fire on in-loop CSDF iteration (e.g.
+  // op7 GEMV: 17 puts feeding gets inside scf.for, which reuse depth-many
+  // slots cyclically — would emit BD chain length 17 > 16 cap).
   int64_t nConsumerBuffers() const {
-    // Annotation-free inference: putCount > 1 with no dma_repeat means N
-    // sequential puts were merged (by --conduit-fuse-channels or by
-    // --air-channel-to-conduit's per-channel merge step). dma_repeat wins if
-    // set (ObjectFIFO task-queue loops have putCount=1).
-    if (putCount > 1 && dmaRepeat == 0)
+    if (putCount > 1 && dmaRepeat == 0 && !consumerGetsInLoop)
       return putCount;
     int64_t d = depth > 0 ? depth : 1;
     if (maxConsumerAcquire <= 0)

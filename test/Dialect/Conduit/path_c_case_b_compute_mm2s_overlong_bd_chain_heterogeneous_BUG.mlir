@@ -53,6 +53,16 @@
 //         (preferred — clearer error than the verifier), or
 //     (b) emits dma_repeat / temporal-mux equivalent that fits in the cap.
 //   Whichever (a)/(b) lands, this fixture's CHECK lines flip then.
+//
+// Sprint N+2 Tier 0 status (2026-04-30):
+//   Tier 0 only adds a loop-context discriminator to nConsumerBuffers() in
+//   ConduitToDMACommon.h so the putCount override is suppressed when
+//   consumer gets are inside a loop.  Case B is the producer side
+//   (compute MM2S) — chain length comes from caseBEffectiveBDs at Link.cpp
+//   L2038, which still over-fires when the consumer is shim/memtile with
+//   no consumer-side gets.  And canon REFUSES heterogeneous offsets, so
+//   even Tier 1's canon won't collapse this fixture.  Flip ONLY after
+//   Task #15's per-call-site cap helper lands at Case B's BD-emit sites.
 
 module @path_c_case_b_compute_mm2s_overlong_bd_chain_heterogeneous {
   // expected-error@+1 {{conduit-to-dma: BD chain length}}

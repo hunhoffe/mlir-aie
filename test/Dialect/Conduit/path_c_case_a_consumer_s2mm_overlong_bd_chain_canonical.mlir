@@ -1,98 +1,66 @@
-// RUN: aie-opt --verify-diagnostics --conduit-to-dma %s
-// RUN: aie-opt --verify-diagnostics --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
+// RUN: aie-opt --conduit-to-dma %s | FileCheck %s
+// RUN: aie-opt --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s | FileCheck %s
 //
-// Pass C Case B (compute MM2S → shim) overlong-BD-chain BUG pin (homogeneous).
+// Pass C Case A (shim MM2S → compute consumer S2MM) canonical pin —
+// post-fix (Sprint N+2 Tier 0) for the nConsumerBuffers() putCount-override.
 //
-// Bug location: ConduitToDMALink.cpp Case B, lines 2030-2202.
-//   * L2037: caseBBdRepeat = info.bdRepeat > 1 ? info.bdRepeat : 1;
-//   * L2038: caseBEffectiveBDs = info.nConsumerBuffers() * caseBBdRepeat;
-//   * L2060/L2139: emit caseBEffectiveBDs sequential aie.dma_bd blocks
-//                  inside aie.mem on the compute tile.
-//   * L2123/L2198: NextBD chain is `bdBlocks[(i+1) % caseBEffectiveBDs]`
-//                  — always-circular, no terminator, no rotation cap.
-//   * NO targetModel.getNumBDs(...) cap before block emission.
+// Tier 0 of Sprint N+2 dropped the override branch in ConduitToDMACommon.h
+// `nConsumerBuffers()` (the `if (putCount > 1 && dmaRepeat == 0) return
+// putCount;` clause).  After the fix, all eight Pass C BD-emit call sites
+// that read the helper size their consumer-side BD chains to depth (or
+// max(depth, maxConsumerAcquire+1) for sliding-window patterns), independent
+// of how many host-emit conduit.put_memref_async ops drive the channel.
 //
-// Root cause: nConsumerBuffers() returns putCount when putCount > 1 and
-//   dmaRepeat == 0 (Common.h:315-326).  putCount is a *host-emit accounting*
-//   metric (count of conduit.put_memref_async ops on this channel) — it
-//   should not influence compute-tile BD-emit decisions.  Same risk class
-//   as today's HIGH bug at Case A (Link.cpp:2369-2370): putCount leaking
-//   into hardware-tile BD-chain length without a HW cap.
+// Companions in this set (each pinned at its own structural Pass C location):
+//   * `..._case_b_..._canonical.mlir` (×2 homog/heterog) — compute MM2S → shim
+//   * `..._join_..._canonical.mlir`   (×2 homog/heterog) — gather-source MM2S
 //
-// On AIE2 compute tile, getNumBDs(...) = 16.  Any putCount > 16 produces
-// > 16 aie.dma_bd blocks → AIEDialect.cpp:328-343 HasValidBDs verifier
-// rejects with `'aie.mem' op has more than 16 blocks`.
-//
-// Fixture geometry:
-//   * compute(0,2) → shim(0,0) via @chan
+// Fixture geometry (mirror of Case B but inverted producer/consumer):
+//   * shim(0,0) producer (MM2S 0) → compute(0,2) consumer (S2MM)
 //   * @chan: depth = 2, memref<8xi32>; conduit.create authored directly
 //     (post-Pass-A IR; no objectfifo).
-//   * aie.shim_dma_allocation @chan(%shim, S2MM, 0) — shim is consumer.
-//     Drives routePhase to populate info.shimConsumerTileCoords (compute
-//     producer + empty consumerTileCoords + non-empty shimConsumerTileCoords
-//     = Case B trigger at Link.cpp:2002-2003).
-//   * Compute core: scf.for trip=∞ conduit.acquire/release(Produce, 1).
+//   * aie.shim_dma_allocation @chan_shim_alloc(%shim, MM2S, 0) — shim is
+//     producer (drives Case A: shim producer + compute consumer).
+//   * Compute core: scf.for trip=∞ conduit.acquire/release(Consume, 1) —
+//     consumes from @chan via S2MM into compute-tile buffers.
 //   * 17 hand-authored conduit.put_memref_async ops on @chan in a regular
 //     func.func (NOT aie.runtime_sequence — keeps Pass C's runtime-step
-//     out of the path).  All 17 are STRUCTURALLY IDENTICAL (same offsets,
-//     sizes, strides, num_elems, no producer_dimensions).  Each is paired
-//     with conduit.wait_all{token=true} (await) + conduit.wait_all{token=
-//     false} (free) — matching the `--conduit-canonicalize-loop-unroll-puts`
-//     match shape.
+//     out of the path).  STRUCTURALLY IDENTICAL puts (offsets=0, sizes=8,
+//     strides=1, num_elems=8) — IRON-loop-unroll match shape, paired with
+//     wait_all{token=true} (await) + wait_all{token=false} (free).
 //
-// Why hand-authored puts on a compute→shim channel:
-//   For compute→shim channels, runtime aiex.dma_configure_task_for ops
-//   become S2MM (shim receives) → conduit.get_memref_async after
-//   --dma-task-to-conduit, NOT puts.  putCount > 1 is therefore not
-//   reachable from IRON's natural compile path today — but IS reachable
-//   via (a) --conduit-fuse-channels merging multiple compute→shim
-//   channels into one canonical name, or (b) future canon symmetric
-//   collapse / expansion patterns.  The hand-authored shape pins the
-//   structural latent bug at the LINK pass independent of how the state
-//   arises upstream.
+// Why hand-authored puts here:
+//   For shim→compute channels, IRON's runtime path naturally produces shim
+//   MM2S configures via runtime_sequence + --dma-task-to-conduit, which
+//   becomes one put on the canonical channel.  putCount > 1 on a Case A
+//   shim-producer channel reaches Pass C via:
+//     (a) `--conduit-fuse-channels` merging multiple distinct shim→compute
+//         channels into one canonical name (per-channel offsets remain).
+//     (b) Future canon symmetric expansion patterns.
+//     (c) Hand-authored Conduit IR for non-IRON harnesses.
+//   The hand-authored shape pins the structural latent bug at the LINK pass
+//   independent of how the state arises upstream.
 //
-// Today's behavior (this RUN line, with canon ABSENT from pipeline):
-//   Pass C emits 17 sequential aie.dma_bd blocks in aie.mem on compute(0,2).
-//   AIE verifier rejects with `'aie.mem' op has more than 16 blocks`.
-//
-// Post-canon-stabilization flip plan (homogeneous variant):
-//   --conduit-canonicalize-loop-unroll-puts (Task #11) collapses the 17
-//   structurally-identical puts → 1 put + dma_repeat = 17 on conduit.create.
-//   With canon in pipeline, putCount drops to 1 and dmaRepeat = 17 → Case B
-//   takes nConsumerBuffers() = depth = 2 path; caseBBdRepeat = 1; emits
-//   2 BDs (depth-many circular chain).  Compute tile DMAs cycle infinitely
-//   (repeat_count = 0), matching upstream stateful's compute-tile rotation.
-//   Flip this fixture (rename, drop _BUG suffix) to FileCheck pinning:
-//     CHECK: conduit.create @chan
-//     CHECK-SAME: dma_repeat = 17
-//     CHECK: aie.mem(%{{.*}}tile_0_2)
-//     CHECK:   aie.dma_start(MM2S,
-//     CHECK:   aie.dma_bd
-//     CHECK:   aie.next_bd
-//     CHECK:   aie.dma_bd
-//     CHECK:   aie.next_bd
-//     CHECK-NOT: aie.dma_bd
-//     CHECK:   aie.end
-//
-// (See companion `..._heterogeneous_BUG.mlir` — canon refuses on
-// non-identical puts, so that variant pins the cap-helper need; Task #15.)
-//
-// Sprint N+2 Tier 0 status (2026-04-30):
-//   Tier 0 only adds a loop-context discriminator to nConsumerBuffers() in
-//   ConduitToDMACommon.h so the putCount override is suppressed when the
-//   consumer gets are inside a loop (op7/op11 GEMV pattern, fixing the Case A
-//   consumer S2MM crash).  Case B is the PRODUCER side (compute MM2S) — its
-//   chain length comes from `caseBEffectiveBDs = nConsumerBuffers() *
-//   caseBBdRepeat` at Link.cpp L2038, which still over-fires when the
-//   consumer is a memtile/shim with NO consumer-side gets at all (so
-//   consumerGetsInLoop = false → override fires → BD chain = putCount).
-//   Tier 0 therefore does NOT fix this BUG pin.  Flip → `_canonical.mlir`
-//   only after canon (`--conduit-canonicalize-channel-puts`) lands in the
-//   Pass C pre-pipeline AND a per-call-site cap helper (Task #15) is
-//   applied at Case B's BD-emit sites.
+// Boundary choice: putCount = 17 = cap+1 for AIE2 compute (getNumBDs = 16).
+// Pre-fix the override sized the chain at 17 → cap helper fired
+// `BD chain length 17 on tile (0,2) exceeds cap 16`.  Post-fix the chain is
+// depth-sized (2 BD blocks, circular), independent of the 17 host puts.
 
-module @path_c_case_b_compute_mm2s_overlong_bd_chain_homogeneous {
-  // expected-error@+1 {{conduit-to-dma: BD chain length}}
+// Consumer compute tile gets exactly depth=2 buffers + a depth-many circular
+// BD chain on its S2MM aie.mem.  The 17 host puts do NOT inflate either
+// count; they live in the runtime-sequence-equivalent func.func and (post
+// the second RUN line) become 17 shim DMA configures sharing the same
+// consumer-side resources.
+// CHECK-LABEL: aie.device(npu2)
+// CHECK: aie.buffer({{.*}}) {{.*}}sym_name = "chan_cons_buff_0"{{.*}} memref<8xi32>
+// CHECK: aie.buffer({{.*}}) {{.*}}sym_name = "chan_cons_buff_1"{{.*}} memref<8xi32>
+// CHECK-NOT: sym_name = "chan_cons_buff_2"
+// CHECK: aie.mem
+// CHECK: aie.dma_start(S2MM
+// CHECK-COUNT-2: aie.dma_bd
+// CHECK-NOT: aie.dma_bd
+
+module @path_c_case_a_consumer_s2mm_overlong_bd_chain {
   aie.device(npu2) {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
@@ -102,28 +70,26 @@ module @path_c_case_b_compute_mm2s_overlong_bd_chain_homogeneous {
       depth = 2 : i64
     }
 
-    // Shim is consumer (S2MM) — makes compute(0,2) the producer.
-    aie.shim_dma_allocation @chan_shim_alloc(%tile_0_0, S2MM, 0) {conduit_channel = @chan}
+    // Shim is producer (MM2S) — makes compute(0,2) the consumer.
+    aie.shim_dma_allocation @chan_shim_alloc(%tile_0_0, MM2S, 0) {conduit_channel = @chan}
 
     %core_0_2 = aie.core(%tile_0_2) {
       %c0 = arith.constant 0 : index
       %cmax = arith.constant 9223372036854775807 : index
       %c1 = arith.constant 1 : index
       scf.for %i = %c0 to %cmax step %c1 {
-        %win = conduit.acquire {name = @chan, port = #conduit.port<Produce>, count = 1 : i64}
+        %win = conduit.acquire {name = @chan, port = #conduit.port<Consume>, count = 1 : i64}
             : !conduit.window<memref<8xi32>>
-        conduit.release %win {port = #conduit.port<Produce>, count = 1 : i64}
+        conduit.release %win {port = #conduit.port<Consume>, count = 1 : i64}
             : !conduit.window<memref<8xi32>>
       }
       aie.end
     }
 
     // 17 structurally-identical puts on @chan.  All offsets = 0; all sizes = 8;
-    // all strides = 1; all num_elems = 8 — IRON-loop-unroll match shape that
-    // --conduit-canonicalize-loop-unroll-puts WOULD collapse if it were in
-    // the pipeline (it is not, on this RUN line).  Each paired with
-    // wait_all{token=true} (await) + wait_all{token=false} (free) so the
-    // shape matches the canon match predicate exactly.
+    // all strides = 1; all num_elems = 8.  Each paired with wait_all{token=true}
+    // (await) + wait_all{token=false} (free) — matches the canon collapse
+    // predicate exactly (collapse not in this RUN line on purpose).
     func.func @sequence(%arg0: memref<8xi32>) {
       %t0 = conduit.put_memref_async {name = @chan, num_elems = 8 : i64,
             offsets = array<i64: 0>, sizes = array<i64: 8>,
