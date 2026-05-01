@@ -314,6 +314,36 @@ struct ConduitDepthPromotePass
             continue;
       }
 
+      // Criterion 0a: same-tile depth=1 self-loop — pure shared-memory access.
+      // The core reads/writes its own tile-local buffer directly via the
+      // buffer + locks allocated in ConduitToDMAAlloc.cpp's `sameTile`
+      // carve-out (line 128).  No DMA exists; rotation has no meaning.
+      // Promoting to depth=2 would emit a useless rotation counter + 2 buffers
+      // + cf.switch with no HW-correctness benefit, and Pass C would then need
+      // to special-case the spurious rotation infrastructure again.  Mirrors
+      // --aie-objectFifo-stateful-transform's emit shape on the same input
+      // (1 buffer per conduit, lock init=1, no rotation counter; captured
+      // 2026-05-01 per CLAUDE.md USER-LOCKED 2026-04-30 capture-stateful
+      // rule).  Companion to the H4 fix in commit e3a8c0b139 which suppresses
+      // the BD-chain emit downstream in Pass C; this skip is the Layer A
+      // IR-cleanliness counterpart so the IR doesn't carry the unnecessary
+      // rotation infrastructure in the first place.  Skip silently; do not
+      // emit a remark (Llama emits many of these self-loops — remarks would
+      // be log noise).  depth==1 is implicit (the candidate set at Step 2
+      // is depth==1 only); the corresponding Pass C predicate at
+      // ConduitToDMALink.cpp:1543 spells it out explicitly.
+      {
+        auto tileIt = inferredMap.find(name);
+        if (tileIt != inferredMap.end() && tileIt->second.producerTile &&
+            tileIt->second.consumerTiles.size() == 1 &&
+            tileIt->second.shimConsumerTiles.empty()) {
+          auto [pCol, pRow] = extractCoord(tileIt->second.producerTile);
+          auto [cCol, cRow] = extractCoord(tileIt->second.consumerTiles[0]);
+          if (pCol >= 0 && pCol == cCol && pRow == cRow)
+            continue;
+        }
+      }
+
       // Criterion 1: CSDF / cyclostatic access pattern.
       if (createOp->getAttrOfType<mlir::DenseI64ArrayAttr>("access_pattern")) {
         createOp->emitRemark("conduit-depth-promote: skipping '")
