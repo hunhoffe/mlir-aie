@@ -42,6 +42,7 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
+#include "ConduitResourceModel.h"
 #include "ConduitTileInference.h"
 
 #include "mlir/IR/Builders.h"
@@ -65,20 +66,11 @@ namespace xilinx::conduit {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Constants for budget heuristics
-// ---------------------------------------------------------------------------
-
-// AIE1 has 16 locks per tile.  Each depth-2 conduit uses 2 locks (prod+cons),
-// so promoting adds 1 lock.  We refuse if the tile already uses >= this many.
-static constexpr int64_t kAIE1MaxLocksPerTile = 16;
-
-// Maximum number of BD slots per tile.  Promoting adds 1 BD per consumer.
-static constexpr int64_t kMaxBDSlotsPerTile = 16;
-
-// Memory budget per compute tile (bytes).  Promoting doubles buffer usage.
-// 32 KiB is the typical AIE tile data memory size.
-static constexpr int64_t kDefaultTileMemoryBytes = 32 * 1024;
+// Per-tile resource constants (kAIE1MaxLocksPerTile, kMaxBDSlotsPerTile,
+// kDefaultTileMemoryBytes), the inline tile-coordinate helpers tileKey /
+// extractCoord, and the estimateSingleSlotBytes helper now live in
+// ConduitResourceModel.h so future passes (Track 3 Phase 3 memory checks)
+// can reuse the same accounting.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -132,21 +124,6 @@ static bool isPassthroughAcquire(mlir::Operation *acqOp) {
     if (mlir::isa<SubviewAccess>(user))
       return false; // has a subview user — not passthrough
   return true;      // no subview users — is passthrough
-}
-
-/// Estimate single-slot buffer size in bytes from element type.
-static int64_t estimateSingleSlotBytes(mlir::Type elemType) {
-  auto mref = mlir::dyn_cast<mlir::MemRefType>(elemType);
-  if (!mref)
-    return 4; // default 4 bytes per element
-  int64_t elemBits = mref.getElementTypeBitWidth();
-  int64_t elemCount = 1;
-  for (int64_t d : mref.getShape()) {
-    if (mlir::ShapedType::isDynamic(d))
-      return 4; // can't determine statically
-    elemCount *= d;
-  }
-  return (elemBits / 8) * elemCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,74 +272,18 @@ struct ConduitDepthPromotePass
 
     // Infer tile coordinates from IR structure for budget checks.
     auto inferredMap = inferAllTiles(module);
-    auto extractCoord = [](mlir::Value tileVal) -> std::pair<int64_t, int64_t> {
-      if (auto tileOp = tileVal.getDefiningOp<AIE::TileOp>())
-        return {static_cast<int64_t>(tileOp.getCol()),
-                static_cast<int64_t>(tileOp.getRow())};
-      return {-1, -1};
-    };
 
     // Step 4: Per-tile resource counters for budget checks.
-    // key = (col, row) packed as int64_t
-    auto tileKey = [](int64_t col, int64_t row) -> int64_t {
-      return (col << 32) | (row & 0xFFFFFFFF);
-    };
-    llvm::DenseMap<int64_t, int64_t> tileLockCount;
-    llvm::DenseMap<int64_t, int64_t> tileBDCount;
-    llvm::DenseMap<int64_t, int64_t> tileMemUsed;
-
-    // Pre-populate from existing conduit.create ops using inferred tiles.
-    module.walk([&](Create op) {
-      // Cascade conduits use no buffers, locks, or BDs — skip resource
-      // counting.
-      if (auto rm = op.getRoutingMode())
-        if (*rm == RoutingMode::Cascade)
-          return;
-
-      auto depthAttr = op->getAttrOfType<mlir::IntegerAttr>("depth");
-      int64_t depth = depthAttr ? depthAttr.getInt() : 1;
-      auto elemTypeAttr = op->getAttrOfType<mlir::TypeAttr>("element_type");
-
-      // Get consumer tile coords: prefer inference, fallback to attribute
-      // for channels outside aie.core (e.g. in func.func or hand-written IR).
-      llvm::SmallVector<std::pair<int64_t, int64_t>> consCoords;
-      auto tileIt = inferredMap.find(op.getName().str());
-      if (tileIt != inferredMap.end() &&
-          !tileIt->second.consumerTiles.empty()) {
-        for (mlir::Value tv : tileIt->second.consumerTiles) {
-          auto [col, row] = extractCoord(tv);
-          if (col >= 0)
-            consCoords.push_back({col, row});
-        }
-      }
-
-      // Estimate per-consumer resources.
-      for (auto [col, row] : consCoords) {
-        int64_t key = tileKey(col, row);
-        tileLockCount[key] += 2; // prod + cons lock pair
-        tileBDCount[key] += depth;
-        if (elemTypeAttr) {
-          int64_t perSlotBytes =
-              estimateSingleSlotBytes(elemTypeAttr.getValue());
-          tileMemUsed[key] += perSlotBytes * depth;
-        }
-      }
-      // Producer tile also uses resources for non-shim.
-      std::pair<int64_t, int64_t> prodCoord = {-1, -1};
-      if (tileIt != inferredMap.end() && tileIt->second.producerTile) {
-        prodCoord = extractCoord(tileIt->second.producerTile);
-      }
-      if (prodCoord.first >= 0 && prodCoord.second != 0) { // non-shim
-        int64_t key = tileKey(prodCoord.first, prodCoord.second);
-        tileLockCount[key] += 2;
-        tileBDCount[key] += depth;
-        if (elemTypeAttr) {
-          int64_t perSlotBytes =
-              estimateSingleSlotBytes(elemTypeAttr.getValue());
-          tileMemUsed[key] += perSlotBytes * depth;
-        }
-      }
-    });
+    // tileKey, extractCoord, and the pre-walk that fills `tileLockCount`,
+    // `tileBDCount`, and `tileMemUsed` now live in ConduitResourceModel.h
+    // so future capacity-aware passes can share the same accounting.  Local
+    // references kept to minimize diff at the per-promotion update sites
+    // below (Step 5).
+    ConduitResourceModel resources;
+    populateConduitResourceModel(module, inferredMap, resources);
+    auto &tileLockCount = resources.lockCount;
+    auto &tileBDCount = resources.bdCount;
+    auto &tileMemUsed = resources.memUsed;
 
     // Detect AIE1 vs AIE2 from device op.
     bool isAIE1 = false;
