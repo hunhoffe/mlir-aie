@@ -331,10 +331,10 @@ void ConduitToDMAState::emitFlow(std::optional<RoutingMode> routingMode,
     // sources onto a shared dst via packet IDs).
     auto *dstTileOp = dstTile.getDefiningOp();
     auto *srcTileOp = srcTile.getDefiningOp();
-    auto dstKey = std::make_tuple(dstTileOp, static_cast<int>(dstBundle),
-                                  dstChan);
-    auto srcVal = std::make_tuple(srcTileOp, static_cast<int>(srcBundle),
-                                  srcChan);
+    auto dstKey =
+        std::make_tuple(dstTileOp, static_cast<int>(dstBundle), dstChan);
+    auto srcVal =
+        std::make_tuple(srcTileOp, static_cast<int>(srcBundle), srcChan);
     if (dstTileOp) {
       auto it = circuitDstPortOwner.find(dstKey);
       if (it != circuitDstPortOwner.end()) {
@@ -364,10 +364,10 @@ void ConduitToDMAState::emitFlow(std::optional<RoutingMode> routingMode,
         // it is the over-subscribed port, and both colliding flows share it).
         mlir::emitError(dstTileOp->getLoc())
             << "conduit-to-dma: cannot circuit-route distinct sources to "
-            << fmtTile(dstTileOp) << ", DMA:" << dstChan
-            << ": new source on " << fmtTile(srcTileOp)
-            << ", DMA:" << srcChan << "; already routed by source on "
-            << fmtTile(prevSrcOp) << ", DMA:" << prevSrcChan
+            << fmtTile(dstTileOp) << ", DMA:" << dstChan << ": new source on "
+            << fmtTile(srcTileOp) << ", DMA:" << srcChan
+            << "; already routed by source on " << fmtTile(prevSrcOp)
+            << ", DMA:" << prevSrcChan
             << ". Use packet routing or single-source fold.";
         passFailed = true;
         return;

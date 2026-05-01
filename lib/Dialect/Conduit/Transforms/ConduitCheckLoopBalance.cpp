@@ -114,8 +114,7 @@ struct ConduitCheckLoopBalancePass
 
     module.walk([&](Create createOp) {
       if (auto ic = createOp.getDmaRepeat())
-        channelDmaRepeat[createOp.getSymName()] =
-            static_cast<int64_t>(*ic) + 1;
+        channelDmaRepeat[createOp.getSymName()] = static_cast<int64_t>(*ic) + 1;
     });
 
     if (channelDmaRepeat.empty())

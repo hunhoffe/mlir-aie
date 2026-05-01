@@ -33,6 +33,49 @@ namespace xilinx::conduit {
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 // ---------------------------------------------------------------------------
+// Pre-pass normalization: dedupe duplicate aie.tile SSA ops per-coord.
+//
+// `aie-combine-device same-tile=true` (DeviceMergeUtils.cpp) splices bodyB's
+// non-sequence ops into bodyA without deduping `aie.tile` ops, leaving two
+// SSA ops at the same (col, row) coord (e.g., `%tile_0_2` from devA and
+// `%tile_0_2_1` from devB orphaned-into-devA).  Subsequent passes (e.g.,
+// --conduit-fuse-core-bodies, --conduit-fuse-operators) may erase one of the
+// cores while the orphan tile SSA + ops referencing it (orphan
+// aie.shim_dma_allocation, etc.) remain.
+//
+// Pass C's tileCache build (ConduitToDMACollect.cpp:328) is unconditional
+// last-writer-wins; the buffer-creation walk (ConduitToDMAAlloc.cpp:324)
+// matches cores by SSA equality, not coord equality.  When the orphan SSA
+// wins the cache, the surviving core's tile fails the SSA-equality check →
+// `coreOp = nullptr` → rotation buffer never allocated → Pass C lowering
+// emits "depth>1 buffer rotation requires a rotation counter" (#97 H(c)).
+//
+// Fix B: walk each `aie.device`, group `aie.tile` ops by (col, row), elect
+// the first-defined as canonical, RAUW + erase the orphans.  First-defined
+// matches `aie-combine-device`'s splice order (bodyA first → devA's tiles
+// first → surviving cores were originally bound to devA).  Covers both
+// compute and shim tiles uniformly (AIE::TileOp is one op type for both).
+// ---------------------------------------------------------------------------
+static void dedupeTileOps(mlir::ModuleOp module) {
+  module.walk([&](AIE::DeviceOp dev) {
+    llvm::DenseMap<std::pair<int, int>, AIE::TileOp> canonical;
+    llvm::SmallVector<AIE::TileOp> orphans;
+    dev.walk([&](AIE::TileOp tile) {
+      auto key = std::make_pair(tile.getCol(), tile.getRow());
+      auto it = canonical.find(key);
+      if (it == canonical.end()) {
+        canonical[key] = tile;
+      } else {
+        tile.getResult().replaceAllUsesWith(it->second.getResult());
+        orphans.push_back(tile);
+      }
+    });
+    for (auto t : orphans)
+      t.erase();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Post-link verification: MemTile BD parity pool check.
 //
 // AIE2 MemTiles have 48 BDs partitioned by DMA channel index parity:
@@ -238,6 +281,12 @@ struct ConduitToDMAPass : impl::ConduitToDMABase<ConduitToDMAPass> {
     state.module = module;
     state.builder = &builder;
     state.ctx = module.getContext();
+
+    // Pre-pass normalization: dedupe duplicate aie.tile SSA ops left behind
+    // by `aie-combine-device same-tile=true` (#97 Fix B).  Must run BEFORE
+    // collectPhase, which builds the (col,row) → TileOp cache that later
+    // phases query — orphan SSAs winning that cache is the H(c) root cause.
+    dedupeTileOps(module);
 
     // Phase 1-2.5: Collect conduit metadata, find device, build tile cache,
     // compute effective depths, gather link source names.
