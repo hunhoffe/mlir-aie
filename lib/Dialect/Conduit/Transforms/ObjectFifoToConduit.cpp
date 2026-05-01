@@ -1381,6 +1381,13 @@ struct ObjectFifoToConduitPass
                           builder.getDenseI64ArrayAttr(info.consumerTilesArr));
       }
 
+      // Propagate Track 3 fusion_index (i32) from the source aie.objectfifo
+      // to the lowered conduit.create. Used by --conduit-fuse-operators to
+      // pair K producers with K consumer-side inputs in a convergent merge
+      // (fan-in shape). Discardable; absent on non-convergent IR.
+      if (auto idx = op->getAttrOfType<mlir::IntegerAttr>("fusion_index"))
+        createOp->setAttr("fusion_index", idx);
+
       // Set aie_stream_port as a generic attribute for stream conduits.
       if (streamPortIt != aieStreamFifoPort.end()) {
         createOp->setAttr(

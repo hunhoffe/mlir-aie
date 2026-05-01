@@ -253,6 +253,18 @@ static bool isInputChannel(Create op,
 using detail::isForwardChainEndpoint;
 
 // ---------------------------------------------------------------------------
+// Helper: read the discardable `fusion_index : i32` attribute that Track 3
+// convergent fixtures stamp on producer/consumer channels to disambiguate K
+// producers fanning into one consumer (e.g. SwiGLU's gate=0, up=1).
+// Returns std::nullopt for 1:1 fusion IR (which does not carry fusion_index).
+// ---------------------------------------------------------------------------
+static std::optional<int64_t> getFusionIndex(Create op) {
+  if (auto attr = op->getAttrOfType<mlir::IntegerAttr>("fusion_index"))
+    return attr.getInt();
+  return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: erase shim_dma_allocation ops for a given conduit name.
 // Pass A emits aie.shim_dma_allocation with sym_name = @<name>_shim_alloc,
 // so we check for both the raw name and the _shim_alloc suffixed form.
@@ -514,10 +526,268 @@ struct ConduitFuseOperatorsPass
 
     int fuseCount = 0;
 
-    // Process consecutive device pairs (A, B).
+    // ---------------------------------------------------------------------
+    // Track 3 pre-scan: detect Q2 (mixed convergent + 1:1 fusion_groups on
+    // the same consumer device) and pre-allocate fused-channel names for
+    // convergent groups so that consumer-side IR ends up with K stable
+    // `fused_intermediate_K` names where K = `fusion_index` of each
+    // producer.  Q5 placement decisions stay inside the per-pair loop;
+    // this pre-scan only diagnoses + reserves names.
+    //
+    // A "convergent" fusion_group is one whose fusion_group symbol appears
+    // on Create ops in >= 3 distinct devices (K producers + 1 consumer,
+    // K >= 2).  A "1:1" fusion_group appears on exactly 2 devices (one
+    // producer + one consumer).  A device that participates in BOTH a
+    // convergent group AND a 1:1 group is rejected per the locked Track 3
+    // design (CLAUDE.md USER-LOCKED 2026-04-26 Q2): the placement /
+    // depth-promote interaction for that composition is not yet decided.
+    // ---------------------------------------------------------------------
+    struct FgInfo {
+      // Distinct devices that contain at least one Create with this fg,
+      // in module order.
+      llvm::SmallVector<AIE::DeviceOp> devices;
+      llvm::DenseSet<mlir::Operation *> deviceSet;
+      // fusion_index values seen on consumer-side (input) channels.
+      llvm::DenseSet<int64_t> consumerIndices;
+    };
+    llvm::StringMap<FgInfo> fgInfo;
+    for (AIE::DeviceOp d : devices) {
+      llvm::StringSet<> fgsSeenInDev;
+      d.walk([&](Create op) {
+        auto fg = op.getFusionGroup();
+        if (!fg || fg->empty())
+          return;
+        llvm::StringRef fgKey = *fg;
+        FgInfo &info = fgInfo[fgKey];
+        if (fgsSeenInDev.insert(fgKey).second) {
+          info.devices.push_back(d);
+          info.deviceSet.insert(d.getOperation());
+        }
+        if (isInputChannel(op, inferredMap)) {
+          if (auto idx = getFusionIndex(op))
+            info.consumerIndices.insert(*idx);
+        }
+      });
+    }
+
+    // Q2 detection: any device participating in BOTH a convergent fg
+    // (>=3 devices) AND a 1:1 fg (==2 devices) is rejected.
+    for (AIE::DeviceOp d : devices) {
+      llvm::SmallVector<llvm::StringRef> convergentFgs, oneToOneFgs;
+      for (auto &kv : fgInfo) {
+        if (!kv.second.deviceSet.contains(d.getOperation()))
+          continue;
+        if (kv.second.devices.size() >= 3)
+          convergentFgs.push_back(kv.first());
+        else if (kv.second.devices.size() == 2)
+          oneToOneFgs.push_back(kv.first());
+      }
+      if (!convergentFgs.empty() && !oneToOneFgs.empty()) {
+        llvm::sort(convergentFgs);
+        llvm::sort(oneToOneFgs);
+        d.emitError(
+            "conduit-fuse-operators: consumer device participates in both "
+            "convergent fusion_group \"")
+            << convergentFgs.front() << "\" and 1:1 fusion_group \""
+            << oneToOneFgs.front()
+            << "\"; mixed convergent + 1:1 fusion is out of scope";
+        signalPassFailure();
+        return;
+      }
+    }
+
+    // Pre-allocate convergent names: for each convergent fg (sorted by
+    // fg name for determinism), reserve `fused_intermediate_<base+i>`
+    // for each consumer-side fusion_index value in ascending order, and
+    // advance fuseCount past all reservations so subsequent 1:1 fusions
+    // use higher numbers (no collision).
+    llvm::StringMap<llvm::DenseMap<int64_t, std::string>> convergentNameMap;
+    {
+      llvm::SmallVector<llvm::StringRef> convFgs;
+      for (auto &kv : fgInfo)
+        if (kv.second.devices.size() >= 3)
+          convFgs.push_back(kv.first());
+      llvm::sort(convFgs);
+      for (llvm::StringRef fg : convFgs) {
+        llvm::SmallVector<int64_t> indices(fgInfo[fg].consumerIndices.begin(),
+                                           fgInfo[fg].consumerIndices.end());
+        llvm::sort(indices);
+        for (int64_t idx : indices) {
+          convergentNameMap[fg][idx] =
+              "fused_intermediate_" + std::to_string(fuseCount++);
+        }
+      }
+    }
+
+    // Build convergentDevices set ONCE.  A device is "convergent" if it
+    // participates in any convergent fusion_group (fg with >=3 devices = K
+    // producers + 1 consumer, K>=2).  Used by:
+    //   1. Element-type fallback gate at L702 — element-type matching is
+    //      meant for IR with no fusion_group annotations at all; convergent
+    //      participants always carry fg, so an empty fg-match for them
+    //      means "no valid pair" (e.g., two co-producers like devGate/devUp
+    //      in SwiGLU), not "no fg at all".  Without the gate, the fallback
+    //      mis-pairs co-producers (e.g. @inter_gate ↔ @ext_in_up because
+    //      they share element_type), destroying surviving channels and
+    //      collapsing K fused intermediates to 1.
+    //   2. classifyConvergent helper to redirect (producer, consumer)
+    //      pairing in the device-pair driver — the natural module order
+    //      [p0, p1, ..., pK-1, consumer] is NOT producer-then-consumer
+    //      adjacency for K>=2, so adjacency-based pairing is wrong.
+    llvm::DenseSet<mlir::Operation *> convergentDevices;
+    for (auto &kv : fgInfo)
+      if (kv.second.devices.size() >= 3)
+        for (AIE::DeviceOp d : kv.second.devices)
+          convergentDevices.insert(d.getOperation());
+
+    // classifyConvergent: determine devA's role in any convergent fg.
+    // Returns a tri-state via the out-params:
+    //   0 → not in any convergent fg (fall through to 1:1 / element-type
+    //       pairing with devices[i+1]).
+    //   1 → convergent CONSUMER (the device whose Creates carry fg +
+    //       fusion_index on input-side channels).  Skip this iteration —
+    //       producers will pair with the consumer when the driver reaches
+    //       them.
+    //   2 → convergent PRODUCER.  outConsumer / outConsumerIdx point at
+    //       the still-live consumer device (which may not be at i+1 in the
+    //       devices vector — for [p0, p1, consumer] the consumer is at
+    //       index i+2 when i=0).
+    // Note: after a convergent merge erases the consumer device and
+    // accumulates into the producer, the absorber inherits the consumer's
+    // unfused convergent input channels and is therefore re-classified as
+    // a CONSUMER on the next iteration — which correctly causes us to
+    // skip it and process the next producer (which then pairs with the
+    // absorber).  This implements the iterative pairwise N-way reduction.
+    auto classifyConvergent = [&](AIE::DeviceOp devA, size_t devAIdx,
+                                  AIE::DeviceOp &outConsumer,
+                                  size_t &outConsumerIdx) -> int {
+      for (auto &kv : fgInfo) {
+        if (kv.second.devices.size() < 3)
+          continue;
+        if (!kv.second.deviceSet.contains(devA.getOperation()))
+          continue;
+        // Is devA the consumer for this fg?  Consumer = device whose
+        // Creates carry fg on input-side channels with fusion_index.
+        bool devAIsConsumer = false;
+        devA.walk([&](Create op) {
+          auto opFG = op.getFusionGroup();
+          if (!opFG || *opFG != kv.first())
+            return;
+          if (isInputChannel(op, inferredMap) && getFusionIndex(op))
+            devAIsConsumer = true;
+        });
+        if (devAIsConsumer)
+          return 1;
+        // devA is a producer in this fg.  Find the consumer in the live
+        // devices vector (the original consumer may have been absorbed
+        // into a prior producer by an earlier convergent merge — in that
+        // case the absorber now carries the consumer-side input channels
+        // and is the live consumer for the next pairing).
+        for (size_t j = 0; j < devices.size(); ++j) {
+          if (j == devAIdx)
+            continue;
+          AIE::DeviceOp cand = devices[j];
+          bool candIsConsumer = false;
+          cand.walk([&](Create op) {
+            auto opFG = op.getFusionGroup();
+            if (!opFG || *opFG != kv.first())
+              return;
+            if (isInputChannel(op, inferredMap) && getFusionIndex(op))
+              candIsConsumer = true;
+          });
+          if (candIsConsumer) {
+            outConsumer = cand;
+            outConsumerIdx = j;
+            return 2;
+          }
+        }
+        // No live consumer found for this fg — convergent processing
+        // already finished (all K producers paired).  Fall through to
+        // try other fgs (devA could in principle be in multiple fgs,
+        // though Q2 disallows mixing convergent+1:1 on the same device).
+      }
+      return 0;
+    };
+
+    // Process device pairs (A, B).  Iteration is convergent-aware: when
+    // devA is a convergent producer, devB is the convergent consumer
+    // (which may not be adjacent); when devA is a convergent consumer,
+    // skip (producers will pair with us).  Otherwise (1:1 fg or
+    // element-type), devB = devices[i+1].
     for (size_t i = 0; i + 1 < devices.size(); ++i) {
       AIE::DeviceOp devA = devices[i];
       AIE::DeviceOp devB = devices[i + 1];
+      size_t devBIdx = i + 1;
+
+      // Convergent-aware devB selection.
+      {
+        AIE::DeviceOp convConsumer;
+        size_t convConsumerIdx = 0;
+        int role = classifyConvergent(devA, i, convConsumer, convConsumerIdx);
+        if (role == 1) {
+          // devA is a convergent consumer.  In the iterative pairwise
+          // reduction, after the first pair-merge the absorber inherits the
+          // consumer's unfused convergent input channels — re-classifying
+          // it as a CONSUMER on the next iteration.  But the for-loop
+          // index `i` may not advance past the absorber's slot on its own
+          // (the absorber typically sits at devices[0] with the remaining
+          // producers at higher indices), so simply `continue`-ing would
+          // strand the remaining producers.
+          //
+          // Look for a still-live convergent producer for some convergent
+          // fg containing devA at any other index j.  If found, swap
+          // roles for this iteration: set devA = devices[j] (producer)
+          // and devB = original devA (consumer at i).  Step 8 will then
+          // absorb the consumer-absorber INTO the producer, leaving the
+          // producer as the new accumulator.  Each subsequent iteration
+          // peels off one more producer until all K have been merged.
+          //
+          // If no remaining producer is found, the convergent group is
+          // fully reduced — `continue` past devA.
+          AIE::DeviceOp prodCand;
+          size_t prodCandIdx = 0;
+          bool foundProd = false;
+          for (auto &kv : fgInfo) {
+            if (kv.second.devices.size() < 3)
+              continue;
+            if (!kv.second.deviceSet.contains(devA.getOperation()))
+              continue;
+            for (size_t j = 0; j < devices.size(); ++j) {
+              if (j == i)
+                continue;
+              AIE::DeviceOp cand = devices[j];
+              bool candIsProducer = false;
+              cand.walk([&](Create op) {
+                auto opFG = op.getFusionGroup();
+                if (!opFG || *opFG != kv.first())
+                  return;
+                // Producer = output-side fg-tagged Create with fusion_index.
+                if (isOutputChannel(op, inferredMap) && getFusionIndex(op))
+                  candIsProducer = true;
+              });
+              if (candIsProducer) {
+                prodCand = cand;
+                prodCandIdx = j;
+                foundProd = true;
+                break;
+              }
+            }
+            if (foundProd)
+              break;
+          }
+          if (!foundProd)
+            continue;
+          // Swap: process this iteration with the producer as devA and the
+          // consumer-absorber as devB.  Step 8 will erase devB at devBIdx.
+          devB = devA;
+          devBIdx = i;
+          devA = prodCand;
+          (void)prodCandIdx; // referenced only for clarity above
+        } else if (role == 2) {
+          devB = convConsumer;
+          devBIdx = convConsumerIdx;
+        }
+      }
 
       // --- Step 1: Find output channels in device A. ---
       llvm::SmallVector<Create> outputChannels;
@@ -562,23 +832,31 @@ struct ConduitFuseOperatorsPass
                    "scatter/gather references cannot be safely renamed";
             continue;
           }
+          auto outIdx = getFusionIndex(outCh);
           for (Create inCh : inputChannels) {
             if (consumedInputs.contains(inCh.getOperation()))
               continue;
             auto inFG = inCh.getFusionGroup();
-            if (inFG && *outFG == *inFG) {
-              if (isForwardChainEndpoint(devB, inCh.getName())) {
-                inCh.emitRemark("conduit-fuse-operators: skipping "
-                                "fusion_group match for input channel @")
-                    << inCh.getName()
-                    << " — forward-chain / link-only endpoint (Pattern E); "
-                       "scatter/gather references cannot be safely renamed";
-                continue;
-              }
-              matched.push_back({outCh, inCh});
-              consumedInputs.insert(inCh.getOperation());
-              break;
+            if (!inFG || *outFG != *inFG)
+              continue;
+            // Track 3 convergent disambiguation: when both sides expose
+            // `fusion_index`, require equality so each producer pairs with
+            // the matching consumer-side input.  1:1 fusion IR carries no
+            // index and falls through to the existing fg-only match.
+            auto inIdx = getFusionIndex(inCh);
+            if (outIdx && inIdx && *outIdx != *inIdx)
+              continue;
+            if (isForwardChainEndpoint(devB, inCh.getName())) {
+              inCh.emitRemark("conduit-fuse-operators: skipping "
+                              "fusion_group match for input channel @")
+                  << inCh.getName()
+                  << " — forward-chain / link-only endpoint (Pattern E); "
+                     "scatter/gather references cannot be safely renamed";
+              continue;
             }
+            matched.push_back({outCh, inCh});
+            consumedInputs.insert(inCh.getOperation());
+            break;
           }
         }
       }
@@ -586,7 +864,20 @@ struct ConduitFuseOperatorsPass
       // Same Pattern E guard applies — element_type collision between a
       // forward chain and a Pattern A neighbor would trigger the identical
       // dangling-symbol bug.
-      if (matched.empty()) {
+      //
+      // Convergent-fg gate: skip element-type fallback when EITHER device
+      // participates in a convergent fusion_group.  Convergent participants
+      // always carry fg, so an empty fg-match for them means "no valid pair
+      // here" (e.g., two co-producers like devGate / devUp in the SwiGLU
+      // fixture both have outputs but no matching inputs in each other),
+      // NOT "this IR has no fusion_group annotations".  Without the gate,
+      // the fallback mis-pairs by element_type alone — e.g.,
+      // (@inter_gate, @ext_in_up) — destroying the surviving @ext_in_up
+      // and burning a `fused_intermediate_N` slot, leaving K-1 fused
+      // intermediates instead of K.
+      if (matched.empty() &&
+          !convergentDevices.contains(devA.getOperation()) &&
+          !convergentDevices.contains(devB.getOperation())) {
         llvm::DenseSet<mlir::Operation *> consumedInputs;
         for (Create outCh : outputChannels) {
           if (isForwardChainEndpoint(devA, outCh.getName()))
@@ -611,7 +902,7 @@ struct ConduitFuseOperatorsPass
         module.emitWarning(
             "conduit-fuse-operators: no matching channel pair found between "
             "device " +
-            std::to_string(i) + " and device " + std::to_string(i + 1) +
+            std::to_string(i) + " and device " + std::to_string(devBIdx) +
             " by fusion_group or element_type; skipping");
         continue;
       }
@@ -668,8 +959,25 @@ struct ConduitFuseOperatorsPass
         erasedChannelsA.insert(outName);
         erasedChannelsB.insert(inName);
 
-        std::string fusedName =
-            "fused_intermediate_" + std::to_string(fuseCount++);
+        // Pick the fused channel name.  For a convergent merge (K producers
+        // → 1 consumer) Track 3's pre-scan reserved K stable names keyed by
+        // (fusion_group, fusion_index), so each producer's `outName` →
+        // `fused_intermediate_K` where K = fusion_index of that producer
+        // (Q4 of the locked design).  1:1 fusion has no fusion_index and
+        // falls through to the running counter.
+        std::string fusedName;
+        if (auto outFGOpt = outCh.getFusionGroup()) {
+          if (auto outIdxOpt = getFusionIndex(outCh)) {
+            auto fgIt = convergentNameMap.find(*outFGOpt);
+            if (fgIt != convergentNameMap.end()) {
+              auto idxIt = fgIt->second.find(*outIdxOpt);
+              if (idxIt != fgIt->second.end())
+                fusedName = idxIt->second;
+            }
+          }
+        }
+        if (fusedName.empty())
+          fusedName = "fused_intermediate_" + std::to_string(fuseCount++);
 
         // Gather attributes for the fused conduit.create.
         // Note: producer_tile/consumer_tiles are no longer emitted —
@@ -1067,8 +1375,17 @@ struct ConduitFuseOperatorsPass
           return;
         }
         devB->erase();
-        devices.erase(devices.begin() + i + 1);
+        devices.erase(devices.begin() + devBIdx);
+        // For 1:1 / element-type pairing devBIdx == i+1 (devA position
+        // unchanged → --i + for-loop's ++i = stay at same i, retry devA).
+        // For convergent pairing devBIdx may be > i+1 (still i unchanged,
+        // same retry semantics) OR devBIdx < i when an earlier convergent
+        // merge has rotated the absorber to a lower index — in that case
+        // devA shifted down by one, so subtract an additional 1 from i so
+        // that the for-loop's ++i lands us back on devA's new position.
         --i;
+        if (devBIdx < i + 1)
+          --i;
 
         // --- Step 8b: Sink cores and runtime sequences to end of device body.
         //
