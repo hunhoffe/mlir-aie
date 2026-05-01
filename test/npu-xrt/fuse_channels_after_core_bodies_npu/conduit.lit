@@ -44,6 +44,29 @@
 //       verifies fuse-core-bodies' OUTPUT satisfies fuse-channels' INPUT
 //       eligibility — the question this fixture is designed to answer.
 //
+// OBSERVED OUTCOME (2026-05-01, this fixture's landing state): outcome
+// (a).  Empirically, on the cloned-from-`fuse_core_bodies_npu` source IR
+// shape, fuse-core-bodies fully merges the two cores and erases the
+// intermediate.  After `--conduit-fuse-channels` runs on the merged-device
+// IR, the post-pipeline shape (verified via aie-opt with the full Conduit
+// pipeline) is: 1 device, 1 core on tile(0,2), 2 flows (shim↔tile via
+// DMA:0).  No `@inter` survives; fuse-channels has 1 producer-side conduit
+// (@ext_out_mul) on tile(0,2) and is structurally a no-op (no
+// `dma_channel_group` annotations stamped).  This fixture's HW value is
+// therefore the WEAKER of the two designed outcomes: it proves
+// fuse-channels does not crash or mis-emit on the post-fuse-core-bodies IR
+// shape, but does NOT prove fuse-channels finds eligible work in
+// fuse-core-bodies' output.
+//
+// FOR THE STRONGER "fuse-channels-with-work-post-merge" SIGNAL, see the
+// future staircase step that wires a topology fuse-core-bodies cannot
+// fully erase (e.g., a chain whose intermediate is multi-consumer or
+// rate-mismatched, leaving the producer-side conduits co-located on the
+// merged tile for fuse-channels to group).  Sibling staircase fixtures
+// covering adjacent compositions:
+//   * `test/npu-xrt/fuse_spatial_and_channels_npu/`         (Task #48)
+//   * `test/npu-xrt/fuse_spatial_core_bodies_channels_npu/` (Task #47)
+//
 // Single-column smoke uses `npu2_1col`.
 //
 // Why both `--conduit-fuse-core-bodies-flag` AND
