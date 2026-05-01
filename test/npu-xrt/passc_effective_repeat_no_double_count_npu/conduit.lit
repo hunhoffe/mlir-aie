@@ -1,0 +1,44 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit Path C end-to-end regression for the
+// `effectiveRepeat = std::max(channelDmaRepeat, outerRepeat)`
+// double-counting bug at ConduitToDMALower.cpp (~line 1300).
+//
+// IR-level companion (FileCheck on Pass C output, no aiecc):
+//   test/Dialect/Conduit/passc_effective_repeat_no_double_count.mlir
+//
+// Bug shape (full description in companion aie.mlir header): IRON-emitted
+// shim S2MM configures with explicit {repeat_count = 1} + a 4-dim BD
+// whose outer dim has <size = 2, stride > 0> (a real iteration).  Pre-fix
+// Pass C emitted push-queue repeat_count = max(1, 2) = 2 onto the
+// post-Pass-C configure_task; firmware MULTIPLIES BD outer (=2) and
+// push-queue (=2), so the BD over-fired 4× per configure instead of the
+// intended 2.  Each over-fire pair re-walked the BD's offsets [0, 1024B]
+// and OVERWROTE the first walk's data.
+//
+// Post-fix expected: PASS on npu2 with byte-exact output[i] == i / 256
+// for the 1024-int output buffer (4 contiguous 256-i32 quarters holding
+// the broadcast values 0, 1, 2, 3 respectively).
+//
+// Pre-fix shape: test.cpp catches via mismatch and prints the exact
+// pre-fix shape it sees (output quarters holding 2, 3, 6, 7), so
+// regressions of this specific bug are identified by name in the failure
+// output.
+//
+// Why ONLY a conduit run (no stateful counterpart): the bug is in Pass C
+// (--conduit-to-dma).  Stateful does not run Pass C, so this exact
+// over-fire codepath is unreachable on stateful — a stateful run would
+// just exercise IRON's pre-existing BD lowering, which is unaffected.
+// Pinning the post-fix invariant in conduit alone is sufficient and
+// keeps the smoke narrow to the transform under fix (per amendment Q2:
+// "narrows to transform under fix — failures unambiguously implicate
+// Pass C → AIE lowering + HW exec").
+//
+// REQUIRES: ryzen_ai
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

@@ -1,0 +1,139 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit + --conduit-fuse-spatial + --conduit-fuse-core-
+// bodies-flag + --conduit-fuse-channels-flag) end-to-end run for the
+// HYBRID Conduit fusion pipeline — exercises ALL THREE Conduit fusion
+// passes simultaneously on a SwiGLU-shaped 2:1 fan-in chained into a
+// downstream sink with two parallel external outputs.
+//
+// Why this fixture exists: this is the actual Llama-decode hybrid pipeline
+// shape (convergent SwiGLU + chained downstream + co-located producer-side
+// outputs).  If this passes HW, fused-decode capability is HW-confirmed at
+// SMALL BLAST RADIUS before Llama-scale verify — failures here isolate to
+// pass-pair / pass-triple interaction surface that single-pass smokes
+// (fuse_operators_convergent_npu / fuse_core_bodies_npu /
+// fuse_channels_npu) cannot catch even when each individually passes.
+//
+// Sibling references:
+//   * `test/npu-xrt/fuse_operators_convergent_npu/conduit.lit` — K=2
+//     convergent merge component (SwiGLU gate+up→mul fan-in) verified in
+//     isolation with --conduit-fuse-spatial only.  Hybrid fixture builds
+//     on the same fusion_group="swiglu_fg0", fusion_index=0/1 pairing.
+//   * `test/npu-xrt/fuse_core_bodies_npu/conduit.lit` — core-body loop
+//     fusion component (Add → Mul 1:1 chain) verified in isolation with
+//     --conduit-fuse-core-bodies-flag --conduit-fuse-spatial.  Hybrid
+//     fixture extends the pattern: mul → sink chain via fusion_group=
+//     "mulsink_cb", and per its docstring same-tile=true is what allows
+//     mul + sink to land on one tile and core-body fuse.
+//   * `test/npu-xrt/fuse_channels_npu/conduit.lit` — channel annotation
+//     pass component (single-device producer-side same-tile grouping)
+//     verified in isolation with --conduit-fuse-channels-flag.  Hybrid
+//     fixture creates the channel-fusion candidate pair (ext_out_a +
+//     ext_out_b) as the post-fusion residual on the merged mul+sink tile.
+//   * `test/npu-xrt/fuse_operators_basic_npu/conduit.lit` — 1:1 spatial
+//     baseline (Add → Mul) verified with --conduit-fuse-spatial only.
+//
+// Pre-fuse: 4 separate `aie.device` blocks (devGate, devUp, devMul,
+// devSink) all on tile(0,2) of column 0.
+//
+// Pipeline composition (under all three flags):
+//   1. --conduit-fuse-spatial → --conduit-fuse-operators:
+//      a. K=2 convergent merge: devGate's @inter_gate + devUp's @inter_up
+//         + devMul's @consume_gate + @consume_up (all sharing fusion_group=
+//         "swiglu_fg0", paired by fusion_index=0/1) collapse to two
+//         @fused_intermediate_N channels (per locked Track 3 design;
+//         consumer-side stays single-producer per-channel).
+//      b. 1:1 spatial merge: devMul's @mul_inter + devSink's @consume_mul
+//         (sharing fusion_group="mulsink_cb") pair as a chain.
+//   2. --conduit-fuse-core-bodies-flag → routes --aie-combine-device with
+//      same-tile=true (per fuse_core_bodies_npu/conduit.lit).  The
+//      mul+sink pair lands on the SAME compute tile, then core-body
+//      fusion merges the per-iteration loop bodies into one core; the
+//      @mul_inter / @consume_mul intermediate is erased.  Per
+//      fuse_core_bodies_npu, same-tile=true is required for core-body
+//      merging — without the flag, spatial fuse alone routes combine-
+//      device with same-tile=false and scatters cores across columns,
+//      preventing core-body fusion entirely.
+//   3. --conduit-fuse-channels-flag → fuse-channels (annotation-only)
+//      walks producer-side conduits on the same tile in the same parent
+//      block with disjoint live windows.  The merged mul+sink core
+//      produces TWO external outputs (@ext_out_a + @ext_out_b) on the
+//      SAME tile in the SAME parent block (the inner scf.for body),
+//      sequenced so the A-section release happens before the B-section
+//      acquire — disjoint windows, both depth=1.  Pass C consumes the
+//      stamped `dma_channel_group="groupN"` + `fuse_mode="static"`
+//      annotations to fold the grouped conduits onto a single HW DMA
+//      channel.  IR shape is otherwise unchanged by fuse-channels itself
+//      — the annotation drives Pass C downstream.
+//
+// Expected post-spatial-fuse placement under npu2_4col budget (column-
+// spread for the K=2 producers per fuse_operators_convergent_npu
+// behavior, while same-tile=true keeps the mul+sink chain co-located):
+//   col 0 tile(0,2): gate producer
+//   col 1 tile(0,2): up producer
+//   col 2 tile(0,2): merged mul+sink (post core-body fuse)
+//
+// PASS expectation: every dispatch (4 invocations) completes; output
+// bytes match reference computed by test.cpp:
+//   gate_in[j] = up_in[j] = (j%8)
+//   ext_out_a[j] = (gate*up) + 1.0
+//   ext_out_b[j] = (gate*up) + 2.0
+// All bf16-exact.  Symmetric inputs make the producer-side arg-
+// reprojection order irrelevant; distinct +1/+2 sink constants surface
+// channel-fusion mis-routing as a byte mismatch (vs silent passthrough
+// if both outputs computed the same value).
+//
+// Failure-mode interpretation (specific to the 3-pass interaction
+// surface that single-pass smokes cannot catch):
+//   * Convergent-merge bug → wrong-bytes on BOTH out_a and out_b
+//     (gate/up producer-side intermediates mis-paired during
+//     fused_intermediate_N erasure; both downstream sinks see corrupted
+//     mul values).  Sibling fuse_operators_convergent_npu in isolation
+//     would catch this, but PAIRWISE interaction with core-body fusion
+//     can cause downstream mul_inter erase to mis-thread halves.
+//   * Core-body merge interaction bug → hang on the SECOND invocation
+//     (Pattern E forward-chain mis-fusion class; merged mul+sink core
+//     wedges across reuse) OR truncated output from iter-count mis-
+//     alignment.  Sibling fuse_core_bodies_npu would catch the
+//     standalone class; this fixture catches the case where convergent-
+//     merge upstream emits fused_intermediate_N consumer-side IR that
+//     the merged mul+sink core mis-handles per-iteration.
+//   * Channel-grouping race → out_a and out_b SWAPPED in the output
+//     (mis-routed across the grouped HW DMA channel) OR all-zero on one
+//     of the two outputs (BD-ring ordering violation post-grouping).
+//     Sibling fuse_channels_npu catches the standalone case; this
+//     fixture catches the case where the channel-fusion candidates are
+//     produced by a CORE-BODY-FUSED merged core (i.e., the producer-
+//     side same-tile pair only EXISTS because of the upstream fusions).
+// PASS = ALL THREE pass interactions correct simultaneously.  This is
+// the strongest single-fixture signal short of a full Llama compile.
+//
+// HW-verify status: this fixture cannot HW-verify cleanly until #92
+// lands (PassC self-loop depth>1 producer rotation counter not allocated;
+// currently breaks fuse-channels HW).  Authoring it now so it is
+// LIT-ready and can be HW-verified the moment #92 closes.  Lit-only
+// parse + 3-file structural parity check is what is verifiable today.
+//
+// No stateful companion: the source IR uses 4 independent `aie.device`
+// blocks linked only by `fusion_group` annotations + Conduit-only
+// channel-fusion annotation semantics — stateful objectfifo lowering
+// does not span devices and has no `dma_channel_group` equivalent, so a
+// stateful run is structurally inapplicable here.  Reference is
+// computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 multiply + add.  Chess (xchesscc)
+// cannot select `fp_to_bf16` for this inline core (`fatal error: error
+// in backend: Cannot select: i32 = fp_to_bf16`); Peano can.  Use
+// `--no-xchesscc --no-xbridge` to route the kernel compile through
+// Peano (sibling pattern: `fuse_operators_convergent_npu/conduit.lit`,
+// `fuse_core_bodies_npu/conduit.lit`, `fuse_channels_npu/conduit.lit`,
+// `loadpdi/run.lit`, `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_4col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-spatial --conduit-fuse-core-bodies-flag --conduit-fuse-channels-flag --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

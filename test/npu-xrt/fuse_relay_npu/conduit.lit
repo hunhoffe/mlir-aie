@@ -1,0 +1,88 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit --conduit-fuse-relay-flag) end-to-end run for
+// `--conduit-fuse-relay` (gather→scatter relay folding).  E2E companion
+// to lit-only pin
+//   test/Dialect/Conduit/fuse_relay_basic.mlir
+// and SKIP-77 Python-harness sibling
+//   iron_operator_mlir/fusion_npu_regression/fuse_relay_smoke.py
+// (the Python harness skipped because aiecc lacked the
+// `conduit-fuse-relay-flag` cl::opt; that flag is added in lockstep
+// with this fixture so the smoke can compile end-to-end).
+//
+// Pre-fuse: a single `aie.device` with one column.  The input path
+// flows shim(0,0) → memtile(0,1) → compute(0,2) via two
+// `aie.objectfifo` channels chained by `aie.objectfifo.link`.  After
+// `--objectfifo-to-conduit` (Pass A) the linked pair lowers to a
+// `conduit.gather` + `conduit.scatter` pair on memtile(0,1) with an
+// intermediate channel that has no other users — exactly the IR shape
+// `--conduit-fuse-relay` matches.  The pass folds the gather/scatter
+// pair into a single `conduit.transpose`, eliminates the intermediate
+// channel, and halves memtile DMA-channel usage on the input path
+// (one S2MM+MM2S pair instead of two).  The output path
+// (compute → shim direct) has no relay and is structurally untouched
+// by fuse-relay; it serves as a cross-check that non-relay channels
+// keep working when fuse-relay runs.  Single-column smoke uses
+// `npu2_1col`.
+//
+// Pipeline composition: `--conduit-fuse-relay-flag` is independent of
+// the spatial / core-bodies / channels flags.  This smoke runs ONLY
+// the relay flag (no fusion-flag interaction) so a regression on
+// fuse-relay is isolated from the other fusion passes.  Hybrid
+// fixtures combining fuse-relay with spatial / core-bodies / channels
+// are tracked separately (see follow-on tasks).
+//
+// PASS expectation: every dispatch (4 invocations) completes; output
+// bytes match reference computed by test.cpp (out[j] = in[j] + 1.0,
+// in[j] = (j%16)).  Failure modes that lit-only fixtures cannot catch
+// (per fuse_relay_smoke.py docstring):
+//   * Relay-elimination produces compile-clean IR but the post-fuse
+//     direct flow violates a tile-routing constraint → HW deadlock /
+//     timeout symptom that lit-only checks miss.
+//   * Eliminated relay's lock state survives somewhere in the merged
+//     IR → silent corruption visible only as wrong output bytes after
+//     dispatch completes.
+//   * Multi-relay chains (producer → relay1 → relay2 → consumer)
+//     reduce wrong (e.g. only one relay eliminated, or both eliminated
+//     incorrectly).  Single-relay shape here covers the basic match
+//     condition; multi-relay variants are deferred to a follow-on
+//     fixture and not exercised by this smoke.
+// Multi-invocation (NUM_INVOCATIONS=4 in test.cpp) catches the second-
+// invocation lock-state-leftover failure class — relay-elimination
+// removes a memtile DMA channel pair; if the lock state for that pair
+// survives somewhere in the merged IR, dispatch 1 may pass while
+// dispatch 2 deadlocks waiting on a stale lock.
+//
+// Sibling references:
+//   - test/npu-xrt/fuse_operators_convergent_npu/ (Peano-routed
+//     fixture template; same RUN-line skeleton)
+//   - test/npu-xrt/fuse_core_bodies_npu/ (sibling 1:1 chain fusion via
+//     core-bodies + spatial; structural template for this fixture)
+//   - test/npu-xrt/fuse_operators_basic_npu/ (sibling 1:1 spatial)
+//   - test/npu-xrt/fuse_channels_npu/ (sibling 1:1 channel grouping)
+//   - test/Dialect/Conduit/fuse_relay_basic.mlir (lit-only pin: basic
+//     fuse + 3 negative tests for different memtile / intermediate
+//     used / budget overflow)
+//   - test/Dialect/Conduit/infer_iter_count_then_fuse_relay.mlir
+//     (lit-only pin: Pass A iter_count inference followed by fuse-relay)
+//
+// No stateful companion: stateful objectfifo lowering uses a different
+// memtile-relay representation (no gather/scatter pair surfaces) so
+// `--conduit-fuse-relay` is structurally not applicable to a stateful
+// run.  Reference is computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 add.  Chess (xchesscc) cannot select
+// `fp_to_bf16` for this inline core (`fatal error: error in backend:
+// Cannot select: i32 = fp_to_bf16`); Peano can.  Use `--no-xchesscc
+// --no-xbridge` to route the kernel compile through Peano (sibling
+// pattern: `convergent_npu/conduit.lit`, `fuse_core_bodies_npu/
+// conduit.lit`, `loadpdi/run.lit`, `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-relay-flag --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

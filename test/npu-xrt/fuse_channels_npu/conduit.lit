@@ -1,0 +1,97 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit --conduit-fuse-channels-flag) end-to-end run for
+// `--conduit-fuse-channels` (channel-fusion annotation pass).  E2E
+// companion to lit-only pin
+//   test/Dialect/Conduit/conduit_fuse_channels.mlir
+// and Python-harness sibling
+//   iron_operator_mlir/fusion_npu_regression/fuse_channels_smoke.py.
+//
+// Pre-pass: 4 conduits in one device on one tile (tile(0,2)) — `@ext_in_a`
+// and `@ext_in_d` produced by shim, `@inter` self-loop on tile(0,2),
+// `@ext_out` produced by tile(0,2) to shim.  Add → Mul chain inside one
+// core's body block (Add: ext_in_a + 1.0 → inter; Mul: inter * ext_in_d →
+// ext_out), sequenced so the two PRODUCER-side conduits on tile(0,2) —
+// `@inter` and `@ext_out` — have non-overlapping live windows in the same
+// parent block.  After `--conduit-fuse-channels` (injected by `--conduit-
+// fuse-channels-flag`, see `aiecc.cpp:1515`) those two producer-side
+// conduits are stamped with matching `dma_channel_group="groupN"` and
+// `fuse_mode="static"` annotations.  Pass C downstream consumes the
+// annotations to fold the grouped conduits onto a single HW DMA channel.
+// IR shape is otherwise unchanged — fuse-channels is annotation-only.
+// Single-column smoke uses `npu2_1col`.
+//
+// Why ONLY `--conduit-fuse-channels-flag` (no `--conduit-fuse-spatial`,
+// no `--conduit-fuse-core-bodies-flag`): the pass groups producer-side
+// conduits already co-located on the same tile by the source IR shape;
+// it does NOT require `--aie-combine-device` to merge separate `aie.device`
+// blocks.  No `fusion_group=` annotation is set in the source IR — that
+// attribute is the pairing key for fuse-operators / fuse-core-bodies, NOT
+// fuse-channels.  Fuse-channels groups by (producer-tile, parent-block,
+// window-disjointness) discovered automatically.
+//
+// PASS expectation: every dispatch (4 invocations) completes; output bytes
+// match reference computed by test.cpp (out[j] = (in_a[j]+1.0)*in_d[j],
+// in_a[j] = (j%16), in_d[j] = 2.0 — equivalent to (j%16+1)*2).  Because
+// fuse-channels is annotation-only, output MUST also be byte-identical to
+// a bare `--use-conduit` pipeline (no fuse-channels flag) on the same IR;
+// any divergence is a Pass C consumer-side bug surfaced by the grouping
+// annotation.  Failure modes that lit-only fixtures cannot catch (per
+// fuse_channels_smoke.py docstring):
+//   * Annotation present + Pass C HW-channel folding emits clean IR but
+//     the grouped channels mis-route on hardware (silent wrong output:
+//     out_a routed to out_b's slot, etc.).  Lit verifies annotation
+//     presence and Pass C compile-clean shape; only an end-to-end byte
+//     check catches mis-routing.
+//   * `dma_channel_group` annotation confuses Pass C lowering — e.g., the
+//     consumer-side BD chain of `@inter` (tile→tile self-loop) or the
+//     shim-bound `@ext_out` becomes inconsistent post-fold, producing
+//     all-zero or garbled output across dispatches.
+//   * Multi-block / re-acquire stability — the pass is documented as
+//     idempotent (the lit pin runs `--conduit-fuse-channels` twice for
+//     this reason).  Per-launch re-acquire of grouped channels across
+//     `NUM_INVOCATIONS=4` is what surfaces idempotency-edge bugs that
+//     a single-dispatch lit fixture would silently hide.
+//
+// Sibling references:
+//   * `test/npu-xrt/fuse_operators_basic_npu/conduit.lit` — same Add → Mul
+//     1:1 chain at the IR level but with the `--conduit-fuse-spatial`
+//     pipeline (separate-device pre-fuse, two-column post-fuse).  This
+//     fixture's single-device IR shape is what makes the fuse-channels
+//     producer-side grouping eligible — diffing the two fixtures'
+//     post-compile IR isolates which behavior is contributed by spatial
+//     fusion vs. channel fusion.
+//   * `test/npu-xrt/fuse_core_bodies_npu/conduit.lit` — same Add → Mul
+//     1:1 chain with the hybrid `--conduit-fuse-core-bodies-flag
+//     --conduit-fuse-spatial` pipeline that collapses both cores onto one
+//     tile via `--aie-combine-device same-tile=true`.  fuse-channels
+//     reaches a similar single-tile producer-side IR shape from the
+//     OPPOSITE direction (single-device source vs. spatially-fused merge).
+//   * `test/npu-xrt/fuse_operators_convergent_npu/conduit.lit` —
+//     convergent K=2 fuse-operators reference for the canonical 3-file
+//     fixture pattern (aie.mlir / test.cpp / conduit.lit + REQUIRES /
+//     RUN-line skeleton this fixture follows).
+//   * `test/Dialect/Conduit/conduit_fuse_channels.mlir` — canonical lit-
+//     only pin for `--conduit-fuse-channels` (19 cases a-s covering all
+//     analysis edge cases; runs the pass twice to verify idempotency).
+//
+// No stateful companion: the source IR uses Conduit-only annotation
+// semantics (`dma_channel_group`, `fuse_mode`) that have no stateful
+// objectfifo equivalent.  Reference is computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 add + multiply.  Chess (xchesscc) cannot
+// select `fp_to_bf16` for this inline core (`fatal error: error in
+// backend: Cannot select: i32 = fp_to_bf16`); Peano can.  Use
+// `--no-xchesscc --no-xbridge` to route the kernel compile through Peano
+// (sibling pattern: `convergent_npu/conduit.lit`,
+// `fuse_operators_basic_npu/conduit.lit`, `fuse_core_bodies_npu/
+// conduit.lit`, `loadpdi/run.lit`, `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-channels-flag --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
