@@ -1,0 +1,52 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit) end-to-end run for the streaming-mode skip on
+// `via_cascade = true` (Track C debt; pairs with lit pin
+//   test/Dialect/Conduit/infer_iter_count_skip_for_stream.mlir).
+//
+// What this proves on real HW:
+//   - Pass A's streaming-mode skip on the via_cascade arm produces a
+//     conduit.create that downstream Pass C / aie-standard-lowering /
+//     peano can chain into a runnable cascade-routed design.
+//   - aie.objectfifo {via_cascade = true} composes with the rest of the
+//     conduit pipeline well enough to dispatch on real silicon (smallest
+//     possible exercise: 1 input vector → cascade hop → 1 output vector).
+//
+// Why no paired stateful.lit (deliberate deviation from
+// conduit_canonicalize_channel_puts/* convention): the upstream stateful
+// objectfifo expansion has NO `via_cascade` handler — `grep "viaCascade"
+// mlir-aie/lib/` returns only ObjectFifoToConduit.cpp.  Under stateful,
+// the attribute is silently ignored and the cascade objectfifo would
+// route via DMA, exercising an entirely different physical path; a
+// byte-equivalence claim across pipelines would be meaningless.  The
+// PASS gate here is internal-consistency: dispatch completes and the
+// 16 i32 input bytes round-trip through the cascade port unchanged.
+//
+// Cascade adjacency tile(0,3) → tile(1,3) (East direction: input=West,
+// output=East) is supported on both AIE2 NPU variants — the verifier
+// constraint in AIEDialect.cpp::ConfigureCascadeOp::verify only requires
+// inputDir ∈ {North, West} and outputDir ∈ {South, East} on AIE2, which
+// covers both BaseNPU1TargetModel and BaseNPU2TargetModel (both inherit
+// AIE2TargetModel).  cascade_flows/aie.mlir gates on ryzen_ai_npu1 only
+// because it predates npu2 hardware; geometry is portable.  Dual RUN-line
+// pattern below mirrors test/npu-xrt/shim_dma_bd_reuse/run.lit.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inline `vector.transfer_read` / `memref.store` /
+// `memref.load` / `vector.transfer_write` over `vector<16xi32>` — no
+// floating-point conversion, so chess `fp_to_bf16` is NOT the trigger
+// here.  Peano routing is selected for consistency with sibling Conduit
+// npu-xrt fixtures (`fuse_operators_convergent_npu/conduit.lit`,
+// `fuse_core_bodies_npu/conduit.lit`) and with the older Peano-routed
+// siblings `loadpdi/run.lit` and `vec_vec_add_objfifo_init/aie2.py`,
+// avoiding the chess-toolchain dependency entirely on the conduit pipeline.
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu1% sed 's/NPUDEVICE/npu1_2col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_2col/g' -i aie_arch.mlir
+// RUN: %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu1% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
