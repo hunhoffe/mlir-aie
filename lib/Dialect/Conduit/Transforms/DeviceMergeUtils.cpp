@@ -89,6 +89,17 @@ void mergeRuntimeSequencesSimple(mlir::Operation *&seqA,
       mlir::Block &seqBodyA = seqA->getRegion(0).front();
       mlir::Block &seqBodyB = seqB->getRegion(0).front();
 
+      // Snapshot devA's pre-merge arg count.  Cloned ops from devB carry
+      // `arg_index` integer attributes that reference devB's local
+      // block-arg space [0, |seqBodyB.args|).  After we addArgument() devB's
+      // args onto seqA, devB's local arg N occupies merged-seq slot
+      // (argOffsetForB + N).  IRMapping handles the SSA value remap on
+      // operand uses, but `clone()` deep-copies the `arg_index` attribute
+      // verbatim — leaving cloned ops referring to devA's original slots
+      // (alias bug surfaced by Task #82 swiglu fixture).
+      const size_t argOffsetForB = seqBodyA.getNumArguments();
+      const size_t devBArgCount = seqBodyB.getNumArguments();
+
       // Append seqB's block args to seqA, building the IRMapping.
       mlir::IRMapping argMapping;
       for (mlir::BlockArgument arg : seqBodyB.getArguments()) {
@@ -110,7 +121,24 @@ void mergeRuntimeSequencesSimple(mlir::Operation *&seqA,
       for (mlir::Operation &inner : seqBodyB) {
         if (inner.hasTrait<mlir::OpTrait::IsTerminator>())
           continue;
-        seqBuilder.clone(inner, argMapping);
+        mlir::Operation *cloned = seqBuilder.clone(inner, argMapping);
+        // Reproject `arg_index` attrs on the cloned op (and any nested
+        // ops) from devB-local space into the merged-seq absolute space.
+        // Safety guard: only reproject indices that fall within devB's
+        // original arg space — out-of-range values indicate hand-written
+        // IR or upstream bug, leave them for the verifier.
+        cloned->walk([&](mlir::Operation *op) {
+          if (auto idxAttr =
+                  op->getAttrOfType<mlir::IntegerAttr>("arg_index")) {
+            int64_t oldIdx = idxAttr.getInt();
+            if (oldIdx >= 0 &&
+                static_cast<size_t>(oldIdx) < devBArgCount) {
+              int64_t newIdx = oldIdx + static_cast<int64_t>(argOffsetForB);
+              op->setAttr("arg_index",
+                          mlir::IntegerAttr::get(idxAttr.getType(), newIdx));
+            }
+          }
+        });
       }
     } else if (!seqA) {
       // devA has no sequence yet — promote devB's as-is.

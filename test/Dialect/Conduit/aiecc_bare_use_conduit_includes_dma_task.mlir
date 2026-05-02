@@ -24,7 +24,7 @@
 
 // RUN: aiecc --no-xchesscc --no-xbridge -n --verbose --use-conduit %s 2>&1 | FileCheck %s
 
-// CHECK: Conduit pipeline: objectfifo-to-conduit,dma-task-to-conduit,conduit-canonicalize-channel-puts,conduit-depth-promote,conduit-to-dma
+// CHECK: Conduit pipeline: objectfifo-to-conduit,dma-task-to-conduit,conduit-canonicalize-channel-puts,conduit-prune-runtime-seq-args,conduit-depth-promote,conduit-to-dma
 
 module {
   aie.device(npu1_1col) {

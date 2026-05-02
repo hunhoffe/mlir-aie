@@ -1518,11 +1518,27 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
       // 5-7: emit fused internal channel, rewrite acquires, delete the
       // intermediate runtime DMA tasks) runs.
       conduitPipeline += ",conduit-fuse-operators";
+    // When BOTH spatial fusion and core-body fusion are enabled, run a
+    // second --conduit-fuse-core-bodies pass after --conduit-fuse-operators.
+    // Spatial fusion may leave same-tile cores in the merged device (when
+    // the two operands of a fused channel are explicitly co-located on the
+    // same physical tile); a follow-up core-body fusion sweep merges those
+    // cores into one core body.
+    if (conduitFuseSpatial && conduitFuseCoreBodies)
+      conduitPipeline +=
+          ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
     if (conduitFuseChannels)
       conduitPipeline += ",conduit-fuse-channels";
     if (conduitFuseRelay)
       conduitPipeline += ",conduit-fuse-relay";
-    conduitPipeline += ",conduit-depth-promote,conduit-to-dma";
+    // After all fusion passes have run, prune dead block args from any
+    // aie.runtime_sequence ops that fusion (device-merge + intermediate
+    // channel erasure) left with N declared args but only M < N referenced.
+    // Must run BEFORE conduit-to-dma, which lowers conduit.put/get_memref
+    // ops back to aiex.dma_configure_task_for keyed on arg_index.  No-op for
+    // un-fused pipelines (early exit when no dead args present).
+    conduitPipeline += ",conduit-prune-runtime-seq-args";
+    conduitPipeline += ",conduit-depth-promote,conduit-to-dma,conduit-append-core-spin";
     if (verbose) {
       llvm::outs() << "Conduit pipeline: " << conduitPipeline << "\n";
       llvm::outs().flush();

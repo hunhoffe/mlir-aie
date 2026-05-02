@@ -566,6 +566,17 @@ struct ConduitDepthPromotePass
       // All checks passed — promote to targetDepth.
       createOp->setAttr("depth", builder.getI64IntegerAttr(targetDepth));
 
+      // Task #102: strip stale fuse-channels grouping annotations.
+      // `--conduit-fuse-channels` may stamp `dma_channel_group` + `fuse_mode`
+      // on depth=1 conduits (Tier-3 eligibility); after we promote to depth>1
+      // those annotations are no longer applicable, and Pass C's grouped
+      // code path (ConduitToDMACollect/Route) silently corrupts lock-init,
+      // flow-key dedup, and packet-ID bookkeeping for the now-promoted
+      // (formerly grouped) channels. Symptom: swiglu out_a + out_b sinks
+      // dead (all-zero) on HW. Strip to force Pass C's simple ungrouped path.
+      createOp->removeAttr("dma_channel_group");
+      createOp->removeAttr("fuse_mode");
+
       // slot_elems is no longer an attribute — no update needed.
 
       // Update per-tile resource counters (consumers).

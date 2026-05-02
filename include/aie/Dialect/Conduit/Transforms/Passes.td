@@ -841,6 +841,94 @@ def ConduitFuseCoreBodies : Pass<"conduit-fuse-core-bodies", "::mlir::ModuleOp">
 }
 
 //===----------------------------------------------------------------------===//
+// Runtime-sequence Dead-Arg Prune — conduit-prune-runtime-seq-args
+//===----------------------------------------------------------------------===//
+
+def ConduitPruneRuntimeSeqArgs
+    : Pass<"conduit-prune-runtime-seq-args", "::mlir::ModuleOp"> {
+  let summary = "Drop dead block arguments from aie.runtime_sequence ops left "
+                "behind by operator/channel fusion";
+  let description = [{
+    After --aie-combine-device merges multiple devices' runtime sequences and
+    --conduit-fuse-core-bodies / --conduit-fuse-operators / --conduit-fuse-channels
+    erase intermediate-channel put/get_memref ops, the merged
+    aie.runtime_sequence may declare N block arguments while only M < N are
+    referenced by surviving conduit memref-DMA ops.
+
+    Unreferenced (dead) block args are positional landmines: the host's
+    set_arg(i, bo) calls land at the wrong runtime arg index, so surviving
+    conduit ops bind to undefined buffers (manifests as garbage outputs at
+    HW dispatch, not a compile-time error).
+
+    For each aie.device, for each AIE::RuntimeSequenceOp inside it:
+      1. Walk the body, collect arg_index attrs from surviving
+         conduit.put_memref{,_async} and conduit.get_memref{,_async} ops.
+      2. If every declared arg is referenced, no-op early.
+      3. Otherwise, build a renumber map (sorted live old idx → 0..M-1),
+         rewrite each conduit op's arg_index, and erase dead block args.
+
+    aie.runtime_sequence has no separate function_type attribute (args are
+    pure block arguments of the body region), so erasing block args is the
+    only signature update required.
+
+    Pipeline placement: AFTER --conduit-fuse-channels and BEFORE
+    --conduit-depth-promote and --conduit-to-dma.
+
+    Run with:  aie-opt --conduit-prune-runtime-seq-args <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitPruneRuntimeSeqArgsPass()";
+
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "xilinx::AIE::AIEDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// Append Core Spin — conduit-append-core-spin
+//===----------------------------------------------------------------------===//
+
+def ConduitAppendCoreSpin
+    : Pass<"conduit-append-core-spin", "::mlir::ModuleOp"> {
+  let summary = "Append an empty infinite spin loop before every aie.core's aie.end";
+  let description = [{
+    Walks every `aie.core` op in the module and inserts an empty bounded
+    "infinite" spin loop just before its terminating `aie.end` op:
+
+      aie.core(%tile) {
+        <existing body>
+        %c0   = arith.constant 0 : index
+        %max  = arith.constant 16777214 : index   // 0xFFFFFE
+        %c1   = arith.constant 1 : index
+        scf.for %i = %c0 to %max step %c1 {
+          %t = arith.constant 0 : index
+        }
+        aie.end                                   // unreachable
+      }
+
+    Background: Llama decode-hang (Task #72/#83/#89) is localized to op18_GEMV
+    (LM-head, ni=1) at the LAST orchestrator-position.  Cores with finite
+    inner-loop trip counts reach `aie.end` after their work, exposing a
+    firmware-runtime hang at orchestrator-position-LAST.  Appending an
+    infinite spin prevents cores from ever reaching `aie.end`.
+
+    Pipeline placement: AFTER `--conduit-to-dma`, BEFORE Step 5 device-level
+    passes.  Runs always under `--use-conduit`.
+
+    Run with:  aie-opt --conduit-append-core-spin <input.mlir>
+  }];
+
+  let constructor = "xilinx::conduit::createConduitAppendCoreSpinPass()";
+
+  let dependentDialects = [
+    "xilinx::AIE::AIEDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // Device Merge — aie-combine-device
 //===----------------------------------------------------------------------===//
 

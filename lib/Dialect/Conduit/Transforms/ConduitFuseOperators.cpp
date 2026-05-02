@@ -62,6 +62,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -166,6 +167,30 @@ static int64_t maxColInDevice(AIE::DeviceOp device) {
       maxCol = tile.getCol();
   });
   return maxCol;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: check if every (col, row) tile in devB also exists in devA.
+// Used to decide whether Step 4's column-offset is needed: if devB's tiles
+// are a subset of devA's (e.g., explicit co-location for spatial+core-body
+// fusion of ops on the same physical tile), no offset is required and
+// applying one would prevent downstream `--conduit-fuse-core-bodies` from
+// merging the cores.
+// ---------------------------------------------------------------------------
+static bool deviceTilesSubsetOf(AIE::DeviceOp devB, AIE::DeviceOp devA) {
+  llvm::SmallSet<std::pair<int64_t, int64_t>, 8> aTiles;
+  devA.walk([&](AIE::TileOp t) {
+    aTiles.insert({static_cast<int64_t>(t.getCol()),
+                   static_cast<int64_t>(t.getRow())});
+  });
+  bool subset = true;
+  devB.walk([&](AIE::TileOp t) {
+    auto key = std::make_pair(static_cast<int64_t>(t.getCol()),
+                              static_cast<int64_t>(t.getRow()));
+    if (!aTiles.contains(key))
+      subset = false;
+  });
+  return subset;
 }
 
 // ---------------------------------------------------------------------------
@@ -940,9 +965,15 @@ struct ConduitFuseOperatorsPass
         }
       }
 
-      // --- Step 4: Compute column offset for device B. ---
+      // --- Step 4: Offset device B's tiles to avoid coord collision. ---
+      // Exception: if devB's tiles are a subset of devA's (explicit
+      // co-location for spatial+core-body fusion of ops on the same physical
+      // tile), keep coordinates as-is. Applying an offset there would push
+      // devB's cores onto distinct columns and prevent a downstream
+      // --conduit-fuse-core-bodies pass from merging the cores.
       int64_t colMaxA = maxColInDevice(devA);
-      int64_t colOffset = colMaxA + 1; // device B's col=0 → col=colMaxA+1
+      int64_t colOffset =
+          deviceTilesSubsetOf(devB, devA) ? 0 : colMaxA + 1;
       offsetDeviceTiles(devB, colOffset);
 
       // --- Step 5: Emit module-level conduit.create for each matched pair. ---

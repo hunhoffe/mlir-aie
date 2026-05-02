@@ -7,6 +7,7 @@
 
 add_mlir_dialect_library(ConduitTransforms
   PARTIAL_SOURCES_INTENDED
+  ConduitAppendCoreSpin.cpp
   ConduitCombineDevicePass.cpp
   ConduitCheckChannels.cpp
   ConduitCheckDeps.cpp
@@ -30,6 +31,7 @@ add_mlir_dialect_library(ConduitTransforms
   ConduitLivenessCheck.cpp
   LoopAnalysisUtils.cpp
   ConduitPairingCheck.cpp
+  ConduitPruneRuntimeSeqArgs.cpp
   ConduitResourceModel.cpp
   ConduitTileInference.cpp
   ConduitToDMAAlloc.cpp

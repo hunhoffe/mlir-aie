@@ -62,6 +62,8 @@ namespace xilinx::conduit {
 #define GEN_PASS_DECL_CONDUITCOMBINEDEVICE
 #define GEN_PASS_DECL_CONDUITCANONICALIZECHANNELPUTS
 #define GEN_PASS_DECL_CONDUITEXPANDCHANNELPUTS
+#define GEN_PASS_DECL_CONDUITPRUNERUNTIMESEQARGS
+#define GEN_PASS_DECL_CONDUITAPPENDCORESPIN
 #include "aie/Dialect/Conduit/Transforms/ConduitPasses.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -172,6 +174,20 @@ createConduitCanonicalizeChannelPutsPass();
 /// fusion authors that need per-batch IR-level mutation.
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createConduitExpandChannelPutsPass();
+
+/// Runtime-sequence dead-arg prune: after device-merge + operator/channel
+/// fusion, drop unreferenced block args from each aie.runtime_sequence and
+/// renumber surviving conduit memref-DMA ops' arg_index attrs to 0..M-1.
+/// Required for correct host set_arg(i, bo) positional binding post-fusion.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitPruneRuntimeSeqArgsPass();
+
+/// Append an empty bounded "infinite" spin loop before every aie.core's
+/// aie.end terminator.  Workaround for the Llama decode-hang at
+/// orchestrator-position-LAST: prevents cores from ever reaching aie.end.
+/// Runs always under --use-conduit, after --conduit-to-dma.
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createConduitAppendCoreSpinPass();
 
 /// Returns the effective put count for `channel`: the number of raw
 /// PutMemrefAsync ops that reference its name, multiplied by the channel's
