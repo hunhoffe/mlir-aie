@@ -70,6 +70,17 @@ namespace xilinx::conduit {
 
 namespace {
 
+// Forward declarations (helpers defined after Step 0; needed for safe
+// async-token-aware erasure inside mergeAndUnifyDevices when the merged
+// device contains a `conduit.put_memref_async` / `get_memref_async` whose
+// token is consumed by a `conduit.wait_all{token=false}` — raw `op->erase()`
+// would leave the wait_all with a dangling SSA reference).
+static void removeTokenFromWaitOp(mlir::Operation *waitOp,
+                                  mlir::Value deadToken,
+                                  mlir::OpBuilder &builder);
+static void safeEraseAsyncOp(mlir::Operation *asyncOp,
+                             mlir::OpBuilder &builder);
+
 // ---------------------------------------------------------------------------
 // Step 0: Cross-device merge for fusion_group connections
 // ---------------------------------------------------------------------------
@@ -325,15 +336,28 @@ static mlir::LogicalResult mergeAndUnifyDevices(AIE::DeviceOp devA,
       toErase.push_back(op.getOperation());
   });
 
-  // Delete runtime_sequence ops referencing the consumer channel.
+  // Collect runtime_sequence ops referencing the consumer channel.  Async
+  // variants (`*_async`) carry `!conduit.dma.token` results that may be
+  // consumed by `conduit.wait_all{token=false}` ops in the same sequence;
+  // those uses must be cleaned up before erasure or the next verifier run
+  // hits "operation destroyed but still has uses".  Blocking variants have
+  // no SSA result and are safe to raw-erase.  This mirrors the
+  // safeEraseAsyncOp / cleanUpDeadOps pattern used post-fusion.
+  llvm::SmallVector<mlir::Operation *> asyncDmaOps;
   devA.walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
-    if (opName != "conduit.put_memref" && opName != "conduit.get_memref" &&
-        opName != "conduit.put_memref_async" &&
-        opName != "conduit.get_memref_async")
+    bool isAsync = (opName == "conduit.put_memref_async" ||
+                    opName == "conduit.get_memref_async");
+    bool isBlocking =
+        (opName == "conduit.put_memref" || opName == "conduit.get_memref");
+    if (!isAsync && !isBlocking)
       return;
     auto nameAttr = op->getAttrOfType<mlir::FlatSymbolRefAttr>("name");
-    if (nameAttr && nameAttr.getValue() == consName)
+    if (!nameAttr || nameAttr.getValue() != consName)
+      return;
+    if (isAsync)
+      asyncDmaOps.push_back(op);
+    else
       toErase.push_back(op);
   });
 
@@ -346,6 +370,12 @@ static mlir::LogicalResult mergeAndUnifyDevices(AIE::DeviceOp devA,
         alloc.getSymName() == consName || alloc.getSymName() == consShimName)
       toErase.push_back(alloc.getOperation());
   });
+
+  // Async DMA ops first — safeEraseAsyncOp prunes token uses from any
+  // downstream wait_all / wait_all_async before erasing the op itself.
+  mlir::OpBuilder builder(ctx);
+  for (mlir::Operation *op : asyncDmaOps)
+    safeEraseAsyncOp(op, builder);
 
   for (auto *op : toErase)
     op->erase();
