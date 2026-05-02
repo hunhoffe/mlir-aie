@@ -160,11 +160,14 @@ module @conduit_to_dma_await_post_fusion {
   }
 
   // DevB: EltMul-like operator (2 columns).
+  // Shims at columns 2/3 (distinct from devA's cols 0/1) so devB's tile set
+  // is NOT a subset of devA's; this preserves the offset path the original
+  // CHECK assertions assume (post-fix: devB → +colMaxA+1 = +2).
   aie.device(npu2) @devB {
-    %shim_0 = aie.tile(0, 0)
-    %shim_1 = aie.tile(1, 0)
-    %tile_0_2 = aie.tile(0, 2)
-    %tile_1_2 = aie.tile(1, 2)
+    %shim_0 = aie.tile(2, 0)
+    %shim_1 = aie.tile(3, 0)
+    %tile_0_2 = aie.tile(2, 2)
+    %tile_1_2 = aie.tile(3, 2)
 
     aie.objectfifo @inter_in_0(%shim_0, {%tile_0_2}, 2 : i32)
         {fusion_group = "fg0"}

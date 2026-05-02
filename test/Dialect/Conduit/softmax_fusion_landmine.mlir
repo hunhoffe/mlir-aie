@@ -124,7 +124,10 @@ module @softmax_fusion_landmine {
   }
 
   aie.device(npu2) @devB {
-    %shim_0 = aie.tile(0, 0)
+    // shim at column 1 (distinct from devA's column-0 shim) so devB's
+    // tile set is NOT a subset of devA's; preserves the offset path the
+    // original CHECK assertions implicitly assume.
+    %shim_0 = aie.tile(1, 0)
     %tile_0_2 = aie.tile(0, 2)
 
     aie.objectfifo @inter_in(%shim_0, {%tile_0_2}, 2 : i32)

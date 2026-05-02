@@ -106,7 +106,10 @@ module @fuse_operators_basic {
   }
 
   aie.device(npu2) @devB {
-    %shim_0 = aie.tile(0, 0)
+    // shim at column 1 (distinct from devA's column-0 shim) so devB's
+    // tile set is NOT a subset of devA's; this preserves the offset path
+    // (devB → +colMaxA+1 = +1) that this fixture's CHECKs encode.
+    %shim_0 = aie.tile(1, 0)
     %tile_0_2 = aie.tile(0, 2)
 
     // Intermediate input: LPDDR5 → compute tile (fusible, matching fusion_group).

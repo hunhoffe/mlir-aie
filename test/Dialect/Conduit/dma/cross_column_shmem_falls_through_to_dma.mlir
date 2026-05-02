@@ -114,7 +114,11 @@ module @cross_column_shmem_falls_through_to_dma {
   }
 
   aie.device(npu2) @devB {
-    %shim_0 = aie.tile(0, 0)
+    // shim at column 1 (distinct from devA's column-0 shim) so devB's
+    // tile set is NOT a subset of devA's; preserves the offset path that
+    // pushes devB's tile_0_2 to tile_1_2 (the cross-column shmem case
+    // this fixture pins).
+    %shim_0 = aie.tile(1, 0)
     %tile_0_2 = aie.tile(0, 2)
 
     // Intermediate input: LPDDR5 → compute tile (fusible, matching fusion_group).

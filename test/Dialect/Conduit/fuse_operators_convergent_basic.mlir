@@ -122,7 +122,10 @@ module @fuse_operators_convergent_basic {
   // Producer 2 — "up" GEMV-like.
   aie.device(npu2) @devUp {
     %shim   = aie.tile(0, 0)
-    %tile_u = aie.tile(0, 2)
+    // Compute tile at row 3 (distinct from devGate's row-2 compute) so
+    // devUp's tile set is not a subset of devGate's; this preserves the
+    // offset path the original CHECK-DAG channel lookups assume.
+    %tile_u = aie.tile(0, 3)
 
     aie.objectfifo @ext_in_up(%shim, {%tile_u}, 2 : i32)
         : !aie.objectfifo<memref<128xbf16>>
@@ -181,7 +184,10 @@ module @fuse_operators_convergent_basic {
   // becomes TWO @fused_intermediate_N channels (NOT one multi-producer).
   aie.device(npu2) @devMul {
     %shim   = aie.tile(0, 0)
-    %tile_c = aie.tile(0, 2)
+    // Compute tile at row 4 (distinct from devGate row-2 + devUp row-3
+    // compute) so devMul's tile set is not a subset of the merged
+    // (devGate+devUp) device's tiles after the first pairwise merge step.
+    %tile_c = aie.tile(0, 4)
 
     aie.objectfifo @consume_gate(%shim, {%tile_c}, 2 : i32)
         {fusion_group = "swiglu_fg0", fusion_index = 0 : i32}
