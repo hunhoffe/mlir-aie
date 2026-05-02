@@ -52,6 +52,7 @@
 #include "DeviceMergeUtils.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/Conduit/IR/ConduitDialect.h"
 
 #include "mlir/IR/Builders.h"
@@ -547,6 +548,27 @@ struct ConduitFuseOperatorsPass
     if (devices.size() < 2) {
       // Nothing to fuse.
       return;
+    }
+
+    // Task #82 pre-tag: stamp every put/get_memref op with the source-IR
+    // device index (its position in module-walk order).  The tag survives
+    // the iterative pairwise merge (Step 8 moves A-side ops and clones
+    // B-side ops via IRMapping; both preserve discardable attrs), so the
+    // post-merge Step 9 reorder can permute the merged sequence's block
+    // args back into source-IR producer-device declaration order even
+    // when classifyConvergent's role-1 swap made a later-declared
+    // producer the final absorber.  See Step 9 below for full rationale.
+    {
+      for (size_t srcIdx = 0; srcIdx < devices.size(); ++srcIdx) {
+        auto idxAttr = builder.getI64IntegerAttr(static_cast<int64_t>(srcIdx));
+        devices[srcIdx].walk([&](mlir::Operation *op) {
+          llvm::StringRef nm = op->getName().getStringRef();
+          if (nm == "conduit.put_memref" || nm == "conduit.get_memref" ||
+              nm == "conduit.put_memref_async" ||
+              nm == "conduit.get_memref_async")
+            op->setAttr("_source_device_index", idxAttr);
+        });
+      }
     }
 
     int fuseCount = 0;
@@ -1629,6 +1651,255 @@ struct ConduitFuseOperatorsPass
                   static_cast<unsigned>(origTypesB.size()), deadA, deadB))) {
             signalPassFailure();
             return;
+          }
+        }
+      }
+    }
+
+    // --- Step 9 (Task #82): Reorder merged runtime_sequence block args
+    // by source-IR producer-device declaration order.
+    //
+    // The iterative pairwise merge (Steps 1-8) chooses the absorber based
+    // on classifyConvergent's role-1 swap, NOT on source-IR position.  For
+    // K>=2 convergent fusions this can place the SECOND-declared
+    // producer's args ahead of the FIRST-declared producer's args in the
+    // merged sequence (e.g. swiglu: devUp args precede devGate args).
+    //
+    // Host code binds buffer objects to runtime_sequence args by source-
+    // IR producer-device declaration order, so the inversion is a silent
+    // semantic bug — invisible with symmetric inputs (gate == up), only
+    // observable with non-symmetric input shapes.  Pinned by
+    // `convergent_merge_order_stability.mlir`.
+    //
+    // Design choice: REORDER-AFTER-MERGE (option A in the Task #82 design),
+    // not change-merge-order (option B).  classifyConvergent's role-1 swap
+    // is structural — it ensures A's outputs are matched against B's
+    // inputs — and changing the merge order would require reworking the
+    // per-iteration matching logic (Steps 1-3) and the
+    // rewriteHostConfigureOnDeviceMerge fold path.  A final post-merge
+    // reorder is local, applies uniformly across 1:1 + convergent +
+    // multi-fusion pipelines, and is a no-op when the natural merge order
+    // already matches source IR (1:1 fusion: A absorbs B → A's args come
+    // first → already source-IR-order).
+    //
+    // Mechanism: stable-sort merged seq block args by `_source_device_index`
+    // tag (recorded BEFORE any merges).  Renumber `arg_index` attrs on
+    // every surviving put/get_memref op, apply the same permutation to
+    // host-side `aiex.run` operands targeting this seq, and strip the
+    // tags.  No-op for sequences whose args are already in source-IR
+    // order.
+    {
+      llvm::SmallVector<AIE::DeviceOp> survivingDevices;
+      module.walk([&](AIE::DeviceOp d) { survivingDevices.push_back(d); });
+      for (AIE::DeviceOp d : survivingDevices) {
+        llvm::SmallVector<mlir::Operation *> seqs;
+        for (mlir::Operation &op : d.getBodyRegion().front()) {
+          if (op.getName().getStringRef() == "aie.runtime_sequence" &&
+              op.getNumRegions() > 0)
+            seqs.push_back(&op);
+        }
+        for (mlir::Operation *seqOp : seqs) {
+          mlir::Block &body = seqOp->getRegion(0).front();
+          unsigned numArgs = body.getNumArguments();
+
+          // Collect arg → source_device_index from put/get_memref ops.
+          // Multiple ops can share an arg_index (Task #81 alias case);
+          // they MUST agree on source_device_index (a single block arg
+          // references one upstream host buffer in one source device).
+          llvm::SmallVector<std::optional<int64_t>> argSrc(numArgs);
+          bool conflict = false;
+          for (mlir::Operation &op : body) {
+            llvm::StringRef nm = op.getName().getStringRef();
+            if (nm != "conduit.put_memref" && nm != "conduit.get_memref" &&
+                nm != "conduit.put_memref_async" &&
+                nm != "conduit.get_memref_async")
+              continue;
+            auto argIdxAttr =
+                op.getAttrOfType<mlir::IntegerAttr>("arg_index");
+            auto srcIdxAttr =
+                op.getAttrOfType<mlir::IntegerAttr>("_source_device_index");
+            if (!argIdxAttr || !srcIdxAttr)
+              continue;
+            int64_t argIdxSigned = argIdxAttr.getInt();
+            if (argIdxSigned < 0 ||
+                static_cast<unsigned>(argIdxSigned) >= numArgs)
+              continue;
+            unsigned argIdx = static_cast<unsigned>(argIdxSigned);
+            int64_t srcIdx = srcIdxAttr.getInt();
+            if (argSrc[argIdx].has_value() && *argSrc[argIdx] != srcIdx) {
+              op.emitWarning("conduit-fuse-operators: arg_index ")
+                  << argIdx << " bound to ops from multiple source devices ("
+                  << *argSrc[argIdx] << " and " << srcIdx
+                  << "); skipping arg-order reorder for @"
+                  << mlir::cast<AIE::RuntimeSequenceOp>(seqOp).getSymName();
+              conflict = true;
+              break;
+            }
+            argSrc[argIdx] = srcIdx;
+          }
+
+          // Helper: strip the tag from every op in the body.  Called on
+          // every exit path so the discardable attr never leaks
+          // downstream.
+          auto stripTags = [&]() {
+            for (mlir::Operation &op : body)
+              op.removeAttr("_source_device_index");
+          };
+
+          if (conflict || numArgs < 2) {
+            stripTags();
+            continue;
+          }
+
+          // Build sort key per arg position; orphan args (no referencing
+          // put/get_memref) get a sentinel that sorts last, preserving
+          // their relative order via stable_sort.
+          int64_t kSentinel = std::numeric_limits<int64_t>::max();
+          llvm::SmallVector<int64_t> srcKey(numArgs, kSentinel);
+          bool anyReal = false;
+          for (unsigned i = 0; i < numArgs; ++i)
+            if (argSrc[i].has_value()) {
+              srcKey[i] = *argSrc[i];
+              anyReal = true;
+            }
+          if (!anyReal) {
+            stripTags();
+            continue;
+          }
+
+          // Stable sort old positions by srcKey.  Stability preserves
+          // intra-source-device order (== original source-IR order
+          // within that device).
+          llvm::SmallVector<unsigned> permOldByNew(numArgs);
+          for (unsigned i = 0; i < numArgs; ++i)
+            permOldByNew[i] = i;
+          llvm::stable_sort(permOldByNew, [&](unsigned a, unsigned b) {
+            return srcKey[a] < srcKey[b];
+          });
+
+          bool isIdentity = true;
+          for (unsigned i = 0; i < numArgs; ++i)
+            if (permOldByNew[i] != i) {
+              isIdentity = false;
+              break;
+            }
+          if (isIdentity) {
+            stripTags();
+            continue;
+          }
+
+          // Defensive: post --dma-task-to-conduit, runtime_sequence block
+          // args are SSA-dead (put/get_memref reference them via
+          // arg_index attr, not SSA operand), so erase+re-add is safe.
+          // Bail with a warning if any arg still has SSA users.
+          bool hasUsers = false;
+          for (mlir::BlockArgument arg : body.getArguments())
+            if (!arg.use_empty()) {
+              hasUsers = true;
+              break;
+            }
+          if (hasUsers) {
+            seqOp->emitWarning(
+                "conduit-fuse-operators: runtime_sequence block args "
+                "still have SSA users; skipping Task #82 arg-order "
+                "reorder for safety");
+            stripTags();
+            continue;
+          }
+
+          // Snapshot old types + locs, then erase+re-add in new order.
+          llvm::SmallVector<mlir::Type> oldTypes;
+          llvm::SmallVector<mlir::Location> oldLocs;
+          oldTypes.reserve(numArgs);
+          oldLocs.reserve(numArgs);
+          for (mlir::BlockArgument arg : body.getArguments()) {
+            oldTypes.push_back(arg.getType());
+            oldLocs.push_back(arg.getLoc());
+          }
+          llvm::SmallVector<unsigned> oldToNew(numArgs);
+          for (unsigned newIdx = 0; newIdx < numArgs; ++newIdx)
+            oldToNew[permOldByNew[newIdx]] = newIdx;
+
+          for (int i = static_cast<int>(numArgs) - 1; i >= 0; --i)
+            body.eraseArgument(static_cast<unsigned>(i));
+          for (unsigned newIdx = 0; newIdx < numArgs; ++newIdx) {
+            unsigned oldIdx = permOldByNew[newIdx];
+            body.addArgument(oldTypes[oldIdx], oldLocs[oldIdx]);
+          }
+
+          // Renumber arg_index attrs and strip tags.  Also collect the
+          // surviving put/get_memref ops keyed by their NEW arg_index so we
+          // can rewrite them into source-order at the head of the body
+          // (the lit pin uses CHECK / CHECK-SAME which require textual
+          // order to mirror arg_index order; functionally only the attr
+          // matters but textual order is the durable readability contract).
+          llvm::SmallVector<std::pair<unsigned, mlir::Operation *>>
+              orderedPutGets;
+          for (mlir::Operation &op : body) {
+            llvm::StringRef nm = op.getName().getStringRef();
+            op.removeAttr("_source_device_index");
+            if (nm != "conduit.put_memref" && nm != "conduit.get_memref" &&
+                nm != "conduit.put_memref_async" &&
+                nm != "conduit.get_memref_async")
+              continue;
+            auto argIdxAttr =
+                op.getAttrOfType<mlir::IntegerAttr>("arg_index");
+            if (!argIdxAttr)
+              continue;
+            int64_t oldIdxSigned = argIdxAttr.getInt();
+            if (oldIdxSigned < 0 ||
+                static_cast<unsigned>(oldIdxSigned) >= numArgs)
+              continue;
+            unsigned newIdx = oldToNew[static_cast<unsigned>(oldIdxSigned)];
+            op.setAttr("arg_index",
+                       mlir::IntegerAttr::get(argIdxAttr.getType(),
+                                              static_cast<int64_t>(newIdx)));
+            orderedPutGets.emplace_back(newIdx, &op);
+          }
+
+          // Stable-sort the put/get ops by new arg_index, then move them to
+          // the front of the body in that order.  Stable so that an
+          // arg_index alias (Task #81 K=2 case) preserves the relative
+          // textual order of co-aliased ops.  We place them in front of
+          // whatever the current first op is and reverse the iteration so
+          // the lowest-index op ends up first.  SSA tokens defined by
+          // these ops are still consumed by later wait_all ops, which
+          // remain in their existing order; defs precede uses since the
+          // put/get ops move to the head of the block.
+          llvm::stable_sort(orderedPutGets,
+                            [](const std::pair<unsigned, mlir::Operation *> &a,
+                               const std::pair<unsigned, mlir::Operation *> &b) {
+                              return a.first < b.first;
+                            });
+          if (!orderedPutGets.empty() && !body.empty()) {
+            for (auto it = orderedPutGets.rbegin();
+                 it != orderedPutGets.rend(); ++it)
+              it->second->moveBefore(&body, body.begin());
+          }
+
+          // Permute host-side aiex.run operands targeting this seq so
+          // the host ABI moves with the device-side reorder.  Skip runs
+          // whose arity disagrees (reconcileHostRunArgsAfterTrim would
+          // have surfaced the mismatch already).
+          llvm::StringRef seqSymName =
+              mlir::cast<AIE::RuntimeSequenceOp>(seqOp).getSymName();
+          llvm::SmallVector<AIEX::RunOp> hostRuns;
+          module.walk([&](AIEX::RunOp run) {
+            if (run.getRuntimeSequenceSymbol() == seqSymName)
+              hostRuns.push_back(run);
+          });
+          for (AIEX::RunOp run : hostRuns) {
+            if (run.getArgs().size() != numArgs)
+              continue;
+            llvm::SmallVector<mlir::Value> newOperands(numArgs);
+            for (unsigned newIdx = 0; newIdx < numArgs; ++newIdx)
+              newOperands[newIdx] = run.getArgs()[permOldByNew[newIdx]];
+            mlir::OpBuilder rb(run);
+            auto newRun = rb.create<AIEX::RunOp>(
+                run.getLoc(), run.getRuntimeSequenceSymbolAttr(),
+                newOperands);
+            run.erase();
+            (void)newRun;
           }
         }
       }
