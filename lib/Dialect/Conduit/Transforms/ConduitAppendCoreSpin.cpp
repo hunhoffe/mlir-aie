@@ -78,8 +78,8 @@ struct ConduitAppendCoreSpinPass
       if (body.empty())
         return;
       mlir::Block &block = body.front();
-      auto endOp = mlir::dyn_cast_or_null<xilinx::AIE::EndOp>(
-          block.getTerminator());
+      auto endOp =
+          mlir::dyn_cast_or_null<xilinx::AIE::EndOp>(block.getTerminator());
       if (!endOp)
         return; // No aie.end terminator — skip (malformed core).
 

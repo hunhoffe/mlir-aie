@@ -180,8 +180,8 @@ static int64_t maxColInDevice(AIE::DeviceOp device) {
 static bool deviceTilesSubsetOf(AIE::DeviceOp devB, AIE::DeviceOp devA) {
   llvm::SmallSet<std::pair<int64_t, int64_t>, 8> aTiles;
   devA.walk([&](AIE::TileOp t) {
-    aTiles.insert({static_cast<int64_t>(t.getCol()),
-                   static_cast<int64_t>(t.getRow())});
+    aTiles.insert(
+        {static_cast<int64_t>(t.getCol()), static_cast<int64_t>(t.getRow())});
   });
   bool subset = true;
   devB.walk([&](AIE::TileOp t) {
@@ -972,8 +972,7 @@ struct ConduitFuseOperatorsPass
       // devB's cores onto distinct columns and prevent a downstream
       // --conduit-fuse-core-bodies pass from merging the cores.
       int64_t colMaxA = maxColInDevice(devA);
-      int64_t colOffset =
-          deviceTilesSubsetOf(devB, devA) ? 0 : colMaxA + 1;
+      int64_t colOffset = deviceTilesSubsetOf(devB, devA) ? 0 : colMaxA + 1;
       offsetDeviceTiles(devB, colOffset);
 
       // --- Step 5: Emit module-level conduit.create for each matched pair. ---

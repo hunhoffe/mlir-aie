@@ -184,8 +184,8 @@ int main(int argc, const char *argv[]) {
     for (int j = 0; j < IO_LEN; j++) {
       if (buf_out_mul[j] != ref_mul[j]) {
         if (errors < 16) {
-          std::cout << "Invocation " << inv << " out_mul mismatch at ["
-                    << j << "]: expected 0x" << std::hex << std::setw(4)
+          std::cout << "Invocation " << inv << " out_mul mismatch at [" << j
+                    << "]: expected 0x" << std::hex << std::setw(4)
                     << std::setfill('0') << ref_mul[j] << " actual 0x"
                     << std::setw(4) << std::setfill('0') << buf_out_mul[j]
                     << std::dec << std::endl;
@@ -194,8 +194,8 @@ int main(int argc, const char *argv[]) {
       }
       if (buf_out_aux[j] != ref_aux_val) {
         if (errors < 16) {
-          std::cout << "Invocation " << inv << " out_aux mismatch at ["
-                    << j << "]: expected 0x" << std::hex << std::setw(4)
+          std::cout << "Invocation " << inv << " out_aux mismatch at [" << j
+                    << "]: expected 0x" << std::hex << std::setw(4)
                     << std::setfill('0') << ref_aux_val << " actual 0x"
                     << std::setw(4) << std::setfill('0') << buf_out_aux[j]
                     << std::dec << std::endl;

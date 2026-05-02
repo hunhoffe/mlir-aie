@@ -43,9 +43,10 @@
 // so erasing block args is the only signature update needed.
 //
 // Pipeline placement (aiecc.cpp, --use-conduit branch): AFTER
-// `--conduit-fuse-channels` and BEFORE `--conduit-depth-promote, --conduit-to-dma`.
-// Running last among the fusion passes means it picks up dead args introduced
-// by any earlier fusion step regardless of which one created them.
+// `--conduit-fuse-channels` and BEFORE `--conduit-depth-promote,
+// --conduit-to-dma`. Running last among the fusion passes means it picks up
+// dead args introduced by any earlier fusion step regardless of which one
+// created them.
 //
 // Run with:  aie-opt --conduit-prune-runtime-seq-args <input.mlir>
 //

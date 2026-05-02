@@ -1538,7 +1538,8 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
     // ops back to aiex.dma_configure_task_for keyed on arg_index.  No-op for
     // un-fused pipelines (early exit when no dead args present).
     conduitPipeline += ",conduit-prune-runtime-seq-args";
-    conduitPipeline += ",conduit-depth-promote,conduit-to-dma,conduit-append-core-spin";
+    conduitPipeline +=
+        ",conduit-depth-promote,conduit-to-dma,conduit-append-core-spin";
     if (verbose) {
       llvm::outs() << "Conduit pipeline: " << conduitPipeline << "\n";
       llvm::outs().flush();

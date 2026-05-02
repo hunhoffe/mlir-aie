@@ -131,8 +131,7 @@ void mergeRuntimeSequencesSimple(mlir::Operation *&seqA,
           if (auto idxAttr =
                   op->getAttrOfType<mlir::IntegerAttr>("arg_index")) {
             int64_t oldIdx = idxAttr.getInt();
-            if (oldIdx >= 0 &&
-                static_cast<size_t>(oldIdx) < devBArgCount) {
+            if (oldIdx >= 0 && static_cast<size_t>(oldIdx) < devBArgCount) {
               int64_t newIdx = oldIdx + static_cast<int64_t>(argOffsetForB);
               op->setAttr("arg_index",
                           mlir::IntegerAttr::get(idxAttr.getType(), newIdx));
