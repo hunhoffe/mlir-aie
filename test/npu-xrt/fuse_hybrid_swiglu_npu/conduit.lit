@@ -23,9 +23,12 @@
 //   * `test/npu-xrt/fuse_core_bodies_npu/conduit.lit` — core-body loop
 //     fusion component (Add → Mul 1:1 chain) verified in isolation with
 //     --conduit-fuse-core-bodies-flag --conduit-fuse-spatial.  Hybrid
-//     fixture extends the pattern: mul → sink chain via fusion_group=
-//     "mulsink_cb", and per its docstring same-tile=true is what allows
-//     mul + sink to land on one tile and core-body fuse.
+//     fixture extends the pattern: mul → sink chain is merged purely by
+//     aie-combine-device{same-tile=true} (gated by --conduit-fuse-core-
+//     bodies-flag) — both cores already live on tile(0,2) so no
+//     additional fusion-group annotation is needed (and adding one
+//     would trigger --conduit-fuse-operators's mixed convergent + 1:1
+//     scope-out; locked Q2 2026-04-26).
 //   * `test/npu-xrt/fuse_channels_npu/conduit.lit` — channel annotation
 //     pass component (single-device producer-side same-tile grouping)
 //     verified in isolation with --conduit-fuse-channels-flag.  Hybrid
@@ -39,17 +42,22 @@
 //
 // Pipeline composition (under all three flags):
 //   1. --conduit-fuse-spatial → --conduit-fuse-operators:
-//      a. K=2 convergent merge: devGate's @inter_gate + devUp's @inter_up
-//         + devMul's @consume_gate + @consume_up (all sharing fusion_group=
-//         "swiglu_fg0", paired by fusion_index=0/1) collapse to two
-//         @fused_intermediate_N channels (per locked Track 3 design;
-//         consumer-side stays single-producer per-channel).
-//      b. 1:1 spatial merge: devMul's @mul_inter + devSink's @consume_mul
-//         (sharing fusion_group="mulsink_cb") pair as a chain.
+//      K=2 convergent merge: devGate's @inter_gate + devUp's @inter_up
+//      + devMul's @consume_gate + @consume_up (all sharing fusion_group=
+//      "swiglu_fg0", paired by fusion_index=0/1) collapse to two
+//      @fused_intermediate_N channels (per locked Track 3 design;
+//      consumer-side stays single-producer per-channel).
+//      The devMul → devSink 1:1 leg is intentionally NOT annotated for
+//      --conduit-fuse-operators.  Mixing convergent + 1:1 fusion-group
+//      modes is a deliberate scope-out (locked Q2 design 2026-04-26;
+//      rejection pinned by
+//      test/Dialect/Conduit/fuse_operators_convergent_mixed_fusion_groups_BUG.mlir).
+//      The 1:1 mul→sink merge is achieved by step 2 below instead.
 //   2. --conduit-fuse-core-bodies-flag → routes --aie-combine-device with
-//      same-tile=true (per fuse_core_bodies_npu/conduit.lit).  The
-//      mul+sink pair lands on the SAME compute tile, then core-body
-//      fusion merges the per-iteration loop bodies into one core; the
+//      same-tile=true (per fuse_core_bodies_npu/conduit.lit).  Because
+//      both devMul and devSink already place their cores on tile(0,2),
+//      combine-device merges the two devices; core-body fusion then
+//      merges their per-iteration loop bodies into one core, and the
 //      @mul_inter / @consume_mul intermediate is erased.  Per
 //      fuse_core_bodies_npu, same-tile=true is required for core-body
 //      merging — without the flag, spatial fuse alone routes combine-

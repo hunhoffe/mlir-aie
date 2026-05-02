@@ -22,18 +22,26 @@
 // Pipeline composition (in the order the passes run inside aiecc.cpp under
 // the three flags):
 //   1. --conduit-fuse-spatial → --conduit-fuse-operators:
-//      a. K=2 convergent merge of devGate + devUp → devMul (paired via
-//         fusion_group="swiglu_fg0", fusion_index=0/1) — produces two
-//         @fused_intermediate_N channels per Track 3 design (NOT one
-//         multi-producer channel; preserves Pass C single-producer
-//         per-channel invariant).
-//      b. 1:1 spatial merge of devMul → devSink (paired via shared
-//         fusion_group="mulsink_cb").
+//      K=2 convergent merge of devGate + devUp → devMul (paired via
+//      fusion_group="swiglu_fg0", fusion_index=0/1) — produces two
+//      @fused_intermediate_N channels per Track 3 design (NOT one
+//      multi-producer channel; preserves Pass C single-producer
+//      per-channel invariant).
+//      NOTE: the devMul → devSink 1:1 leg is NOT annotated for
+//      --conduit-fuse-operators (no shared fusion_group on @mul_inter /
+//      @consume_mul).  Mixing convergent + 1:1 fusion-group modes is a
+//      deliberate scope-out in --conduit-fuse-operators (locked Q2 design
+//      2026-04-26; rejection pinned by
+//      test/Dialect/Conduit/fuse_operators_convergent_mixed_fusion_groups_BUG.mlir).
+//      The 1:1 mul→sink merge is instead achieved by step 2 below.
 //   2. --conduit-fuse-core-bodies-flag → routes --aie-combine-device with
-//      same-tile=true (per fuse_core_bodies_npu/conduit.lit).  Mul + sink
-//      cores land on the same compute tile and core-body fusion merges
-//      their per-iteration loop bodies into one core; the intermediate
-//      conduit pair @mul_inter / @consume_mul is erased.
+//      same-tile=true (per fuse_core_bodies_npu/conduit.lit).  Both mul
+//      and sink cores already live on tile(0,2), so combine-device with
+//      same-tile=true merges devMul + devSink into one device; core-body
+//      fusion then merges their per-iteration loop bodies into one core
+//      and the intermediate conduit pair @mul_inter / @consume_mul is
+//      erased.  This subsumes what the redundant mulsink_cb annotation
+//      would have requested from --conduit-fuse-operators.
 //   3. --conduit-fuse-channels-flag → fuse-channels (annotation-only)
 //      groups producer-side conduits on the same tile in the same parent
 //      block with disjoint live windows.  After (1)+(2) the merged mul+
@@ -50,8 +58,10 @@
 //            fusion_index=1).
 //   devMul:  consume_gate (fusion_group="swiglu_fg0", fusion_index=0) ×
 //            consume_up   (fusion_group="swiglu_fg0", fusion_index=1) →
-//            elementwise multiply → mul_inter (fusion_group="mulsink_cb").
-//   devSink: consume_mul (fusion_group="mulsink_cb") → produces TWO
+//            elementwise multiply → mul_inter (NOT fusion-group annotated;
+//            mul→sink 1:1 merge happens via aie-combine-device same-tile=true,
+//            not via --conduit-fuse-operators — see Pipeline note above).
+//   devSink: consume_mul (NOT fusion-group annotated) → produces TWO
 //            external outputs ext_out_a (= mul + 1.0) and ext_out_b
 //            (= mul + 2.0).  Distinct constants on the two outputs let
 //            channel-fusion mis-routing surface as a byte mismatch
@@ -219,9 +229,13 @@ module {
   aie.device(NPUDEVICE) @devMul {
 
     // ---- Consumer 1: eltmul (consume_gate × consume_up -> mul_inter) ----
-    // mul_inter is fusion_group="mulsink_cb" — paired with devSink's
-    // consume_mul; spatial fuse merges devMul + devSink, then core-body
-    // fuse erases the mul_inter / consume_mul intermediate.
+    // mul_inter is intentionally NOT fusion-group annotated.  devMul +
+    // devSink both live on tile(0,2), so aie-combine-device{same-tile=true}
+    // (gated by --conduit-fuse-core-bodies-flag) merges them into one
+    // device; core-body fusion then erases the mul_inter / consume_mul
+    // intermediate.  Annotating with a shared fusion_group here would
+    // trigger --conduit-fuse-operators's mixed-mode (convergent + 1:1)
+    // scope-out (locked Q2 design 2026-04-26).
     %shim_c = aie.tile(0, 0)
     %tile_c = aie.tile(0, 2)
 
@@ -234,7 +248,6 @@ module {
         : !aie.objectfifo<memref<64xbf16>>
 
     aie.objectfifo @mul_inter (%tile_c, {%shim_c}, 2 : i32)
-        {fusion_group = "mulsink_cb"}
         : !aie.objectfifo<memref<64xbf16>>
 
     %core_c = aie.core(%tile_c) {
@@ -310,7 +323,6 @@ module {
     %tile_s = aie.tile(0, 2)
 
     aie.objectfifo @consume_mul (%shim_s, {%tile_s}, 2 : i32)
-        {fusion_group = "mulsink_cb"}
         : !aie.objectfifo<memref<64xbf16>>
 
     aie.objectfifo @ext_out_a (%tile_s, {%shim_s}, 1 : i32)
