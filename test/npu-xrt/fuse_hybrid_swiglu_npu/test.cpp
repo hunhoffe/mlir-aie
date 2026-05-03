@@ -43,6 +43,19 @@
 // Max output values (50, 51) are well within bf16-exact integer range
 // (≤ 256), so byte-equivalence to the host-computed reference is
 // meaningful even with the truncate-toward-zero bf16 conversion below.
+//
+// Reference source: when --expected-a / --expected-b CLI args are
+// provided, the reference is loaded byte-for-byte from on-disk .bin files
+// produced by the separately-authored gen_reference.py (Apache-2.0,
+// numpy, ~150 LoC, derived from the SPEC text — closes validation
+// gap 2 "independently-authored reference").  When --gate-in / --up-in
+// CLI args are provided, the inputs are likewise loaded from disk
+// (closes validation gap 3 "asymmetric input coverage" — gen_reference.py
+// can produce a regime where gate_in[j] != up_in[j], detecting
+// wire-swap bugs that symmetric inputs would hide).
+// If those CLI args are NOT provided, the harness falls back to the
+// original symmetric inline path (gate=up=(j%8), reference computed in
+// C++) so bare invocations remain debuggable without lit.
 
 #include <bits/stdc++.h>
 #include <chrono>
@@ -79,9 +92,42 @@ static float bf16_to_float(uint16_t b) {
   return f;
 }
 
+// Read exactly IO_LEN bf16 elements (= IO_SIZE bytes) from `path` into
+// `out`.  Returns true on success.  Logs and returns false otherwise so
+// the harness can surface a clear failure rather than crashing.
+static bool load_bf16_bin(const std::string &path, std::vector<uint16_t> &out) {
+  out.assign(IO_LEN, 0);
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    std::cout << "ERROR: cannot open " << path << "\n";
+    return false;
+  }
+  f.read(reinterpret_cast<char *>(out.data()), IO_SIZE);
+  if (!f || f.gcount() != IO_SIZE) {
+    std::cout << "ERROR: short read from " << path << " (got " << f.gcount()
+              << " bytes, expected " << IO_SIZE << ")\n";
+    return false;
+  }
+  return true;
+}
+
 int main(int argc, const char *argv[]) {
   cxxopts::Options options("fuse_hybrid_swiglu_npu");
   test_utils::add_default_options(options);
+  // Optional file-backed reference inputs/outputs.  When all four are
+  // provided, the harness validates HW output against the on-disk
+  // reference produced by gen_reference.py.  When omitted, the harness
+  // falls back to the legacy symmetric inline ramp + inline reference
+  // (preserves bare-invocation debuggability without lit).
+  options.add_options()(
+      "gate-in", "path to bf16 gate_in.bin (IO_LEN elems)",
+      cxxopts::value<std::string>()->default_value(""))(
+      "up-in", "path to bf16 up_in.bin (IO_LEN elems)",
+      cxxopts::value<std::string>()->default_value(""))(
+      "expected-a", "path to bf16 expected_a.bin (IO_LEN elems)",
+      cxxopts::value<std::string>()->default_value(""))(
+      "expected-b", "path to bf16 expected_b.bin (IO_LEN elems)",
+      cxxopts::value<std::string>()->default_value(""));
 
   cxxopts::ParseResult vm;
   test_utils::parse_options(argc, argv, options, vm);
@@ -129,15 +175,33 @@ int main(int argc, const char *argv[]) {
   auto bo_out_b =
       xrt::bo(device, IO_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(6));
 
-  // Symmetric bf16 ramp: gate[j] = up[j] = (j % 8), all bf16-exact.
+  // Inputs: load from --gate-in / --up-in if provided (this is what the
+  // lit RUN line does, sourcing the bytes from gen_reference.py); else
+  // fall back to the symmetric ramp gate[j] = up[j] = (j % 8).
   uint16_t *buf_gate = bo_gate.map<uint16_t *>();
   uint16_t *buf_up = bo_up.map<uint16_t *>();
-  std::vector<uint16_t> input_vec(IO_LEN);
-  for (int j = 0; j < IO_LEN; j++) {
-    input_vec[j] = float_to_bf16(static_cast<float>(j % 8));
+  std::vector<uint16_t> gate_vec(IO_LEN);
+  std::vector<uint16_t> up_vec(IO_LEN);
+  const std::string gate_in_path = vm["gate-in"].as<std::string>();
+  const std::string up_in_path = vm["up-in"].as<std::string>();
+  const bool inputs_from_disk = !gate_in_path.empty() && !up_in_path.empty();
+  if (inputs_from_disk) {
+    if (!load_bf16_bin(gate_in_path, gate_vec))
+      return 1;
+    if (!load_bf16_bin(up_in_path, up_vec))
+      return 1;
+    if (verbosity >= 1)
+      std::cout << "Loaded inputs from " << gate_in_path << " + "
+                << up_in_path << "\n";
+  } else {
+    for (int j = 0; j < IO_LEN; j++) {
+      uint16_t v = float_to_bf16(static_cast<float>(j % 8));
+      gate_vec[j] = v;
+      up_vec[j] = v;
+    }
   }
-  std::memcpy(buf_gate, input_vec.data(), IO_SIZE);
-  std::memcpy(buf_up, input_vec.data(), IO_SIZE);
+  std::memcpy(buf_gate, gate_vec.data(), IO_SIZE);
+  std::memcpy(buf_up, up_vec.data(), IO_SIZE);
 
   uint16_t *buf_out_a = bo_out_a.map<uint16_t *>();
   uint16_t *buf_out_b = bo_out_b.map<uint16_t *>();
@@ -166,16 +230,31 @@ int main(int argc, const char *argv[]) {
   run.set_arg(5, bo_out_a);
   run.set_arg(6, bo_out_b);
 
-  // Reference: out_a[j] = mul[j] + 1.0, out_b[j] = mul[j] + 2.0,
+  // Reference: load from --expected-a / --expected-b if provided
+  // (independently authored by gen_reference.py from the spec text);
+  // else compute inline: out_a[j] = mul[j] + 1.0, out_b[j] = mul[j] + 2.0,
   // mul[j] = gate[j] * up[j].  All ref values are bf16-exact ints.
   std::vector<uint16_t> ref_a(IO_LEN, 0);
   std::vector<uint16_t> ref_b(IO_LEN, 0);
-  for (int j = 0; j < IO_LEN; j++) {
-    float a = bf16_to_float(input_vec[j]);
-    float b = bf16_to_float(input_vec[j]);
-    float m = a * b;
-    ref_a[j] = float_to_bf16(m + 1.0f);
-    ref_b[j] = float_to_bf16(m + 2.0f);
+  const std::string exp_a_path = vm["expected-a"].as<std::string>();
+  const std::string exp_b_path = vm["expected-b"].as<std::string>();
+  const bool ref_from_disk = !exp_a_path.empty() && !exp_b_path.empty();
+  if (ref_from_disk) {
+    if (!load_bf16_bin(exp_a_path, ref_a))
+      return 1;
+    if (!load_bf16_bin(exp_b_path, ref_b))
+      return 1;
+    if (verbosity >= 1)
+      std::cout << "Loaded reference from " << exp_a_path << " + "
+                << exp_b_path << "\n";
+  } else {
+    for (int j = 0; j < IO_LEN; j++) {
+      float a = bf16_to_float(gate_vec[j]);
+      float b = bf16_to_float(up_vec[j]);
+      float m = a * b;
+      ref_a[j] = float_to_bf16(m + 1.0f);
+      ref_b[j] = float_to_bf16(m + 2.0f);
+    }
   }
 
   int total_errors = 0;

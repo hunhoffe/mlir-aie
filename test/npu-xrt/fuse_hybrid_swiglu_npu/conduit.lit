@@ -140,8 +140,25 @@
 // `fuse_core_bodies_npu/conduit.lit`, `fuse_channels_npu/conduit.lit`,
 // `loadpdi/run.lit`, `vec_vec_add_objfifo_init/aie2.py`).
 //
+// Reference is independently authored by %S/gen_reference.py (numpy,
+// derived from the spec text — closes "validation gap 2: independently-
+// authored reference").  Two regimes run end-to-end:
+//   symmetric  — gate[j] = up[j] = (j%8)              (legacy coverage)
+//   asymmetric — gate[j] = (j%8), up[j] = (j%8)+1     (closes "validation
+//                                                      gap 3: gate/up
+//                                                      arg-mis-pairing
+//                                                      blind spot")
+// gen_reference.py writes 4 .bin files per regime (gate_in, up_in,
+// expected_a, expected_b — bf16 raw bits) into the per-test CWD.  The
+// test binary then loads the inputs + expected via --gate-in / --up-in /
+// --expected-a / --expected-b CLI args and byte-compares HW output to
+// the on-disk reference per invocation.
+//
 // RUN: cp %S/aie.mlir aie_arch.mlir
 // RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_4col/g' -i aie_arch.mlir
 // RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-spatial --conduit-fuse-core-bodies-flag --conduit-fuse-channels-flag --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
 // RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
-// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
+// RUN: %run_on_npu2% %python %S/gen_reference.py --regime symmetric --out-dir .
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin --gate-in gate_in_sym.bin --up-in up_in_sym.bin --expected-a expected_a_sym.bin --expected-b expected_b_sym.bin
+// RUN: %run_on_npu2% %python %S/gen_reference.py --regime asymmetric --out-dir .
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin --gate-in gate_in_asym.bin --up-in up_in_asym.bin --expected-a expected_a_asym.bin --expected-b expected_b_asym.bin
