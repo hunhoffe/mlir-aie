@@ -96,6 +96,17 @@ bool tryCollapsePuts(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
+  // Refuse on linked channels.  See isLinkedChannel docstring; empirical
+  // root-cause for the Llama prefill attn_scores GEMM hang (2026-05-03).
+  // Pinned by test/Dialect/Conduit/conduit_to_dma_b_channel_consolidation.mlir.
+  if (isLinkedChannel(scope, chanName)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — participates in aie.objectfifo.link; linked path "
+           "wants N separate paced configures, not collapsed dma_repeat";
+    return false;
+  }
+
   // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
   // Refuse to multiply.  0-indexed convention per Bug #98 / Task #39.
   if (getDmaRepeatOr0(createOp) != 0)
@@ -202,6 +213,16 @@ bool tryCollapseGets(Create createOp, PatternRewriter &rewriter) {
   for (auto &c : llvm::drop_begin(chains))
     if (chainShape(c) != refShape)
       return false;
+
+  // Refuse on linked channels.  Symmetric to tryCollapsePuts above; see
+  // isLinkedChannel docstring.
+  if (isLinkedChannel(scope, chanName)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — participates in aie.objectfifo.link; linked path "
+           "wants N separate paced configures, not collapsed dma_repeat";
+    return false;
+  }
 
   // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
   // 0-indexed convention per Bug #98 / Task #39.

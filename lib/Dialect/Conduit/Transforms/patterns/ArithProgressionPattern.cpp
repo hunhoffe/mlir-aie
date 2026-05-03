@@ -235,10 +235,18 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
-  // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
-  // 0-indexed convention per Bug #98 / Task #39.
-  if (getDmaRepeatOr0(createOp) != 0)
+  // Refuse on linked channels.  See isLinkedChannel docstring; same
+  // root-cause class as the homogeneous-repeat refusal — collapsing
+  // produces a single configure with an outer wrap+stride dim that
+  // does not compose with multi-round consumer pacing on the linked
+  // Pass C path.
+  if (isLinkedChannel(scope, chanName)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — participates in aie.objectfifo.link; linked path "
+           "wants N separate paced configures, not collapsed dma_repeat";
     return false;
+  }
 
   // Arith-progression on offsets[0]: offsets[i][0] == base + i × stride.
   ArrayRef<int64_t> firstOff = ref.getOffsetsAttr().asArrayRef();
@@ -416,10 +424,15 @@ bool tryCollapseArithGets(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
-  // Existing dma_repeat must be unset (= 0 additional fires = 1 total).
-  // 0-indexed convention per Bug #98 / Task #39.
-  if (getDmaRepeatOr0(createOp) != 0)
+  // Refuse on linked channels.  Symmetric to tryCollapseArithPuts above;
+  // see isLinkedChannel docstring.
+  if (isLinkedChannel(scope, chanName)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — participates in aie.objectfifo.link; linked path "
+           "wants N separate paced configures, not collapsed dma_repeat";
     return false;
+  }
 
   ArrayRef<int64_t> firstOff = ref.getOffsetsAttr().asArrayRef();
   if (firstOff.empty())

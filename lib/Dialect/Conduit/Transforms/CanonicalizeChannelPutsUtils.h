@@ -87,6 +87,21 @@ std::optional<uint32_t> tileBDCap(mlir::Operation *scope, mlir::Value tile);
 // AIEDMATasksToNPU.cpp:347-350 (shim runtime-sequence cap).
 std::optional<uint32_t> tileBDDimCap(mlir::Operation *scope, mlir::Value tile);
 
+/// Returns true if `chanName` participates in any aie.objectfifo.link
+/// (lowered to conduit.scatter/gather/transpose by Pass A) within `scope`.
+/// Channels on the linked path MUST NOT be collapsed by canon — the
+/// downstream Pass C link path (ConduitToDMALink.cpp) emits N separate
+/// paced configures for the linked-MM2S→memtile shape, and a collapsed
+/// (1 configure × dma_repeat=N-1) form does not compose with multi-round
+/// consumer pacing on the linked path. Verified empirically 2026-05-03 by
+/// hand-patch experiment on Llama prefill attn_scores GEMM
+/// (M=2048 K=2048 N=512); collapsed form hangs at HW dispatch with XRT
+/// timeout, paced form completes in <1ms with bf16 max_abs_diff 0.003261.
+/// Inspection pattern mirrors ConduitDepthPromotion.cpp:79-103
+/// (`collectLinkedConduitNames`): walk Scatter/Gather/Transpose ops and
+/// read their `src`/`srcs`/`dst`/`dsts` symbol-ref attrs.
+bool isLinkedChannel(mlir::Operation *scope, llvm::StringRef chanName);
+
 } // namespace xilinx::conduit::detail
 
 #endif // AIE_DIALECT_CONDUIT_TRANSFORMS_CANONICALIZECHANNELPUTSUTILS_H

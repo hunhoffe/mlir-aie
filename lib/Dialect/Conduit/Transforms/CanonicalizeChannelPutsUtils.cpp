@@ -170,6 +170,57 @@ std::optional<uint32_t> tileBDCap(Operation *scope, Value tile) {
                       static_cast<int>(tileOp.getRow()));
 }
 
+bool isLinkedChannel(Operation *scope, StringRef chanName) {
+  if (!scope)
+    return false;
+  // Inspection pattern mirrors ConduitDepthPromotion.cpp:79-103
+  // (`collectLinkedConduitNames`).  Walk Scatter/Gather/Transpose ops
+  // (the lowered form of aie.objectfifo.link emitted by Pass A) and
+  // check whether `chanName` appears as a `src`/`srcs`/`dst`/`dsts`
+  // symbol-ref attribute.  We scope the filter to the three relay ops
+  // rather than every op (collectLinkedConduitNames does the same)
+  // because the attribute names `src`/`dst`/`srcs`/`dsts` are also
+  // used elsewhere in MLIR and could otherwise produce false positives.
+  bool found = false;
+  auto match = [&](Operation *op) {
+    if (auto srcsAttr = op->getAttrOfType<ArrayAttr>("srcs")) {
+      for (Attribute s : srcsAttr)
+        if (auto sym = dyn_cast<FlatSymbolRefAttr>(s))
+          if (sym.getValue() == chanName) {
+            found = true;
+            return;
+          }
+    }
+    if (auto dstsAttr = op->getAttrOfType<ArrayAttr>("dsts")) {
+      for (Attribute d : dstsAttr)
+        if (auto sym = dyn_cast<FlatSymbolRefAttr>(d))
+          if (sym.getValue() == chanName) {
+            found = true;
+            return;
+          }
+    }
+    if (auto srcAttr = op->getAttrOfType<FlatSymbolRefAttr>("src"))
+      if (srcAttr.getValue() == chanName) {
+        found = true;
+        return;
+      }
+    if (auto dstAttr = op->getAttrOfType<FlatSymbolRefAttr>("dst"))
+      if (dstAttr.getValue() == chanName) {
+        found = true;
+        return;
+      }
+  };
+  scope->walk([&](Operation *op) {
+    if (!isa<ScatterOp, GatherOp, TransposeOp>(op))
+      return WalkResult::advance();
+    match(op);
+    if (found)
+      return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 std::optional<uint32_t> tileBDDimCap(Operation *scope, Value tile) {
   AIE::DeviceOp dev = scope->getParentOfType<AIE::DeviceOp>();
   if (!dev)

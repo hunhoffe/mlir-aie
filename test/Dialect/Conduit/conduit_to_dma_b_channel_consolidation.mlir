@@ -1,4 +1,4 @@
-//===- conduit_to_dma_b_channel_consolidation_BUG.mlir ------*- MLIR -*-===//
+//===- conduit_to_dma_b_channel_consolidation.mlir ----------*- MLIR -*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -8,16 +8,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// BUG pin (Sprint N+4, 2026-05-03): --conduit-to-dma over-collapses
-// structurally-identical IRON puts on a shim-MM2S → memtile linked
-// channel into a SINGLE output configure_task with `repeat_count = N-1`
-// (= N firmware fires).  This wedges hardware on the Llama prefill
-// `attn_scores` GEMM (M=2048 K=2048 N=512 num_invocations=16) — the
-// B-channel weight MM2S path hangs at the first dispatch with XRT
-// timeout.
+// Pin (Sprint N+4, 2026-05-03 → flipped to correct-pin once canon
+// refuse-to-collapse-on-link landed): canon
+// (--conduit-canonicalize-channel-puts) MUST NOT collapse 8 structurally-
+// identical IRON puts on a shim-MM2S → memtile LINKED channel into a
+// single configure_task with `repeat_count = 7`.  Pre-fix, canon's
+// HomogeneousRepeatPattern over-collapsed and Pass C surfaced a single
+// `{repeat_count = 7 : i32}` configure → wedged HW on the Llama prefill
+// `attn_scores` GEMM (M=2048 K=2048 N=512 num_invocations=16): B-channel
+// weight MM2S path hung at first dispatch with XRT timeout.
 //
 // Empirical proof of root cause (2026-05-03, gemm-handpatch-verify):
-//   * Captured failing conduit post-Pass-C IR has 8 such consolidated
+//   * Captured failing conduit post-Pass-C IR had 8 consolidated
 //     B-channel configures (one per shim col 0-7), each with
 //     `{repeat_count = 7 : i32}` (= 8 firmware fires consolidated from
 //     8 IRON puts paced 2/round × 4 rounds).
@@ -27,74 +29,64 @@
 //   * aiecc compiled the patched IR; NPU dispatch completed in <1ms,
 //     output matched numpy bf16 matmul reference (max_abs_diff =
 //     0.003261, well within bf16 K=2048 accumulation tolerance).
-// Consolidation is unambiguously the cause.
+// Canon's homogeneous-repeat collapse on a LINKED channel is the
+// unambiguous root cause.
 //
-// Root-cause area (per CLAUDE.md "Active Open Bugs" → row
-// "ConduitToDMALink.cpp Case B / join MM2S residual"):
-//   "the chain shape is still always-circular (% caseBEffectiveBDs)
-//   and inflates by nConsumerBuffers() * bd_repeat instead of
-//   collapsing via dma_repeat".  For shim-MM2S → memtile, the
-//   nConsumerBuffers()=putCount override fires (Common.h:315-326), the
-//   8 puts collapse into a single configure with repeat_count=7, and
-//   firmware front-loads all 8 transfers at start of round 1 instead
-//   of pacing them across 4 rounds interleaved with sibling A and C
-//   channels.
+// Root-cause area: canon, NOT Pass C.
+// `lib/Dialect/Conduit/Transforms/patterns/HomogeneousRepeatPattern.cpp::
+// tryCollapsePuts` was over-eager — it folded the 8 structurally-identical
+// puts into 1 put + `dma_repeat = 7`, then Pass C surfaced that verbatim
+// onto `configure_task.repeat_count`.  Pass C is faithful; canon was the
+// over-collapse site.  The CLAUDE.md "Active Open Bugs" Case B residual
+// row in ConduitToDMALink.cpp is adjacent but DIFFERENT — that row is the
+// always-circular chain shape; this case is the homogeneous-collapse
+// pattern firing on a shim-MM2S → memtile **linked** path where stateful's
+// correct shape is N separate paced configures.
 //
-// Fixture geometry (minimum to trigger the consolidation):
+// Fix shape (landed in this commit): canon's HomogeneousRepeatPattern
+// (and ArithProgressionPattern, symmetric) refuses to collapse when the
+// channel participates in any aie.objectfifo.link (lowered to
+// conduit.scatter / gather / transpose by Pass A).  Refusal happens
+// AFTER cheap structural matches BEFORE the dma_repeat / cap checks.
+// New helper: `xilinx::conduit::detail::isLinkedChannel(scope, chanName)`
+// in CanonicalizeChannelPutsUtils.{h,cpp}.  History: the wrong-current
+// pin (count-1 directive on the consolidated configure with a
+// repeat_count attr of 7) landed in acdb1d7415 and was flipped to the
+// correct-pin shape below in the same commit that landed the source fix.
+//
+// Fixture geometry (minimum to exercise the canon refusal):
 //   * 3 tiles: shim(0,0) → memtile(0,1) → compute(0,2).
 //   * @B_L3L2: shim-producer → memtile-consumer, depth=2.
 //   * @B_L2L1: memtile-producer → compute-consumer, depth=2.
-//   * aie.objectfifo.link [@B_L3L2] -> [@B_L2L1]([] [0]) — the LINK is
-//     what makes Pass C take Case B (shim-MM2S → memtile route through
-//     a memtile relay) instead of the direct-shim-MM2S → compute path.
+//   * aie.objectfifo.link [@B_L3L2] -> [@B_L2L1]([] [0]) — Pass A lowers
+//     this to conduit.scatter; isLinkedChannel sees @B_L3L2 in the
+//     scatter's `srcs` array → returns true → canon refuses to collapse.
 //   * Compute core: scf.for trip=∞ acquire/release(Consume, 1) on
 //     @B_L2L1 — same shape as the GEMM kernel core.
 //   * 8 IRON-emitted `aiex.dma_configure_task_for @B_L3L2` ops in the
 //     runtime_sequence, all STRUCTURALLY IDENTICAL: same %arg1, offset
 //     0, BD len 4096, no producer dims, no `repeat_count` attribute.
-//     This matches the GEMM B_L3L2_0 shape (lines 1460/1470/1620/
-//     1630/1844/1854/2036/2046 of the IRON-emitted pre-Pass-C IR;
-//     2 puts/round × 4 rounds = 8 total per col).
-//
-// CHECK lines below pin WRONG-CURRENT behavior (per CLAUDE.md
-// USER-LOCKED 2026-04-24 "Isolate bugs with a minimal lit test BEFORE
-// fixing"): exactly ONE shim-side B configure is emitted, carrying
-// `repeat_count = 7 : i32`.  Post-fix, the CHECK lines flip to pin the
-// CORRECT shape (8 separate configures with no/elided repeat_count, BD
-// len 4096 each, byte-identical-pacing to stateful) and the file is
-// renamed by dropping the `_BUG` suffix.
-//
-// Fix design target (per CLAUDE.md USER-LOCKED 2026-04-30 "Capture
-// stateful's actual emit BEFORE designing any Pass C emit-rule
-// change"): emit one configure per IRON put (the pre-collapse shape),
-// preserving the round-pacing the host runtime sequence expressed.
-// Stateful's reference shape for the same input was captured at
-// `/tmp/stateful-gemm-capture/input.mlir.prj/input_with_addresses.mlir`.
 //
 //===----------------------------------------------------------------------===//
 
 // Pipeline mirrors the bare `--use-conduit` aiecc pipeline (aiecc.cpp:1492-
-// 1508): objectfifo-to-conduit → dma-task-to-conduit → canon-channel-puts
-// → depth-promote → conduit-to-dma.  Canon-puts is the ACTUAL collapsing
-// pass; without it Pass C alone leaves the 8 puts as 8 separate configures.
-// Two-line metafix convention catches dialect-verifier-only failures the
-// bare FileCheck line misses (per CLAUDE.md locked design rule).
+// 1508).  Two-line metafix convention catches dialect-verifier-only
+// failures the bare FileCheck line misses (per CLAUDE.md locked design
+// rule).
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-canonicalize-channel-puts --conduit-depth-promote --conduit-to-dma %s | FileCheck %s
 // RUN: aie-opt --objectfifo-to-conduit --dma-task-to-conduit --conduit-canonicalize-channel-puts --conduit-depth-promote --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
 
 // CHECK-LABEL: aie.device(npu2)
 
-// BUG PIN: exactly ONE shim configure for @B_L3L2_shim_alloc inside the
-// runtime_sequence, carrying `repeat_count = 7 : i32` (= 8 firmware
-// fires consolidated from the 8 IRON puts).  The `dma_bd` line and the
-// `repeat_count = 7` attribute live on the same op as adjacent CHECK
-// lines.  Post-fix: the count-1 directive flips to count-8, the
-// `repeat_count` CHECK is dropped, and the file is renamed (drop the
-// `_BUG` suffix).
+// CORRECT PIN (post-fix): exactly EIGHT shim configures for
+// @B_L3L2_shim_alloc inside the runtime_sequence, each carrying
+// `aie.dma_bd(%{{.*}}, 0, 4096)` and NO `repeat_count` attribute.
+// Canon refused to collapse because @B_L3L2 participates in
+// aie.objectfifo.link; Pass C therefore emits one configure per IRON
+// put (byte-pacing-equivalent to stateful).
 // CHECK:         aie.runtime_sequence
-// CHECK-COUNT-1: aiex.dma_configure_task_for @B_L3L2_shim_alloc
-// CHECK:           aie.dma_bd(%{{.*}}, 0, 4096)
-// CHECK:         } {repeat_count = 7 : i32}
+// CHECK-COUNT-8: aiex.dma_configure_task_for @B_L3L2_shim_alloc
+// CHECK-NOT:       repeat_count
 // CHECK-NOT:     aiex.dma_configure_task_for @B_L3L2_shim_alloc
 
 // The shim_dma_allocation for the B-channel must be present and routed
@@ -102,7 +94,7 @@
 // the actual emit ordering.
 // CHECK:       aie.shim_dma_allocation @B_L3L2_shim_alloc(%{{.*}}, MM2S, {{[0-9]+}}) {conduit_channel = @B_L3L2}
 
-module @b_channel_consolidation_BUG {
+module @b_channel_consolidation {
   aie.device(npu2) {
     %shim = aie.tile(0, 0)
     %mem  = aie.tile(0, 1)
@@ -135,9 +127,10 @@ module @b_channel_consolidation_BUG {
     // 8 IRON-emitted MM2S puts on @B_L3L2.  All STRUCTURALLY IDENTICAL
     // (offset = 0, BD len = 4096, no producer dims, no repeat_count
     // attr) — matches the GEMM @B_L3L2_0 per-col shape (2 puts/round
-    // × 4 rounds).  Pass C currently consolidates these into a single
-    // configure with repeat_count = 7 (the BUG pinned by the CHECK
-    // lines above).
+    // × 4 rounds).  Post-fix, canon's HomogeneousRepeatPattern refuses
+    // to collapse because @B_L3L2 participates in aie.objectfifo.link;
+    // Pass C therefore emits 8 separate configures (the CORRECT shape
+    // pinned by the CHECK lines above).
     aie.runtime_sequence(%arg0: memref<32768xbf16>) {
       %t0 = aiex.dma_configure_task_for @B_L3L2 {
         aie.dma_bd(%arg0 : memref<32768xbf16>, 0, 4096) {burst_length = 0 : i32}
