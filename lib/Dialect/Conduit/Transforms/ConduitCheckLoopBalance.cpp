@@ -75,6 +75,22 @@ namespace xilinx::conduit {
 
 namespace {
 
+// "Loop forever" sentinel bounds.  Duplicated here from ObjectFifoToConduit.cpp
+// (canonical defs at :204 / :214) — a shared header is the better long-term
+// home, but the warning emit below is the only second consumer today, so a
+// local copy keeps this fix atomic.  Keep these in sync if either constant
+// moves.  See ObjectFifoToConduit.cpp:200-213 for the empirical 2026-05-03
+// validation context (companion commit aa20c968b1).
+//
+//  - kTripCountUnboundedSentinel: legacy `cmax = i64::MAX`-shaped bound
+//    (compared with `>=` since the original lowering may further widen it).
+//  - kAie24bitBdLoopSentinel: IRON's documented "loop forever" idiom using
+//    the AIE 24-bit BD-loop saturation value (0xFFFFFE = 2^24 - 2).  This
+//    value is BELOW kTripCountUnboundedSentinel, so the `>=` check alone
+//    never fires for IRON-emitted infinite-loop cores; matched exactly.
+static constexpr int64_t kTripCountUnboundedSentinel = int64_t{1} << 30;
+static constexpr int64_t kAie24bitBdLoopSentinel = (int64_t{1} << 24) - 2;
+
 /// Return the static trip count of an scf::ForOp, or -1 if not statically
 /// known.  Uses getStaticTripCount() which is available when all three of
 /// lb / ub / step are constants.
@@ -146,6 +162,20 @@ struct ConduitCheckLoopBalancePass
       int64_t tripCount = getStaticTripCount(forOp);
       if (tripCount < 0)
         return; // dynamic bounds — cannot check statically
+
+      // Suppress the warning for "loop forever" sentinel bounds: IRON's
+      // 24-bit BD-loop saturation idiom (0xFFFFFE) and the legacy
+      // i64::MAX-shaped bound both encode "termination is host-dispatch +
+      // lock-blocking, not iter-count".  Comparing such a bound against
+      // dma_repeat is virtually always > and produces a misleading
+      // "token deficit" warning.  Mirror the silent-skip already used in
+      // Pass A (ObjectFifoToConduit.cpp:715-716).  Companion commit
+      // aa20c968b1 (2026-05-03) added the kAie24bitBdLoopSentinel handling
+      // on the dma_repeat-stamping side; this is the second
+      // getStaticTripCount caller that needs the same awareness.
+      if (tripCount == kAie24bitBdLoopSentinel ||
+          tripCount >= kTripCountUnboundedSentinel)
+        return;
 
       if (tripCount > totalFires) {
         // Find the conduit.create to attach the warning to the declaration.
