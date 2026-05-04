@@ -712,8 +712,7 @@ inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
   // kTripCountUnboundedSentinel) and (b) IRON's 24-bit BD-loop saturation
   // sentinel (== kAie24bitBdLoopSentinel = 0xFFFFFE).  See the constant
   // definitions above for the empirical-validation context.
-  if (*trip == kAie24bitBdLoopSentinel ||
-      *trip >= kTripCountUnboundedSentinel)
+  if (*trip == kAie24bitBdLoopSentinel || *trip >= kTripCountUnboundedSentinel)
     return out;
 
   if (*trip <= 1)

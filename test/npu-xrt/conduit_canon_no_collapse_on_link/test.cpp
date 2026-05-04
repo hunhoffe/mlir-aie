@@ -9,8 +9,9 @@
 //===----------------------------------------------------------------------===//
 //
 // XRT host harness for the canon refuse-to-collapse-on-link smoke
-// (companion to test/Dialect/Conduit/conduit_to_dma_b_channel_consolidation.mlir
-// and to the empirical Llama-prefill GEMM hand-patch result, 2026-05-03).
+// (companion to
+// test/Dialect/Conduit/conduit_to_dma_b_channel_consolidation.mlir and to the
+// empirical Llama-prefill GEMM hand-patch result, 2026-05-03).
 //
 // Inputs:  64 bf16 ramp (input[j] = j, j = 0..63), all bf16-exact.
 // Outputs: 256 bf16, four identical replicas of the input slice.

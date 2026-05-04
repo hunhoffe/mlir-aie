@@ -1714,8 +1714,7 @@ struct ConduitFuseOperatorsPass
                 nm != "conduit.put_memref_async" &&
                 nm != "conduit.get_memref_async")
               continue;
-            auto argIdxAttr =
-                op.getAttrOfType<mlir::IntegerAttr>("arg_index");
+            auto argIdxAttr = op.getAttrOfType<mlir::IntegerAttr>("arg_index");
             auto srcIdxAttr =
                 op.getAttrOfType<mlir::IntegerAttr>("_source_device_index");
             if (!argIdxAttr || !srcIdxAttr)
@@ -1842,8 +1841,7 @@ struct ConduitFuseOperatorsPass
                 nm != "conduit.put_memref_async" &&
                 nm != "conduit.get_memref_async")
               continue;
-            auto argIdxAttr =
-                op.getAttrOfType<mlir::IntegerAttr>("arg_index");
+            auto argIdxAttr = op.getAttrOfType<mlir::IntegerAttr>("arg_index");
             if (!argIdxAttr)
               continue;
             int64_t oldIdxSigned = argIdxAttr.getInt();
@@ -1866,14 +1864,15 @@ struct ConduitFuseOperatorsPass
           // these ops are still consumed by later wait_all ops, which
           // remain in their existing order; defs precede uses since the
           // put/get ops move to the head of the block.
-          llvm::stable_sort(orderedPutGets,
-                            [](const std::pair<unsigned, mlir::Operation *> &a,
-                               const std::pair<unsigned, mlir::Operation *> &b) {
-                              return a.first < b.first;
-                            });
+          llvm::stable_sort(
+              orderedPutGets,
+              [](const std::pair<unsigned, mlir::Operation *> &a,
+                 const std::pair<unsigned, mlir::Operation *> &b) {
+                return a.first < b.first;
+              });
           if (!orderedPutGets.empty() && !body.empty()) {
-            for (auto it = orderedPutGets.rbegin();
-                 it != orderedPutGets.rend(); ++it)
+            for (auto it = orderedPutGets.rbegin(); it != orderedPutGets.rend();
+                 ++it)
               it->second->moveBefore(&body, body.begin());
           }
 
@@ -1896,8 +1895,7 @@ struct ConduitFuseOperatorsPass
               newOperands[newIdx] = run.getArgs()[permOldByNew[newIdx]];
             mlir::OpBuilder rb(run);
             auto newRun = rb.create<AIEX::RunOp>(
-                run.getLoc(), run.getRuntimeSequenceSymbolAttr(),
-                newOperands);
+                run.getLoc(), run.getRuntimeSequenceSymbolAttr(), newOperands);
             run.erase();
             (void)newRun;
           }

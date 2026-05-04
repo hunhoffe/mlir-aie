@@ -119,9 +119,8 @@ int main(int argc, const char *argv[]) {
   // reference produced by gen_reference.py.  When omitted, the harness
   // falls back to the legacy symmetric inline ramp + inline reference
   // (preserves bare-invocation debuggability without lit).
-  options.add_options()(
-      "gate-in", "path to bf16 gate_in.bin (IO_LEN elems)",
-      cxxopts::value<std::string>()->default_value(""))(
+  options.add_options()("gate-in", "path to bf16 gate_in.bin (IO_LEN elems)",
+                        cxxopts::value<std::string>()->default_value(""))(
       "up-in", "path to bf16 up_in.bin (IO_LEN elems)",
       cxxopts::value<std::string>()->default_value(""))(
       "expected-a", "path to bf16 expected_a.bin (IO_LEN elems)",
@@ -191,8 +190,8 @@ int main(int argc, const char *argv[]) {
     if (!load_bf16_bin(up_in_path, up_vec))
       return 1;
     if (verbosity >= 1)
-      std::cout << "Loaded inputs from " << gate_in_path << " + "
-                << up_in_path << "\n";
+      std::cout << "Loaded inputs from " << gate_in_path << " + " << up_in_path
+                << "\n";
   } else {
     for (int j = 0; j < IO_LEN; j++) {
       uint16_t v = float_to_bf16(static_cast<float>(j % 8));
@@ -245,8 +244,8 @@ int main(int argc, const char *argv[]) {
     if (!load_bf16_bin(exp_b_path, ref_b))
       return 1;
     if (verbosity >= 1)
-      std::cout << "Loaded reference from " << exp_a_path << " + "
-                << exp_b_path << "\n";
+      std::cout << "Loaded reference from " << exp_a_path << " + " << exp_b_path
+                << "\n";
   } else {
     for (int j = 0; j < IO_LEN; j++) {
       float a = bf16_to_float(gate_vec[j]);
