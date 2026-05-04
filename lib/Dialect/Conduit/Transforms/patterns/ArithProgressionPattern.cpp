@@ -235,6 +235,20 @@ bool tryCollapseArithPuts(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
+  // Refuse when the per-put sync chain requests per-issue acknowledgment
+  // (any wait_all{token=true}).  Symmetric to HomogeneousRepeatPattern's
+  // refusal; see chainHasAwait docstring.  Collapsed arith form encodes
+  // the per-cycle offset variation as an outer wrap+stride dim — same
+  // single-configure / single-ack failure mode as the homogeneous case.
+  if (chainHasAwait(refShape)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — sync chain requests per-issue acknowledgment "
+           "(wait_all{token=true}); collapsing N tokens → 1 would "
+           "starve the per-chunk consumer-side ack and stall HW";
+    return false;
+  }
+
   // Refuse on linked channels.  See isLinkedChannel docstring; same
   // root-cause class as the homogeneous-repeat refusal — collapsing
   // produces a single configure with an outer wrap+stride dim that
@@ -423,6 +437,18 @@ bool tryCollapseArithGets(Create createOp, PatternRewriter &rewriter) {
   for (auto &c : llvm::drop_begin(chains))
     if (chainShape(c) != refShape)
       return false;
+
+  // Refuse when the per-get sync chain requests per-issue acknowledgment
+  // (any wait_all{token=true}).  Symmetric to tryCollapseArithPuts above;
+  // see chainHasAwait docstring.
+  if (chainHasAwait(refShape)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — sync chain requests per-issue acknowledgment "
+           "(wait_all{token=true}); collapsing N tokens → 1 would "
+           "starve the per-chunk consumer-side ack and stall HW";
+    return false;
+  }
 
   // Refuse on linked channels.  Symmetric to tryCollapseArithPuts above;
   // see isLinkedChannel docstring.

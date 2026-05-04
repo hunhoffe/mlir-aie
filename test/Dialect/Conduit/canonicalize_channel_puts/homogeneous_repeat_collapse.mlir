@@ -1,38 +1,39 @@
 // RUN: aie-opt --conduit-canonicalize-channel-puts %s | FileCheck %s
 //
-// Pin the basic collapse behavior of --conduit-canonicalize-channel-puts:
-//   * 4 structurally-identical conduit.put_memref_async ops on @chan with
-//     matching wait_all{token=true} await + wait_all{token=false} free chains
-//     → collapsed to 1 put + 1 await + 1 free
-//   * conduit.create @chan gains dma_repeat = 3 (0-indexed convention;
-//     "additional fires beyond the initial one" → total fires = 4).  See
-//     `CanonicalizeChannelPutsUtils.h::getDmaRepeatOr0` + Bug #98 / Task #39
-//     + IRON's matching aiex.py:289-291 (`repeat_count = sizes[0] - 1`).
+// HISTORICAL: this fixture originally pinned the basic collapse —
+// 4 structurally-identical IRON puts → 1 surviving put + dma_repeat = 3.
 //
-// This is the canonical IRON `for batch in range(4)` shape that the IRON
-// `task_group` / `finish_task_group` lowering produces after the upstream
-// --dma-task-to-conduit pass round-trips it into Conduit IR.
+// FLIPPED 2026-05-03 (canon refuse-to-collapse-on-await predicate, this
+// commit): the 4 puts each carry `wait_all{token=true}` (await) +
+// `wait_all{token=false}` (free) → chain shape `[true, false]`.  Per the
+// new `chainHasAwait` predicate, canon REFUSES to collapse such chains
+// because the consolidated `1 configure × dma_repeat=N-1` form starves
+// the per-chunk consumer-side ack and stalls HW.  Same root-cause class
+// as the canon link-refusal landed in commit 375b0e5233; per CLAUDE.md
+// USER-LOCKED 2026-04-28 "wrong is right" anti-pattern, the prior
+// collapse-asserting CHECKs encoded HW-broken behavior.  Empirical HW
+// backing: `test/npu-xrt/conduit_canon_no_collapse_on_puts_with_await/`
+// + `test/npu-xrt/conduit_canon_no_collapse_on_gets_with_await/`.
 //
-// Geometry: shim(0,0) producer → compute(0,2) consumer, depth=2,
-//           memref<16xi32>, 4 host dispatches.
+// To restore lit coverage of the collapse-stamp itself for the
+// chain-without-await shape (the LEGITIMATE collapse case — IRON's
+// MM2S puts that emit only `dma_free_task` without `dma_await_task`),
+// see `conduit_to_dma_b_channel_consolidation.mlir`'s history (b-channel
+// path emits chain `[false]` only and exercises the linked-refusal
+// branch instead).
+//
+// Geometry (unchanged): shim(0,0) producer → compute(0,2) consumer,
+//           depth=2, memref<16xi32>, 4 host dispatches with
+//           per-issue-await chain → canon refuses; all 4 puts survive.
 
 // CHECK-LABEL: aie.device(npu1)
 
+// Channel must NOT carry dma_repeat (canon refused — chain has token=true).
 // CHECK: conduit.create @chan
-// CHECK-SAME: dma_repeat = 3
+// CHECK-NOT: dma_repeat
 
-// Exactly one surviving put_memref_async on @chan.
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
-// CHECK-NOT: conduit.put_memref_async{{.*}}name = @chan
-
-// One await + one free on the surviving token; canon kept the matched pair.
-// The await keeps the put[0] release-marker semantic (token defaults to true,
-// printer omits the attr when default per Conduit.td:994
-// DefaultValuedOptionalAttr<BoolAttr, "true">).  The free is explicit
-// {token = false}.
-// CHECK: conduit.wait_all %{{[^ ]+}} : !conduit.dma.token
-// CHECK-NEXT: conduit.wait_all %{{[^ ]+}} {token = false} : !conduit.dma.token
+// All 4 puts survive on @chan (canon left the IR alone).
+// CHECK-COUNT-4: conduit.put_memref_async {{.*}}name = @chan
 
 module @conduit_canonicalize_loop_unroll_puts_collapse {
   aie.device(npu1) {

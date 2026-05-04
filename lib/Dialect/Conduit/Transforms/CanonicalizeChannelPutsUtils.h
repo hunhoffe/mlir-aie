@@ -87,6 +87,31 @@ std::optional<uint32_t> tileBDCap(mlir::Operation *scope, mlir::Value tile);
 // AIEDMATasksToNPU.cpp:347-350 (shim runtime-sequence cap).
 std::optional<uint32_t> tileBDDimCap(mlir::Operation *scope, mlir::Value tile);
 
+/// Returns true iff any `wait_all` in the per-put/per-get sync chain has
+/// `token = true` set (the IR-level signal that IRON requested a per-issue
+/// `aiex.dma_await_task` ack).  Pass A's `--dma-task-to-conduit`
+/// (ConduitDmaTaskToConduit.cpp:551-558) ALWAYS stamps `setTokenAttr(true)`
+/// when lowering an `aiex.dma_await_task`; absence (`token=false` or
+/// elided default) means the IR carries no per-issue ack request.
+/// `WaitAllOp.token` is `DefaultValuedOptionalAttr<BoolAttr, "true">` per
+/// Conduit.td:1116-1117 — the printer ELIDES the default `true`, so
+/// `wait_all %0 :` (no explicit attr) parses back as token=true.
+///
+/// Channels whose chain shape contains any `true` MUST NOT be collapsed
+/// by canon (Homogeneous- or ArithProgression-).  A collapsed
+/// `(1 configure × dma_repeat=N-1)` form produces ONE consolidated
+/// firmware ack at the end of the configure, which starves the per-chunk
+/// consumer-side ack request encoded in the original IR.  Empirically
+/// (see `conduit_canon_no_collapse_on_link/` smoke and
+/// `conduit_to_dma_b_channel_consolidation.mlir` lit pin) the consolidated
+/// form stalls HW (XRT timeout or all-zero downstream invocations) on
+/// channels that still expect per-issue ack semantics — which includes
+/// every linked-relay path AND every IRON path that emits
+/// `aiex.dma_await_task`.  The per-issue-ack failure mode is symmetric to
+/// the linked-channel failure mode and is enforced via the same predicate
+/// pattern.
+bool chainHasAwait(llvm::ArrayRef<bool> chainShape);
+
 /// Returns true if `chanName` participates in any aie.objectfifo.link
 /// (lowered to conduit.scatter/gather/transpose by Pass A) within `scope`.
 /// Channels on the linked path MUST NOT be collapsed by canon — the

@@ -1,23 +1,38 @@
 // RUN: aie-opt --conduit-canonicalize-channel-puts %s | FileCheck %s
 // RUN: aie-opt --conduit-canonicalize-channel-puts --conduit-depth-promote --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
 //
-// Boundary-stress pin (cap-1 = 15) for ArithProgressionPattern.
-// AIE2 shim/compute BD cap = 16; N = 15 is JUST under cap, so canon must
-// collapse 15 sliding-offset puts → 1 surviving put + producer_dimensions
-// outer wrap <size = 15, stride = 8>.  Pairs with putcount_16 (at cap)
-// and putcount_17 (over cap, canon refuses).
+// HISTORICAL: this fixture originally pinned the cap-1 = 15 boundary for
+// ArithProgressionPattern — 15 sliding-offset puts → 1 surviving put +
+// producer_dimensions outer wrap <size = 15, stride = 8>.
 //
-// Per CLAUDE.md "Boundary-stress lit fixtures for data-driven N-entry
-// chains" rule (USER-LOCKED 2026-04-28): every chain whose length is
-// data-driven must have fixtures at cap-1, cap, cap+1.
+// FLIPPED 2026-05-03 (canon refuse-to-collapse-on-await predicate, this
+// commit): the 15 puts each carry `wait_all{token=true}` (await) +
+// `wait_all{token=false}` (free) → chain shape `[true, false]`.  Per the
+// new `chainHasAwait` predicate, ArithProgressionPattern now REFUSES to
+// collapse such chains; the consolidated single-configure form
+// (with outer wrap+stride dim) starves the per-chunk consumer-side ack
+// and stalls HW.  Same root-cause class as the canon link-refusal landed
+// in commit 375b0e5233; per CLAUDE.md USER-LOCKED 2026-04-28 "wrong is
+// right" anti-pattern, the prior collapse-asserting CHECKs encoded
+// HW-broken behavior.  Empirical HW backing:
+// `test/npu-xrt/conduit_canon_no_collapse_on_puts_with_await/`.
+//
+// Boundary-stress role retained: pairs with putcount_16 and putcount_17,
+// per CLAUDE.md "Boundary-stress lit fixtures for data-driven N-entry
+// chains" rule (USER-LOCKED 2026-04-28).  At all three counts the canon
+// refuses on chain shape `[true, false]` (the cap is now moot for this
+// chain shape; coverage of cap behavior on chain `[false]` only is
+// preserved by the homogeneous-repeat sibling cap pins).
 
 // CHECK-LABEL: aie.device(npu1)
+
+// Channel must NOT carry the canon-introduced outer wrap dim
+// (canon refused — chain has token=true).
 // CHECK: conduit.create @chan
-// CHECK-SAME: producer_dimensions = #aie<bd_dim_layout_array[<size = 15, stride = 8>]>
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
-// CHECK-SAME: offsets = array<i64: 0>
-// CHECK-NOT: conduit.put_memref_async{{.*}}name = @chan
+// CHECK-NOT: producer_dimensions
+
+// All 15 puts survive on @chan at original offsets (canon left the IR alone).
+// CHECK-COUNT-15: conduit.put_memref_async {{.*}}name = @chan
 
 module @boundary_stress_putcount_15 {
   aie.device(npu1) {

@@ -1,34 +1,43 @@
-// RUN: aie-opt --verify-diagnostics --conduit-canonicalize-channel-puts %s | FileCheck %s
+// RUN: aie-opt --conduit-canonicalize-channel-puts %s | FileCheck %s
 //
-// HW-cap pin: when the proposed dma_repeat = N would exceed the producer
-// tile's `targetModel.getNumBDs(...)` cap, --conduit-canonicalize-loop-
-// unroll-puts must REFUSE to collapse, emit a warning that names the
-// channel + cap, and leave the IR un-collapsed.  This protects fail-safe
-// against shape-aware downstream passes that may handle small N but
-// blow the BD verifier on large N.
+// HISTORICAL: this fixture originally pinned the BD-cap refuse path for
+// HomogeneousRepeatPattern — N=17 IRON-pattern identical puts > AIE2
+// compute cap (=16), canon emitted "refusing to collapse 17 puts on
+// @chan — exceeds tile BD cap of 16" via emitWarning; pinned with
+// --verify-diagnostics + expected-warning.
 //
-// Geometry: shim(0,0) → compute(0,2), N=17 IRON-pattern identical puts.
-// AIE2 compute tile cap = 16 BDs/channel < 17 → canon refuses.
+// FLIPPED 2026-05-03 (canon refuse-to-collapse-on-await predicate, this
+// commit): the 17 puts each carry `wait_all{token=true}` +
+// `wait_all{token=false}` (chain shape `[true, false]`).  Per the new
+// `chainHasAwait` predicate, HomogeneousRepeatPattern now refuses
+// EARLIER — before the cap-refuse fires — so the cap-refuse warning no
+// longer reaches the user for this fixture's chain shape.  The
+// --verify-diagnostics + expected-warning directive is removed.
+//
+// Same root-cause class as the canon link-refusal landed in commit
+// 375b0e5233; per CLAUDE.md USER-LOCKED 2026-04-28 "wrong is right"
+// anti-pattern, the prior pinned shape was correct in OUTCOME (canon
+// refused) but the REASON was the wrong gate — canon should have
+// refused on chain-await first, not on cap.  Empirical HW backing for
+// the new gate: `test/npu-xrt/conduit_canon_no_collapse_on_puts_with_await/`.
+//
+// Cap-refuse coverage on chain `[false]` only (the LEGITIMATE refuse
+// case) is preserved by sibling pins / future cap-stress fixtures.
 
 // CHECK-LABEL: aie.device(npu1)
-// Channel must NOT carry dma_repeat (canon refused to collapse).
+
+// Channel must NOT carry dma_repeat (canon refused — chain has token=true).
 // CHECK: conduit.create @chan
 // CHECK-NOT: dma_repeat
-//
-// All 17 puts survive (we don't pin the count exactly with FileCheck,
-// just verify multiple put_memref_async ops remain on @chan — proving
-// canon left the IR alone).
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
+
+// All 17 puts survive on @chan (canon left the IR alone).
+// CHECK-COUNT-17: conduit.put_memref_async {{.*}}name = @chan
 
 module @conduit_canonicalize_loop_unroll_puts_hw_cap {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // expected-warning@+1 {{canonicalize-loop-unroll-puts: refusing to collapse 17 puts on @chan}}
     conduit.create @chan {
       element_type = memref<8xi32>,
       depth = 2 : i64

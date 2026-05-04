@@ -96,6 +96,22 @@ bool tryCollapsePuts(Create createOp, PatternRewriter &rewriter) {
     if (chainShape(c) != refShape)
       return false;
 
+  // Refuse when the per-put sync chain requests per-issue acknowledgment
+  // (any wait_all{token=true}).  See chainHasAwait docstring; collapsing
+  // N puts whose IR carries N per-issue ack requests into 1 configure
+  // with dma_repeat=N-1 starves the per-chunk consumer-side ack and
+  // stalls HW.  Symmetric to the link-refusal below; same root-cause
+  // class.  Pinned by conduit_canon_no_collapse_on_token_true.mlir
+  // (lit) + conduit_canon_no_collapse_on_puts_with_await/ (NPU smoke).
+  if (chainHasAwait(refShape)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — sync chain requests per-issue acknowledgment "
+           "(wait_all{token=true}); collapsing N tokens → 1 would "
+           "starve the per-chunk consumer-side ack and stall HW";
+    return false;
+  }
+
   // Refuse on linked channels.  See isLinkedChannel docstring; empirical
   // root-cause for the Llama prefill attn_scores GEMM hang (2026-05-03).
   // Pinned by test/Dialect/Conduit/conduit_to_dma_b_channel_consolidation.mlir.
@@ -213,6 +229,18 @@ bool tryCollapseGets(Create createOp, PatternRewriter &rewriter) {
   for (auto &c : llvm::drop_begin(chains))
     if (chainShape(c) != refShape)
       return false;
+
+  // Refuse when the per-get sync chain requests per-issue acknowledgment
+  // (any wait_all{token=true}).  Symmetric to tryCollapsePuts above; see
+  // chainHasAwait docstring.
+  if (chainHasAwait(refShape)) {
+    createOp.emitRemark()
+        << "canon: refusing to collapse channel '" << chanName
+        << "' — sync chain requests per-issue acknowledgment "
+           "(wait_all{token=true}); collapsing N tokens → 1 would "
+           "starve the per-chunk consumer-side ack and stall HW";
+    return false;
+  }
 
   // Refuse on linked channels.  Symmetric to tryCollapsePuts above; see
   // isLinkedChannel docstring.

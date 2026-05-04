@@ -170,6 +170,12 @@ std::optional<uint32_t> tileBDCap(Operation *scope, Value tile) {
                       static_cast<int>(tileOp.getRow()));
 }
 
+bool chainHasAwait(llvm::ArrayRef<bool> shape) {
+  // See header docstring.  Trivial reduction; hoisted so all 4 canon
+  // collapse sites use the same source of truth.
+  return llvm::any_of(shape, [](bool t) { return t; });
+}
+
 bool isLinkedChannel(Operation *scope, StringRef chanName) {
   if (!scope)
     return false;

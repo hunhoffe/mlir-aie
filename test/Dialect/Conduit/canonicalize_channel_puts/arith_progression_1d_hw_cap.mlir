@@ -1,36 +1,44 @@
-// RUN: aie-opt --verify-diagnostics --conduit-canonicalize-channel-puts %s | FileCheck %s
+// RUN: aie-opt --conduit-canonicalize-channel-puts %s | FileCheck %s
 //
-// HW-cap pin for ArithProgressionPattern: when the proposed arith-progression
-// collapse would emit N=17 outer-wrap iterations, exceeding the producer
-// shim tile's `targetModel.getNumBDs(...)` cap (=16 on AIE2 shim S2MM/MM2S),
-// canon must REFUSE to collapse, emit a warning that names the channel +
-// cap, and leave the IR un-collapsed.
+// HISTORICAL: this fixture originally pinned the BD-cap refuse path for
+// ArithProgressionPattern — N=17 sliding-offset puts > shim BD cap (=16),
+// canon emitted "refusing to collapse 17 puts on @chan — exceeds tile BD
+// cap of 16" via emitWarning; pinned with --verify-diagnostics +
+// expected-warning.
 //
-// Shim cap is 16 BDs/channel.  We use a shim-driven channel here so the
-// cap-check fires on the producer-tile cap.  (compute-tile cap is also 16
-// but the existing homogeneous_repeat_hw_cap.mlir already exercises that;
-// this fixture exercises the arith-progression discriminator path.)
+// FLIPPED 2026-05-03 (canon refuse-to-collapse-on-await predicate, this
+// commit): the 17 puts each carry `wait_all{token=true}` +
+// `wait_all{token=false}` (chain shape `[true, false]`).  Per the new
+// `chainHasAwait` predicate, ArithProgressionPattern now refuses
+// EARLIER — before the cap-refuse fires — so the cap-refuse warning no
+// longer reaches the user for this fixture's chain shape.  The
+// --verify-diagnostics + expected-warning directive is removed.
 //
-// N = 17 sliding offsets [0, 8, 16, ..., 128] (delta = 8).
+// Same root-cause class as the canon link-refusal landed in commit
+// 375b0e5233; per CLAUDE.md USER-LOCKED 2026-04-28 "wrong is right"
+// anti-pattern, the prior pinned shape was correct in OUTCOME (canon
+// refused) but the REASON was the wrong gate — canon should have
+// refused on chain-await first, not on cap.  Empirical HW backing for
+// the new gate: `test/npu-xrt/conduit_canon_no_collapse_on_puts_with_await/`.
+//
+// Cap-refuse coverage on chain `[false]` only (the LEGITIMATE refuse
+// case) is preserved by sibling pins / future cap-stress fixtures.
 
 // CHECK-LABEL: aie.device(npu1)
-// Channel must NOT carry the canon-introduced outer wrap.
+
+// Channel must NOT carry the canon-introduced outer wrap dim
+// (canon refused — chain has token=true).
 // CHECK: conduit.create @chan
 // CHECK-NOT: producer_dimensions
-//
-// All 17 puts survive; canon left the IR alone (we pin via two CHECK lines
-// for put_memref_async — the count itself is asserted by the warning).
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
+
+// All 17 puts survive on @chan at original offsets (canon left the IR alone).
+// CHECK-COUNT-17: conduit.put_memref_async {{.*}}name = @chan
 
 module @arith_progression_1d_hw_cap {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
 
-    // expected-warning@+1 {{canonicalize-loop-unroll-puts: refusing to collapse 17 puts on @chan}}
     conduit.create @chan {
       element_type = memref<8xi32>,
       depth = 2 : i64

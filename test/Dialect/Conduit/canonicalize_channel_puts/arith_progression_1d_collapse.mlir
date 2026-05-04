@@ -1,40 +1,36 @@
 // RUN: aie-opt --conduit-canonicalize-channel-puts %s | FileCheck %s
 // RUN: aie-opt --conduit-canonicalize-channel-puts --conduit-depth-promote --conduit-to-dma --aie-substitute-shim-dma-allocations --aie-assign-runtime-sequence-bd-ids %s
 //
-// Pin the basic arith-progression collapse behavior of
-// --conduit-canonicalize-channel-puts (ArithProgressionPattern, Sprint N
-// sibling of HomogeneousRepeatPattern):
-//   * 4 conduit.put_memref_async ops on @chan with SAME shape/sizes/strides
-//     but offsets sliding in arithmetic progression [0, 8, 16, 24] (delta = 8)
-//     and matching wait_all{token=true} await + wait_all{token=false} free
-//     chains → collapsed to 1 put + 1 await + 1 free with producer_dimensions
-//     gaining an outer wrap dimension <size = 4, stride = 8> on the
-//     conduit.create channel.
+// HISTORICAL: this fixture originally pinned the basic arith-progression
+// collapse — 4 sliding-offset puts → 1 surviving put + outer wrap+stride
+// dim <size=4, stride=8> on producer_dimensions.
 //
-// IR shape models the IRON `for batch in range(4)` where IRON's per-batch
-// kernel emits structurally-similar dma_configure ops that ONLY differ in
-// the configure offset (e.g. op11_GEMV @op11_A_L3L1_0 in the captured
-// reproducer at /tmp/npu_run_conduit_20260428_104918_1277633/build/
-// fused_op_fused.mlir lines 5467/5563/5659/... with offsets 0, 131072,
-// 262144, ... — the actual Llama bug).  HomogeneousRepeatPattern doesn't
-// fire because offsets differ; the arith-progression pattern is the
-// next-strictest collapse — it encodes the per-fire offset increment as a
-// new outer wrap+stride on the channel's producer_dimensions.
+// FLIPPED 2026-05-03 (canon refuse-to-collapse-on-await predicate, this
+// commit): the 4 puts each carry `wait_all{token=true}` +
+// `wait_all{token=false}` (chain shape `[true, false]`).  Per the new
+// `chainHasAwait` predicate, ArithProgressionPattern now REFUSES to
+// collapse such chains because the consolidated single-configure form
+// (with outer wrap+stride dim encoding the per-cycle variation) starves
+// the per-chunk consumer-side ack and stalls HW.  Same root-cause class
+// as the canon link-refusal landed in commit 375b0e5233; per CLAUDE.md
+// USER-LOCKED 2026-04-28 "wrong is right" anti-pattern, the prior
+// collapse-asserting CHECKs encoded HW-broken behavior.  Empirical HW
+// backing: `test/npu-xrt/conduit_canon_no_collapse_on_puts_with_await/`.
 //
-// Geometry: shim(0,0) producer → compute(0,2) consumer, depth=2,
-//           memref<8xi32> per put, 4 host dispatches at offsets [0,8,16,24].
+// Geometry (unchanged): shim(0,0) producer → compute(0,2) consumer,
+//           depth=2, memref<8xi32> per put, 4 host dispatches at offsets
+//           [0,8,16,24] with per-issue-await chain → canon refuses.
+//           Second RUN line is the metafix-aiecc-smoke convention.
 
 // CHECK-LABEL: aie.device(npu1)
 
-// Channel gains an outer wrap dimension matching the per-put delta.
+// Channel must NOT carry the canon-introduced outer wrap dim
+// (canon refused — chain has token=true).
 // CHECK: conduit.create @chan
-// CHECK-SAME: producer_dimensions = #aie<bd_dim_layout_array[<size = 4, stride = 8>]>
+// CHECK-NOT: producer_dimensions
 
-// Exactly one surviving put_memref_async on @chan, at the FIRST offset (0).
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
-// CHECK-SAME: offsets = array<i64: 0>
-// CHECK-NOT: conduit.put_memref_async{{.*}}name = @chan
+// All 4 puts survive on @chan at original offsets (canon left the IR alone).
+// CHECK-COUNT-4: conduit.put_memref_async {{.*}}name = @chan
 
 module @arith_progression_1d_collapse {
   aie.device(npu1) {

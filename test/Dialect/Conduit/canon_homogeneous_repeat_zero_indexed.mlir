@@ -1,38 +1,37 @@
 // RUN: aie-opt --conduit-canonicalize-channel-puts %s | FileCheck %s
 //
-// Bug #98 / Task #39 pin: `--conduit-canonicalize-channel-puts` stamps
-// `dma_repeat` using the 0-INDEXED convention ("additional fires beyond
-// the initial one" → total fires = dma_repeat + 1).  This matches IRON's
-// `aiex.dma_configure_task_for.repeat_count` semantic (aiex.py:289-291,
-// `repeat_count = sizes[0] - 1`) so Pass C's verbatim surface to
-// `configure_task.repeat_count` (ConduitToDMALower.cpp:1356-1359) yields
-// the correct firmware fire count (`value + 1` per
-// AIEDmaToNpu.cpp:180-183).
+// HISTORICAL: this fixture originally pinned the 0-INDEXED dma_repeat
+// stamp (Bug #98 / Task #39) — 4 IRON puts collapsed to 1 surviving put +
+// `dma_repeat = 3` (= 4 total fires).  Bug #98's source-side fix is still
+// live; the collapse-stamp coverage is preserved by other regression
+// paths (HomogeneousRepeatPattern unit + Pass C's verbatim surface).
 //
-// Before #98: canon stamped `dma_repeat = N` (1-indexed = "fire N
-// times"), Pass C surfaced verbatim → firmware fired N+1 times = over-fire
-// by 1.  Masked by canon NPU smokes' separate structural bug (wrap-in-BD
-// vs N dispatches), but real Llama-scale risk.
+// FLIPPED 2026-05-03 (canon refuse-to-collapse-on-await predicate, this
+// commit): the 4 puts here each carry a `wait_all{token=true}` plus a
+// `wait_all{token=false}` (chain shape `[true, false]`).  Per the new
+// `chainHasAwait` predicate in `CanonicalizeChannelPutsUtils.{h,cpp}`,
+// canon now REFUSES to collapse channels whose IR carries any per-issue
+// ack request, because the consolidated `1 configure × dma_repeat=N-1`
+// form starves the per-chunk consumer-side ack and stalls HW
+// (root-cause class shared with the canon link-refusal landed in
+// commit 375b0e5233).  Per CLAUDE.md USER-LOCKED 2026-04-28 "wrong is
+// right" anti-pattern: this fixture's prior collapse-asserting CHECKs
+// encoded behavior that is HW-broken; flipping is correct.  Empirical
+// HW backing: `test/npu-xrt/conduit_canon_no_collapse_on_puts_with_await/`
+// + `test/npu-xrt/conduit_canon_no_collapse_on_gets_with_await/`.
 //
-// Geometry: shim(0,0) producer → compute(0,2) consumer, depth=2,
-//           memref<16xi32>, 4 host dispatches → canon stamps
-//           dma_repeat = 3 (= 4 total fires).
-//
-// Companion fixture `canonicalize_channel_puts/homogeneous_repeat_collapse.mlir`
-// pins the surrounding collapse semantics (single surviving put + chain
-// preservation) and is updated to pin `dma_repeat = 3` post-#98.  This
-// fixture's role is to be the named-by-the-fix lit-pin so future
-// convention drift is caught at this exact site.
+// Geometry (unchanged): shim(0,0) producer → compute(0,2) consumer,
+//           depth=2, memref<16xi32>, 4 host dispatches with
+//           per-issue-await chain → canon refuses; all 4 puts survive.
 
 // CHECK-LABEL: aie.device(npu1)
 
+// Channel must NOT carry dma_repeat (canon refused — chain has token=true).
 // CHECK: conduit.create @chan
-// CHECK-SAME: dma_repeat = 3
+// CHECK-NOT: dma_repeat
 
-// Exactly one surviving put_memref_async on @chan (collapse worked).
-// CHECK: conduit.put_memref_async
-// CHECK-SAME: name = @chan
-// CHECK-NOT: conduit.put_memref_async{{.*}}name = @chan
+// All 4 puts survive on @chan (canon left the IR alone).
+// CHECK-COUNT-4: conduit.put_memref_async {{.*}}name = @chan
 
 module @canon_homogeneous_repeat_zero_indexed {
   aie.device(npu1) {
