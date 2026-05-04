@@ -38,11 +38,19 @@ class Program:
         self._device = device
         self._rt = rt
 
-    def resolve_program(self, device_name="main"):
+    def resolve_program(self, *_placer_compat, device_name="main"):
         """This method resolves the program components in order to generate MLIR.
 
         Tiles are emitted as aie.logical_tile ops. The --aie-place-tiles pass
         in the compilation pipeline converts them to aie.tile ops.
+
+        Args:
+            *_placer_compat: Back-compat positional sink for the deprecated
+                Python-side placer (e.g. `SequentialPlacer()`). Ignored — tile
+                placement now happens in MLIR via --aie-place-tiles. See the
+                back-compat shim at python/iron/placers.py for the deprecation
+                trail. Remove when IRON migrates off the deprecated arg.
+            device_name (str): name of the emitted aie.device.
 
         Returns:
             module (Module): The module containing the MLIR context information.

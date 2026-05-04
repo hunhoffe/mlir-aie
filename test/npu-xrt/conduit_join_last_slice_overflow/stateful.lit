@@ -1,0 +1,32 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Stateful (no --use-conduit) end-to-end run for the JOIN last-slice
+// BD-length overflow pattern.  The bug lives in the conduit Pass C JOIN
+// lowering; the stateful objectfifo→aie path computes per-slice BD
+// lengths directly from the ofifo element type and is unaffected.
+// Expected: PASS today on both npu1_1col and npu2_1col, byte-equivalent
+// to the reference computed in test.cpp.
+//
+// Companion: conduit.lit runs the same source under --use-conduit.
+// Pre-fix that lit hangs/times out on hardware (BD len 448 against
+// 128-bf16 memtile JOIN buffers); post-fix it PASSES with output bytes
+// matching the reference here.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inline bf16 fill (`arith.sitofp` + `arith.truncf` →
+// bf16 store).  Chess (xchesscc) cannot select `fp_to_bf16` for this
+// inline core (`fatal error: error in backend: Cannot select: i32 =
+// fp_to_bf16`); Peano can.  Use `--no-xchesscc --no-xbridge` to route
+// the kernel compile through Peano (sibling pattern: `loadpdi/run.lit`,
+// `vec_vec_add_objfifo_init/aie2.py`, `fuse_operators_convergent_npu/
+// conduit.lit`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu1% sed 's/NPUDEVICE/npu1_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu1% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

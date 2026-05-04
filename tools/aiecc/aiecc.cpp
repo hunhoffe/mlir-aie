@@ -60,6 +60,7 @@
 #include "aie/Dialect/AIEVec/Transforms/Passes.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/AIEX/Transforms/AIEXPasses.h"
+#include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 #include "aie/InitialAllDialect.h"
 #include "aie/Targets/AIETargets.h"
 #include "aie/version.h"
@@ -320,6 +321,36 @@ static cl::opt<bool> packetSwObjFifos("packet-sw-objFifos",
                                       cl::desc("Use packet-switched flows"),
                                       cl::init(false),
                                       cl::cat(aieCompilerOptions));
+
+static cl::opt<bool> useConduit(
+    "use-conduit",
+    cl::desc(
+        "Use Conduit IR lowering instead of objectFifo stateful transform"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
+static cl::opt<bool> conduitFuseSpatial(
+    "conduit-fuse-spatial",
+    cl::desc(
+        "With --use-conduit, inject --conduit-fuse-operators (spatial fusion)"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
+static cl::opt<bool> conduitFuseCoreBodies(
+    "conduit-fuse-core-bodies-flag",
+    cl::desc("With --use-conduit, inject --conduit-fuse-core-bodies "
+             "(loop-body fusion)"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
+static cl::opt<bool> conduitFuseChannels(
+    "conduit-fuse-channels-flag",
+    cl::desc(
+        "With --use-conduit, inject --conduit-fuse-channels (relay fusion)"),
+    cl::init(false), cl::cat(aieCompilerOptions));
+
+static cl::opt<bool>
+    conduitFuseRelay("conduit-fuse-relay-flag",
+                     cl::desc("With --use-conduit, inject --conduit-fuse-relay "
+                              "(gather/scatter relay fusion)"),
+                     cl::init(false), cl::cat(aieCompilerOptions));
 
 static cl::opt<bool> ctrlPktOverlay("generate-ctrl-pkt-overlay",
                                     cl::desc("Generate control packet overlay"),
@@ -1455,21 +1486,87 @@ static LogicalResult runResourceAllocationPipeline(ModuleOp moduleOp,
   // Step 3: Canonicalize device (module-level pass)
   pm.addPass(xilinx::AIE::createAIECanonicalizeDevicePass());
 
-  // Step 4: Device-level passes - use nest<DeviceOp>()
+  // Step 4: ObjectFifo / Conduit pipeline
+  if (useConduit) {
+    // Conduit passes are module-level; add before device-level nesting
+    std::string conduitPipeline = "objectfifo-to-conduit";
+    // FS6: dma-task-to-conduit must always run under --use-conduit.  Bare
+    // --use-conduit on IRON-emitted IR (every Llama op) leaves
+    // aiex.dma_configure_task_for ops un-converted; conduit-to-dma then
+    // collides with aie-dma-to-npu on the auto-generated <chan>_shim_alloc
+    // symbol.  The pass is a no-op when no aiex.dma_task ops are present, so
+    // unconditional inclusion is safe.
+    conduitPipeline += ",dma-task-to-conduit";
+    // Canonicalize IRON's `for batch in range(N)` host-side Python-unroll —
+    // collapse N structurally-identical conduit.put_memref_async (or
+    // get_memref_async) ops on one channel + matching wait_all chains into
+    // 1 op + channel-level dma_repeat=N.  Keeps Pass C BD-chain emit aware
+    // of channel-level repeats only (not host-emit accounting); matches
+    // upstream stateful's compute-tile rotation behavior.  Must run AFTER
+    // dma-task-to-conduit (we collapse the round-tripped form) and BEFORE
+    // any fusion or depth-promote pass.
+    conduitPipeline += ",conduit-canonicalize-channel-puts";
+    if (conduitFuseCoreBodies)
+      conduitPipeline +=
+          ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
+    if (conduitFuseSpatial)
+      // NOTE: conduit-fuse-operators does its OWN device-body merge via
+      // DeviceMergeUtils (FS3 helper) at Step 8.  Do NOT prepend
+      // aie-combine-device here: it would physically merge devB into devA
+      // first, causing conduit-fuse-operators to bail at the
+      // devices.size() < 2 guard before its channel-merging logic (Steps
+      // 5-7: emit fused internal channel, rewrite acquires, delete the
+      // intermediate runtime DMA tasks) runs.
+      conduitPipeline += ",conduit-fuse-operators";
+    // When BOTH spatial fusion and core-body fusion are enabled, run a
+    // second --conduit-fuse-core-bodies pass after --conduit-fuse-operators.
+    // Spatial fusion may leave same-tile cores in the merged device (when
+    // the two operands of a fused channel are explicitly co-located on the
+    // same physical tile); a follow-up core-body fusion sweep merges those
+    // cores into one core body.
+    if (conduitFuseSpatial && conduitFuseCoreBodies)
+      conduitPipeline +=
+          ",aie-combine-device{same-tile=true},conduit-fuse-core-bodies";
+    if (conduitFuseChannels)
+      conduitPipeline += ",conduit-fuse-channels";
+    if (conduitFuseRelay)
+      conduitPipeline += ",conduit-fuse-relay";
+    // After all fusion passes have run, prune dead block args from any
+    // aie.runtime_sequence ops that fusion (device-merge + intermediate
+    // channel erasure) left with N declared args but only M < N referenced.
+    // Must run BEFORE conduit-to-dma, which lowers conduit.put/get_memref
+    // ops back to aiex.dma_configure_task_for keyed on arg_index.  No-op for
+    // un-fused pipelines (early exit when no dead args present).
+    conduitPipeline += ",conduit-prune-runtime-seq-args";
+    conduitPipeline +=
+        ",conduit-depth-promote,conduit-to-dma,conduit-append-core-spin";
+    if (verbose) {
+      llvm::outs() << "Conduit pipeline: " << conduitPipeline << "\n";
+      llvm::outs().flush();
+    }
+    if (failed(parsePassPipeline(conduitPipeline, pm))) {
+      llvm::errs() << "Error: Failed to parse conduit pipeline\n";
+      return failure();
+    }
+  }
+
+  // Step 5: Device-level passes - use nest<DeviceOp>()
   OpPassManager &devicePm = pm.nest<xilinx::AIE::DeviceOp>();
   // Note: Trace lowering runs in a separate guarded pipeline
   // (runTraceLoweringPipeline) before this function is called.
   devicePm.addPass(xilinx::AIE::createAIEAssignLockIDsPass());
-  devicePm.addPass(xilinx::AIE::createAIEObjectFifoRegisterProcessPass());
-  {
-    std::string objFifoPipelineStr =
-        "aie-objectFifo-stateful-transform{dynamic-objFifos=" +
-        std::string(dynamicObjFifos ? "true" : "false") +
-        " packet-sw-objFifos=" +
-        std::string(packetSwObjFifos ? "true" : "false") + "}";
-    if (failed(parsePassPipeline(objFifoPipelineStr, devicePm))) {
-      llvm::errs() << "Error: Failed to parse objectFifo pipeline\n";
-      return failure();
+  if (!useConduit) {
+    devicePm.addPass(xilinx::AIE::createAIEObjectFifoRegisterProcessPass());
+    {
+      std::string objFifoPipelineStr =
+          "aie-objectFifo-stateful-transform{dynamic-objFifos=" +
+          std::string(dynamicObjFifos ? "true" : "false") +
+          " packet-sw-objFifos=" +
+          std::string(packetSwObjFifos ? "true" : "false") + "}";
+      if (failed(parsePassPipeline(objFifoPipelineStr, devicePm))) {
+        llvm::errs() << "Error: Failed to parse objectFifo pipeline\n";
+        return failure();
+      }
     }
   }
   devicePm.addPass(xilinx::AIE::createAIEAssignBufferDescriptorIDsPass());
@@ -4518,12 +4615,12 @@ generateFullElfArtifact(ArrayRef<DeviceElfInfo> deviceInfos,
     // Arguments - generate based on actual runtime sequence parameter count
     llvm::json::Array arguments;
     for (int i = 0; i < info.argCount; ++i) {
-      char offsetBuf[16];
-      snprintf(offsetBuf, sizeof(offsetBuf), "0x%x", i * 8);
+      uint64_t offset = static_cast<uint64_t>(i) * 8;
+      std::string offsetHex = llvm::formatv("0x{0}", llvm::utohexstr(offset));
       arguments.push_back(
           llvm::json::Object{{"name", ("arg_" + Twine(i)).str()},
                              {"type", "char *"},
-                             {"offset", std::string(offsetBuf)}});
+                             {"offset", offsetHex}});
     }
 
     // PDIs - list ALL device PDIs in each kernel entry (matching Python driver
@@ -5370,6 +5467,10 @@ static LogicalResult compileAIEModule(MLIRContext &context, ModuleOp moduleOp,
       }
       info.pdiPath = std::string(pdiFullPath);
 
+      // Collect runtime sequence instruction paths (also absolute).
+      // Also record the argument count from the first non-empty sequence body,
+      // so generateFullElfArtifact can emit the correct number of XRT kernel
+      // argument slots in full_elf_config.json.
       for (auto seqOp : deviceOp.getOps<xilinx::AIE::RuntimeSequenceOp>()) {
         StringRef seqName = seqOp.getSymName();
         std::string instsFileName =
@@ -5541,6 +5642,7 @@ static int processInputFile(StringRef inputFile, StringRef tmpDirName) {
   xilinx::registerConversionPasses();
   xilinx::AIE::registerAIEPasses();
   xilinx::AIEX::registerAIEXPasses();
+  xilinx::conduit::registerConduitPasses();
   xilinx::aievec::registerAIEVecAnalysisPasses();
   xilinx::aievec::registerAIEVecPasses();
   xilinx::aievec::registerAIEVecPipelines();

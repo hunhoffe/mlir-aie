@@ -1,0 +1,22 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Stateful (no --use-conduit) end-to-end run for the per-launch release
+// BD-pool pattern.  Per launch the IRON-emitted dma_await_task /
+// dma_free_task ops release MM2S BDs at the launch boundary, so the
+// per-channel pool sees at most 5 live BDs (well within the 16-BD
+// shim-channel pool on npu2).  Expected: PASS today on both npu1_1col
+// and npu2_1col.
+//
+// Companion: conduit_path_b_xfail.lit pins the Path B compile-time
+// allocator-exhaustion error on the same source under --use-conduit.
+//
+// REQUIRES: ryzen_ai
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu1% sed 's/NPUDEVICE/npu1_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %python aiecc.py --no-aiesim --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu1% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

@@ -1,0 +1,82 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit --conduit-fuse-spatial) end-to-end run for
+// `--conduit-fuse-operators` 1:1 spatial fusion (basic).  E2E companion to
+// lit-only pin
+//   test/Dialect/Conduit/fuse_operators_basic.mlir
+// and Python-harness sibling
+//   iron_operator_mlir/fusion_npu_regression/fuse_operators_smoke.py.
+//
+// Pre-fuse: 2 separate `aie.device` blocks (devAdd + devMul), each at
+// tile(0,2) of column 0.  After `--conduit-fuse-spatial` (which injects
+// `--conduit-fuse-operators` per `aiecc.cpp:332`) the two devices collapse
+// into ONE merged device with devMul's tiles offset to column 1 — so the
+// merged producer core sits at tile(0,2) and the merged consumer core at
+// tile(1,2).  The intermediate conduit pair (`@inter_add` / `@consume_add`,
+// both tagged `fusion_group="addmul_smoke_op"`) is replaced by a single
+// `@fused_intermediate_0` cross-column on-chip channel.  Two-column smoke
+// uses `npu2_2col`.
+//
+// Spatial-only (NO `--conduit-fuse-core-bodies-flag`): `--aie-combine-
+// device same-tile=false` is the default routing without the core-bodies
+// flag, so the two cores do NOT collapse onto one tile; they spread across
+// columns 0 and 1.  The merged-device on-chip routing for the surviving
+// fused_intermediate channel must be correct for the dispatch to succeed
+// — that is what this smoke validates.
+//
+// PASS expectation: every dispatch (4 invocations) completes; output
+// bytes match reference computed by test.cpp (out[j] = (in[j]+1.0)*2.0,
+// in[j] = (j%16)).  Failure modes that lit-only fixtures cannot catch
+// (per fuse_operators_smoke.py docstring):
+//   * Spatial fusion produces compile-clean IR but the merged-device ELF
+//     deadlocks or misroutes on hardware (Bug A/B regression class).  Lit
+//     verifies IR shape only — it cannot observe hardware-level routing
+//     correctness or ELF dispatch behavior.
+//   * `arg_index`-driven channel-merge silently drops an output buffer
+//     slot (#77 / #78 regression class).  IR may still verify, but the
+//     dropped slot leaves the host-visible output BO unwritten or
+//     corrupted; only an end-to-end byte check surfaces this.
+//   * Trim-after-merge corrupts host ABI (#99) — caught by all-zero
+//     output observation that lit-only validation cannot see.  When the
+//     intermediate-erase step trims the runtime sequence's arg list and
+//     mis-aligns surviving args to BO bindings, the kernel writes nothing
+//     observable to bo_out and every byte stays at the pre-dispatch
+//     `memset(0)` value.
+//
+// Sibling references:
+//   * `test/npu-xrt/fuse_operators_convergent_npu/conduit.lit` — same
+//     pipeline (`--conduit-fuse-spatial`) at K=2 convergent shape; this
+//     fixture is the K=1 (1:1) baseline that convergent extends.
+//   * `test/npu-xrt/fuse_core_bodies_npu/conduit.lit` — same Add → Mul
+//     1:1 chain at the IR level, but with the hybrid pipeline
+//     (`--conduit-fuse-core-bodies-flag --conduit-fuse-spatial`) that
+//     additionally collapses both cores onto one tile via
+//     `--aie-combine-device same-tile=true`.  Diffing the two fixtures'
+//     post-compile IR isolates which behavior is contributed by spatial
+//     vs. core-bodies fusion.
+//   * `test/Dialect/Conduit/fuse_operators_basic.mlir` — canonical lit-
+//     only pin for `--conduit-fuse-operators` 1:1 (CHECK lines for IR
+//     shape: cross-column tile offset, `@fused_intermediate_0` rename,
+//     external I/O survival).
+//
+// No stateful companion: the source IR uses 2 independent `aie.device`
+// blocks linked only by `fusion_group` annotations — stateful objectfifo
+// lowering does not span devices, so a stateful run is structurally
+// inapplicable here.  Reference is computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 add + multiply.  Chess (xchesscc) cannot
+// select `fp_to_bf16` for this inline core (`fatal error: error in
+// backend: Cannot select: i32 = fp_to_bf16`); Peano can.  Use
+// `--no-xchesscc --no-xbridge` to route the kernel compile through Peano
+// (sibling pattern: `convergent_npu/conduit.lit`,
+// `fuse_core_bodies_npu/conduit.lit`, `loadpdi/run.lit`,
+// `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_2col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-spatial --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

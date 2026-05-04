@@ -26,6 +26,8 @@ set(LIBS
   MLIROptLib
   ADF
   AIE
+  Conduit
+  ConduitTransforms
   AIETransforms
   AIEX
   AIEXTransforms

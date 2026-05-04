@@ -1199,11 +1199,34 @@ LogicalResult ConfigureCascadeOp::verify() {
 // PutCascadeOp
 //===----------------------------------------------------------------------===//
 
+// Compute the bit width of a cascade type without requiring the enclosing
+// op's data layout to register every element type (e.g. bf16).
+// For memref<N x T>, returns N * T.getIntOrFloatBitWidth().
+// Falls back to DataLayout query for non-memref or non-scalar element types.
+static std::optional<uint64_t> cascadeTypeBits(Type type) {
+  if (auto memTy = mlir::dyn_cast<MemRefType>(type)) {
+    Type elem = memTy.getElementType();
+    if (elem.isIntOrFloat()) {
+      uint64_t elemBits = elem.getIntOrFloatBitWidth();
+      uint64_t numElems = 1;
+      for (int64_t d : memTy.getShape())
+        numElems *= static_cast<uint64_t>(d);
+      return numElems * elemBits;
+    }
+  }
+  return std::nullopt; // caller falls back to DataLayout
+}
+
 LogicalResult PutCascadeOp::verify() {
   const auto &targetModel = getTargetModel(*this);
   Type type = getCascadeValue().getType();
-  DataLayout dataLayout = DataLayout::closest(*this);
-  auto bits = dataLayout.getTypeSizeInBits(type);
+  uint64_t bits;
+  if (auto directBits = cascadeTypeBits(type)) {
+    bits = *directBits;
+  } else {
+    DataLayout dataLayout = DataLayout::closest(*this);
+    bits = dataLayout.getTypeSizeInBits(type);
+  }
   auto archbits = targetModel.getAccumulatorCascadeSize();
   if (bits != archbits)
     return emitOpError("type must match architecture cascade width (")
@@ -1219,8 +1242,13 @@ LogicalResult PutCascadeOp::verify() {
 LogicalResult GetCascadeOp::verify() {
   const auto &targetModel = getTargetModel(*this);
   Type type = getCascadeValue().getType();
-  DataLayout dataLayout = DataLayout::closest(*this);
-  auto bits = dataLayout.getTypeSizeInBits(type);
+  uint64_t bits;
+  if (auto directBits = cascadeTypeBits(type)) {
+    bits = *directBits;
+  } else {
+    DataLayout dataLayout = DataLayout::closest(*this);
+    bits = dataLayout.getTypeSizeInBits(type);
+  }
   if (isa<AIE1TargetModel>(targetModel)) {
     if (bits != 384)
       return emitOpError("must be a 384-bit type");
@@ -2424,18 +2452,24 @@ struct LinearizeContiguousBDTransfer : public mlir::OpRewritePattern<DMABDOp> {
     if (dims->size() == 1 && dims->front().getStride() == 1)
       return mlir::failure();
 
-    // If the op has no explicit len, compute it from the total element count
-    // across all dims (product of all sizes).  This is always well-defined
-    // when dims is non-empty, so we don't need to fall back to the buffer type.
-    int32_t len;
+    // Compute total element count from all dimension sizes.
+    int64_t product = 1;
+    for (BDDimLayoutAttr dim : *dims)
+      product *= dim.getSize();
+
+    // If the op has an explicit len that disagrees with the total dims product,
+    // the outermost dimension is a BD iteration (d3) dimension — len covers
+    // only the inner dims (per-iteration transfer), while the outermost dim
+    // controls how many times the BD is re-issued with address advancement.
+    // Linearizing would collapse the iteration into len, but the iteration
+    // stride (address advancement) would be lost, causing the hardware to
+    // repeatedly transfer only the first len elements instead of sweeping
+    // across the full buffer.  Bail out in this case.
     if (auto lenVal = op.getLen()) {
-      len = *lenVal;
-    } else {
-      int64_t product = 1;
-      for (BDDimLayoutAttr dim : *dims)
-        product *= dim.getSize();
-      len = static_cast<int32_t>(product);
+      if (static_cast<int64_t>(*lenVal) != product)
+        return mlir::failure();
     }
+    int32_t len = static_cast<int32_t>(product);
 
     // Drop the dimensions attribute in-place; all other attributes (offset,
     // len, packet, burst_length, bd_id, etc.) are preserved automatically.

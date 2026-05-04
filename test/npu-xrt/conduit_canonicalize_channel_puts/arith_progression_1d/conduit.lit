@@ -1,0 +1,30 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit) end-to-end run for ArithProgressionPattern in
+// --conduit-canonicalize-channel-puts (Task #21).
+//
+// Pre-canon (latent): 4 conduit.put_memref_async ops on @fifo_in at
+// linearly increasing offsets [0, 64, 128, 192] (slice-stride = 64 bf16).
+// This is the exact IRON `for batch in range(4)` loop-unroll shape that,
+// at N=32 in Llama op7_GEMV / op11_GEMV, blew past the 16-block aie.mem
+// verifier cap (CLAUDE.md "Active Open Bugs" HIGH row).  Canon detects
+// the linear arith progression and collapses to 1 put + dma_repeat = 4
+// + a stride attribute on @fifo_in; Pass C emits a single shim BD
+// configured with the iter-dim stride.
+//
+// PASS expectation: dispatch completes and output bytes match the
+// stateful reference (byte-identical input ramp copy).  Wrong bytes
+// would indicate canon's stride emission diverges from the unrolled
+// 4-BD lowering at runtime; hang/timeout would indicate a firmware-
+// contract violation in the iter-dim BD config.
+//
+// REQUIRES: ryzen_ai
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu1% sed 's/NPUDEVICE/npu1_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %python aiecc.py --no-aiesim --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu1% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

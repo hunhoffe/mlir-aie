@@ -1,0 +1,134 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit --conduit-fuse-spatial --conduit-fuse-channels-flag)
+// end-to-end run for the COMPOSITION of `--conduit-fuse-spatial` followed by
+// `--conduit-fuse-channels`.  Sibling-pair to the single-pass smokes:
+//   test/npu-xrt/fuse_operators_basic_npu/conduit.lit
+//   test/npu-xrt/fuse_channels_npu/conduit.lit
+// And companion to:
+//   test/npu-xrt/fuse_channels_after_core_bodies_npu/conduit.lit  (composition
+//                                              #1: core-bodies + channels)
+//
+// Why a separate composition fixture: fuse_operators_basic_npu hand-authors
+// the two-device single-output-per-core shape that fuse-spatial needs as
+// INPUT (one producer-side conduit per core post-merge → no fuse-channels
+// work).  fuse_channels_npu hand-authors the single-device
+// two-producer-side-conduits-on-one-tile shape that fuse-channels needs as
+// INPUT.  Neither answers the production-pipeline question: does
+// fuse-spatial's OUTPUT contain a topology where fuse-channels can find
+// eligible groups?  This fixture extends the basic-spatial source IR with a
+// SECOND producer-side output on the consumer core (`@ext_out_aux`) so
+// post-spatial there are TWO producer-side conduits co-located on the
+// merged consumer tile in disjoint windows — exactly the eligibility
+// surface fuse-channels groups.  Companion to
+// `fuse_channels_after_core_bodies_npu` (whose topology degraded to
+// fuse-channels no-op on the cloned core-bodies source IR — see that
+// fixture's lit:60-69 cross-reference).
+//
+// Source IR (see aie.mlir header for full context): TWO `aie.device` blocks
+// (devAdd + devMul), both targeting `tile(0,2)` pre-fuse, intermediate
+// channel pair (`@inter_add` on devAdd; `@consume_add` on devMul) tagged
+// with matching `fusion_group="addmul_spatial_chan"`.  devMul's core has
+// TWO sequential sections inside its outer `scf.for`:
+//
+//   Section A: acquire @consume_add (Consume), acquire @ext_out_mul
+//              (Produce), inline `mul %v, 2.0`, release both.
+//   Section B: acquire @ext_out_aux (Produce), inline write
+//              `arith.constant 7.0 : bf16` to all 64 elements, release.
+//
+// `--conduit-fuse-spatial` injects `--conduit-fuse-operators` per
+// `aiecc.cpp:332` AND triggers `aie-combine-device same-tile=false` (the
+// default routing without `--conduit-fuse-core-bodies-flag`), collapsing
+// the two devices into ONE merged device with devMul's tiles offset to
+// column 1 — merged producer core sits at tile(0,2), merged consumer core
+// at tile(1,2).  The intermediate conduit pair is replaced by a single
+// `@fused_intermediate_0` cross-column on-chip channel.
+//
+// `--conduit-fuse-channels` then runs on the merged-device IR.  Producer-
+// side conduits on the merged consumer core tile(1,2): `@ext_out_mul` and
+// `@ext_out_aux`, sequential in the same outer-`scf.for` body, with
+// disjoint windows (Section A's `@ext_out_mul` Produce-release strictly
+// precedes Section B's `@ext_out_aux` Produce-acquire).  Per
+// `ConduitFuseChannels.cpp:303-399` (device-walk, tile-grouped
+// producer-side conduits, per-block greedy interval coloring), the pass
+// stamps `dma_channel_group="groupN"` on both — fuse-channels finds
+// eligible work post-spatial.  Producer core on tile(0,2) has only one
+// producer-side conduit (`@fused_intermediate_0`) — single-member group is
+// a no-op on that tile.  Two-column smoke uses `npu2_2col`.
+//
+// OBSERVED OUTCOME (2026-05-01, recorded post aie-opt validation):
+// fuse-channels successfully groups @ext_out_mul + @ext_out_aux on the
+// merged consumer tile post-spatial.  This fixture's HW value is therefore
+// the STRONGER "fuse-channels-with-work-post-merge" signal — directly
+// complementing `fuse_channels_after_core_bodies_npu`'s observed weaker
+// (no-op) signal on the cloned core-bodies source IR.
+//
+// Why both `--conduit-fuse-spatial` AND `--conduit-fuse-channels-flag` (no
+// `--conduit-fuse-core-bodies-flag`): `--conduit-fuse-spatial` already
+// routes through `--aie-combine-device same-tile=false` (the default
+// routing without the core-bodies flag), which is what collapses the two
+// pre-fuse devices and offsets devMul to column 1.  The core-bodies flag
+// is intentionally OFF — its inclusion would route through
+// `--aie-combine-device same-tile=true` (per `aiecc.cpp:1509-1511`),
+// collapsing both cores onto the same tile, which is a DIFFERENT
+// composition tested by Task #47's full hybrid fixture.
+//
+// Reference compute: `out_mul[j] = (in_a[j] + 1.0) * 2.0`,
+// `in_a[j] = (j % 16)`, `out_aux[j] = 7.0` (constant, all elements) —
+// bf16-exact (max value 32 < 256, 7.0 < 256).  NUM_INVOCATIONS=4,
+// IO_LEN=64.
+//
+// PASS expectation: every dispatch (4 invocations) completes; output bytes
+// for both outputs match reference computed by test.cpp, and (separately,
+// by construction) the out_mul bytes match the basic-spatial sibling on
+// the same input.  Failure modes that single-pass smokes cannot catch:
+//   * Compile-time crash inside fuse-channels triggered by fuse-spatial's
+//     output IR shape (the question this fixture answers).
+//   * fuse-channels mis-grouping the surviving producer-side conduits on
+//     the merged consumer tile — silent wrong-bytes output where
+//     out_mul-destined bytes land in bo_aux (or vice versa) via a swapped
+//     DMA channel.
+//   * Multi-section re-acquire stability of grouped channels reached via
+//     spatial fusion (vs. hand-authored single-device eligibility tested
+//     by fuse_channels_npu).
+//
+// Sibling references:
+//   * `test/npu-xrt/fuse_operators_basic_npu/conduit.lit` — single-pass
+//     fuse-spatial 1:1 with single output per core.  Same Add+Mul reference
+//     compute.
+//   * `test/npu-xrt/fuse_channels_npu/conduit.lit` — single-pass
+//     fuse-channels with hand-authored single-device single-core
+//     eligibility.  Same Add+Mul reference compute.
+//   * `test/npu-xrt/fuse_channels_after_core_bodies_npu/conduit.lit` —
+//     adjacent composition (core-bodies + channels) on same-tile=true
+//     routing, observed weaker no-op outcome.  This fixture is the
+//     stronger-signal companion on same-tile=false routing.
+//   * `test/Dialect/Conduit/path_c_async_fuse_corebody_blocks_at_wait_all.mlir`
+//     — XFAIL pin for the related MED bug (fusion-then-Pass-C IR with
+//     `wait_all` consumers).  This fixture deliberately avoids `wait_all`
+//     to skirt that XFAIL'd path.
+//
+// No stateful companion: the source IR uses Conduit-only cross-device
+// fusion semantics (`fusion_group` annotation + `--conduit-fuse-spatial` +
+// `--conduit-fuse-channels` `dma_channel_group` annotation) that have no
+// stateful objectfifo equivalent.  Reference is computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 add + multiply + constant store.  Chess
+// (xchesscc) cannot select `fp_to_bf16` for this inline core (`fatal error:
+// error in backend: Cannot select: i32 = fp_to_bf16`); Peano can.  Use
+// `--no-xchesscc --no-xbridge` to route the kernel compile through Peano
+// (sibling pattern: `fuse_operators_basic_npu/conduit.lit`,
+// `fuse_channels_npu/conduit.lit`,
+// `fuse_channels_after_core_bodies_npu/conduit.lit`,
+// `fuse_core_bodies_npu/conduit.lit`,
+// `fuse_operators_convergent_npu/conduit.lit`, `loadpdi/run.lit`,
+// `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_2col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-spatial --conduit-fuse-channels-flag --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

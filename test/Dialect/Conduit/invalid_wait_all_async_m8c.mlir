@@ -1,0 +1,38 @@
+// RUN: aie-opt -split-input-file -verify-diagnostics %s
+//
+// Negative test: M8c operand type check on conduit.wait_all_async.
+
+// -----
+
+// wait_all_async with an i32 non-token input must be rejected.
+aie.device(npu1) {
+conduit.create @ch_wa {depth = 0 : i64, element_type = memref<64xi32>}
+func.func @wait_all_async_non_token(%bad : i32) {
+  %tok = conduit.put_memref_async {name = @ch_wa, num_elems = 64 : i64,
+             offsets = array<i64: 0>, sizes = array<i64: 64>,
+             strides = array<i64: 1>} : !conduit.dma.token
+  // expected-error @+1 {{'conduit.wait_all_async' op operand #1 must be variadic of conduit token type, but got 'i32'}}
+  %merged = conduit.wait_all_async %tok, %bad :
+      (!conduit.dma.token, i32) -> !conduit.dma.token
+  conduit.wait_all %merged : !conduit.dma.token
+  return
+}
+}
+
+// -----
+
+// wait_all_async result (dma.token) escapes via call — M10 via wait_all_async.
+aie.device(npu1) {
+conduit.create @ch_wa2 {depth = 0 : i64, element_type = memref<64xi32>}
+func.func private @consumer(%tok : !conduit.dma.token)
+func.func @wait_all_async_escape_call() {
+  %tok = conduit.put_memref_async {name = @ch_wa2, num_elems = 64 : i64,
+             offsets = array<i64: 0>, sizes = array<i64: 64>,
+             strides = array<i64: 1>} : !conduit.dma.token
+  // expected-error @+1 {{'conduit.wait_all_async' op M10: token escapes function scope via call argument}}
+  %merged = conduit.wait_all_async %tok :
+      (!conduit.dma.token) -> !conduit.dma.token
+  func.call @consumer(%merged) : (!conduit.dma.token) -> ()
+  return
+}
+}

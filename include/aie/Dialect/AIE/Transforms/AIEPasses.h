@@ -73,6 +73,8 @@ std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIETraceToConfigPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
 createAIETraceRegPackWritesPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEInsertTraceFlowsPass();
+std::unique_ptr<mlir::OperationPass<DeviceOp>>
+createAIECheckCascadePairingPass();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

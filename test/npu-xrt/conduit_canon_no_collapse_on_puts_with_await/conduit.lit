@@ -1,0 +1,105 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit) end-to-end run for the canon
+// refuse-to-collapse-on-await predicate (`chainHasAwait` in
+// CanonicalizeChannelPutsUtils.{h,cpp}, landed 2026-05-03 in this
+// commit) — the puts-side variant.  Companion to:
+//   test/Dialect/Conduit/conduit_canon_no_collapse_on_token_true.mlir
+//     (lit-only at-site pin for the predicate)
+//   test/npu-xrt/conduit_canon_no_collapse_on_link/conduit.lit
+//     (link-refusal HW smoke; structural sibling, different predicate)
+//   test/npu-xrt/conduit_canon_no_collapse_on_gets_with_await/conduit.lit
+//     (gets-side counterpart of THIS smoke)
+//
+// Validates that canon's HomogeneousRepeatPattern (and
+// ArithProgressionPattern, symmetric) does NOT collapse 4 structurally-
+// identical IRON puts on a NON-LINKED shim-MM2S → compute channel when
+// each put carries `aiex.dma_await_task` (per-issue ack) +
+// `aiex.dma_free_task` (release marker) — chain shape `[true, false]`
+// after dma-task-to-conduit lowering.
+//
+// Pre-fix, collapse → 1 configure × dma_repeat = 3 with the per-issue
+// ack request inherited onto the merged single configure → firmware
+// fires the BD 4 times back-to-back without per-chunk consumer ack
+// pacing → HW stalls (XRT timeout).  Same root-cause class as the
+// canon link-refusal landed in commit 375b0e5233.
+//
+// Post-fix, canon refuses on `chainHasAwait(refShape)`; Pass C emits
+// 4 separate paced shim configures (each with its own per-issue ack);
+// HW dispatch completes and the per-byte output check below passes.
+//
+// Pipeline: bare `--use-conduit` (no fusion flags — this test exercises
+// canon refusal, not fusion).  aiecc.cpp:1492-1508 expands `--use-conduit`
+// to `objectfifo-to-conduit, dma-task-to-conduit, conduit-canonicalize-
+// channel-puts, conduit-depth-promote, conduit-to-dma`.
+//
+// PASS expectation: dispatch completes and output bytes match the
+// spec-derived reference computed in test.cpp.  Hang/timeout would
+// indicate the canon refusal regressed; wrong-bytes would indicate
+// the chainHasAwait emit shape changed in a non-byte-equivalent way.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inline bf16 load/store (the in-core scf.for copy
+// loop in aie.mlir); Peano is required because xchesscc cannot select
+// bf16 ops for an inline core (sibling pattern: `loadpdi/run.lit`,
+// `vec_vec_add_objfifo_init/aie2.py`, `conduit_join_last_slice_overflow/
+// conduit.lit`, `conduit_canon_no_collapse_on_link/conduit.lit`).  Use
+// `--no-xchesscc --no-xbridge` to route the kernel compile through Peano.
+//
+// =============================================================================
+// XFAIL — pinned 2026-05-03.  Surfaces a real LATENT Pass C emit bug exposed
+// by (NOT caused by) the canon `chainHasAwait` refusal landed this commit.
+// =============================================================================
+//
+// What this fixture pins (the canon refusal + smoke-fix-v2 design): with
+// `chainHasAwait` refusal active, canon correctly leaves 4 separate paced
+// MM2S configures on @in instead of collapsing them to 1 + dma_repeat=3.
+// That's the SMOKE FIX V2 contract and it IS verified at the lit level by
+// `test/Dialect/Conduit/conduit_canon_no_collapse_on_token_true.mlir`.
+//
+// Why this HW smoke XFAILs against current HEAD: Pass C's emit for the
+// downstream tile S2MM consumer-side BD chain becomes NON-CIRCULAR when
+// canon leaves N>depth separate paced configures (the post-refusal shape).
+// Pre-refusal (canon collapses to 1 configure × dma_repeat), the BD chain
+// emits correctly as a circular ring; post-refusal, the chain wraps to a
+// dead-end last BD and the dispatch never returns a completion token →
+// XRT timeout.  This is a real Pass C bug (NON-circular chain on the
+// post-refusal emit shape), distinct from the canon predicate itself.
+//
+// Diagnostic provenance (verdict from puts-with-await-investigator,
+// 2026-05-03 — Hypothesis B confirmed): captured artifacts at
+//   /tmp/puts-with-await-capture/   (THIS fixture — failing IR)
+//   /tmp/gets-with-await-capture/   (sibling gets-side fixture — passing IR;
+//                                    its consumer-side BD chain stays
+//                                    circular because gets sit on a different
+//                                    Pass C emit branch than puts)
+// IR diff between the two is the smoking gun: only the consumer-side tile
+// BD-chain `next_bd` topology differs.  Canon's predicate is byte-identical
+// in both; the divergence is downstream in Pass C.
+//
+// Why XFAIL (not delete): this fixture continues to validate the smoke fix v2
+// design (canon refusal at the IR level — verified end-to-end by aiecc
+// completing without canon-mode crashes on the post-refusal shape) AND it
+// pins the latent Pass C bug for the eventual fixer.  Flips to PASS when the
+// Pass C non-circular-chain bug on N>depth paced shim-MM2S → memtile-S2MM
+// emit is fixed.  Tracked in CLAUDE.md "Active Open Bugs" (row added in
+// task #57).
+//
+// Companion gets-side smoke (`conduit_canon_no_collapse_on_gets_with_await/`)
+// is NOT XFAIL'd — it independently verifies canon refusal on the gets path
+// AND happens to dodge the Pass C bug by virtue of a different downstream
+// emit shape.  Together the two fixtures bracket the surface: gets-side
+// proves the predicate works end-to-end; puts-side pins the residual Pass
+// C bug that the predicate exposes.
+//
+// XFAIL: *
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu1% sed 's/NPUDEVICE/npu1_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu1% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

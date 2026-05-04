@@ -1,0 +1,95 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit) end-to-end run for the IRON `dma_repeat`-as-
+// stride-0-outer-dim encoding case (Pass C v4 case (d) ground-truth
+// anchor).  E2E companion to the lit-only pin
+//   test/Dialect/Conduit/passc_effective_repeat_iron_stride_zero_encoding.mlir.
+//
+// Why this fixture exists
+// -----------------------
+// Pass C v4 (Sprint N+2) discriminates BD outer.STRIDE on shim MM2S to
+// choose between two emit cases:
+//   * outer.stride > 0   (BD walks N times, real iteration)  → push-queue=1
+//   * outer.stride == 0  (BD does NOT walk; IRON dma_repeat
+//                         encoding, AIEDmaToNpu.cpp:385-388)  → push-queue=N
+// The outer.stride==0 limb has heretofore rested on inferred firmware
+// semantics + a lit-only IR-discrimination pin (the named lit fixture
+// above).  This e2e smoke is the missing third leg: a HW dispatch that
+// PASSES iff `repeat_count = outer.size` is firmware-correct for the
+// stride==0 encoding.  Without this, v4 ships with one of three Pass C
+// emit cases (b / c / d in v4) lacking ground-truth NPU verification.
+//
+// What v4's design depends on
+// ---------------------------
+// PASS confirms that Pass C's case-(d) emit `repeat_count = outerSize`
+// matches firmware semantics one-to-one — i.e., the stride-discriminator
+// approach is valid and v4's case-(d) limb does NOT need a -1
+// adjustment.  Combined with the outer.stride > 0 case (covered by
+// `passc_effective_repeat_no_double_count.mlir` lit pin + the gate-2a
+// GEMM @ attn_query NPU re-verify) and the no-outer / scalar case
+// (covered by general Llama compile-to-dispatch paths), v4 closes the
+// firmware-ground-truth matrix for shim MM2S `repeat_count` emission.
+//
+// Failure semantics (what each failure mode would tell us)
+// --------------------------------------------------------
+//   * UNDER-FIRE (only 1 of 4 transfers, output[0:64] correct,
+//     output[64:256] zero) ⇒ firmware push_queue is 0-indexed for this
+//     path; emitting `repeat_count = N` actually fires N+1 transfers.
+//     Implication: v4's case-(d) limb needs a -1 adjustment, NOT just
+//     a stride discriminator → bigger redesign required.
+//   * OVER-FIRE (output[0:256] correct + spill OR kernel hang on second
+//     invocation due to push_queue overflow) ⇒ BD walks N times AND
+//     push-queue fires N more times; both mechanisms multiplicative.
+//     Implication: v4's case-(d) limb is wrong; push-queue should be 1
+//     for stride==0 too — the pre-revise gate-2a fix was right and the
+//     stride-discriminator hypothesis was wrong.
+//   * WRONG-BYTES MID-BUFFER (correct count, scrambled values)
+//     ⇒ shim S2MM L1↔L3 chunk-aggregation race (unrelated to the
+//     stride==0 encoding under test); rerun with depth bump on the
+//     output channel to eliminate.  Not a v4 design failure.
+//
+// Sibling references (read in this order to understand context)
+// -------------------------------------------------------------
+//   1. test/Dialect/Conduit/passc_effective_repeat_iron_stride_zero_encoding.mlir
+//      — lit-only pin for THIS exact case; documents the IRON encoding
+//      convention and the boundary-stress mismatch (outer.size=4 vs
+//      explicit repeat_count=3) used to prove outer.size is the read
+//      source post-revise.  This e2e fixture chooses a SIMPLER matched
+//      shape (outer.size=4 == repeat_count=4, the production form) to
+//      keep the HW smoke focused on firmware semantics rather than IR
+//      discrimination.
+//   2. test/Dialect/Conduit/passc_effective_repeat_no_double_count.mlir
+//      — lit-only pin for the OPPOSITE case (stride > 0, push-queue=1).
+//   3. test/npu-xrt/fuse_operators_convergent_npu/conduit.lit
+//      — canonical lit-style NPU smoke template; same RUN-line skeleton.
+//   4. test/npu-xrt/fuse_core_bodies_npu/conduit.lit
+//      — sibling lit-NPU smoke; same Peano routing, NUM_INVOCATIONS=4
+//      per-invocation memset + verify pattern.
+//
+// PASS expectation
+// ----------------
+// Every dispatch (NUM_INVOCATIONS=4) completes; output bytes match the
+// reference computed by test.cpp (out[i] = in[i % 64], i ∈ [0, 256)).
+//
+// No stateful companion: the source IR uses a hand-written
+// `aie.runtime_sequence` that explicitly carries the IRON stride==0
+// encoding on the shim MM2S configure.  Stateful objectfifo lowering
+// does not preserve this user-authored runtime-sequence shape (it
+// regenerates configures from objectfifo metadata), so a stateful run
+// is structurally inapplicable.  The HW reference is computed in
+// test.cpp from the input ramp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is pure bf16 memref load/store (identity copy, no
+// fp_to_bf16 selection needed) — chess could in principle compile this
+// kernel.  We route through Peano (`--no-xchesscc --no-xbridge`) to
+// match the sibling lit-NPU smoke convention and keep the REQUIRES
+// line uniform across the npu-xrt Conduit fixtures.
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

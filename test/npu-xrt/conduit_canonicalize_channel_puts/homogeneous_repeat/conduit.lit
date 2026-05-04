@@ -1,0 +1,30 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit) end-to-end run for HomogeneousRepeatPattern in
+// --conduit-canonicalize-channel-puts (Task #21).
+//
+// Pre-canon (latent): 4 conduit.put_memref_async ops on @fifo_in, all at
+// offset 0; Pass C compute-tile S2MM emit chained 4 BD blocks per buffer
+// slot (= 8 blocks at depth=2) — under the 16-block aie.mem cap at this
+// shape, but the pattern is exactly the IRON loop-unroll shape that, at
+// Llama op7/op11 N=32, exploded to 32 blocks on a 16-block-cap tile (see
+// CLAUDE.md "Active Open Bugs" HIGH row).  Canon collapses to 1 put +
+// dma_repeat = 4 on @fifo_in; Pass C emits a single shim BD with
+// repeat_count = 4 and the compute-tile chain stays at the depth=2 floor.
+//
+// PASS expectation: dispatch completes and output bytes match the
+// stateful reference computed by test.cpp.  Hang/timeout would indicate
+// canon-emit broke firmware contract (e.g., wrong dma_repeat or BD-link
+// topology); wrong-bytes would indicate canon's collapse is not byte-
+// equivalent to the unrolled stateful lowering.
+//
+// REQUIRES: ryzen_ai
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu1% sed 's/NPUDEVICE/npu1_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %python aiecc.py --no-aiesim --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu1% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

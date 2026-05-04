@@ -1,0 +1,67 @@
+// RUN: aie-opt %s -split-input-file -verify-diagnostics
+//
+// M6-dist / M7-dist: rate mismatch tests for 1:N distribute.
+//
+// These tests verify that per-edge and cross-conduit checks catch different
+// types of errors:
+//
+// Section 1: Destination conduit has imbalanced rates (M6 per-edge fires first).
+// Section 2: Source conduit has imbalanced rates (M6 fires on conduit.create).
+// Section 3: Per-edge M6 passes for all conduits, but Eq. 45 consistency between
+//            source production and destination consumption sum is violated.
+//            This is caught by per-edge M6 on the destination conduit.create
+//            because each conduit is individually checked before the link verifier.
+
+// -----
+
+// Section 1: FAIL — dst1 has imbalanced rates.
+//
+// dst1: producer_rates=[2] (sum=2, period=1), consumer_rates=[1,2] (sum=3, period=2)
+//   M6: sum(P)*len(C) = 2*2 = 4 != sum(C)*len(P) = 3*1 = 3 → FAIL
+//   This fires on conduit.create for dst1 (Create::verify M6 runs first).
+
+aie.device(npu1) {
+conduit.create @rm_src {                element_type = memref<i32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
+// expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=4 != sum(consumer_rates)*len(producer_rates)=3}}
+conduit.create @rm_d1_bad {                element_type = memref<i32>,
+                depth = 3 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 1, 2>}
+conduit.create @rm_d2 {                element_type = memref<i32>,
+                depth = 1 : i64,
+                producer_rates = array<i64: 1>,
+                consumer_rates = array<i64: 1>}
+func.func @distribute_dst_imbalanced() {
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @rm_src, dsts = [@rm_d1_bad, @rm_d2], memtile = %mt}
+  return
+}
+}
+
+// -----
+
+// Section 2: FAIL — source conduit has imbalanced rates.
+//
+// src: producer_rates=[3] (sum=3, period=1), consumer_rates=[1,1] (sum=2, period=2)
+//   M6: sum(P)*len(C) = 3*2 = 6 != sum(C)*len(P) = 2*1 = 2 → FAIL
+//   This fires on conduit.create for src (Create::verify M6).
+
+aie.device(npu1) {
+// expected-error@+1 {{'conduit.create' op CSDF rate imbalance: sum(producer_rates)*len(consumer_rates)=6 != sum(consumer_rates)*len(producer_rates)=2}}
+conduit.create @rm2_src_bad {                element_type = memref<i32>,
+                depth = 1 : i64,
+                producer_rates = array<i64: 3>,
+                consumer_rates = array<i64: 1, 1>}
+conduit.create @rm2_d1 {                element_type = memref<i32>,
+                depth = 1 : i64,
+                producer_rates = array<i64: 1>,
+                consumer_rates = array<i64: 1>}
+func.func @distribute_src_imbalanced() {
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @rm2_src_bad, dsts = [@rm2_d1], memtile = %mt}
+  return
+}
+}

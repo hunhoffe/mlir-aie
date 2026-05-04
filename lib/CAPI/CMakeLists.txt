@@ -10,6 +10,7 @@ add_mlir_public_c_api_library(AIECAPI
   LINK_LIBS PUBLIC
   ADF
   AIE
+  Conduit
   AIETargets
   AIETransforms
   AIEX

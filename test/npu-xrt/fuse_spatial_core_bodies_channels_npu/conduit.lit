@@ -1,0 +1,185 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit --conduit-fuse-spatial --conduit-fuse-core-bodies-flag
+// --conduit-fuse-channels-flag) end-to-end run for the FULL HYBRID
+// COMPOSITION of `--conduit-fuse-spatial` + `--conduit-fuse-core-bodies` +
+// `--conduit-fuse-channels` in one pipeline.  Sibling-pair to the
+// single-pass smokes:
+//   test/npu-xrt/fuse_operators_basic_npu/conduit.lit
+//   test/npu-xrt/fuse_core_bodies_npu/conduit.lit
+//   test/npu-xrt/fuse_channels_npu/conduit.lit
+// And companion to the two-pass composition fixtures:
+//   test/npu-xrt/fuse_channels_after_core_bodies_npu/conduit.lit  (compose-A)
+//   test/npu-xrt/fuse_spatial_and_channels_npu/conduit.lit        (compose-B)
+//
+// Why a separate full-hybrid fixture: the two-pass companions each leave
+// ONE pass un-exercised in the same pipeline.  Compose-A doesn't run
+// `--conduit-fuse-spatial`; compose-B doesn't run
+// `--conduit-fuse-core-bodies`.  Neither answers the production-pipeline
+// question: does a topology where ALL THREE passes do meaningful work in
+// one pipeline actually compile + run on hardware?  This fixture extends
+// compose-B's source IR (Section A + Section B in devMul's core) with the
+// SAME `fusion_group` annotation that compose-A used to drive
+// `--conduit-fuse-core-bodies`'s Step 0 cross-device channel pair unify
+// (verified by `ConduitFuseCoreBodyPass.cpp:74-155` — the intermediate pair
+// is matched by fusion_group regardless of which pass injects the
+// aie-combine-device step).  Direct precursor to swiglu functional NPU
+// smoke (Task #12 / fuse_hybrid_swiglu_npu) which adds K=2 convergent
+// merge + 4-op shape on top of this 2-op minimum-viable hybrid.
+//
+// Source IR (see aie.mlir header for full context): TWO `aie.device` blocks
+// (devAdd + devMul), both targeting `tile(0,2)` pre-fuse, intermediate
+// channel pair (`@inter_add` on devAdd; `@consume_add` on devMul) tagged
+// with matching `fusion_group="addmul_hybrid"`.  devMul's core has TWO
+// sequential sections inside its outer `scf.for`:
+//
+//   Section A: acquire @consume_add (Consume), acquire @ext_out_mul
+//              (Produce), inline `mul %v, 2.0`, release both.
+//   Section B: acquire @ext_out_aux (Produce), inline write
+//              `arith.constant 7.0 : bf16` to all 64 elements, release.
+//
+// Pipeline behavior (RUN line: all three fusion flags simultaneously):
+//   1. `--conduit-fuse-spatial` injects `--conduit-fuse-operators` per
+//      `aiecc.cpp:332`.  Critically, because `--conduit-fuse-core-bodies-
+//      flag` is ALSO set, `aiecc.cpp:1509-1511` routes `--aie-combine-
+//      device` with `same-tile=true` (NOT compose-B's `same-tile=false`),
+//      so devMul's tiles are NOT offset to column 1 — instead BOTH cores
+//      collapse onto tile(0,2) on column 0.  `--conduit-fuse-operators`
+//      then erases the intermediate conduit pair and replaces it with
+//      `@fused_intermediate_0` on-tile.
+//   2. `--conduit-fuse-core-bodies` runs.  Step 0 (cross-device
+//      fusion_group unify) is a no-op since fuse-operators already erased
+//      the pair; Steps 2-5 merge the two per-iteration loop bodies into
+//      ONE core on tile(0,2) (consume @ext_in_add → add 1.0 (L1 alloc) →
+//      mul 2.0 → release @ext_out_mul → write 7.0 → release @ext_out_aux);
+//      the on-tile intermediate channel becomes an L1 alloc.
+//   3. `--conduit-fuse-channels` runs.  Producer-side conduits
+//      `@ext_out_mul` and `@ext_out_aux` on tile(0,2), sequential in the
+//      same parent block with disjoint windows (Section A's release
+//      strictly precedes Section B's acquire).  Per
+//      `ConduitFuseChannels.cpp:303-399`, the pass stamps
+//      `dma_channel_group="groupN"` on both — fuse-channels has actual
+//      work.  STRONGER signal than compose-A (which had only 1 producer-
+//      side conduit post-merge): this fixture exercises fuse-channels
+//      grouping on the OUTPUT of fuse-core-bodies, validating the full
+//      hybrid pipeline end-to-end at the smallest possible shape.
+//   4. `--conduit-to-dma` lowers to AIE dialect ops the rest of aiecc
+//      consumes.
+//
+// EITHER outcome compiles clean and exercises the full hybrid composition;
+// the value is in proving all three passes can run in sequence on the SAME
+// source IR without crashing, mis-routing, or producing wrong bytes.
+//
+// OBSERVED OUTCOME (2026-05-01, recorded post aie-opt validation):
+// 1 device (devAdd; devMul collapsed in by `aie-combine-device same-tile=
+// true`), 1 core on tile(0,2), 3 surviving conduit channels — `@ext_in_add`
+// (input) + `@ext_out_mul` and `@ext_out_aux` (both producer-side outputs).
+// `@inter_add` / `@consume_add` successfully erased by `--conduit-fuse-
+// core-bodies` (replaced by `memref.alloca` L1 intermediate inside the
+// merged core body).  `--conduit-fuse-operators` is structurally a no-op
+// because `aie-combine-device same-tile=true` runs FIRST (per
+// `aiecc.cpp:1509-1511`) and merges devices before fuse-operators sees
+// them — fuse-operators bails at the `devices.size() < 2` guard (the
+// `aiecc.cpp:1513-1518` comment block describes this exact interaction).
+// `--conduit-fuse-channels` is ALSO a no-op: it emits "skipping
+// 'ext_out_mul' — Tier 3 channel with depth>1 not supported in fuse
+// groups" and the same for `ext_out_aux`, because the depth=2 producer-
+// side conduits are not currently eligible for `dma_channel_group`
+// stamping in the merged-onto-same-tile shape.
+//
+// This fixture's HW value is therefore the WEAKER "full-hybrid-pipeline-
+// runs-clean-without-crash" signal — it proves the three fusion passes
+// COMPOSE without mis-emit, but on this minimum-viable 2-op shape only
+// `--conduit-fuse-core-bodies` does meaningful structural work.  This is
+// the same outcome class as compose-A (`fuse_channels_after_core_bodies_
+// npu`), and it complements compose-B (`fuse_spatial_and_channels_npu`)
+// which DOES exercise fuse-channels grouping under `same-tile=false`
+// routing.  The stronger "fuse-channels-with-work-under-hybrid" signal
+// requires either (a) depth=1 producer-side conduits eligible under Tier
+// 3, OR (b) the upcoming swiglu functional NPU smoke (Task #12 /
+// `fuse_hybrid_swiglu_npu`) which adds K=2 convergent merge + 4-op shape.
+// Single-column smoke uses `npu2_1col`.
+//
+// Why all three flags `--conduit-fuse-spatial` AND
+// `--conduit-fuse-core-bodies-flag` AND `--conduit-fuse-channels-flag`:
+// this is the full hybrid pipeline Track 5c uses, exercising ALL three
+// fusion passes on a single source IR.  The presence of
+// `--conduit-fuse-core-bodies-flag` is what switches `--aie-combine-
+// device` to `same-tile=true` (per `aiecc.cpp:1509-1511`) — so `--conduit-
+// fuse-spatial`'s injected fuse-operators erases the channel pair on a
+// merged-onto-tile(0,2) device, and fuse-core-bodies then has eligible
+// per-iteration bodies to merge.  Compose-B (`fuse_spatial_and_channels_
+// npu`) uses the same source IR shape but skips the core-bodies flag, so
+// `same-tile=false` routing offsets devMul to column 1 instead.  Both are
+// valid post-fuse-spatial outcomes; this fixture exercises the
+// hybrid-pipeline path.
+//
+// Reference compute: `out_mul[j] = (in_a[j] + 1.0) * 2.0`,
+// `in_a[j] = (j % 16)`, `out_aux[j] = 7.0` (constant, all elements) —
+// bf16-exact (max value 32 < 256, 7.0 < 256).  NUM_INVOCATIONS=4,
+// IO_LEN=64.
+//
+// PASS expectation: every dispatch (4 invocations) completes; output bytes
+// for both outputs match reference computed by test.cpp, and (separately,
+// by construction) the out_mul bytes match the basic-spatial sibling on
+// the same input.  Failure modes that single-pass and two-pass smokes
+// cannot catch:
+//   * Compile-time crash inside fuse-core-bodies triggered by fuse-
+//     spatial's same-tile=true output IR shape.
+//   * Compile-time crash inside fuse-channels triggered by the
+//     fuse-core-bodies-merged single-core output (the full-hybrid question
+//     this fixture answers).
+//   * Pattern E forward-chain mis-fusion across the merged body in
+//     multi-invocation = HW hang on invocation 2.
+//   * fuse-channels mis-grouping the surviving producer-side conduits on
+//     the merged tile — silent wrong-bytes output where out_mul-destined
+//     bytes land in bo_aux (or vice versa) via a swapped DMA channel.
+//
+// Sibling references:
+//   * `test/npu-xrt/fuse_operators_basic_npu/conduit.lit` — single-pass
+//     fuse-spatial 1:1 with single output per core.  Same Add+Mul reference
+//     compute.
+//   * `test/npu-xrt/fuse_core_bodies_npu/conduit.lit` — single-pass
+//     fuse-core-bodies (with --conduit-fuse-spatial, no fuse-channels) on
+//     two-device source IR shape.  Same Add+Mul reference compute.
+//   * `test/npu-xrt/fuse_channels_npu/conduit.lit` — single-pass
+//     fuse-channels with hand-authored single-device single-core
+//     eligibility.  Same Add+Mul reference compute.
+//   * `test/npu-xrt/fuse_channels_after_core_bodies_npu/conduit.lit` —
+//     compose-A (core-bodies + channels), no spatial.  Observed weaker
+//     no-op outcome on cloned core-bodies source IR.
+//   * `test/npu-xrt/fuse_spatial_and_channels_npu/conduit.lit` —
+//     compose-B (spatial + channels), no core-bodies.  Observed stronger
+//     "fuse-channels-with-work" outcome on Section A + Section B topology.
+//   * `test/Dialect/Conduit/path_c_async_fuse_corebody_blocks_at_wait_all.mlir`
+//     — XFAIL pin for the related MED bug (`--conduit-fuse-core-bodies`
+//     before `--conduit-to-dma` chokes when `conduit.wait_all` consumers
+//     are present).  This fixture deliberately avoids `wait_all` to skirt
+//     that XFAIL'd path.
+//
+// No stateful companion: the source IR uses Conduit-only cross-device
+// fusion semantics (`fusion_group` annotation + `--conduit-fuse-spatial` +
+// `--conduit-fuse-core-bodies` + `--conduit-fuse-channels`
+// `dma_channel_group` annotation) that have no stateful objectfifo
+// equivalent.  Reference is computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 add + multiply + constant store.  Chess
+// (xchesscc) cannot select `fp_to_bf16` for this inline core (`fatal error:
+// error in backend: Cannot select: i32 = fp_to_bf16`); Peano can.  Use
+// `--no-xchesscc --no-xbridge` to route the kernel compile through Peano
+// (sibling pattern: `fuse_operators_basic_npu/conduit.lit`,
+// `fuse_channels_npu/conduit.lit`,
+// `fuse_channels_after_core_bodies_npu/conduit.lit`,
+// `fuse_core_bodies_npu/conduit.lit`,
+// `fuse_operators_convergent_npu/conduit.lit`,
+// `fuse_spatial_and_channels_npu/conduit.lit`,
+// `loadpdi/run.lit`, `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-spatial --conduit-fuse-core-bodies-flag --conduit-fuse-channels-flag --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

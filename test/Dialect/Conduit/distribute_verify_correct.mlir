@@ -1,0 +1,113 @@
+// RUN: aie-opt %s -split-input-file -verify-diagnostics
+//
+// M6-dist / M7-dist: 1:N distribute with Denolf Eq. 46/48 composed consume.
+//
+// Positive tests: distribute patterns where all per-edge checks and the
+// cross-conduit composed consume buffer capacity check (Denolf Eq. 48) pass.
+//
+// Section 1: 1→2 distribute, uniform consumers, sufficient source capacity.
+// Section 2: 1→3 distribute, mixed-period consumers, source capacity sufficient.
+// Section 3: 1→2 distribute, one fast one slow consumer, source capacity sufficient.
+
+// -----
+
+// Section 1: PASS — 1→2 distribute, both consumers uniform rate [2], source cap=4.
+//
+// src: P=[2], C=[2], cap=4 → per-edge OK, M7 peak=2 <= 4 ✓
+// dst1: P=[2], C=[2], cap=4 → per-edge OK ✓
+// dst2: P=[2], C=[2], cap=4 → per-edge OK ✓
+//
+// Composed consume (Eq. 48): H=lcm(1,1,1)=1
+//   t=0: cumProd=2, cumCons1=2, cumCons2=2, composed=2, occ=0
+//   Peak=0 <= srcCap=4 ✓
+
+aie.device(npu1) {
+conduit.create @cc_src {                element_type = memref<4xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
+conduit.create @cc_d1 {                element_type = memref<4xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
+conduit.create @cc_d2 {                element_type = memref<4xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
+func.func @distribute_composed_uniform_pass() {
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @cc_src, dsts = [@cc_d1, @cc_d2], memtile = %mt}
+  return
+}
+}
+
+// -----
+
+// Section 2: PASS — 1→3 distribute, mixed periods, source cap=6 (sufficient).
+//
+// src: P=[3], C=[3], cap=6 → per-edge OK, M7 peak=3 <= 6 ✓
+// dst1: P=[3], C=[3], cap=6 → per-edge OK ✓
+// dst2: P=[1,2], C=[1,2], cap=6 → per-edge OK ✓ (sum=3, period=2)
+// dst3: P=[3], C=[3], cap=6 → per-edge OK ✓
+//
+// Composed consume (Eq. 48): H=lcm(1,1,2,1)=2
+//   t=0: cumProd=3, cumCons1=3, cumCons2=1, cumCons3=3, composed=min(3,1,3)=1, occ=2
+//   t=1: cumProd=6, cumCons1=6, cumCons2=3, cumCons3=6, composed=min(6,3,6)=3, occ=3
+//   Peak=3 <= srcCap=6 ✓
+
+aie.device(npu1) {
+conduit.create @mx_src {                element_type = memref<6xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 3>,
+                consumer_rates = array<i64: 3>}
+conduit.create @mx_d1 {                element_type = memref<6xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 3>,
+                consumer_rates = array<i64: 3>}
+conduit.create @mx_d2 {                element_type = memref<6xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 1, 2>,
+                consumer_rates = array<i64: 1, 2>}
+conduit.create @mx_d3 {                element_type = memref<6xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 3>,
+                consumer_rates = array<i64: 3>}
+func.func @distribute_composed_mixed_pass() {
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @mx_src, dsts = [@mx_d1, @mx_d2, @mx_d3], memtile = %mt}
+  return
+}
+}
+
+// -----
+
+// Section 3: PASS — 1→2 distribute, one slow consumer, source capacity large enough.
+//
+// src: P=[2], C=[2], cap=4 → per-edge OK, M7 peak=2 <= 4 ✓
+// dst1: P=[2], C=[2], cap=4 → per-edge OK ✓
+// dst2: P=[1,1], C=[1,1], cap=4 → per-edge OK ✓ (sum=2, period=2)
+//
+// Composed consume (Eq. 48): H=lcm(1,1,2)=2
+//   t=0: cumProd=2, cumCons1=2, cumCons2=1, composed=min(2,1)=1, occ=1
+//   t=1: cumProd=4, cumCons1=4, cumCons2=2, composed=min(4,2)=2, occ=2
+//   Peak=2 <= srcCap=4 ✓
+
+aie.device(npu1) {
+conduit.create @sl_src {                element_type = memref<4xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
+conduit.create @sl_d1 {                element_type = memref<4xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 2>,
+                consumer_rates = array<i64: 2>}
+conduit.create @sl_d2 {                element_type = memref<4xi32>,
+                depth = 2 : i64,
+                producer_rates = array<i64: 1, 1>,
+                consumer_rates = array<i64: 1, 1>}
+func.func @distribute_composed_slow_consumer_pass() {
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @sl_src, dsts = [@sl_d1, @sl_d2], memtile = %mt}
+  return
+}
+}

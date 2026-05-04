@@ -1,0 +1,57 @@
+// RUN: aie-opt --conduit-check-channels --conduit-to-dma %s | FileCheck %s
+//
+// Regression test: Pass C generates scf.index_switch for buffer selection
+// in depth>1 channels. The rotation counter is an aie.buffer on the tile.
+//
+// The buffer selection pattern for depth=2:
+//   %idx = arith.index_cast %counter : i32 to index
+//   %buf = scf.index_switch %idx -> memref<T>
+//   case 0 { scf.yield %buf_0 }
+//   default { scf.yield %buf_1 }
+//
+// CHECK-LABEL: module @passC_no_index_switch
+// CHECK: aie.buffer({{.*}}) : memref<1xi32>
+// CHECK: aie.core
+// CHECK: memref.store
+// CHECK: scf.index_switch
+// CHECK-NOT: arith.cmpi eq
+// CHECK: aie.end
+
+module @passC_no_index_switch {
+  aie.device(npu1_1col) {
+    %shim = aie.tile(0, 0)
+    %tile = aie.tile(0, 2)
+
+    // depth=2: triggers dynamic rotation counter + buffer selection
+    conduit.create @fifo {depth = 2 : i64,
+                    element_type = memref<32xi32>
+                    }
+
+    aie.shim_dma_allocation @fifo_shim_alloc(%shim, MM2S, 0)
+
+    %core = aie.core(%tile) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c4 = arith.constant 4 : index
+      %val = arith.constant 42 : i32
+
+      scf.for %i = %c0 to %c4 step %c1 {
+        %win = conduit.acquire {name = @fifo, count = 1 : i64,
+                                port = #conduit.port<Consume>}
+                   : !conduit.window<memref<32xi32>>
+        %buf = conduit.subview_access %win {index = 0 : i64}
+                   : !conduit.window<memref<32xi32>> -> memref<32xi32>
+        memref.store %val, %buf[%c0] : memref<32xi32>
+        conduit.release %win {count = 1 : i64, port = #conduit.port<Consume>}
+            : !conduit.window<memref<32xi32>>
+      }
+
+      aie.end
+    }
+
+    aie.runtime_sequence(%in: memref<128xi32>) {
+      aiex.npu.dma_memcpy_nd (%in[0,0,0,0][1,1,1,128][0,0,0,1])
+          {metadata = @fifo_shim_alloc, id = 0 : i64} : memref<128xi32>
+    }
+  }
+}

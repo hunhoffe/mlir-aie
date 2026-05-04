@@ -1,0 +1,73 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit --conduit-fuse-core-bodies-flag --conduit-fuse-
+// spatial) end-to-end run for `--conduit-fuse-core-bodies` (loop-body
+// fusion).  E2E companion to lit-only pins
+//   test/Dialect/Conduit/fuse_core_bodies.mlir
+//   test/Dialect/Conduit/infer_iter_count_then_fuse_core_bodies.mlir
+// and Python-harness sibling
+//   iron_operator_mlir/fusion_npu_regression/fuse_core_bodies_smoke.py.
+//
+// Pre-fuse: 2 separate `aie.device` blocks (devAdd + devMul), both at
+// tile(0,2).  After `--conduit-fuse-spatial` (which routes through
+// `--aie-combine-device same-tile=true`, wired by `aiecc.cpp` only when
+// `--conduit-fuse-core-bodies-flag` is set) the two devices collapse into
+// ONE merged device with both cores still on tile(0,2).  `--conduit-fuse-
+// core-bodies` then merges the per-iteration loop bodies into one core:
+// acquire @ext_in_add → add 1.0 into L1 alloc → multiply by 2.0 into L1
+// alloc → release @ext_out_mul.  The intermediate conduit pair
+// (`@inter_add` / `@consume_add`, both tagged `fusion_group=
+// "addmul_corebody"`) is erased.  Single-column smoke uses `npu2_1col`.
+//
+// Why both `--conduit-fuse-core-bodies-flag` AND `--conduit-fuse-spatial`:
+// per fuse_core_bodies_smoke.py docstring, core-body fusion needs
+// `--aie-combine-device same-tile=true` to land both ops on the SAME
+// compute tile before per-iteration loop bodies can be merged; aiecc.cpp
+// wires `same-tile=true` only when `--conduit-fuse-core-bodies-flag` is
+// set.  Spatial fusion on its own (without the core-bodies flag) would
+// route combine-device with `same-tile=false`, which scatters the two
+// devices to adjacent columns — preventing core-body fusion entirely.
+//
+// PASS expectation: every dispatch (4 invocations) completes; output
+// bytes match reference computed by test.cpp (out[j] = (in[j]+1.0)*2.0,
+// in[j] = (j%16)).  Failure modes that lit-only fixtures cannot catch
+// (per fuse_core_bodies_smoke.py docstring):
+//   * Loop-body fusion compiles cleanly but the merged core hangs on the
+//     SECOND invocation (Pattern E forward-chain mis-fusion class,
+//     sibling to fuse-operators bugs).  Single-dispatch lit smokes miss
+//     this.
+//   * scf.for outer-loop alignment between producer and consumer
+//     silently mis-aligns iter_count, surfacing as truncated output.
+//   * Cross-tile lock interaction at the merged-tile boundary —
+//     pre-fusion devAdd's release of @inter_add and devMul's acquire of
+//     @consume_add are separate locks; post-fusion they collapse into a
+//     single L1 alloc with no inter-core lock, and any leftover lock
+//     emission would deadlock the merged core.
+//
+// Related sibling pin:
+//   test/Dialect/Conduit/path_c_async_fuse_corebody_blocks_at_wait_all.mlir
+// (XFAIL pin tracking the related fused-Llama Pass C blocker — Pass C
+// still errors out when --conduit-fuse-core-bodies precedes --conduit-to-
+// dma on IR with `conduit.wait_all` consumers; that XFAIL flips to PASS
+// once fused-Llama work begins).
+//
+// No stateful companion: the source IR uses 2 independent `aie.device`
+// blocks linked only by `fusion_group` annotations — stateful objectfifo
+// lowering does not span devices, so a stateful run is structurally
+// inapplicable here.  Reference is computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 add + multiply.  Chess (xchesscc) cannot
+// select `fp_to_bf16` for this inline core (`fatal error: error in
+// backend: Cannot select: i32 = fp_to_bf16`); Peano can.  Use
+// `--no-xchesscc --no-xbridge` to route the kernel compile through Peano
+// (sibling pattern: `convergent_npu/conduit.lit`, `loadpdi/run.lit`,
+// `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_1col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-core-bodies-flag --conduit-fuse-spatial --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

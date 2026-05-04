@@ -105,6 +105,17 @@ declare_mlir_dialect_python_bindings(
 declare_mlir_dialect_python_bindings(
   ADD_TO_PARENT AIEPythonSources.Dialects
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+  TD_FILE dialects/ConduitBinding.td
+  SOURCES
+    dialects/conduit.py
+  DIALECT_NAME conduit
+  DEPENDS
+    aie-headers
+)
+
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT AIEPythonSources.Dialects
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
   TD_FILE dialects/AIEVecBinding.td
   SOURCES
     dialects/aievec.py

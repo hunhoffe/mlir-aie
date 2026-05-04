@@ -1,0 +1,44 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Conduit (--use-conduit --conduit-fuse-spatial) end-to-end run for the
+// `--conduit-fuse-operators` convergent (K=2) merge (Sprint N+2 Phase 2;
+// e2e companion to the lit-only pin
+//   test/Dialect/Conduit/fuse_operators_convergent_basic.mlir).
+//
+// Pre-fuse: 3 separate `aie.device` blocks (devGate + devUp + devMul), all
+// at tile(0,2).  After `--conduit-fuse-operators` (injected via
+// `--conduit-fuse-spatial` on the aiecc command line) the 2 producer
+// devices and the 1 consumer device collapse into ONE merged device with
+// the producer cores re-placed at columns 0 and 1 and the consumer core at
+// column 2 — this is why the device target is `npu2_4col` (1col would not
+// have the column budget).  The 4 pre-fuse intermediate channels
+// (@inter_gate, @inter_up, @consume_gate, @consume_up) collapse to 2
+// `@fused_intermediate_N` channels (one per producer; consumer-side stays
+// single-producer per-channel by design).
+//
+// PASS expectation: dispatch completes; output bytes match the reference
+// computed by test.cpp (output[j] = gate_in[j] * up_in[j], symmetric inputs
+// chosen so verification is independent of post-fusion arg-reprojection
+// order).  Hang/timeout would indicate the fused runtime sequence drives a
+// wrong DMA program; wrong-bytes would indicate convergent-aware producer/
+// consumer pairing or arg reprojection (Step 8c-bis) is mis-pairing halves.
+//
+// No stateful companion: the source IR uses 3 independent `aie.device`
+// blocks linked only by `fusion_group` annotations — stateful objectfifo
+// lowering does not span devices, so a stateful run is structurally
+// inapplicable here.  Reference is computed in test.cpp.
+//
+// REQUIRES: ryzen_ai, peano
+//
+// Kernel compute is inlined bf16 multiply.  Chess (xchesscc) cannot select
+// `fp_to_bf16` for this inline core (`fatal error: error in backend: Cannot
+// select: i32 = fp_to_bf16`); Peano can.  Use `--no-xchesscc --no-xbridge`
+// to route the kernel compile through Peano (sibling pattern: `loadpdi/
+// run.lit`, `vec_vec_add_objfifo_init/aie2.py`).
+//
+// RUN: cp %S/aie.mlir aie_arch.mlir
+// RUN: %run_on_npu2% sed 's/NPUDEVICE/npu2_4col/g' -i aie_arch.mlir
+// RUN: %run_on_npu2% %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host --use-conduit --conduit-fuse-spatial --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie_arch.mlir
+// RUN: %run_on_npu2% clang %S/test.cpp -o test.exe -std=c++17 -Wall %xrt_flags -lrt -lstdc++ %test_utils_flags
+// RUN: %run_on_npu2% ./test.exe -x aie.xclbin -k MLIR_AIE -i insts.bin

@@ -1,0 +1,49 @@
+// RUN: aie-opt %s -split-input-file -verify-diagnostics
+//
+// Regression test (A-10): cascade channels cannot be used in scatter or
+// gather links.
+//
+// NOTE: The cascade channel check for scatter/gather is enforced by Pass C
+// (conduit-to-dma linkPhase), NOT by the op-level verifier. ScatterOp and
+// GatherOp verifiers only check DMA budget and memtile format.
+//
+// This file validates that scatter/gather parse correctly with cascade-mode
+// conduits present — the cascade rejection happens at lowering time, not
+// during verification.
+
+// -----
+
+// scatter with cascade-mode source conduit — parses without verifier error.
+// The cascade channel rejection fires in --conduit-to-dma, not here.
+aie.device(npu1) {
+conduit.create @casc_src {                element_type = memref<4xi32>,
+                depth = 1 : i64,
+                routing_mode = #conduit.routing_mode<cascade>}
+conduit.create @out0 {                element_type = memref<4xi32>,
+                depth = 1 : i64}
+conduit.create @out1 {                element_type = memref<4xi32>,
+                depth = 1 : i64}
+func.func @scatter_with_cascade_src() {
+  %mt = aie.tile(0, 1)
+  conduit.scatter{src = @casc_src, dsts = [@out0, @out1], memtile = %mt}
+  return
+}
+}
+
+// -----
+
+// gather with cascade-mode destination conduit — parses without verifier error.
+aie.device(npu1) {
+conduit.create @in0 {                element_type = memref<4xi32>,
+                depth = 1 : i64}
+conduit.create @in1 {                element_type = memref<4xi32>,
+                depth = 1 : i64}
+conduit.create @casc_dst {                element_type = memref<4xi32>,
+                depth = 1 : i64,
+                routing_mode = #conduit.routing_mode<cascade>}
+func.func @gather_with_cascade_dst() {
+  %mt = aie.tile(0, 1)
+  conduit.gather{srcs = [@in0, @in1], dst = @casc_dst, memtile = %mt}
+  return
+}
+}
