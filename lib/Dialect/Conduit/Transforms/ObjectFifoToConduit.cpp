@@ -184,6 +184,8 @@ struct FifoInfo {
 //       * no core-side acquires at all
 //       * derived dma_repeat <= 1
 //       * trip exceeds kTripCountUnboundedSentinel (legacy `cmax = i64::MAX`)
+//         OR matches kAie24bitBdLoopSentinel (IRON's `0xFFFFFE` 24-bit
+//         BD-loop saturation "loop forever" idiom)
 //   - remark on the conduit.create (so the user can see why we backed off):
 //       * dynamic loop bounds anywhere in the enclosing nest
 //       * producer trip != consumer trip
@@ -200,6 +202,16 @@ struct FifoInfo {
 // sentinel (`cmax = i64::MAX` followed by `step = 1`) and skipped silently
 // to preserve the behaviour of the existing while-true test corpus.
 static constexpr int64_t kTripCountUnboundedSentinel = int64_t{1} << 30;
+
+// IRON's documented "loop forever" idiom uses the AIE 24-bit BD-loop
+// saturation value (0xFFFFFE = 16,777,214 = 2^24 - 2).  This value is BELOW
+// the legacy kTripCountUnboundedSentinel (2^30), so the existing >= check
+// alone never fires for IRON-emitted infinite-loop cores.  Treat any literal
+// bound matching this exact value as "skip dma_repeat stamping —
+// termination is host-dispatch + lock-blocking, not iter-count."  Empirically
+// validated 2026-05-03 (itercount-investigator IR-trace + cmax-sentinel-sweep
+// after the canon-fix landing exposed multi-invocation iter-count gaps).
+static constexpr int64_t kAie24bitBdLoopSentinel = (int64_t{1} << 24) - 2;
 
 // Match either arith.constant_index or arith.constant of integer type.
 static std::optional<int64_t> getConstIndexOrInt(mlir::Value v) {
@@ -696,7 +708,12 @@ inferDmaRepeatForChannel(AIE::DeviceOp device, llvm::StringRef channelName,
     return out;
 
   // Sentinel for legacy infinite-loop test patterns — silent skip.
-  if (*trip >= kTripCountUnboundedSentinel)
+  // Catches both (a) the legacy `cmax = i64::MAX`-shaped bound (>=
+  // kTripCountUnboundedSentinel) and (b) IRON's 24-bit BD-loop saturation
+  // sentinel (== kAie24bitBdLoopSentinel = 0xFFFFFE).  See the constant
+  // definitions above for the empirical-validation context.
+  if (*trip == kAie24bitBdLoopSentinel ||
+      *trip >= kTripCountUnboundedSentinel)
     return out;
 
   if (*trip <= 1)
