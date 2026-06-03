@@ -1855,7 +1855,16 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
         OptionalAttr<ConfinedAttr<AIEI32Attr, [IntMinValue<0>, IntMaxValue<1>]>>:$aie_stream_port,
         InitValuesArrayAttr:$initValues,
         OptionalAttr<BDPadLayoutArrayAttr>:$padDimensions,
-        OptionalAttr<AIEI32Attr>:$iter_count
+        OptionalAttr<AIEI32Attr>:$iter_count,
+        // Per-slot DM bank pinning for the buffers allocated on the producer
+        // tile. Length must equal the producer-side depth, OR be empty (==
+        // attr absent, no pinning). Each entry maps the corresponding
+        // ping-pong slot to a specific bank (same path as BufferOp.mem_bank).
+        OptionalAttr<I32ArrayAttr>:$producer_mem_bank,
+        // One inner array per consumer tile, in $consumerTiles order. Each
+        // inner array length must equal that consumer's depth, OR be empty
+        // to opt that consumer out of pinning (placer chooses for it).
+        OptionalAttr<ArrayAttr>:$consumer_mem_banks
   );
 
   let assemblyFormat = [{

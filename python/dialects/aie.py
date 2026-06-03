@@ -328,6 +328,7 @@ class buffer(BufferOp):
         datatype: MemRefType | type[np.ndarray],
         name: str | None = None,
         address=None,
+        mem_bank=None,
         initial_value: np.ndarray | None = None,
         use_write_rtp: bool = False,
         loc=None,
@@ -347,6 +348,7 @@ class buffer(BufferOp):
             tile=tile,
             sym_name=name,
             address=address,
+            mem_bank=mem_bank,
             initial_value=initial_value,
             loc=loc,
             ip=ip,
@@ -467,6 +469,8 @@ class object_fifo(ObjectFifoCreateOp):
         disable_synchronization=None,
         iter_count=None,
         consumer_datatype=None,
+        producer_mem_bank=None,
+        consumer_mem_banks=None,
     ):
         self.datatype = try_convert_np_type_to_mlir_type(datatype)
         self.consumer_datatype = (
@@ -492,6 +496,18 @@ class object_fifo(ObjectFifoCreateOp):
                     init_val = array("i", e)
                 values.append(DenseElementsAttr.get(init_val, type=self.datatype))
             initValues = _arrayAttr(values, None)
+        # consumer_mem_banks is a nested ArrayAttr (outer per-consumer,
+        # inner per-slot i32 array). The auto-generated builder cannot
+        # construct nested ArrayAttr-of-I32ArrayAttr from Python lists, so
+        # build the attribute manually here.
+        if consumer_mem_banks is not None and not isinstance(
+            consumer_mem_banks, Attribute
+        ):
+            inner_attrs = [
+                _i32ArrayAttr(list(inner) if inner is not None else [], None)
+                for inner in consumer_mem_banks
+            ]
+            consumer_mem_banks = _arrayAttr(inner_attrs, None)
         super().__init__(
             sym_name=name,
             producerTile=producerTile,
@@ -506,6 +522,8 @@ class object_fifo(ObjectFifoCreateOp):
             disable_synchronization=disable_synchronization,
             initValues=initValues,
             iter_count=iter_count,
+            producer_mem_bank=producer_mem_bank,
+            consumer_mem_banks=consumer_mem_banks,
         )
         if consumerElemType is not None:
             self.attributes["consumerElemType"] = consumerElemType

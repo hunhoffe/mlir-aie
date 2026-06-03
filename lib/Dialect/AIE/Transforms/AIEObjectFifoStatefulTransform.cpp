@@ -782,13 +782,80 @@ struct AIEObjectFifoStatefulTransformPass
             }
           }
         }
+        // Consult OF's producer_mem_bank / consumer_mem_banks. Per-slot:
+        // index `i` of the depth loop selects which bank entry to use.
+        // Default behavior (no user attr) → nullptr → byte-identical to
+        // pre-bank-aware codegen. If the user requested pinning but the
+        // buffer spilled to an overflow neighbor, emit a warning so the
+        // request is not silently dropped.
+        mlir::IntegerAttr memBankAttr = nullptr;
+        bool pinRequested = false;
+        if (creation_tile == op.getProducerTileOp()) {
+          if (auto prodBanks = op.getProducerMemBank())
+            if (!prodBanks->empty())
+              pinRequested = true;
+        } else if (auto consumerBanks = op.getConsumerMemBanks()) {
+          auto consumerTiles = op.getConsumerTiles();
+          for (size_t idx = 0; idx < consumerTiles.size(); ++idx) {
+            if (creation_tile ==
+                dyn_cast<TileOp>(consumerTiles[idx].getDefiningOp())) {
+              if (idx < consumerBanks->size())
+                if (auto innerArr =
+                        dyn_cast<ArrayAttr>((*consumerBanks)[idx]))
+                  if (!innerArr.empty())
+                    pinRequested = true;
+              break;
+            }
+          }
+        }
+        if (current_buf_allocation_tile == creation_tile) {
+          if (creation_tile == op.getProducerTileOp()) {
+            if (auto prodBanks = op.getProducerMemBank()) {
+              if ((size_t)i < prodBanks->size())
+                memBankAttr = builder.getI32IntegerAttr(
+                    cast<IntegerAttr>((*prodBanks)[i]).getInt());
+            }
+          } else if (auto consumerBanks = op.getConsumerMemBanks()) {
+            auto consumerTiles = op.getConsumerTiles();
+            for (size_t idx = 0; idx < consumerTiles.size(); ++idx) {
+              if (creation_tile ==
+                  dyn_cast<TileOp>(consumerTiles[idx].getDefiningOp())) {
+                if (idx < consumerBanks->size()) {
+                  auto innerArr =
+                      dyn_cast<ArrayAttr>((*consumerBanks)[idx]);
+                  if (innerArr && (size_t)i < innerArr.size())
+                    memBankAttr = builder.getI32IntegerAttr(
+                        cast<IntegerAttr>(innerArr[i]).getInt());
+                }
+                break;
+              }
+            }
+          }
+        } else if (pinRequested) {
+          // Buffer overflowed to a neighbor tile; the requested bank index
+          // refers to the original tile's banks, so honoring the pin on a
+          // different tile would be wrong. Fail loudly rather than silently
+          // dropping the user's placement constraint.
+          op.emitOpError() << "buffer #" << i << " for fifo '"
+                           << op.name() << "' has a requested mem_bank pin "
+                           << "but spilled from tile ("
+                           << creation_tile.getCol() << ", "
+                           << creation_tile.getRow() << ") to neighbor tile ("
+                           << current_buf_allocation_tile.getCol() << ", "
+                           << current_buf_allocation_tile.getRow()
+                           << ") because the original tile was full. Either "
+                           << "free space on the original tile or remove the "
+                           << "mem_bank pin.";
+          signalPassFailure();
+          return;
+        }
         auto buff = BufferOp::create(
             builder, builder.getUnknownLoc(), elemType,
             current_buf_allocation_tile,
             builder.getStringAttr(op.name().str() + "_buff_" +
                                   std::to_string(of_elem_index)),
-            /*address*/ nullptr, initValues,
-            /*mem_bank*/ nullptr, /*aligned*/ nullptr);
+            /*address*/ nullptr, initValues, memBankAttr,
+            /*aligned*/ nullptr);
         buffers.push_back(buff);
       }
       of_elem_index++;
@@ -1952,6 +2019,19 @@ struct AIEObjectFifoStatefulTransformPass
           consumerFifo.setIterCountAttr(
               builder.getI32IntegerAttr(*bdChainIterCount));
         }
+        // Propagate this consumer's per-slot bank pin onto the split
+        // consumer fifo. The split fifo is a self-loop (prod == cons ==
+        // consumerTile), so the consumer-side pin becomes its
+        // producer_mem_bank.
+        if (auto consumerBanks = createOp.getConsumerMemBanks()) {
+          if (consumerIndex < (int)consumerBanks->size()) {
+            if (auto innerArr =
+                    dyn_cast<ArrayAttr>((*consumerBanks)[consumerIndex])) {
+              if (!innerArr.empty())
+                consumerFifo.setProducerMemBankAttr(innerArr);
+            }
+          }
+        }
         replaceSplitFifo(createOp, consumerFifo, consumerTileOp);
         if (createOp.getAieStream()) {
           int streamEnd = createOp.getAieStream().value();
@@ -2035,6 +2115,56 @@ struct AIEObjectFifoStatefulTransformPass
 
       int share_direction = 0;
       bool shared = !requiresDMAs(createOp, share_direction, state);
+
+      // Sanity: when producer and consumer share memory, the OF lowers to
+      // a single buffer pool on one tile -- the consumer has no buffer of
+      // its own, so consumer_mem_banks[i] cannot be honored. Refuse to
+      // silently no-op the user's placement constraint.
+      if (shared) {
+        if (auto consumerBanks = createOp.getConsumerMemBanks()) {
+          for (size_t idx = 0; idx < consumerBanks->size(); ++idx) {
+            if (auto innerArr = dyn_cast<ArrayAttr>((*consumerBanks)[idx]))
+              if (!innerArr.empty()) {
+                createOp.emitOpError()
+                    << "`consumer_mem_banks[" << idx << "]` is set on a "
+                    << "shared-memory ObjectFifo. The consumer's buffers "
+                    << "live on the producer's tile, so the consumer-side "
+                    << "pin cannot be honored. Either set "
+                    << "`producer_mem_bank` instead, or remove the "
+                    << "consumer pin.";
+                signalPassFailure();
+                return;
+              }
+          }
+        }
+      }
+
+      // Sanity: delegate_tile (aie.objectfifo.allocate) redirects the
+      // entire buffer pool to a third tile, so producer- and
+      // consumer-endpoint pins do not apply -- the buffer lands on the
+      // delegate, not on the producer or consumer.
+      if (getOptionalAllocateOp(createOp).has_value()) {
+        bool prodPinSet = false;
+        if (auto pb = createOp.getProducerMemBank())
+          prodPinSet = !pb->empty();
+        bool consPinSet = false;
+        if (auto cb = createOp.getConsumerMemBanks())
+          for (auto inner : *cb)
+            if (auto arr = dyn_cast<ArrayAttr>(inner))
+              if (!arr.empty()) {
+                consPinSet = true;
+                break;
+              }
+        if (prodPinSet || consPinSet) {
+          createOp.emitOpError()
+              << "has a `delegate_tile` (aie.objectfifo.allocate) that "
+              << "redirects the buffer pool to a third tile; "
+              << "producer_mem_bank / consumer_mem_banks cannot be honored "
+              << "in this configuration.";
+          signalPassFailure();
+          return;
+        }
+      }
 
       // add all tiles that contain an objectFifo to objectFifoTiles for later
       // loop unrolling pass

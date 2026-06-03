@@ -560,6 +560,93 @@ LogicalResult ObjectFifoCreateOp::verify() {
              << "element size (" << consSize << ")";
   }
 
+  // Validate per-slot mem-bank pinning attributes.
+  // - producer_mem_bank length == producer depth; each entry in
+  //   [0, numBanks(producerTile))
+  // - consumer_mem_banks outer length == number of consumer tiles; each inner
+  //   array length == that consumer's depth; each entry in
+  //   [0, numBanks(thatConsumerTile))
+  const auto &targetModel = getTargetModel(*this);
+  if (auto prodBankAttr = getProducerMemBankAttr()) {
+    int prodDepth = size(0);
+    // Empty array = opt out of pinning (placer chooses). Otherwise length
+    // must equal producer depth.
+    if (!prodBankAttr.empty() && (int)prodBankAttr.size() != prodDepth)
+      return emitOpError("`producer_mem_bank` length (")
+             << prodBankAttr.size()
+             << ") must equal producer depth (" << prodDepth
+             << ") or be empty";
+    auto prodTileOp = dyn_cast<TileOp>(getProducerTile().getDefiningOp());
+    if (!prodTileOp)
+      return emitOpError(
+          "`producer_mem_bank` requires the producer tile to be an aie.tile op");
+    {
+      uint32_t nBanks =
+          targetModel.getNumBanks(prodTileOp.getCol(), prodTileOp.getRow());
+      if (nBanks == 0)
+        return emitOpError(
+            "`producer_mem_bank` set on a tile with no addressable banks (")
+               << prodTileOp.getCol() << ", " << prodTileOp.getRow() << ")";
+      for (size_t i = 0; i < prodBankAttr.size(); ++i) {
+        auto intAttr = dyn_cast<IntegerAttr>(prodBankAttr[i]);
+        if (!intAttr)
+          return emitOpError(
+              "`producer_mem_bank` entries must be 32-bit integers");
+        int bank = intAttr.getInt();
+        if (bank < 0 || (uint32_t)bank >= nBanks)
+          return emitOpError("`producer_mem_bank[")
+                 << i << "]` (" << bank << ") out of range [0, " << nBanks
+                 << ") for tile (" << prodTileOp.getCol() << ", "
+                 << prodTileOp.getRow() << ")";
+      }
+    }
+  }
+  if (auto consBanksAttr = getConsumerMemBanksAttr()) {
+    if (consBanksAttr.size() != getConsumerTiles().size())
+      return emitOpError(
+          "`consumer_mem_banks` outer length must equal number of consumer "
+          "tiles");
+    bool perConsumerDepth = isa<ArrayAttr>(getElemNumber());
+    for (size_t i = 0; i < consBanksAttr.size(); ++i) {
+      auto innerArr = dyn_cast<ArrayAttr>(consBanksAttr[i]);
+      if (!innerArr)
+        return emitOpError(
+            "`consumer_mem_banks` entries must be 32-bit integer arrays");
+      // Empty inner array = this consumer opted out of pinning.
+      if (innerArr.empty())
+        continue;
+      int consDepth = perConsumerDepth ? size(i + 1) : size(0);
+      if ((int)innerArr.size() != consDepth)
+        return emitOpError("`consumer_mem_banks[")
+               << i << "]` length (" << innerArr.size()
+               << ") must equal consumer depth (" << consDepth
+               << ") or be empty";
+      auto consTileOp =
+          dyn_cast<TileOp>(getConsumerTiles()[i].getDefiningOp());
+      if (!consTileOp)
+        return emitOpError("`consumer_mem_banks[")
+               << i << "]` requires the consumer tile to be an aie.tile op";
+      uint32_t nBanks =
+          targetModel.getNumBanks(consTileOp.getCol(), consTileOp.getRow());
+      if (nBanks == 0)
+        return emitOpError("`consumer_mem_banks[")
+               << i << "]` set on a tile with no addressable banks ("
+               << consTileOp.getCol() << ", " << consTileOp.getRow() << ")";
+      for (size_t j = 0; j < innerArr.size(); ++j) {
+        auto intAttr = dyn_cast<IntegerAttr>(innerArr[j]);
+        if (!intAttr)
+          return emitOpError(
+              "`consumer_mem_banks` inner entries must be 32-bit integers");
+        int bank = intAttr.getInt();
+        if (bank < 0 || (uint32_t)bank >= nBanks)
+          return emitOpError("`consumer_mem_banks[")
+                 << i << "][" << j << "]` (" << bank << ") out of range [0, "
+                 << nBanks << ") for tile (" << consTileOp.getCol() << ", "
+                 << consTileOp.getRow() << ")";
+      }
+    }
+  }
+
   return success();
 }
 

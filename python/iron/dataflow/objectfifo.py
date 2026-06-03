@@ -167,12 +167,17 @@ class ObjectFifo(Resolvable):
             f"prod={prod_endpoint}, cons={[c.endpoint for c in self._cons]})"
         )
 
-    def prod(self, depth: int | None = None) -> ObjectFifoHandle:
+    def prod(
+        self,
+        depth: int | None = None,
+        mem_banks: list[int] | None = None,
+    ) -> ObjectFifoHandle:
         """Returns an ObjectFifoHandle of type producer. Each ObjectFifo may have only one producer
         handle, so if one already exists, a new reference to this handle will be returned.
 
         Args:
             depth (int | None, optional): The depth of the buffers at the endpoint corresponding to the producer handle. Defaults to None.
+            mem_banks (list[int] | None, optional): Per-slot DM bank indices for the producer-side buffer pool. Length must equal ``depth``. Each entry must be in ``[0, num_banks(producer_tile))``. Defaults to None (placer chooses).
 
         Raises:
             ValueError: Arguments are validated
@@ -190,13 +195,14 @@ class ObjectFifo(Resolvable):
             elif depth < 1:
                 raise ValueError(f"Depth must be > 1, but got {depth}")
         else:
-            self._prod = ObjectFifoHandle(self, True, depth)
+            self._prod = ObjectFifoHandle(self, True, depth, mem_banks=mem_banks)
         return self._prod
 
     def cons(
         self,
         depth: int | None = None,
         dims_from_stream: list[Sequence[int]] | None = None,
+        mem_banks: list[int] | None = None,
     ) -> ObjectFifoHandle:
         """Returns an ObjectFifoHandle of type consumer. Each ObjectFifo may have multiple consumers, so this
         will return a new consumer handle every time it is called.
@@ -204,6 +210,7 @@ class ObjectFifo(Resolvable):
         Args:
             depth (int | None, optional): The depth of the buffers at the endpoint corresponding to this consumer handle. Defaults to None.
             dims_from_stream (list[Sequence[int]] | None, optional): Dimensions from stream for this consumer. Defaults to None.
+            mem_banks (list[int] | None, optional): Per-slot DM bank indices for this consumer's buffer pool. Length must equal ``depth``. Each entry must be in ``[0, num_banks(consumer_tile))``. Defaults to None (placer chooses).
 
         Raises:
             ValueError: Arguments are validated
@@ -221,7 +228,11 @@ class ObjectFifo(Resolvable):
             dims_from_stream = self._dims_from_stream_per_cons
         self._cons.append(
             ObjectFifoHandle(
-                self, is_prod=False, depth=depth, dims_from_stream=dims_from_stream
+                self,
+                is_prod=False,
+                depth=depth,
+                dims_from_stream=dims_from_stream,
+                mem_banks=mem_banks,
             )
         )
         return self._cons[-1]
@@ -312,6 +323,20 @@ class ObjectFifo(Resolvable):
                 if self._consumer_obj_type is not None
                 else None
             )
+
+            # Per-slot, per-endpoint mem-bank pinning. Each handle
+            # independently chooses to pin (list of length depth) or not
+            # (None). At the IR layer "this endpoint opts out" is an empty
+            # list inside the outer array; an entirely-absent attr means
+            # nobody pinned.
+            prod_banks = self._prod._mem_banks if self._prod else None
+            cons_banks_list = [c._mem_banks for c in self._cons]
+            any_cons_pinned = any(b is not None for b in cons_banks_list)
+            consumer_mem_banks = (
+                [b if b is not None else [] for b in cons_banks_list]
+                if any_cons_pinned
+                else None
+            )
             self._op = object_fifo(
                 self.name,
                 self._prod_tile_op(),
@@ -327,6 +352,8 @@ class ObjectFifo(Resolvable):
                 via_DMA=self._via_DMA or None,
                 initValues=self._init_values,
                 consumer_datatype=consumer_datatype,
+                producer_mem_bank=prod_banks,
+                consumer_mem_banks=consumer_mem_banks,
             )
 
             if self._repeat_count is not None:
@@ -372,6 +399,7 @@ class ObjectFifoHandle(Resolvable):
         is_prod: bool,
         depth: int | None = None,
         dims_from_stream: list[Sequence[int]] | None = None,
+        mem_banks: list[int] | None = None,
     ):
         """Construct an ObjectFifoHandle
 
@@ -380,6 +408,7 @@ class ObjectFifoHandle(Resolvable):
             is_prod (bool): Whether the handle should be producer or consumer handle.
             depth (int | None, optional): The depth of the ObjectFifo at this endpoint. Defaults to None.
             dims_from_stream (list[Sequence[int]] | None, optional): A unique dimensions from stream. This is only valid for consumer handles. Defaults to None.
+            mem_banks (list[int] | None, optional): Per-slot DM bank indices for this endpoint's buffer pool. Length must equal ``depth``. Defaults to None (placer chooses).
 
         Raises:
             ValueError: Arguments are validated.
@@ -401,11 +430,24 @@ class ObjectFifoHandle(Resolvable):
         elif not is_prod and not dims_from_stream:
             dims_from_stream = of.dims_from_stream_per_cons
 
+        if mem_banks is not None:
+            if not isinstance(mem_banks, list) or not all(
+                isinstance(b, int) for b in mem_banks
+            ):
+                raise ValueError(
+                    f"mem_banks must be a list[int], got {mem_banks!r}"
+                )
+            if len(mem_banks) != depth:
+                raise ValueError(
+                    f"mem_banks length ({len(mem_banks)}) must equal depth ({depth})"
+                )
+
         self._is_prod = is_prod
         self._object_fifo = of
         self._depth = depth
         self._endpoint = None
         self._dims_from_stream = dims_from_stream
+        self._mem_banks: list[int] | None = mem_banks
 
     def acquire(
         self,
