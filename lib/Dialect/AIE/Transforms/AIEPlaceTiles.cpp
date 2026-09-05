@@ -1,10 +1,7 @@
 //===- AIEPlaceTiles.cpp ----------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2026 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -61,9 +58,8 @@ struct AIEPlaceTilesPass
 
   AIEPlaceTilesPass() = default;
 
-  AIEPlaceTilesPass(const AIEPlaceTilesOptions &options) {
-    clCoresPerCol = options.clCoresPerCol;
-  }
+  AIEPlaceTilesPass(const AIEPlaceTilesOptions &options)
+      : AIEPlaceTilesBase(options) {}
 
   void runOnOperation() override {
     DeviceOp device = getOperation();
@@ -75,9 +71,13 @@ struct AIEPlaceTilesPass
       std::optional<int> coresPerCol = std::nullopt;
       if (clCoresPerCol >= 0)
         coresPerCol = clCoresPerCol;
-      placer = std::make_shared<SequentialPlacer>(coresPerCol);
+      placer =
+          std::make_shared<SequentialPlacer>(coresPerCol, clMergeLogicalTiles);
       break;
     }
+    case PlacerType::SAPlacer:
+      placer = std::make_shared<SAPlacer>(clSASeed);
+      break;
     }
 
     placer->initialize(device.getTargetModel());
@@ -95,6 +95,33 @@ struct AIEPlaceTilesPass
 
     if (failed(applyPartialConversion(device, target, std::move(patterns))))
       return signalPassFailure();
+
+    // Generate objectfifo.allocate ops right after their respective objectfifo
+    auto &allocs = placer->getAllocates();
+    if (!allocs.empty()) {
+      // Deduplicate: only emit one allocate per fifo
+      llvm::DenseSet<Operation *> emitted;
+      for (auto &[fifoOp, delegateTileID] : allocs) {
+        if (emitted.count(fifoOp))
+          continue;
+        emitted.insert(fifoOp);
+
+        auto ofOp = dyn_cast<ObjectFifoCreateOp>(fifoOp);
+        if (!ofOp)
+          continue;
+
+        // Insert right after the objectfifo op
+        OpBuilder builder(ofOp->getContext());
+        builder.setInsertionPointAfter(ofOp);
+
+        TileOp delegateTile = TileOp::getOrCreate(
+            builder, device, delegateTileID.col, delegateTileID.row);
+        ObjectFifoAllocateOp::create(
+            builder, ofOp.getLoc(),
+            SymbolRefAttr::get(builder.getContext(), ofOp.getSymName()),
+            delegateTile.getResult());
+      }
+    }
   }
 };
 

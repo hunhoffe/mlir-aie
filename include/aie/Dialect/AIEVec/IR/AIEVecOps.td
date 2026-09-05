@@ -1,10 +1,7 @@
 //===- AIEVecOps.td - AIE vector op definitions -----------*- tablegen -*-====//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023-2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2023-2024 Advanced Micro Devices, Inc. or its affiliates
 //
 //===----------------------------------------------------------------------===//
 // Defines AIE vector operations.
@@ -654,6 +651,12 @@ def AIEVec_MatMulOp:
     AMD AIEv2-specific intrinsic that performs a matrix multiplications
     between `lhs` and `rhs`, and accumulates the result in `acc`.
 
+    Operand signedness is carried in the integer element types: a signed
+    element type (`si8`) sets the MAC `signX`/`signY` bit, an unsigned type
+    (`ui8`) clears it. A signless element type (`i8`) is treated as signed.
+    Each operand is resolved independently, and `aievec.matmul_aie2p` follows
+    the same rule.
+
     Currently, this intrinsic supports the following type combinations:
 
          lhs                | rhs                | Accumulator
@@ -690,6 +693,10 @@ def AIEVec_MatMulOp_AIE2P:
   let description = [{
     AMD AIEv2P-specific intrinsic that performs a matrix multiplication
     between `lhs` and `rhs`, and accumulates the result in `acc`.
+
+    Operand signedness is carried in the integer element types exactly as for
+    `aievec.matmul`: `si8` sets the MAC `signX`/`signY` bit, `ui8` clears it,
+    and a signless element type is treated as signed.
 
     Currently, this intrinsic supports the following type combinations:
 

@@ -1,10 +1,7 @@
 //===- AIEVecTransformOps.cpp -----------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023-2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2023-2024 Advanced Micro Devices, Inc. or its affiliates
 //
 //===----------------------------------------------------------------------===//
 
@@ -89,7 +86,7 @@ static Value scalarizeTensor(OpBuilder &rewriter, Location loc, Value tensor) {
 
 static bool vectorizeContractionOpBlock(OpBuilder &rewriter, Location loc,
                                         Block &srcBlock, Block &dstBlock) {
-  auto ctx = rewriter.getContext();
+  auto *ctx = rewriter.getContext();
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPointToStart(&dstBlock);
   auto baA = static_cast<Value>(dstBlock.getArgument(0));
@@ -123,11 +120,11 @@ static bool vectorizeContractionOpBlock(OpBuilder &rewriter, Location loc,
           Value opA, opB, opC;
           auto lhsDefOp = lhs.getDefiningOp();
           auto rhsDefOp = rhs.getDefiningOp();
-          if (lhsDefOp && isa<arith::MulIOp, arith::MulFOp>(lhsDefOp)) {
+          if (isa_and_nonnull<arith::MulIOp, arith::MulFOp>(lhsDefOp)) {
             opA = convertedValues[lhsDefOp->getOperand(0)];
             opB = convertedValues[lhsDefOp->getOperand(1)];
             opC = convertedValues[rhs];
-          } else if (rhsDefOp && isa<arith::MulIOp, arith::MulFOp>(rhsDefOp)) {
+          } else if (isa_and_nonnull<arith::MulIOp, arith::MulFOp>(rhsDefOp)) {
             opA = convertedValues[rhsDefOp->getOperand(0)];
             opB = convertedValues[rhsDefOp->getOperand(1)];
             opC = convertedValues[lhs];
@@ -163,7 +160,7 @@ static bool vectorizeContractionOpBlock(OpBuilder &rewriter, Location loc,
               return WalkResult::interrupt();
             dstOpTy = VectorType::get(vecElemTy.getShape(), srcOpTy);
           }
-          auto newOp =
+          auto *newOp =
               rewriter.create(loc, unaryOp->getName().getIdentifier(),
                               {dstOpIn}, {dstOpTy}, unaryOp->getAttrs());
           convertedValues.try_emplace(unaryOp->getResult(0),
@@ -178,7 +175,7 @@ DiagnosedSilenceableFailure transform::VectorizeContractionOp::applyToOne(
     TransformRewriter &rewriter, linalg::GenericOp target,
     ApplyToEachResultList &results, TransformState &state) {
 
-  auto ctx = target.getContext();
+  auto *ctx = target.getContext();
   SmallVector<Value> inputs = target.getInputs();
   if (SmallVector<Value> outputs = target.getOutputs();
       inputs.size() != 2 || outputs.size() != 1)

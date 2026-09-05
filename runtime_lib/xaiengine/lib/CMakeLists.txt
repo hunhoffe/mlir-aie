@@ -1,8 +1,6 @@
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2023-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2023 Advanced Micro Devices, Inc.
 
 include("../aiert.cmake")
 
@@ -40,6 +38,10 @@ else()
 
     set(XAIE_SOURCE_DIR ../../../third_party/aie-rt/driver/src)
     set(BOOTGEN_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/bootgen)
+
+    apply_aie_rt_vendor_patches(
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/aie-rt
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/patches/aie-rt)
 
     add_aiert_headers(xaienginecdo
                         ${XAIE_SOURCE_DIR}

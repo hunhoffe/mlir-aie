@@ -1,10 +1,8 @@
 //===- broadcast.mlir ------------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,7 +38,7 @@
 // CHECK1: aie.flow(%[[T60]], DMA : 0, %[[T22]], DMA : 1)
 // CHECK1: aie.flow(%[[T60]], DMA : 0, %[[T02]], DMA : 1)
 
-// CHECK2: "total_path_length": 27
+// CHECK2: "total_path_length": 26
 
 module {
     aie.device(xcvc1902) {

@@ -1,4 +1,10 @@
+# Copyright (C) 2023-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
 name: Build and Test with Vitis 2025.1
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -18,6 +24,7 @@ on:
   # - or edit directly the step below which runs tmate and push to the
   #   PR, ignoring the manual workflow launch.
   workflow_dispatch:
+    inputs:
       launch_tmate_terminal_for_debug:
         type: boolean
         description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'
@@ -48,14 +55,14 @@ env:
             -DXRT_ROOT=/opt/xilinx/xrt \
             -DAIE_VITIS_COMPONENTS=AIE;AIE2 \
             -DAIE_ENABLE_PYTHON_PASSES=OFF \
-            -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
-            -DAIE_INCLUDE_INTEGRATION_TESTS=OFF
+            -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON
   LIT_OPTS: -sv --time-tests --timeout 600 --show-unsupported --show-excluded
 
 jobs:
   build-tests:
     name: Run Tests on Vitis
     runs-on: ${{ matrix.runner_type }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +70,7 @@ jobs:
     env:
       NPU_CACHE_HOME: ${{ github.workspace }}/iron-cache-${{ matrix.runner_type }}-${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: "true"
 
@@ -71,7 +78,7 @@ jobs:
       # for debug. This seems to live for 35 min max
       # https://github.com/mxschmitt/action-tmate
       - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113  # v3
         # To run this, launch it manually on the default branch and
         # click on "launch_tmate_terminal_for_debug"
         if: github.event_name == 'workflow_dispatch'
@@ -82,26 +89,24 @@ jobs:
           sudo prlimit -lunlimited --pid $$
           pip cache purge
           source /opt/xilinx/xrt/setup.sh
-          python -m venv aie-venv
-          source aie-venv/bin/activate
-          pip install --upgrade pip
-          python utils/mlir_aie_wheels/vendor_eudsl.py \
-              --requirements python/requirements.txt \
-              --install-non-eudsl
-          pip install -r python/requirements_notebook.txt
-          pip install -r python/requirements_ml.txt
-          pip install -r python/requirements_dev.txt
+          source ./utils/env_install.sh aie-venv --dev --extras
 
-          # Install llvm-aie (Peano) which is needed for unittests requiring compiling NPU code
-          pip install -I llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
-          export PEANO_INSTALL_DIR="$(pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
-          
           sed -i.bak 's/OUTPUT_TIMEOUT = 10/OUTPUT_TIMEOUT = 100/g' \
             $(python -c 'import site; print(site.getsitepackages()[0])')/jupyter_client/runapp.py
 
           VERSION=$(utils/clone-llvm.sh --get-wheel-version)
-          pip -q download mlir==$VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          for attempt in 1 2 3; do
+            rm -f mlir-*.whl
+            if pip -q download mlir==$VERSION \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to download MLIR wheel after ${attempt} attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           unzip -q mlir-*.whl
           # I have no clue why but the system clock on GHA containers is like 12 hours ahead.
           # That means wheels have file with time stamps in the future which makes ninja loop
@@ -115,7 +120,7 @@ jobs:
           LIT_OPTS="-j12 $LIT_OPTS"
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
-          
+
           cmake .. -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPython3_EXECUTABLE=$(which python) \

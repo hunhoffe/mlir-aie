@@ -1,10 +1,7 @@
 //===- split_blockwrite.mlir ----------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,10 +13,10 @@
 //
 // RUN: aie-opt --aie-npu-to-cert %s | FileCheck %s
 //
-// CHECK: memref.global "private" constant @data_split_0 : memref<1000xi32> = dense<"0x123456789ABCDEF
-// CHECK: memref.global "private" constant @data_split_1 : memref<1000xi32> = dense<"0xDEADBEEFDEADBEEF
-// CHECK: aiex.cert.uc_dma_bd @data_split_0, 4096, 1000, false
-// CHECK: aiex.cert.uc_dma_bd @data_split_1, 8096, 1000, false
+// CHECK-DAG: memref.global "private" constant @data_split_0 : memref<1000xi32> = dense<"0x123456789ABCDEF
+// CHECK-DAG: memref.global "private" constant @data_split_1 : memref<1000xi32> = dense<"0xDEADBEEFDEADBEEF
+// CHECK-DAG: aiex.cert.uc_dma_bd @data_split_0, 4096, 1000, false
+// CHECK-DAG: aiex.cert.uc_dma_bd @data_split_1, 8096, 1000, false
 
 module {
   aie.device(npu2) {

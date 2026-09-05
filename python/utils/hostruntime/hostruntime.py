@@ -1,52 +1,48 @@
-# SPDX-FileCopyrightText: Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-from abc import ABC, abstractmethod
 import logging
-import numpy as np
 import sys
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-logger = logging.getLogger(__name__)
+import numpy as np
 
-from .. import tensor
+from ..tensor_factory import tensor
 
 if TYPE_CHECKING:
     from aie.iron.device import Device
-from .tensor_class import Tensor
+from ..npukernel import NPUKernel
 from ..trace import TraceConfig
 from ..trace.utils import create_ctrl_pkt, extract_tile
-from ..npukernel import NPUKernel
 from . import bfloat16_safe_allclose
+from .tensor_class import NpuTensor
+
+logger = logging.getLogger(__name__)
 
 
 class HostRuntimeError(Exception):
-    """
-    Error raised when a NPU kernel encounters an error during runtime operations.
-    """
+    """Error raised when a NPU kernel encounters an error during runtime operations."""
 
     pass
 
 
 class KernelHandle(ABC):
-    """
-    Abstract representation that represents a kernel already registered/loaded with a runtime.
-    """
+    """Abstract representation that represents a kernel already registered/loaded with a runtime."""
 
     ...
 
 
 class KernelResult(ABC):
-    """A wrapper around data produced as the result of running a kernel"""
+    """A wrapper around data produced as the result of running a kernel."""
 
     def __init__(
         self,
         npu_time: int,
         trace_config: TraceConfig | None = None,
     ):
-        """
-        Initialize the KernelResult.
+        """Initialize the KernelResult.
 
         Args:
             npu_time (int): The execution time on the NPU in nanoseconds.
@@ -57,8 +53,7 @@ class KernelResult(ABC):
 
     @property
     def npu_time(self) -> int:
-        """
-        Get the NPU execution time.
+        """Get the NPU execution time.
 
         Returns:
             int: The execution time in nanoseconds.
@@ -67,8 +62,7 @@ class KernelResult(ABC):
 
     @property
     def trace_config(self) -> TraceConfig | None:
-        """
-        Get the trace configuration.
+        """Get the trace configuration.
 
         Returns:
             TraceConfig | None: The trace configuration if available, else None.
@@ -76,18 +70,16 @@ class KernelResult(ABC):
         return self._trace_config
 
     def has_trace(self) -> bool:
-        """
-        Check if trace data is available.
+        """Check if trace data is available.
 
         Returns:
             bool: True if trace configuration is present, False otherwise.
         """
-        return not (self._trace_config is None)
+        return self._trace_config is not None
 
     @abstractmethod
     def is_success(self) -> bool:
-        """
-        Check if the kernel execution was successful.
+        """Check if the kernel execution was successful.
 
         Returns:
             bool: True if successful, False otherwise.
@@ -96,27 +88,56 @@ class KernelResult(ABC):
 
 
 class HostRuntime(ABC):
-    """An abstract class for a generic host runtime"""
+    """An abstract class for a generic host runtime."""
 
     def check_device_consistency(self):
+        """Check if the overridden device is loadable on the runtime device.
+
+        A 1- or N-column variant of a generation (e.g. NPU1Col1) is loadable
+        on a wider device of the same generation (e.g. a 4-column NPU1), so we
+        accept any override whose arch matches and whose column count is <=
+        the runtime device's column count.
         """
-        Check if the overridden device matches the runtime device.
-        """
+        assert __package__ is not None
         mod = sys.modules[__package__]
         override = getattr(mod, "_CURRENT_DEVICE", None)
-        if override:
-            runtime_device = self.device()
-            if getattr(override, "_device", None) != getattr(
-                runtime_device, "_device", None
-            ):
-                raise RuntimeError(
-                    f"Overridden device {override} does not match runtime device {runtime_device}"
-                )
+        if override is None:
+            return
+        runtime_device = self.device()
+        try:
+            same_arch = override.arch == runtime_device.arch
+            fits = override.cols <= runtime_device.cols
+        except AttributeError:
+            same_arch = fits = False
+        if not (same_arch and fits):
+            raise RuntimeError(
+                f"Overridden device {override} is not loadable on runtime "
+                f"device {runtime_device}"
+            )
+
+    def cleanup(self) -> None:
+        """Release any cached device/runtime resources held by this runtime.
+
+        Base implementation is a no-op: a plain runtime holds nothing to
+        release. Caching runtimes override this to free hardware contexts,
+        loaded executables, instruction buffers, etc. Safe to call even if the
+        runtime never ran anything.
+        """
+        return
+
+    def evict_context(self, xclbin_path: Path) -> None:
+        """Drop any cached device context associated with ``xclbin_path``.
+
+        Recovery hook invoked after the driver rejects a submit against a stale
+        context (e.g. an XRT IOCTL EINVAL) so the next ``load`` rebuilds a fresh
+        context. Base implementation is a no-op for runtimes that keep no
+        evictable context cache.
+        """
+        return
 
     @abstractmethod
     def load(self, npu_kernel: NPUKernel, **kwargs) -> KernelHandle:
-        """
-        Load an NPU kernel into the runtime.
+        """Load an NPU kernel into the runtime.
 
         Args:
             npu_kernel (NPUKernel): The NPU kernel to load.
@@ -131,18 +152,21 @@ class HostRuntime(ABC):
     def run(
         self,
         kernel_handle: KernelHandle,
-        *args,
+        args,
         trace_config: TraceConfig | None = None,
+        fail_on_error: bool = True,
         only_if_loaded=False,
+        **kwargs,
     ) -> KernelResult:
-        """
-        Run a loaded kernel.
+        """Run a loaded kernel.
 
         Args:
             kernel_handle (KernelHandle): The handle to the loaded kernel.
-            *args: Arguments to pass to the kernel.
+            args: Arguments to pass to the kernel.
             trace_config (TraceConfig | None, optional): Configuration for tracing. Defaults to None.
+            fail_on_error (bool, optional): Whether to raise an exception on kernel failure. Defaults to True.
             only_if_loaded (bool, optional): If True, only run if already loaded. Defaults to False.
+            **kwargs: Additional arguments.
 
         Returns:
             KernelResult: The result of the kernel execution.
@@ -155,8 +179,7 @@ class HostRuntime(ABC):
         run_args: list,
         **kwargs,
     ) -> tuple[KernelHandle, KernelResult]:
-        """
-        Load and run an NPU kernel.
+        """Load and run an NPU kernel.
 
         Args:
             npu_kernel (NPUKernel): The NPU kernel to load and run.
@@ -169,10 +192,28 @@ class HostRuntime(ABC):
         trace_config = npu_kernel.trace_config
         handle = self.load(npu_kernel, **kwargs)
         if trace_config:
-            if trace_config.ddr_id == -1 and len(run_args) > 0:
+            if trace_config.reuse_output_buffer and len(run_args) > 0:
                 trace_config.last_tensor_shape = run_args[-1].shape
                 trace_config.last_tensor_dtype = np.dtype(run_args[-1].dtype)
             self.prepare_args_for_trace(run_args, trace_config)
+
+            # Passing a trace_config to a design that never called enable_trace
+            # means the lowering appended no trace operand, yet the host just
+            # appended a trace buffer above. The extra buffer has no matching
+            # runtime_sequence operand and would run with an empty trace (or,
+            # before the firmware-ABI floor over-declared kernels.json, segfault
+            # in XRT argument setup). Compare against the design's true operand
+            # count -- floor-independent, unlike the kernels.json boN slot count.
+            num_host_bos = npu_kernel.num_host_bos
+            if num_host_bos is not None and len(run_args) > num_host_bos:
+                raise HostRuntimeError(
+                    f"A trace_config was supplied but the compiled design has "
+                    f"{num_host_bos} host buffer argument(s), while running with "
+                    f"a trace buffer requires {len(run_args)}. The design must "
+                    f"call enable_trace(...) so trace lowering appends a trace "
+                    f"buffer operand; otherwise the trace buffer has nowhere to "
+                    f"land."
+                )
 
         ret = self.run(handle, list(run_args), trace_config=trace_config)
 
@@ -186,8 +227,7 @@ class HostRuntime(ABC):
 
     @abstractmethod
     def device(self) -> "Device":
-        """
-        Get the device associated with this runtime.
+        """Get the device associated with this runtime.
 
         Returns:
             Device: The device object.
@@ -198,8 +238,7 @@ class HostRuntime(ABC):
     # instruction buffer for the xrt.kernel call
     @classmethod
     def read_insts_binary(cls, insts_path: Path):
-        """
-        Reads instructions from a binary file.
+        """Read instructions from a binary file.
 
         Args:
             insts_path (Path): Path to the binary instruction file.
@@ -214,8 +253,7 @@ class HostRuntime(ABC):
 
     @classmethod
     def read_insts(cls, insts_path: Path):
-        """
-        Reads instructions from the given file.
+        """Read instructions from the given file.
 
         If the file extension is .bin, uses binary read.
         If the file extension is .txt, uses sequence (text) read.
@@ -239,20 +277,20 @@ class HostRuntime(ABC):
 
     @classmethod
     def prepare_args_for_trace(
-        cls, args: list[Tensor], trace_config: TraceConfig
-    ) -> list[Tensor]:
-        """
-        Prepare arguments for tracing by appending necessary buffers.
+        cls, args: list[NpuTensor], trace_config: TraceConfig
+    ) -> list[NpuTensor]:
+        """Prepare arguments for tracing by appending necessary buffers.
 
         Args:
-            args (list[Tensor]): List of input/output tensors.
+            args (list[NpuTensor]): List of input/output tensors.
             trace_config (TraceConfig): Trace configuration.
 
         Returns:
-            list[Tensor]: The updated list of tensors with trace buffers appended.
+            list[NpuTensor]: The updated list of tensors with trace buffers appended.
         """
-        if trace_config.ddr_id == -1:
-            # Create a new, extended out tensor.
+        if trace_config.reuse_output_buffer:
+            # Trace data is written into the tail of the last output buffer.
+            # Extend that buffer by the trace size; no new host buffer is added.
             out_size = trace_config.trace_size
             if len(args) > 0:
                 out_size += args[-1].nbytes
@@ -262,14 +300,11 @@ class HostRuntime(ABC):
                 out = tensor((out_size,), dtype=np.uint8)
                 args.append(out)
         else:
-            pad_until = trace_config.DEFAULT_TRACE_BUFFER_INDEX
-            if trace_config.enable_ctrl_pkts:
-                pad_until -= 1
-            while len(args) < pad_until:
-                # TODO out always needed so register buf 7 succeeds (not needed in C/C++ host code)
-                filler = tensor((1,), dtype=np.uint32)
-                args.append(filler)
-
+            # Dedicated trace buffer: trace lowering appended one trailing
+            # argument to the runtime_sequence, so the host appends exactly one
+            # trailing buffer here. The trace buffer lands at index len(args),
+            # which matches the appended argument's index by construction -- no
+            # positional padding is needed.
             if trace_config.enable_ctrl_pkts:
                 # write ctrl packets
                 ctrl_pkts = [
@@ -293,25 +328,25 @@ class HostRuntime(ABC):
 
     @classmethod
     def extract_trace_from_args(
-        cls, args: list[Tensor], trace_config: TraceConfig
-    ) -> tuple[Tensor, Tensor | None]:
-        """
-        Extract trace and control buffers from the arguments.
+        cls, args: list[NpuTensor], trace_config: TraceConfig
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Extract trace and control buffers from the arguments.
 
         Args:
-            args (list[Tensor]): List of tensors used in execution.
+            args (list[NpuTensor]): List of tensors used in execution.
             trace_config (TraceConfig): Trace configuration.
 
         Returns:
-            tuple[Tensor, Tensor | None]: A tuple containing the trace buffer and optionally the control buffer.
+            tuple[np.ndarray, np.ndarray | None]: A tuple containing the trace buffer and optionally the control buffer.
         """
         trace_buff = None
         ctrl_buff = None
 
-        if trace_config.ddr_id == -1:
-            args[-1], trace_buff = cls._extract_prefix(
+        if trace_config.reuse_output_buffer:
+            prefix, trace_buff = cls._extract_prefix(
                 args[-1], trace_config.last_tensor_shape, trace_config.last_tensor_dtype
             )
+            args[-1] = prefix  # pyright: ignore[reportCallIssue, reportArgumentType]
         else:
             # The trace position is always last.
             trace_buff = args[-1].numpy()
@@ -327,11 +362,10 @@ class HostRuntime(ABC):
 
     @classmethod
     def _extract_prefix(cls, tensor, prefix_shape, prefix_dtype):
-        """
-        Separate output data and trace data from a single output buffer stream.
+        """Separate output data and trace data from a single output buffer stream.
 
         Args:
-            tensor (Tensor | np.ndarray): The combined tensor.
+            tensor (NpuTensor | np.ndarray): The combined tensor.
             prefix_shape (tuple): Shape of the prefix (output data).
             prefix_dtype (np.dtype): Data type of the prefix.
 
@@ -351,8 +385,7 @@ class HostRuntime(ABC):
 
     @classmethod
     def process_trace(cls, trace_buffer, ctrl_buffer, trace_config, verbosity=0):
-        """
-        Process the trace buffer and control buffer.
+        """Process the trace buffer and control buffer.
 
         Args:
             trace_buffer (np.ndarray): The trace data buffer.
@@ -379,13 +412,12 @@ class HostRuntime(ABC):
                     )
 
     @classmethod
-    def verify_results(cls, io_args, refs={}, verbosity=0):
-        """
-        Verify the results of the kernel execution against reference data.
+    def verify_results(cls, io_args, refs=None, verbosity=0):
+        """Verify the results of the kernel execution against reference data.
 
         Args:
-            io_args (list[Tensor]): List of input/output tensors.
-            refs (dict, optional): Dictionary mapping index to reference numpy array. Defaults to {}.
+            io_args (list[NpuTensor]): List of input/output tensors.
+            refs (dict | None, optional): Dictionary mapping index to reference numpy array. Defaults to None (empty dict).
             verbosity (int, optional): Verbosity level. Defaults to 0.
 
         Returns:
@@ -394,6 +426,8 @@ class HostRuntime(ABC):
         Raises:
             HostRuntimeError: If a reference index is out of bounds.
         """
+        if refs is None:
+            refs = {}
         errors = 0
         if verbosity >= 1:
             logger.info("Verifying results ...")
@@ -417,12 +451,11 @@ class HostRuntime(ABC):
         verify: bool = True,
         verbosity: int = 0,
     ) -> int:
-        """
-        Run a test for the given NPU kernel.
+        """Run a test for the given NPU kernel.
 
         Args:
             npu_kernel (NPUKernel): The NPU kernel to test.
-            io_args (list[Tensor]): List of input/output tensors.
+            io_args (list[NpuTensor]): List of input/output tensors.
             ref (dict): Reference data for verification.
             verify (bool, optional): Whether to verify results. Defaults to True.
             verbosity (int, optional): Verbosity level. Defaults to 0.

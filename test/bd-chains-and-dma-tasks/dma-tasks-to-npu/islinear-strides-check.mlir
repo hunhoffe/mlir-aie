@@ -1,10 +1,7 @@
 //===- islinear-strides-check.mlir ------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -13,6 +10,8 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: aie-opt --canonicalize --aie-dma-tasks-to-npu --split-input-file %s | FileCheck %s
+
+
 
 // -----
 
@@ -24,15 +23,17 @@ module {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     aie.runtime_sequence(%arg0: memref<64xi32>) {
+      %c0_i32 = arith.constant 0 : i32
+      %c8_i32 = arith.constant 8 : i32
       %t0 = aiex.dma_configure_task(%tile_0_0, MM2S, 0) {
-        aie.dma_bd(%arg0 : memref<64xi32>, 0, 8,
-          [<size = 1, stride = 4>, <size = 1, stride = 4>, <size = 8, stride = 1>]
-        ) {bd_id = 0 : i32}
+        aie.dma_bd(%arg0 : memref<64xi32> offset = 0 len = 8 sizes = [1, 1, 8] strides = [4, 4, 1]) {bd_id = 0 : i32}
         aie.end
       }
     }
   }
 }
+
+
 
 // -----
 
@@ -43,10 +44,10 @@ module {
   aie.device(npu1) {
     %tile_0_0 = aie.tile(0, 0)
     aie.runtime_sequence(%arg0: memref<64xi32>) {
+      %c0_i32 = arith.constant 0 : i32
+      %c8_i32 = arith.constant 8 : i32
       %t0 = aiex.dma_configure_task(%tile_0_0, MM2S, 0) {
-        aie.dma_bd(%arg0 : memref<64xi32>, 0, 8,
-          [<size = 8, stride = 1>]
-        ) {bd_id = 0 : i32}
+        aie.dma_bd(%arg0 : memref<64xi32> offset = 0 len = 8 sizes = [8] strides = [1]) {bd_id = 0 : i32}
         aie.end
       }
     }

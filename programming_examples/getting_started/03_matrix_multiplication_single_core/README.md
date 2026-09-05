@@ -1,10 +1,16 @@
+<!-- Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
+
 # Getting Started: Single Core Matrix Multiplication
 
-This example multiplies two input matrices of 16-bit integers, `A` and `B`, to 
-produce a 16-bit integer output matrix `C`. All matrices are of size `512x512`.
-We use a single AI Engine core to compute the matrix product. Since these
-matrices do not fit into a AI Engine core's memory, we split the input and
-output into sub-tiles that are processed individually.
+This example multiplies two input matrices of 16-bit integers, `A` and `B`,
+to produce a 16-bit integer output matrix `C`. The same `@iron.jit`-decorated
+design is **AOT-compiled** for two shapes — `256x256x256` and `512x512x512` —
+demonstrating that any JIT design can be *opt-in* pre-compiled when the
+problem sizes are known in advance, without changing how the design is
+decorated. A single AI Engine core computes each matrix product. Since
+these matrices do not fit into an AI Engine core's memory, the design
+splits the input and output into sub-tiles processed individually.
 
 ![Matrix Multiplication AxB = C](diagrams/matmul.svg)
 
@@ -14,15 +20,18 @@ For more versions of the matrix multiplication design, with customizable paramet
 
 This design consists of the following:
 
-* `matrix_multiplication_single_core.py`: The NPU design for this application,
-  which describes which cores of the NPU we will use, how to route data between
-  cores, and what program to run on each core. This design leverages the IRON
-  JIT decorator to compile the design into a binary to run on the NPU, as well as 
-  to describe the program that runs on the CPU (host) that calculates a correct 
-  reference output, verifies and times our NPU design's execution.
-* `matrix_multiplication.cc`: A C++ kernel that exposes a function for 
-  efficiently multiplying matrices using the 
-  [AIE API](https://xilinx.github.io/aie_api/index.html).
+* `matrix_multiplication_single_core.py`: The NPU design and host driver.
+  The generator carries the usual `@iron.jit` decorator. The host driver
+  shows the opt-in AOT path: for each desired shape, it builds a
+  `CompilableDesign` from the JIT generator (via
+  `matrix_multiplication_single_core.compilable.mlir_generator`) and calls
+  `.compile()` eagerly. This populates the on-disk cache before any kernel
+  runs, so the subsequent normal calls through the JIT-decorated function
+  hit the cache instead of paying `aiecc` time on first invocation.
+* The MMUL kernel itself comes from the IRON kernel library
+  ([`aie.iron.kernels.mm`](../../../python/iron/kernels/linalg.py)), which
+  wraps [`aie_kernels/aie2/mm.cc`](../../../aie_kernels/aie2/mm.cc) — no
+  per-example C++ file is needed.
 * `run.lit`: lit test that runs the design on different NPU devices.
 
 ## Problem Size, Tile Size and Intrinsic Size
@@ -41,7 +50,7 @@ a single vector register of the AI Engine. The AI Engine provides dedicated
 fused multiply-add instructions, called `VMAC`, that are capable of multiplying
 one of these smallest sub-tiles in each clock cycle. We call this smallest tile
 size the intrinsic size, and the hardware dictates which tile sizes are
-available. The availalbe sizes for different architectures are documented 
+available. The available sizes for different architectures are documented 
 [here](https://xilinx.github.io/aie_api/group__group__mmul.html).
 
 ## Data Movement and Matrix Tiling
@@ -49,9 +58,9 @@ available. The availalbe sizes for different architectures are documented
 For brevity, the code refers to different memories as "levels"; the higher
 the level, the farther away from the AI Engine compute core the memory is, i.e.
 L3 is DRAM memory shared with the CPU, L2 is the memory on memory tiles and
-L1 is compute core memory. The ObjectFIFOs that move data are named accordingly
+L1 is compute core memory. The ObjectFifos that move data are named accordingly
 by which matrix they move (`A`, `B` or `C`), followed by their source and
-destination memories. For example, the ObjectFIFO `fifo_A_L3L2` moves `A` from 
+destination memories. For example, the ObjectFifo `fifo_A_L3L2` moves `A` from 
 DRAM into the memory tile.
 
 ### L3 &rightarrow; L2: Larger Tiles
@@ -61,15 +70,20 @@ a_taps = TensorTiler2D.group_tiler((M, K), (m, k), (1, K // k), pattern_repeat=(
 b_tap = TensorTiler2D.group_tiler((K, N), (k, n), (K // k, N // n), tile_group_col_major=True)[0]
 c_taps = TensorTiler2D.group_tiler((M, N), (m, n), (1, N // n))
 
-rt = Runtime()
-with rt.sequence(A_ty, B_ty, C_ty) as (A, B, C):
-    rt.start(worker)
+def sequence(A, B, C, a_prod, b_prod, c_cons):
     for tile_row in range(M // m):
-        task_group = rt.task_group()
-        rt.fill(fifo_A_L3L2.prod(), A, tap=a_taps[tile_row], task_group=task_group)
-        rt.fill(fifo_B_L3L2.prod(), B, tap=b_tap, task_group=task_group)
-        rt.drain(fifo_C_L2L3.cons(), C, tap=c_taps[tile_row], task_group=task_group, wait=True)
-        rt.finish_task_group(task_group)
+        task_group = TaskGroup()
+        a_prod.fill(A, tap=a_taps[tile_row], group=task_group)
+        b_prod.fill(B, tap=b_tap, group=task_group)
+        c_cons.drain(C, tap=c_taps[tile_row], group=task_group, wait=True)
+        task_group.finish()
+
+rt = Runtime(
+    sequence,
+    [A_ty, B_ty, C_ty, fifo_A_L3L2.prod(), fifo_B_L3L2.prod(), fifo_C_L2L3.cons()],
+)
+# The Worker is launched by the Program, not from inside the sequence body:
+Program(dev, rt, workers=[worker]).resolve_program()
 ```
 
 As `A` and `B` are moved in from DRAM, our design splits these matrices up into
@@ -94,7 +108,7 @@ output C on the compute cores is zero-initialized in each such iteration.
 After repeating the first row of tiles of `A` for each column of tiles in B
 (i.e., `N / n` times), we move on to the next row of `A`. In our 
 implementation, this step corresponds to moving on to the next iteration of
-the `for tile_row in range(M // m)` loop in the `rt.sequence`. We use the same
+the `for tile_row in range(M // m)` loop in the `sequence` body. We use the same
 tensor access pattern for `A`, except that the transfer will start from an
 offset that starts at the next row of tiles of `A`. The tensor access pattern
 for `B` is exactly the same, as we will once again iterate over all tiles
@@ -134,11 +148,16 @@ fifo_C_L2L3 = fifo_C_L1L2.cons().forward(
 The above tensor access patterns tile the input matrices into the smallest
 tiles used in our design -- the intrinsic-sized tiles. The computation kernel
 expects data to be tiled into these small vector-sized dimensions. The
-tensor access pattern for the ouptut C then undoes this tiling to produce a 
+tensor access pattern for the output C then undoes this tiling to produce a 
 regular row-major tile as the output moves out of the computation core.
 Note that all of these tiles are arranged in row-major order.
 
-![The 64x64 tiles of A, B and C, are tiled into tiles of size 8x2, 2x8 and 8x8, respectively, to allow processing using the VMAC intrinsics.](./diagrams/matmul_l2l1.svg)
+![The 64x64 tiles of A, B and C, are tiled into intrinsic-sized r*s, s*t, and r*t sub-tiles to allow processing using the VMAC intrinsics.](./diagrams/matmul_l2l1.svg)
+
+The exact `r`, `s`, `t` values depend on the kernel chosen for the
+`(input_dtype, output_dtype)` pair. The example uses `kernels.mm()` with
+`(int16, int16)`, which selects a `4x4x4` MMUL (see
+`aie_kernels/aie2/mm.cc` for the per-dtype sizes).
 
 ## Ryzen™ AI Usage
 

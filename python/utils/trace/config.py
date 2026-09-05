@@ -1,20 +1,21 @@
-# SPDX-FileCopyrightText: Copyright (C) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-import numpy as np
 import json
+
+import numpy as np
+
 from .parse import parse_trace
-from .utils import parity, extract_tile
 
 
 class TraceConfig:
-    DEFAULT_TRACE_BUFFER_INDEX = 4
+    DEFAULT_TRACE_FILE = "trace.txt"
 
     def __init__(
         self,
         trace_size: int,
-        trace_file: str = "trace.txt",
-        ddr_id: int = 4,
+        trace_file: str = DEFAULT_TRACE_FILE,
+        reuse_output_buffer: bool = False,
         enable_ctrl_pkts: bool = False,
         last_tensor_shape=None,
         last_tensor_dtype=None,
@@ -23,12 +24,42 @@ class TraceConfig:
             raise ValueError(f"Invalid trace size: {trace_size}")
         self.trace_size = trace_size
         self.trace_file = trace_file
-        self.ddr_id = ddr_id
+        # When True, trace data is written into the tail of the last output
+        # buffer instead of a dedicated trailing trace buffer.
+        self.reuse_output_buffer = reuse_output_buffer
         self.enable_ctrl_pkts = enable_ctrl_pkts
         self.last_tensor_shape = last_tensor_shape
         self.last_tensor_dtype = last_tensor_dtype
         # Path to physical MLIR with lowered trace ops (set by NPUKernel)
         self.physical_mlir_path = None
+
+    def __repr__(self) -> str:
+        # Eval-faithful: only constructor kwargs.  ``eval(repr(cfg))``
+        # round-trips to an equivalent fresh TraceConfig.  Post-run mutable
+        # state (physical_mlir_path, last_tensor_*) lives in __str__.
+        # Defaults are skipped to keep the rendering tight.
+        bits = [f"trace_size={self.trace_size}"]
+        if self.trace_file != self.DEFAULT_TRACE_FILE:
+            bits.append(f"trace_file={self.trace_file!r}")
+        if self.reuse_output_buffer:
+            bits.append("reuse_output_buffer=True")
+        if self.enable_ctrl_pkts:
+            bits.append("enable_ctrl_pkts=True")
+        return f"TraceConfig({', '.join(bits)})"
+
+    def __str__(self) -> str:
+        # Human-readable: starts with the eval-faithful repr, then appends
+        # any post-run state someone debugging a trace would actually want
+        # to see (where the lowered MLIR landed, what tensor shape was last
+        # routed through this config).
+        parts = [repr(self)]
+        if self.physical_mlir_path is not None:
+            parts.append(f"physical_mlir_path={self.physical_mlir_path}")
+        if self.last_tensor_shape is not None:
+            parts.append(f"last_tensor_shape={self.last_tensor_shape}")
+        if self.last_tensor_dtype is not None:
+            parts.append(f"last_tensor_dtype={self.last_tensor_dtype}")
+        return parts[0] if len(parts) == 1 else "\n  ".join(parts)
 
     def write_trace(self, trace):
         # Strip only trailing zeros (unused buffer space). Internal zeros are
@@ -55,7 +86,7 @@ class TraceConfig:
         return buf
 
     def trace_to_json(self, mlir_file: str, output_name: str = "trace.json"):
-        """Wrapper over parse_trace.py utility."""
+        """Wrap the parse_trace.py utility to write trace JSON."""
         trace_buffer = self.read_trace()
 
         with open(mlir_file, "r") as f:

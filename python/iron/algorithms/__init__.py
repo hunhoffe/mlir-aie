@@ -1,16 +1,34 @@
 # __init__.py -*- Python -*-
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2026 Advanced Micro Devices, Inc.
 """High-level algorithm templates built on IRON (transform, for_each, etc.)."""
 
-from .for_each import for_each
-from .transform import (
+from ._transform import (
     transform,
     transform_binary,
     transform_parallel,
     transform_parallel_binary,
 )
+from .conv_pipeline import (
+    row_at_a_time,
+    row_at_a_time_tiled,
+    row_at_a_time_with_skip,
+    sliding_3row,
+)
+from .for_each import for_each
+from .reduce import reduce
+
+__all__ = [
+    "row_at_a_time",
+    "row_at_a_time_tiled",
+    "row_at_a_time_with_skip",
+    "sliding_3row",
+    "for_each",
+    "reduce",
+    "transform",
+    "transform_binary",
+    "transform_parallel",
+    "transform_parallel_binary",
+]

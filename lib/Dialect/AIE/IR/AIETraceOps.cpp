@@ -1,10 +1,7 @@
 //===- AIETraceOps.cpp ------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 // Implementation of AIE trace operations
@@ -377,13 +374,13 @@ LogicalResult TraceEventOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult TracePacketOp::verify() {
-  // Packet ID range is already enforced by Confined constraint in TableGen
-  // Just verify it's within valid range
-  int32_t id = getId();
-  if (id < 1 || id > 31) {
-    return emitOpError("packet ID must be in range [1, 31], got ") << id;
+  // Range is enforced by the Confined constraint in TableGen when id is
+  // present; when absent, -aie-insert-trace-flows assigns one in valid
+  // range from the (col, row) order over active trace tiles.
+  if (auto id = getId()) {
+    if (*id < 1 || *id > 31)
+      return emitOpError("packet ID must be in range [1, 31], got ") << *id;
   }
-
   return success();
 }
 
@@ -743,72 +740,12 @@ ParseResult TraceEdgeEventOp::parse(OpAsmParser &parser,
 // TraceHostConfigOp
 //===----------------------------------------------------------------------===//
 
-void TraceHostConfigOp::print(OpAsmPrinter &p) {
-  p << " buffer_size = " << getBufferSize();
-
-  // Only print non-default values
-  if (getArgIdx() != 4)
-    p << " arg_idx = " << getArgIdx();
-
-  if (getRouting() != TraceShimRouting::Single)
-    p << " routing = " << stringifyTraceShimRouting(getRouting());
-
-  p.printOptionalAttrDict(
-      (*this)->getAttrs(),
-      /*elidedAttrs=*/{"buffer_size", "arg_idx", "routing"});
-}
-
-ParseResult TraceHostConfigOp::parse(OpAsmParser &parser,
-                                     OperationState &result) {
-  // Parse required buffer_size
-  IntegerAttr bufferSize;
-  if (parser.parseKeyword("buffer_size") || parser.parseEqual() ||
-      parser.parseAttribute(bufferSize, parser.getBuilder().getI32Type(),
-                            "buffer_size", result.attributes))
-    return failure();
-
-  // Parse arg_idx (default: 4)
-  int32_t argIdxVal = 4;
-  if (succeeded(parser.parseOptionalKeyword("arg_idx"))) {
-    IntegerAttr argIdx;
-    if (parser.parseEqual() ||
-        parser.parseAttribute(argIdx, parser.getBuilder().getI32Type(),
-                              "arg_idx", result.attributes))
-      return failure();
-  } else {
-    result.attributes.set("arg_idx",
-                          parser.getBuilder().getI32IntegerAttr(argIdxVal));
-  }
-
-  // Parse routing (default: single)
-  TraceShimRouting routingVal = TraceShimRouting::Single;
-  if (succeeded(parser.parseOptionalKeyword("routing"))) {
-    if (parser.parseEqual())
-      return failure();
-    StringRef routingStr;
-    if (failed(parser.parseKeyword(&routingStr)))
-      return failure();
-    auto routing = symbolizeTraceShimRouting(routingStr);
-    if (!routing)
-      return parser.emitError(parser.getCurrentLocation(),
-                              "unknown routing strategy: ")
-             << routingStr;
-    routingVal = *routing;
-  }
-  result.attributes.set(
-      "routing", TraceShimRoutingAttr::get(parser.getContext(), routingVal));
-
-  if (parser.parseOptionalAttrDict(result.attributes))
-    return failure();
-
-  return success();
-}
-
 LogicalResult TraceHostConfigOp::verify() {
-  // arg_idx=-1 means "append after last tensor", only valid with single shim
-  if (getArgIdx() == -1) {
+  // Reusing the last output buffer for trace data only works with a single
+  // shim destination (the trace bytes are appended to one buffer).
+  if (getReuseOutputBuffer()) {
     if (getRouting() != TraceShimRouting::Single) {
-      return emitOpError("arg_idx=-1 (append trace after last tensor) "
+      return emitOpError("reuse_output_buffer (append trace after last tensor) "
                          "only works with single shim destination strategy "
                          "(routing=single)");
     }
@@ -817,6 +754,11 @@ LogicalResult TraceHostConfigOp::verify() {
   // Validate buffer_size is positive
   if (getBufferSize() <= 0) {
     return emitOpError("buffer_size must be positive");
+  }
+
+  // Validate Shim col id
+  if (getEgressShimCol() < 0) {
+    return emitOpError("egress_shim_col must be >= 0");
   }
 
   return success();

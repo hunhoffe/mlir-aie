@@ -1,10 +1,7 @@
 //===- cpp_link_with_shared_func.mlir --------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,16 +34,14 @@ module {
     func.func private @kernel(memref<16xi32>) attributes {link_with = "k.o"}
 
     %core_0_2 = aie.core(%tile_0_2) {
-      %buf = aie.objectfifo.acquire @dummy_in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem = aie.objectfifo.subview.access %buf[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem = aie.objectfifo.acquire @dummy_in(Consume, 1) : memref<16xi32>
       func.call @kernel(%elem) : (memref<16xi32>) -> ()
       aie.objectfifo.release @dummy_in(Consume, 1)
       aie.end
     }
 
     %core_0_3 = aie.core(%tile_0_3) {
-      %buf = aie.objectfifo.acquire @dummy_in2(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem = aie.objectfifo.subview.access %buf[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem = aie.objectfifo.acquire @dummy_in2(Consume, 1) : memref<16xi32>
       func.call @kernel(%elem) : (memref<16xi32>) -> ()
       aie.objectfifo.release @dummy_in2(Consume, 1)
       aie.end

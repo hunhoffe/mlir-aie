@@ -1,11 +1,8 @@
 //===- conv2dk1_i8.cc -------------------------------------------*- C++ -*-===//
 
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2022-2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -112,7 +109,8 @@ void conv2dk1_i8_vector(int8_t *input, int8_t *kernels, int8_t *output,
     acc_tmp[x] = aie::zeros<acc32, MMUL_MN>();
   }
 
-  // TODO Keeping this variable gives a wrong behavior and bad schedule!
+  // TODO: keeping this variable produces incorrect results and a worse
+  // schedule.
   const int iw = input_width;
   const int iw_partial = (input_width / MMUL_M) / NUM_ACC;
 

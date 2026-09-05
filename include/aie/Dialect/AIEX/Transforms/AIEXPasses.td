@@ -1,10 +1,8 @@
 //===- AIEPasses.td ----------------------------------------*- tablegen -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2019-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2019 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,6 +23,66 @@ def AIEXToStandard : Pass<"aiex-standard-lowering", "mlir::ModuleOp"> {
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::memref::MemRefDialect",
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIEDecomposeLargeDmaBd
+    : Pass<"aie-decompose-large-dma-bd", "AIE::DeviceOp"> {
+  let summary = "Decompose oversized non-contiguous ND DMA transfers";
+  let description = [{
+    Splits `aiex.npu.dma_memcpy_nd` ops and task-path `aie.dma_bd` ops (inside
+    `aiex.dma_configure_task` / `aiex.dma_configure_task_for`) whose constant
+    ND wrap/stride encoding exceeds the hardware buffer-descriptor field limits
+    (and that cannot be linearized because the access is non-contiguous) into
+    one or more hardware-legal ND transfers that move exactly the same data.
+
+    On the task path, multiple sub-patterns are linked with `aie.next_bd`
+    blocks inside the configure region; `bd_id` / `next_bd_id` are left for
+    later passes to assign.
+
+    Two techniques are used: dimension factoring (split an oversized dimension
+    of size N=a*b across a free dimension slot) is preferred, falling back to
+    slicing an oversized dimension into ceil(N/limit) sub-transfers with
+    adjusted offsets. Contiguous oversized patterns are left untouched; they are
+    handled by canonicalization to linear mode.
+  }];
+
+  let constructor = "xilinx::AIEX::createAIEDecomposeLargeDmaBdPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect",
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIESCFToControlFlow : Pass<"aie-scf-to-control-flow", "mlir::ModuleOp"> {
+  let summary = "Lower scf to cf everywhere except inside runtime sequences";
+  let description = [{
+    Converts structured control flow (`scf`) to unstructured control flow
+    (`cf`) throughout the module, with one exception: `scf` operations nested
+    inside an `aie.runtime_sequence` are left untouched.
+
+    A runtime sequence is `NoTerminator` and is lowered to a flat NPU
+    instruction stream that has no notion of branches; its loops are instead
+    resolved by the dedicated runtime-sequence lowering path (loop unrolling
+    for compile-time-constant trip counts, or the dynamic EmitC path
+    otherwise). Running the generic `convert-scf-to-cf` over a runtime
+    sequence would both violate its `NoTerminator` block invariant (the ops
+    following a lowered loop end up in a terminator-less block) and feed the
+    flat NPU emitter control-flow ops it silently drops -- a miscompile.
+
+    This pass is therefore a drop-in replacement for `convert-scf-to-cf` in
+    pipelines that contain runtime sequences: core/host `scf` is lowered to
+    `cf` as usual (e.g. before `aie-standard-lowering`), while runtime-sequence
+    control flow is preserved for its own lowering.
+  }];
+
+  let constructor = "xilinx::AIEX::createAIESCFToControlFlowPass()";
+  let dependentDialects = [
+    "mlir::cf::ControlFlowDialect",
     "xilinx::AIE::AIEDialect",
     "xilinx::AIEX::AIEXDialect",
   ];
@@ -79,15 +137,6 @@ def AIECreateLocks : Pass<"aie-create-locks", "AIE::DeviceOp"> {
   let constructor = "xilinx::AIEX::createAIECreateLocksPass()";
 }
 
-def AIEHerdRouting : Pass<"aie-herd-routing", "AIE::DeviceOp"> {
-  let summary =       "Lowering herds with place and route ops to AIE cores, mems, and switchboxes";
-  let description = [{
-    An experimental pass which elaborates herd operations (e.g. aie.herd, aie.iter, aie.select)
-    into an explicit representation (e.g. aie.core, aie.mem, etc.).
-  }];
-
-  let constructor = "xilinx::AIEX::createAIEHerdRoutingPass()";
-}
 
 def AIEBroadcastPacket : Pass<"aie-lower-broadcast-packet", "AIE::DeviceOp"> {
   let summary = "Replace combination of broadcast and packet-switch by packet-flow";
@@ -141,20 +190,30 @@ def AIEDmaToNpu : Pass<"aie-dma-to-npu", "AIE::DeviceOp"> {
 
   let constructor = "xilinx::AIEX::createAIEDmaToNpuPass()";
   let dependentDialects = [
+    "mlir::arith::ArithDialect",
     "mlir::func::FuncDialect",
+    "mlir::memref::MemRefDialect",
     "xilinx::AIE::AIEDialect",
     "xilinx::AIEX::AIEXDialect",
   ];
 }
 
-def AIENpuToCert : Pass<"aie-npu-to-cert", "AIE::DeviceOp"> {
+def AIENpuToCert : Pass<"aie-npu-to-cert", "mlir::ModuleOp"> {
   let summary = "transform aiex.npu operations to aiex.cert operations";
   let description = [{
     This pass transforms low level aiex.npu operations contained in
     aie.runtime_sequence operations into aiex.cert operations enclosed in
     aiex.cert.job operations. The write32, maskwrite32, blockwrite and sync
     operations are supported.
+
+    Referenced devices are absorbed into cert.section operations and removed
+    from the output, keeping only the main device.
   }];
+
+  let options = [
+    Option<"deviceName", "device-name", "std::string", /*default=*/"\"main\"",
+           "Name of the main device to emit (other devices are removed after absorption)">
+  ];
 
   let constructor = "xilinx::AIEX::createAIENpuToCertPass()";
   let dependentDialects = [
@@ -210,6 +269,53 @@ def AIEMaterializeRuntimeSequences : Pass<"aie-materialize-runtime-sequences", "
   ];
 }
 
+def AIEFuseTraceBuffers : Pass<"aie-fuse-trace-buffers", "mlir::ModuleOp"> {
+  let summary = "Give every traced sequence a slice of one fused trace buffer";
+  let description = [{
+    Trace lowering appends a trace buffer to each traced `aie.runtime_sequence`.
+    It does not update the `aiex.run` call sites. These call sites are therefore
+    one argument short.
+
+    This pass gives each `aie.runtime_sequence` one trace buffer covering its
+    own traces and those of every sequence it runs. It passes each `aiex.run` a
+    `memref.subview` of that buffer, sized to the callee's claim. Every call
+    site gets its own region, so a sequence that runs one design twice keeps the
+    two traces apart. `aiex.configure` plays no part in the split: the buffer
+    follows the `aiex.run` call graph, whether the calls reconfigure the array
+    between them or repeat one design.
+
+    A sequence's own traces take the front of its buffer, then each call site in
+    turn. The pass records the layout as an `aie.trace_slices` array of
+    `#aie.trace_slice`, and the buffer itself as `#aie.trace_buffer`. A host
+    reads the slices to attribute each region to the design that wrote it.
+
+    Run after the trace pipeline and before `-aie-materialize-runtime-sequences`.
+  }];
+
+  let constructor = "xilinx::AIEX::createAIEFuseTraceBuffersPass()";
+  let dependentDialects = ["mlir::memref::MemRefDialect",
+                           "xilinx::AIE::AIEDialect",
+                           "xilinx::AIEX::AIEXDialect"];
+}
+
+def AIEResolveAddressPatchBuffers
+    : Pass<"aie-resolve-address-patch-buffers", "AIE::DeviceOp"> {
+  let summary = "Resolve an address patch's buffer operand to a buffer index";
+  let description = [{
+    Rewrites each `aiex.npu.address_patch` that names its host buffer by SSA
+    value into the `arg_idx` form the targets emit. Adds the buffer's byte
+    offset to `arg_plus`.
+
+    Run after `-aie-materialize-runtime-sequences`. An index exists only in the
+    sequence that holds the op. Inlining moves the op into that sequence.
+  }];
+
+  let constructor = "xilinx::AIEX::createAIEResolveAddressPatchBuffersPass()";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "xilinx::AIE::AIEDialect",
+                           "xilinx::AIEX::AIEXDialect"];
+}
+
 def AIEAssignRuntimeSequenceBDIDs : Pass<"aie-assign-runtime-sequence-bd-ids", "AIE::DeviceOp"> {
   let summary = "Assign IDs to Buffer Descriptors Configured in the Runtime Sequence";
 
@@ -220,13 +326,84 @@ def AIEAssignRuntimeSequenceBDIDs : Pass<"aie-assign-runtime-sequence-bd-ids", "
   ];
 }
 
+def AIEReserveRuntimeBDIDs
+    : Pass<"aie-reserve-runtime-bd-ids", "AIE::DeviceOp"> {
+  let summary =
+      "Reserve runtime-sequence pinned BD ids for the static allocator";
+  let description = [{
+    Records the compile-time BD ids that `aiex.dma_configure_task` ops pin in the
+    runtime sequence, per tile, as an `aiex.reserved_bd_ids` attribute on each
+    `aie.tile`. The static allocator (`aie-assign-bd-ids`) runs in the AIE
+    dialect and cannot walk AIEX ops, so it reads this attribute to keep its
+    auto-assignment off ids the runtime sequence already claimed.
+  }];
+
+  let constructor = "xilinx::AIEX::createAIEReserveRuntimeBDIDsPass()";
+  let dependentDialects = ["xilinx::AIE::AIEDialect",
+                           "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIEUnrollRuntimeSequenceLoops
+    : Pass<"aie-unroll-runtime-sequence-loops", "AIE::DeviceOp"> {
+  let summary = "Unroll constant-bound loops in runtime sequences";
+  let description = [{
+    Fully unrolls `scf.for` loops with compile-time-constant trip counts that
+    appear inside `aie.runtime_sequence` bodies.
+
+    Runs before `aie-assign-runtime-sequence-bd-ids` so BD-ID allocation sees
+    straight-line IR: configure operations in each loop iteration can receive
+    individual BD IDs after unrolling.
+
+    Runtime-bound loops (non-constant trip count) are left in place for the
+    dynamic EmitC lowering path.
+  }];
+
+  let constructor = "xilinx::AIEX::createAIEUnrollRuntimeSequenceLoopsPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIELowerDynamicBDPool
+    : Pass<"aie-lower-dynamic-bd-pool", "AIE::DeviceOp"> {
+  let summary = "Lower runtime-bound DMA task allocation to a runtime BD free-list pool";
+  let description = [{
+    The dynamic counterpart to `aie-assign-runtime-sequence-bd-ids`. That pass
+    requires straight-line IR and rejects runtime-bound `scf.for`; this pass
+    handles the runtime-bound case by keeping the loop rolled and drawing buffer
+    descriptor IDs from a per-tile runtime free-list pool.
+
+    For each `dma_configure_task` it inserts an `aiex.dma_bd_pool_pop` and routes
+    the popped SSA `bd_id` into the BD's lowering; each `dma_free_task` and the
+    recycling half of a `dma_await_task` becomes an `aiex.dma_bd_pool_push` of
+    the matching ID (matched through the def-use / scf.for iter_args chain).
+
+    Runs only on the dynamic EmitC path, after `aie-unroll-runtime-sequence-
+    loops` has removed every constant-trip loop, so any surviving `scf.for` is
+    genuinely runtime-bound. v1 supports single-BD tasks; multi-BD chains under a
+    runtime loop are diagnosed.
+  }];
+
+  let constructor = "xilinx::AIEX::createAIELowerDynamicBDPoolPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
 def AIEDMATasksToNPU : Pass<"aie-dma-tasks-to-npu", "AIE::DeviceOp"> {
   let summary = "Lower configured DMA tasks to NPU instructions";
 
   let constructor = "xilinx::AIEX::createAIEDMATasksToNPUPass()";
-  let dependentDialects = [
-    "xilinx::AIE::AIEDialect",
-    "xilinx::AIEX::AIEXDialect",
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::ub::UBDialect",
+                           "xilinx::AIE::AIEDialect",
+                           "xilinx::AIEX::AIEXDialect",
   ];
 }
 
@@ -245,6 +422,7 @@ def AIECtrlPacketToDma : Pass<"aie-ctrl-packet-to-dma", "AIE::DeviceOp"> {
 
   let constructor = "xilinx::AIEX::createAIECtrlPacketToDmaPass()";
   let dependentDialects = [
+    "mlir::arith::ArithDialect",
     "xilinx::AIE::AIEDialect",
     "xilinx::AIEX::AIEXDialect",
   ];
@@ -265,8 +443,96 @@ def AIELowerSetLock : Pass<"aie-lower-set-lock", "AIE::DeviceOp"> {
 
   let constructor = "xilinx::AIEX::createAIELowerSetLockPass()";
   let dependentDialects = [
+    "mlir::arith::ArithDialect",
     "xilinx::AIE::AIEDialect",
     "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIELowerDmaChannelReset : Pass<"aie-lower-dma-channel-reset", "AIE::DeviceOp"> {
+  let summary = "Lowers aiex.dma_channel_reset(_for) to npu.maskwrite32 + re-arm";
+  let description = [{
+    Two concerns, one pass (kept together like the other reset lowerings):
+
+    - Each `aiex.dma_channel_reset_for @fifo` is first expanded, via the fifo's
+      `aie.objectfifo_rearm_binding`, into the resident re-arm of its non-shim
+      channels: an `aiex.dma_channel_reset` per channel, an `aiex.set_lock` per
+      producer/consumer lock, and an `aiex.npu.push_queue` START_QUEUE re-push
+      per channel (head BD id + repeat read straight off the binding, populated
+      by `--aie-assign-bd-ids`).
+    - Every `aiex.dma_channel_reset` -- standalone or just emitted above -- is
+      then lowered to the `aiex.npu.maskwrite32` reset pulse.
+
+    The emitted `set_lock` / `push_queue` are lowered later by
+    `--aie-lower-set-lock` / `--aie-dma-to-npu`, so run this before them.
+  }];
+  let constructor = "xilinx::AIEX::createAIELowerDmaChannelResetPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIELowerCoreReset : Pass<"aie-lower-core-reset", "AIE::DeviceOp"> {
+  let summary = "Lowers all aiex.core_reset operations to npu.maskwrite32";
+  let constructor = "xilinx::AIEX::createAIELowerCoreResetPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIEVerifyRuntimeRearm : Pass<"aie-verify-runtime-rearm", "AIE::DeviceOp"> {
+  let summary = "Experimental, opt-in: reject an aiex.dma_channel_reset whose "
+                "objectFIFO lock is never re-armed (a necessary, not sufficient, "
+                "condition for a safe reset)";
+  let constructor = "xilinx::AIEX::createAIEVerifyRuntimeRearmPass()";
+  let dependentDialects = [
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
+def AIELowerScratchpadParameters : Pass<"aie-lower-scratchpad-parameters", "mlir::ModuleOp"> {
+  let summary = "Lower scratchpad parameter ops and emit parameter-sync preambles";
+  let description = [{
+    Lowers `aiex.scratchpad_parameter` and `aiex.read_scratchpad_parameter`
+    ops into concrete scratchpad-based communication between host and AIE
+    cores.
+
+    Assigns globally-unique state table indices to every
+    `aiex.scratchpad_parameter` in the module (indices in [0, 32), since the
+    scratchpad is a single hardware resource shared by all PDIs loaded by a
+    runtime sequence). Creates per-core buffers for each
+    `aiex.read_scratchpad_parameter` usage. Automatically emits a
+    parameter-sync preamble driven by the `emit_parameter_sync_preamble`
+    attribute on `aie.core` and `aie.runtime_sequence`:
+    - In each qualifying core: inserts `aie.lock` + `aie.use_lock(Acquire, 1)`.
+    - In each qualifying runtime sequence: inserts `aiex.npu.create_scratchpad`,
+      per-parameter `aiex.npu.write32` + `aiex.npu.update_from_scratchpad`,
+      and `aiex.set_lock` for each core lock.
+
+    Sets a `kind` attribute on each `aiex.scratchpad_parameter` based on how
+    it is used: `core` if read by `aiex.read_scratchpad_parameter`, `addr` if
+    used as a DMA `offset_parameter`. A parameter may not be used as both.
+
+    Optionally emits a `params.txt` file describing every parameter in the
+    module (name, global state_table_idx, type, and kind).
+  }];
+
+  let constructor = "xilinx::AIEX::createAIELowerScratchpadParametersPass()";
+  let dependentDialects = [
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect",
+  ];
+  let options = [
+    Option<"outputParamsFile", "output-params-file", "std::string",
+           /*default=*/"\"\"",
+           "Path to write the parameter layout file to.">
   ];
 }
 
@@ -308,12 +574,27 @@ def AIELegalizeControlPacket : Pass<"aie-legalize-ctrl-packet", "AIE::DeviceOp">
 def AIEExpandLoadPdi : Pass<"aie-expand-load-pdi", "mlir::ModuleOp"> {
   let summary = "Expand load_pdi operations to explicit configuration sequences";
   let description = [{
-    This pass transforms `load_pdi { device_ref = @device }` operations as follows:
-    1. Create an empty device `@empty_N`.
-    2. Replace the load_pdi with `load_pdi { device_ref = @empty_N }` -- this causes a device reset.
-    3. Configure the device for the selected design by inserting write32s and blockwrites.
-    
-    The configuration operations are generated by converting the referenced device's configuration to a transaction binary and then disassembling it into MLIR operations.
+    This pass transforms `load_pdi { device_ref = @device }` operations.
+
+    By default (`ctrl-pkt = false`), each op is replaced with:
+    1. A `load_pdi { device_ref = @empty_N }` op (loading an empty device,
+       which causes a device reset).
+    2. A sequence of `aiex.npu.write32`/`aiex.npu.blockwrite` ops that
+       configure the device.
+
+    With `ctrl-pkt = true`, each op is replaced with:
+    1. A `load_pdi { device_ref = @ctrl_pkt_overlay }` op, which loads the
+       column control packet overlay needed to stream further configuration
+       as control packets.
+    2. A sequence of `aiex.npu.control_packet` ops that configure the device.
+
+    The configuration operations are generated by converting the referenced
+    device's configuration to a transaction binary and then disassembling it
+    into MLIR operations.
+
+    This pass is intended to run after runtime sequence materialization
+    (i.e., after `aiex.configure` ops have been turned into
+    `aiex.npu.load_pdi`).
   }];
 
   let constructor = "xilinx::AIEX::createAIEExpandLoadPdiPass()";
@@ -321,6 +602,12 @@ def AIEExpandLoadPdi : Pass<"aie-expand-load-pdi", "mlir::ModuleOp"> {
     "mlir::memref::MemRefDialect",
         "xilinx::AIE::AIEDialect",
     "xilinx::AIEX::AIEXDialect",
+  ];
+  let options =
+      [Option<"clCtrlPkt", "ctrl-pkt", "bool", /*default=*/"false",
+              "If true, lower each load_pdi to an @ctrl_pkt_overlay load_pdi "
+              "followed by aiex.npu.control_packet ops instead of write32/"
+              "blockwrite ops with an empty-device reset.">,
   ];
 }
 
@@ -337,6 +624,7 @@ def AIEXInlineTraceConfig : Pass<"aie-inline-trace-config", "AIE::DeviceOp"> {
 
   let constructor = "xilinx::AIEX::createAIEXInlineTraceConfigPass()";
   let dependentDialects = [
+    "mlir::arith::ArithDialect",
     "xilinx::AIE::AIEDialect",
     "xilinx::AIEX::AIEXDialect",
   ];

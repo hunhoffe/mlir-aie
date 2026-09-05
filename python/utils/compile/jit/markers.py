@@ -1,0 +1,87 @@
+# markers.py -*- Python -*-
+#
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+"""Type-annotation markers for compile-time vs. runtime parameter classification.
+
+Three annotation categories are defined here (all exported from ``aie.iron``):
+
+``CompileTime[T]``
+    Marks a generator function parameter as compile-time.  Changing its value
+    causes a recompile and a new cache entry.  Inspired by ``tl.constexpr`` in
+    Triton.  Implemented as ``Annotated[T, ...]`` so pyright/mypy check callers
+    against the wrapped type ``T`` itself (e.g. ``CompileTime[int]`` behaves
+    like ``int`` for type-checking) while ``_introspect.py`` still recovers the
+    marker at runtime via ``get_type_hints(..., include_extras=True)``.
+
+``In``
+    Marks a generator function parameter as a runtime *input* tensor.  Data is
+    DMA-transferred from the host to the NPU on every kernel call.
+
+``Out``
+    Marks a generator function parameter as a runtime *output* tensor.  Data is
+    DMA-transferred from the NPU to the host on every kernel call.
+
+``InOut``
+    Marks a generator function parameter as a runtime bidirectional tensor.
+    Data is DMA-transferred in both directions on every kernel call.
+
+Any parameter without one of these four annotations is currently rejected at
+``@iron.jit`` decoration time when the parameter has a default value — there
+is no runtime-scalar plumbing yet (tracked separately as future work), so the
+default would be baked into the compiled kernel and per-call overrides
+silently ignored.  Annotate as ``CompileTime[T]`` (recompiles on change) or
+``In``/``Out``/``InOut`` (DMA tensor) instead.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, TypeVar
+
+T = TypeVar("T")
+
+
+class _CompileTimeTag:
+    """Runtime tag embedded in ``Annotated[T, _CompileTimeTag()]``.
+
+    Lets ``_introspect.py`` recognize a ``CompileTime[T]`` annotation without
+    pyright treating the parameter's type as anything other than ``T``.
+    """
+
+    __slots__ = ()
+
+
+_COMPILE_TIME_TAG = _CompileTimeTag()
+
+CompileTime = Annotated[T, _COMPILE_TIME_TAG]
+"""Compile-time parameter annotation.
+
+Use as a type annotation on generator function parameters that affect the
+generated MLIR.  The value must be supplied at ``CompilableDesign``
+construction time (or bound by ``@iron.jit(...)``).
+
+Changing a ``CompileTime[T]``-annotated value → new cache key → recompile.
+Required unless a default is given.
+
+Example::
+
+    from ml_dtypes import bfloat16
+
+    def gemm(a: In, b: In, c: Out,
+             M: CompileTime[int], K: CompileTime[int], N: CompileTime[int],
+             dtype: CompileTime[type] = bfloat16):
+        ...
+"""
+
+
+class In:
+    """Runtime input tensor annotation (host → NPU, DMA each call)."""
+
+
+class Out:
+    """Runtime output tensor annotation (NPU → host, DMA each call)."""
+
+
+class InOut:
+    """Runtime bidirectional tensor annotation (DMA in both directions each call)."""

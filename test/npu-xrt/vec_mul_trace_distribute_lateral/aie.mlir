@@ -1,10 +1,7 @@
 //===- aie.mlir ------------------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -21,8 +18,8 @@
 // With -aie-insert-trace-flows="distribute-channels=true lateral-routing=true":
 //   - Lateral routing redirects traces from column 0 shim to column 1 shim
 //   - Channel distribution splits the two traces across S2MM channels 0 and 1
-//   - Both channels share arg_idx=4, split by offset within a 2x trace buffer
-//     (channel 0 at offset 0, channel 1 at offset buffer_size)
+//   - Both channels share the appended trace buffer argument, split by offset
+//     within a 2x trace buffer (channel 0 at offset 0, channel 1 at buffer_size)
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,16 +54,13 @@ module {
       %c_inf = arith.constant 9223372036854775807 : index
       %c1 = arith.constant 1 : index
       scf.for %arg0 = %c0 to %c_inf step %c1 {
-        %0 = aie.objectfifo.acquire @infactor_fwd(Consume, 1) : !aie.objectfifosubview<memref<1xi32>>
-        %1 = aie.objectfifo.subview.access %0[0] : !aie.objectfifosubview<memref<1xi32>> -> memref<1xi32>
+        %1 = aie.objectfifo.acquire @infactor_fwd(Consume, 1) : memref<1xi32>
         %c0_0 = arith.constant 0 : index
         %c4 = arith.constant 4 : index
         %c1_1 = arith.constant 1 : index
         scf.for %arg1 = %c0_0 to %c4 step %c1_1 {
-          %2 = aie.objectfifo.acquire @out(Produce, 1) : !aie.objectfifosubview<memref<1024xi32>>
-          %3 = aie.objectfifo.subview.access %2[0] : !aie.objectfifosubview<memref<1024xi32>> -> memref<1024xi32>
-          %4 = aie.objectfifo.acquire @in_fwd(Consume, 1) : !aie.objectfifosubview<memref<1024xi32>>
-          %5 = aie.objectfifo.subview.access %4[0] : !aie.objectfifosubview<memref<1024xi32>> -> memref<1024xi32>
+          %3 = aie.objectfifo.acquire @out(Produce, 1) : memref<1024xi32>
+          %5 = aie.objectfifo.acquire @in_fwd(Consume, 1) : memref<1024xi32>
           %c1024_i32 = arith.constant 1024 : i32
           func.call @vector_scalar_mul_aie_scalar(%5, %3, %1, %c1024_i32)
               : (memref<1024xi32>, memref<1024xi32>, memref<1xi32>, i32) -> ()
@@ -127,34 +121,29 @@ module {
     aie.runtime_sequence(%arg0: memref<4096xi32>, %arg1: memref<1xi32>,
                          %arg2: memref<4096xi32>) {
 
-      // Trace: 8192 bytes per channel, 2 channels = 16384 total at arg_idx=4.
+      // Trace: 8192 bytes per channel, 2 channels = 16384 total, written to the
+      // trace buffer appended as the last runtime_sequence argument.
       // The distribute pass splits this into two 8192-byte regions by offset.
-      aie.trace.host_config buffer_size = 8192
+      aie.trace.host_config {buffer_size = 8192 : i32}
 
       aie.trace.start_config @core_trace
       aie.trace.start_config @mem_trace
 
       // Data transfers
       %0 = aiex.dma_configure_task_for @in {
-        aie.dma_bd(%arg0 : memref<4096xi32>, 0, 4096,
-          [<size = 1, stride = 0>, <size = 1, stride = 0>,
-           <size = 1, stride = 0>, <size = 4096, stride = 1>])
+        aie.dma_bd(%arg0 : memref<4096xi32> offset = 0 len = 4096 sizes = [1, 1, 1, 4096] strides = [0, 0, 0, 1])
           {burst_length = 0 : i32}
         aie.end
       } {issue_token = true}
 
       %1 = aiex.dma_configure_task_for @infactor {
-        aie.dma_bd(%arg1 : memref<1xi32>, 0, 1,
-          [<size = 1, stride = 0>, <size = 1, stride = 0>,
-           <size = 1, stride = 0>, <size = 1, stride = 1>])
+        aie.dma_bd(%arg1 : memref<1xi32> offset = 0 len = 1 sizes = [1, 1, 1, 1] strides = [0, 0, 0, 1])
           {burst_length = 0 : i32}
         aie.end
       } {issue_token = true}
 
       %2 = aiex.dma_configure_task_for @out_fwd {
-        aie.dma_bd(%arg2 : memref<4096xi32>, 0, 4096,
-          [<size = 1, stride = 0>, <size = 1, stride = 0>,
-           <size = 1, stride = 0>, <size = 4096, stride = 1>])
+        aie.dma_bd(%arg2 : memref<4096xi32> offset = 0 len = 4096 sizes = [1, 1, 1, 4096] strides = [0, 0, 0, 1])
           {burst_length = 0 : i32}
         aie.end
       } {issue_token = true}

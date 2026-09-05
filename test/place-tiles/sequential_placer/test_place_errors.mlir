@@ -1,10 +1,7 @@
 //===- test_place_errors.mlir ----------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2026 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,7 +13,8 @@ module @three_inputs_exceeds_capacity {
     %shim2 = aie.logical_tile<ShimNOCTile>(?, ?)
     %shim3 = aie.logical_tile<ShimNOCTile>(?, ?)
 
-    // CHECK: error: tile requires 3 input/0 output DMA channels, but only 2 input/2 output available
+    // CHECK: error: tile (0, 3) requires 3 input/0 output DMA channels, but only 2 input/2 output available
+    // CHECK: note: placer selected this tile
     %core = aie.logical_tile<CoreTile>(?, ?)
 
     aie.objectfifo @in1 (%shim1, {%core}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
@@ -62,7 +60,10 @@ module @memtile_exhaustion {
     %mem4 = aie.logical_tile<MemTile>(?, ?)
     %mem5 = aie.logical_tile<MemTile>(?, ?)
     %mem6 = aie.logical_tile<MemTile>(?, ?)
-    // CHECK: error: no MemTile with sufficient DMA capacity
+    // Global exhaustion: npu1_1col has exactly one MemTile, and it is
+    // already fully booked, so no column pin could ever help.
+    // CHECK: error: no MemTile on the device has {{[0-9]+ input/[0-9]+ output}} DMA channel(s) free: all 1 MemTile(s) are at {{[0-9]+/[0-9]+}} input, {{[0-9]+/[0-9]+}} output channels used
+    // CHECK: note: this is the device's total MemTile DMA budget
     %mem7 = aie.logical_tile<MemTile>(?, ?)
 
     aie.objectfifo @of1 (%mem1, {%core1}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
@@ -145,7 +146,10 @@ module @shimnoc_exhaustion {
     // First two shims merge, using 2 output channels
     %shim1 = aie.logical_tile<ShimNOCTile>(?, ?)
     %shim2 = aie.logical_tile<ShimNOCTile>(?, ?)
-    // CHECK: error: no ShimNOCTile with sufficient DMA capacity
+    // Global exhaustion: npu1_1col has exactly one ShimNOCTile, and it is
+    // already fully booked, so no column pin could ever help.
+    // CHECK: error: no ShimNOCTile on the device has {{[0-9]+ input/[0-9]+ output}} DMA channel(s) free: all 1 ShimNOCTile(s) are at {{[0-9]+/[0-9]+}} input, {{[0-9]+/[0-9]+}} output channels used
+    // CHECK: note: this is the device's total ShimNOCTile DMA budget
     %shim3 = aie.logical_tile<ShimNOCTile>(?, ?)
 
     aie.objectfifo @of1 (%shim1, {%core1}, 2 : i32) : !aie.objectfifo<memref<16xi32>>
@@ -212,6 +216,7 @@ module @cascade_pinned_wrong_direction {
   aie.device(npu1) {
     // CHECK: error: tile (0, 5) violates cascade adjacency
     // CHECK: note: cascade source peer placed at (0, 4)
+    // CHECK: note: cascade adjacency requires the destination tile to be one row South or one column East of the source tile
     %dst = aie.logical_tile<CoreTile>(0, 5)
     %src = aie.logical_tile<CoreTile>(0, 4)
     aie.cascade_flow(%src, %dst)
@@ -248,11 +253,11 @@ module @cascade_hybrid_unsatisfiable {
     aie.cascade_flow(%src, %dst)
     aie.core(%src) { aie.end }
     aie.core(%dst) { aie.end }
-  }                                                                                                                                                                                                                                                                         
-}                                                                                                                                                                                                                                                                           
-                                                                                                                                                                                          
-// -----                                                                                                                                                                                                                                                                    
-  
+  }
+}
+
+// -----
+
 // Flow-derived MM2S demand exceeds shim capacity.
 module @flow_shim_output_exceeds_capacity {
   aie.device(npu1) {
@@ -297,7 +302,8 @@ module @mixed_channels_exceed_capacity {
     %mem2 = aie.logical_tile<MemTile>(?, ?)
     %mem3 = aie.logical_tile<MemTile>(?, ?)
 
-    // CHECK: error: tile requires 2 input/3 output DMA channels, but only 2 input/2 output available
+    // CHECK: error: tile (0, 3) requires 2 input/3 output DMA channels, but only 2 input/2 output available
+    // CHECK: note: placer selected this tile
     %core = aie.logical_tile<CoreTile>(?, ?)
 
     // 2 inputs
@@ -319,6 +325,7 @@ module @buffer_adjacency_both_pinned_violation {
   aie.device(npu1) {
     // CHECK: error: tile (0, 2) violates shared-L1 buffer adjacency
     // CHECK: note: shared-L1 buffer consumer peer placed at (3, 5)
+    // CHECK: note: shared-L1 buffer adjacency requires this LTO to be on a tile whose L1 is shared with the buffer owner's tile
     %owner = aie.logical_tile<CoreTile>(0, 2)
     %buf   = aie.buffer(%owner) : memref<16xi32>
     aie.core(%owner) { aie.end }

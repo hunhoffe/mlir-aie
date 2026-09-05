@@ -1,0 +1,222 @@
+# Copyright (C) 2023-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Build and Test with AIE tools on Ryzen AI (Windows)
+
+permissions:
+  contents: read
+
+on:
+  # No `push` on main: the merge queue already tests the exact commit that
+  # merging pushes there, so a postsubmit run re-tests an identical SHA. main is
+  # admin-enforced with a required merge queue and no force pushes, so nothing
+  # can reach it without a merge_group run having tested it first. The nightly
+  # schedule below still covers main for environment drift.
+  #
+  # test-ryzen-ai is kept: it is a manual push target that does not go through
+  # the queue, so it has no merge_group run to inherit.
+  push:
+    branches:
+      - test-ryzen-ai
+  pull_request:
+    types: [opened, synchronize, reopened]
+  merge_group:
+  schedule:
+    # Runs at midnight (00:00) every day
+    - cron: '0 0 * * *'
+
+concurrency:
+  # A PR number if a pull request and otherwise the commit hash. This cancels
+  # queued and in-progress runs for the same PR (presubmit) or commit
+  # (postsubmit).
+  group: ci-build-test-ryzenai-windows-${{ github.event.number || github.sha }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  # Peano only: Vitis/xchesscc is not part of the supported native-Windows
+  # toolchain (see docs/buildHostWinNative.md); AIE_BUILD_CHESS_CLANG is
+  # force-disabled on WIN32 in the top-level CMakeLists.txt regardless.
+  LIT_OPTS: -sv --time-tests --timeout 600 --show-unsupported --show-excluded
+
+jobs:
+
+  build-and-test-from-source:
+    name: Run Tests and Examples on Ryzen AI (Built from Source, Windows)
+    # Mirrors buildAndTestRyzenAI.yml's Linux job: build mlir-aie from source
+    # against a published MLIR wheel and run the lit suite on real NPU
+    # hardware. Windows has no Makefile (`make`) on PATH by default, so
+    # Makefile-based programming_examples/programming_guide tests are
+    # automatically skipped by lit (see the "makefile_examples" feature gate
+    # in python/aie_lit_utils/lit_config_helpers.py); JIT-style Python
+    # examples (@iron.jit) still run and cover the NPU end to end.
+    runs-on: [self-hosted, windows, ryzenai, npu2]
+    # Normal exec is 19-21 min; observed hang on this job 71.4 min (2026-08-04).
+    timeout-minutes: 90
+    env:
+      NPU_CACHE_HOME: ${{ github.workspace }}\iron-cache-${{ github.run_id }}
+      PIP_CACHE_DIR: ${{ github.workspace }}\.pip-cache-${{ github.run_id }}
+      # Force matplotlib's non-interactive backend: taplib visualize() calls
+      # plt.show(), which blocks forever on this headless runner (Linux CI has
+      # no DISPLAY, so it already falls back to Agg).
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: "true"
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
+
+      - name: Verify Python
+        # actions/setup-python isn't used here: its installer invokes a
+        # setup.ps1 under Windows PowerShell, which is blocked by this
+        # runner's default script execution policy. Python 3.13 is already
+        # provisioned on the runner as a host prerequisite (see
+        # Windows_runner_setup_mlir-aie.md), matching how the Linux
+        # self-hosted job also relies on a pre-provisioned interpreter
+        # instead of actions/setup-python.
+        shell: cmd
+        run: |
+          python --version
+          if errorlevel 1 exit /b 1
+
+      - name: Setup IRON environment
+        shell: cmd
+        run: |
+          REM Avoid git "dubious ownership" rejection when --dev's pre-commit
+          REM hook install shells out to git in the runner-owned work tree.
+          git config --global --add safe.directory "%CD%"
+          if errorlevel 1 exit /b 1
+
+          python utils\iron_setup.py --dev
+          if errorlevel 1 exit /b 1
+
+      - name: Download MLIR wheel and build mlir-aie
+        shell: cmd
+        run: |
+          call .\iron_env.cmd
+          if errorlevel 1 exit /b 1
+
+          REM utils\clone-llvm.sh is a bash script; Git for Windows ships its
+          REM own bash.exe (installed as part of "Git for Windows" in the
+          REM runner setup guide) that can run it directly. Its bin directory
+          REM isn't on PATH by default (only Git\cmd, for git.exe itself is),
+          REM so call it by its default winget install path.
+          if not exist "C:\Program Files\Git\bin\bash.exe" (
+            echo ##[error]C:\Program Files\Git\bin\bash.exe not found - install Git for Windows per the runner setup guide
+            exit /b 1
+          )
+          for /f "usebackq delims=" %%v in (`"C:\Program Files\Git\bin\bash.exe" utils/clone-llvm.sh --get-wheel-version`) do set MLIR_VERSION=%%v
+          if not defined MLIR_VERSION exit /b 1
+
+          mkdir my_install
+          pushd my_install
+          python -m pip -q download mlir==%MLIR_VERSION% -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          if errorlevel 1 exit /b 1
+          dir mlir-*.whl
+          python -c "import zipfile,glob; zipfile.ZipFile(glob.glob('mlir-*.whl')[0]).extractall('.')"
+          if errorlevel 1 exit /b 1
+
+          REM llvm-debuginfod.exe has gone missing post-extraction here (likely
+          REM AV quarantine); fail early with a clear message, not a later
+          REM confusing CMake error.
+          if not exist "mlir\bin\llvm-debuginfod.exe" (
+            echo ##[error]mlir\bin\llvm-debuginfod.exe is missing after wheel extraction - check endpoint security/antivirus quarantine logs on the runner
+            dir mlir\bin\llvm-debuginfod* 2>nul
+            exit /b 1
+          )
+
+          REM LLVMExports.cmake bakes in a diaguids.lib (DIA SDK) path from the
+          REM VS edition that built the wheel; rewrite it for this runner.
+          python -c "import sys; sys.path.insert(0, r'..\utils\mlir_aie_wheels\scripts'); from pathlib import Path; import download_mlir; download_mlir._fixup_llvm_diaguids(Path('mlir'))"
+          if errorlevel 1 exit /b 1
+
+          REM Future-dated wheel timestamps make ninja loop; stamp them to the past.
+          python -c "import os,time; [os.utime(os.path.join(r,f),(315600000,315600000)) for r,_,fs in os.walk('mlir') for f in fs]"
+          if errorlevel 1 exit /b 1
+          popd
+
+          if not defined PEANO_INSTALL_DIR (
+            echo ##[error]PEANO_INSTALL_DIR is not set - ensure the runner is provisioned per the runner setup guide
+            exit /b 1
+          )
+          if not exist "%PEANO_INSTALL_DIR%" (
+            echo ##[error]PEANO_INSTALL_DIR="%PEANO_INSTALL_DIR%" does not exist - check runner provisioning
+            exit /b 1
+          )
+          if not defined XRT_ROOT (
+            echo ##[error]XRT_ROOT is not set - ensure XRT is installed and XRT_ROOT is set per the runner setup guide
+            exit /b 1
+          )
+          if not exist "%XRT_ROOT%" (
+            echo ##[error]XRT_ROOT="%XRT_ROOT%" does not exist - check XRT installation on the runner
+            exit /b 1
+          )
+
+          REM tools/bootgen unconditionally requires OpenSSL (used by aiecc
+          REM for in-process PDI generation). Per docs/buildHostWinNative.md
+          REM Addendum B.1, this must be the full Win64 OpenSSL package from
+          REM Shining Light Productions (NOT the "Light" variant, which lacks
+          REM dev headers), installed at its default location on the runner.
+          if not exist "C:\Program Files\OpenSSL-Win64" (
+            echo ##[error]C:\Program Files\OpenSSL-Win64 not found - install the full Win64 OpenSSL package per docs/buildHostWinNative.md Addendum B.1
+            exit /b 1
+          )
+
+          for /f "usebackq delims=" %%p in (`python -c "import sys; print(sys.executable)"`) do set PYTHON_EXE=%%p
+
+          REM Build with the same script as the Linux job (one source of truth).
+          REM Wheel is already prepped above, so pass it as arg 1 to skip the
+          REM script's own download. EXTRA_CMAKE_ARGS carries the Windows-only
+          REM -D flags; paths are forward-slashed and space-free (OpenSSL via 8.3
+          REM short name) since the script expands args unquoted.
+          set "XRT_ROOT_FWD=%XRT_ROOT:\=/%"
+          set "PYTHON_EXE_FWD=%PYTHON_EXE:\=/%"
+          set "PEANO_INSTALL_DIR_FWD=%PEANO_INSTALL_DIR:\=/%"
+          for %%I in ("C:\Program Files\OpenSSL-Win64") do set "OPENSSL_ROOT=%%~sI"
+          set "OPENSSL_ROOT_FWD=%OPENSSL_ROOT:\=/%"
+          set "EXTRA_CMAKE_ARGS=-DAIE_ENABLE_PYTHON_PASSES=OFF -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON -DXRT_ROOT=%XRT_ROOT_FWD% -DPython3_EXECUTABLE=%PYTHON_EXE_FWD% -DOPENSSL_ROOT_DIR=%OPENSSL_ROOT_FWD% -DOPENSSL_USE_STATIC_LIBS=TRUE"
+
+          REM arg 4 = provisioned Peano, else the script derives its own.
+          "C:\Program Files\Git\bin\bash.exe" utils/build-mlir-aie-from-wheels.sh my_install/mlir build install "%PEANO_INSTALL_DIR_FWD%"
+          if errorlevel 1 exit /b 1
+
+      - name: Run tests and examples
+        shell: cmd
+        run: |
+          call .\iron_env.cmd
+          if errorlevel 1 exit /b 1
+
+          if exist "%NPU_CACHE_HOME%" rmdir /s /q "%NPU_CACHE_HOME%"
+          mkdir "%NPU_CACHE_HOME%"
+          set XRT_CONTEXT_CACHE_SIZE=2
+
+          pushd build
+
+          echo ===== Running tests =====
+          ninja check-aie
+          if errorlevel 1 exit /b 1
+
+          echo ===== Running concurrency tests =====
+          ninja check-aie-concurrency
+          if errorlevel 1 exit /b 1
+
+          echo ===== Running examples =====
+          ninja check-reference-designs
+          if errorlevel 1 exit /b 1
+          ninja check-programming-guide
+          if errorlevel 1 exit /b 1
+
+          popd
+
+      - name: Cleanup workspace
+        if: always()
+        shell: cmd
+        run: |
+          if exist "%NPU_CACHE_HOME%" rmdir /s /q "%NPU_CACHE_HOME%"
+          if exist "%PIP_CACHE_DIR%" rmdir /s /q "%PIP_CACHE_DIR%"
+          REM Fixed-name build trees the next checkout's git-clean can miss on
+          REM Windows (locked files / long paths); remove them here so a partial
+          REM clean can't leave a poisoned tree on this persistent runner.
+          if exist "build" rmdir /s /q "build"
+          if exist "install" rmdir /s /q "install"
+          if exist "my_install" rmdir /s /q "my_install"

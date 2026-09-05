@@ -1,10 +1,8 @@
 //===- AIEDialect.h ---------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2019-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2019 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -59,13 +57,20 @@ uint32_t getShimBurstLengthBytes(const AIE::AIETargetModel &tm,
 uint32_t getShimBurstLengthEncoding(const AIE::AIETargetModel &tm,
                                     uint32_t burstLength);
 
+// Generate a symbol name guaranteed to be unique within the symbol table of
+// `symbolTableOp`. Names are formed as "<prefix><n>" for increasing n; the
+// counter is advanced past the chosen value so repeated calls with the same
+// counter remain efficient and produce distinct names. The returned name is
+// not inserted into the symbol table; the caller is responsible for creating
+// a symbol with that name before the next call (otherwise the same name will
+// be returned again).
+std::string generateUniqueSymbolName(mlir::Operation *symbolTableOp,
+                                     llvm::StringRef prefix, unsigned &counter);
+
 mlir::LogicalResult
 verifyOffsetSizeAndStrideOp(mlir::OffsetSizeAndStrideOpInterface op);
 
 } // namespace xilinx::AIE
-
-/// Include the generated interface declarations.
-#include "aie/Dialect/AIE/IR/AIEInterfaces.h.inc"
 
 namespace xilinx::AIE {
 mlir::LogicalResult
@@ -108,6 +113,9 @@ void registerAIETranslations();
 
 #define GET_ATTRDEF_CLASSES
 #include "aie/Dialect/AIE/IR/AIEAttrs.h.inc"
+
+// Interfaces come after the attributes and types their methods traffic in.
+#include "aie/Dialect/AIE/IR/AIEInterfaces.h.inc"
 
 ////////////////////////////////////////////////////////////////////////////////
 //////////////////// Custom Operations for the Dialect /////////////////////////
@@ -181,14 +189,34 @@ using DMAChannel = struct DMAChannel {
 const AIETargetModel &getTargetModel(mlir::Operation *op);
 const AIETargetModel &getTargetModel(AIEDevice device);
 
+/// Which of `a`'s and `b`'s memory modules both tiles can address.
+AIETargetModel::SharedMemory sharedMemory(TileOp a, TileOp b);
+
 mlir::ParseResult
 parseObjectFifoProducerTile(mlir::OpAsmParser &parser,
                             mlir::OpAsmParser::UnresolvedOperand &operand,
                             BDDimLayoutArrayAttr &dimensions);
 
 void printObjectFifoProducerTile(mlir::OpAsmPrinter &printer,
-                                 mlir::Operation *op, mlir::Value tile,
+                                 mlir::Operation *op, mlir::Value operand,
                                  BDDimLayoutArrayAttr dimensions);
+
+mlir::ParseResult
+parseObjectFifoAcquireObjects(mlir::OpAsmParser &parser,
+                              ObjectFifoPortAttr &port,
+                              llvm::SmallVectorImpl<mlir::Type> &objects);
+
+void printObjectFifoAcquireObjects(mlir::OpAsmPrinter &printer,
+                                   mlir::Operation *op, ObjectFifoPortAttr port,
+                                   mlir::TypeRange objects);
+
+mlir::ParseResult parseObjectFifoReleaseCount(mlir::OpAsmParser &parser,
+                                              ObjectFifoPortAttr &port,
+                                              mlir::IntegerAttr &size);
+
+void printObjectFifoReleaseCount(mlir::OpAsmPrinter &printer,
+                                 mlir::Operation *op, ObjectFifoPortAttr port,
+                                 mlir::IntegerAttr size);
 
 mlir::ParseResult parseObjectFifoConsumerTiles(
     mlir::OpAsmParser &parser,
@@ -197,7 +225,7 @@ mlir::ParseResult parseObjectFifoConsumerTiles(
 
 void printObjectFifoConsumerTiles(mlir::OpAsmPrinter &printer,
                                   mlir::Operation *op, mlir::OperandRange tiles,
-                                  BDDimLayoutArrayArrayAttr dimensions);
+                                  BDDimLayoutArrayArrayAttr dimsPerTileAttr);
 
 int32_t getBufferBaseAddress(mlir::Operation *bufOp);
 
@@ -228,22 +256,28 @@ void collectBuffers(
 // linearized by the compiler.
 bool isContiguousBDTransfer(llvm::ArrayRef<BDDimLayoutAttr> dims);
 
+// Validate the sender-side out_of_order_id field on a single BD. Callable from
+// the AIEX dialect, whose runtime-sequence task BDs skip DMABDOp::verify.
+mlir::LogicalResult
+verifyDMABDOutOfOrderId(DMABDOp bd, bool packetEnabledByContext = false);
+
+// Validate an out-of-order S2MM channel and its receive BDs.
+mlir::LogicalResult
+verifyOutOfOrderChannel(mlir::Operation *op, DMAChannelDir dir, bool outOfOrder,
+                        llvm::ArrayRef<DMABDOp> bds,
+                        bool packetEnabledByContext = false);
+
+// BD ids already assigned within a tile's static DMA program (the
+// aie.dma_bd chain(s) inside one DmaBody-implementing op: aie.mem,
+// aie.memtile_dma, aie.shim_dma).
+llvm::SmallVector<uint32_t> getAssignedBdIds(DmaBody program);
+
 } // namespace xilinx::AIE
 
 namespace llvm {
 // Functions hash just like pointers.
 template <>
 struct DenseMapInfo<xilinx::AIE::ObjectFifoAcquireOp> {
-  static xilinx::AIE::ObjectFifoAcquireOp getEmptyKey() {
-    auto *pointer = DenseMapInfo<void *>::getEmptyKey();
-    return xilinx::AIE::ObjectFifoAcquireOp::getFromOpaquePointer(pointer);
-  }
-
-  static xilinx::AIE::ObjectFifoAcquireOp getTombstoneKey() {
-    auto *pointer = DenseMapInfo<void *>::getTombstoneKey();
-    return xilinx::AIE::ObjectFifoAcquireOp::getFromOpaquePointer(pointer);
-  }
-
   static unsigned getHashValue(xilinx::AIE::ObjectFifoAcquireOp val) {
     return hash_value(val.getAsOpaquePointer());
   }
@@ -259,16 +293,6 @@ namespace llvm {
 // Functions hash just like pointers.
 template <>
 struct DenseMapInfo<xilinx::AIE::ObjectFifoCreateOp> {
-  static xilinx::AIE::ObjectFifoCreateOp getEmptyKey() {
-    auto *pointer = DenseMapInfo<void *>::getEmptyKey();
-    return xilinx::AIE::ObjectFifoCreateOp::getFromOpaquePointer(pointer);
-  }
-
-  static xilinx::AIE::ObjectFifoCreateOp getTombstoneKey() {
-    auto *pointer = DenseMapInfo<void *>::getTombstoneKey();
-    return xilinx::AIE::ObjectFifoCreateOp::getFromOpaquePointer(pointer);
-  }
-
   static unsigned getHashValue(xilinx::AIE::ObjectFifoCreateOp val) {
     return hash_value(val.getAsOpaquePointer());
   }
@@ -283,14 +307,6 @@ template <>
 struct DenseMapInfo<xilinx::AIE::DMAChannel> {
   using FirstInfo = DenseMapInfo<xilinx::AIE::DMAChannelDir>;
   using SecondInfo = DenseMapInfo<int>;
-
-  static xilinx::AIE::DMAChannel getEmptyKey() {
-    return {FirstInfo::getEmptyKey(), SecondInfo::getEmptyKey()};
-  }
-
-  static xilinx::AIE::DMAChannel getTombstoneKey() {
-    return {FirstInfo::getTombstoneKey(), SecondInfo::getTombstoneKey()};
-  }
 
   static unsigned getHashValue(const xilinx::AIE::DMAChannel &d) {
     return detail::combineHashValue(FirstInfo::getHashValue(d.direction),
@@ -307,14 +323,6 @@ template <>
 struct DenseMapInfo<xilinx::AIE::Port> {
   using FirstInfo = DenseMapInfo<xilinx::AIE::WireBundle>;
   using SecondInfo = DenseMapInfo<int>;
-
-  static xilinx::AIE::Port getEmptyKey() {
-    return {FirstInfo::getEmptyKey(), SecondInfo::getEmptyKey()};
-  }
-
-  static xilinx::AIE::Port getTombstoneKey() {
-    return {FirstInfo::getTombstoneKey(), SecondInfo::getTombstoneKey()};
-  }
 
   static unsigned getHashValue(const xilinx::AIE::Port &d) {
     return detail::combineHashValue(FirstInfo::getHashValue(d.bundle),

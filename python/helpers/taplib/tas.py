@@ -1,8 +1,16 @@
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
 from __future__ import annotations
+
 from collections import abc
 from copy import deepcopy
+from typing import TYPE_CHECKING, Any, Callable, Sequence
+
 import numpy as np
-from typing import Callable, Sequence
+
+if TYPE_CHECKING:
+    from matplotlib.animation import FuncAnimation
 
 from .tap import TensorAccessPattern
 from .utils import (
@@ -12,9 +20,15 @@ from .utils import (
 )
 
 
+def _constant_fn(value):
+    def _fn(_step, _prev):
+        return value
+
+    return _fn
+
+
 class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
-    """
-    TensorAccessSequence is a MutableSequence and an Iterable. Generally, it is a thin wrapper around a list[TensorAccessPattern].
+    """TensorAccessSequence is a MutableSequence and an Iterable. Generally, it is a thin wrapper around a list[TensorAccessPattern].
 
     The TensorAccessSequence is useful as a container of TensorAccessPatterns so that a grouping of patterns may be
     accessed in a particular order, or visualized or animated in sequence.
@@ -52,12 +66,12 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
 
         Raises:
             ValueError: Parameters are validated
-        """
+        """  # noqa: D401
         self._current_step = 0
 
         # Check tensor dims, offset, sizes, strides
         self._tensor_dims = validate_tensor_dims(tensor_dims)
-        if not (offset is None):
+        if offset is not None:
             offset = validate_offset(offset, self._tensor_dims)
         sizes, strides = validate_and_clean_sizes_strides(
             sizes, strides, allow_none=True
@@ -69,60 +83,65 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
 
         if num_steps == 0:
             if (
-                offset != None
-                or sizes != None
-                or strides != None
-                or offset_fn != None
-                or sizes_fn != None
-                or strides_fn != None
+                offset is not None
+                or sizes is not None
+                or strides is not None
+                or offset_fn is not None
+                or sizes_fn is not None
+                or strides_fn is not None
             ):
                 raise ValueError(
-                    f"If num_steps=0, no sizes/strides/offset information may be specified"
+                    "If num_steps=0, no sizes/strides/offset information may be specified"
                 )
             self._taps = []
         else:
             # Make sure values or not None if iteration functions are None; also set default iter fn
-            if offset_fn is None:
+            if offset_fn is not None:
+                resolved_offset_fn = offset_fn
+            else:
                 if offset is None:
                     raise ValueError("Offset must be provided if offset_fn is None")
-                offset_fn = lambda _step, _prev_offset: offset
+                resolved_offset_fn = _constant_fn(offset)
+
+            if sizes_fn is not None:
+                resolved_sizes_fn = sizes_fn
             else:
-                offset_fn = offset_fn
-            if sizes_fn is None:
                 if sizes is None:
                     raise ValueError("Sizes must be provided if size_fn is None")
-                sizes_fn = lambda _step, _prev_sizes: sizes
+                resolved_sizes_fn = _constant_fn(sizes)
+
+            if strides_fn is not None:
+                resolved_strides_fn = strides_fn
             else:
-                sizes_fn = sizes_fn
-            if strides_fn is None:
                 if strides is None:
                     raise ValueError("Strides must be provided if stride_fn is None")
-                strides_fn = lambda _step, _prev_strides: strides
-            else:
-                strides_fn = strides_fn
+                resolved_strides_fn = _constant_fn(strides)
 
             # Pre-calculate taps, because better for error handling up-front (and for visualizing full iter)
             # This is somewhat against the mentality behind iterations, but should be okay at the scale this
             # class will be used for (e.g., no scalability concerns with keeping all taps in mem)
             self._taps = []
+            cur_offset: Any = offset
+            cur_sizes: Any = sizes
+            cur_strides: Any = strides
             for step in range(num_steps):
-                offset = offset_fn(step, offset)
-                sizes = sizes_fn(step, sizes)
-                strides = strides_fn(step, strides)
+                cur_offset = resolved_offset_fn(step, cur_offset)
+                cur_sizes = resolved_sizes_fn(step, cur_sizes)
+                cur_strides = resolved_strides_fn(step, cur_strides)
 
                 self._taps.append(
                     TensorAccessPattern(
                         self._tensor_dims,
-                        offset,
-                        sizes,
-                        strides,
+                        cur_offset,
+                        cur_sizes,
+                        cur_strides,
                     )
                 )
 
     @classmethod
     def from_taps(cls, taps: Sequence[TensorAccessPattern]) -> TensorAccessSequence:
-        """
-        This alternative constructor creates a TensorAccessSequence from a sequence of TensorAccessPatterns.
+        """Create a TensorAccessSequence from a sequence of TensorAccessPatterns.
+
         This is an alternative to the traditional constructor, and is useful for patterns that are difficult
         to express using the sizes/strides/offset functions.
 
@@ -158,9 +177,7 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
         return tas
 
     def accesses(self) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Returns the access_order and access_count arrays of the TensorAccessPatterns in
-        the sequence applied sequentially to the tensor.
+        """Return the access_order and access_count arrays of the sequence applied sequentially to the tensor.
 
         The access_order ndarray sequentially counts access to elements in the
         tensor. If an element is accessed more than once, only the last count is reflected.
@@ -174,10 +191,9 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
         return self._calc_accesses(True, True)
 
     def access_order(self) -> np.ndarray:
-        """
-        The access_order ndarray sequentially counts access to elements in the
-        tensor. If an element is accessed more than once, only the last count is reflected.
+        """Return the access_order ndarray, which sequentially counts access to elements in the tensor.
 
+        If an element is accessed more than once, only the last count is reflected.
         The TensorAccessPatterns in the sequence are applied sequentially.
 
         Returns:
@@ -187,9 +203,7 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
         return access_order
 
     def access_count(self) -> np.ndarray:
-        """
-        The access_count ndarray contains the number of times each element is
-        accessed by the tensor access pattern.
+        """Return the access_count ndarray, which contains the number of times each element is accessed.
 
         The TensorAccessPatterns in the sequence are applied sequentially.
 
@@ -211,42 +225,42 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
             raise ValueError("Must select calc_order, calc_count, or both")
 
         total_elems = np.prod(self._tensor_dims)
-        combined_access_order_tensor = None
-        combined_access_count_tensor = None
+        combined_access_order_tensor = np.full(
+            total_elems, 0, TensorAccessPattern._DTYPE
+        ).reshape(self._tensor_dims)
+        combined_access_count_tensor = np.full(
+            total_elems, 0, TensorAccessPattern._DTYPE
+        ).reshape(self._tensor_dims)
+        highest_count = 0
 
-        if calc_order:
-            combined_access_order_tensor = np.full(
-                total_elems, 0, TensorAccessPattern._DTYPE
-            ).reshape(self._tensor_dims)
-            highest_count = 0
-        if calc_count:
-            combined_access_count_tensor = np.full(
-                total_elems, 0, TensorAccessPattern._DTYPE
-            ).reshape(self._tensor_dims)
         for t in self._taps:
             if calc_order and calc_count:
                 t_access_order, t_access_count = t.accesses()
             elif calc_order:
                 t_access_order = t.access_order()
+                t_access_count = None
             else:
+                t_access_order = None
                 t_access_count = t.access_count()
 
-            if calc_order:
+            if t_access_order is not None:
                 t_access_order[t_access_order != -1] += 1 + highest_count
                 t_access_order[t_access_order == -1] = 0
                 combined_access_order_tensor += t_access_order
                 highest_count = np.max(combined_access_order_tensor)
-            if calc_count:
+            if t_access_count is not None:
                 combined_access_count_tensor += t_access_count
 
         if calc_order:
             combined_access_order_tensor -= 1
         return (combined_access_order_tensor, combined_access_count_tensor)
 
-    def animate(self, title: str | None = None, animate_access_count: bool = False):
-        """
-        Creates and returns a handle to a TensorAccessSequence animation. Each frame
-        in the animation represents one TensorAccessPattern in the sequence.
+    def animate(
+        self, title: str | None = None, animate_access_count: bool = False
+    ) -> "FuncAnimation":
+        """Create and return a handle to a TensorAccessSequence animation.
+
+        Each frame in the animation represents one TensorAccessPattern in the sequence.
 
         Args:
             title (str | None, optional): The title of the animation. Defaults to None.
@@ -275,7 +289,7 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
             )
         ]
 
-        animate_count_frames = None
+        animate_count_frames: list[np.ndarray] | None = None
         if animate_access_count:
             animate_count_frames = [
                 np.full(total_elems, 0, TensorAccessPattern._DTYPE).reshape(
@@ -284,7 +298,7 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
             ]
 
         for t in self._taps:
-            if animate_access_count:
+            if animate_count_frames is not None:
                 t_access_order, t_access_count = t.accesses()
                 animate_count_frames.append(t_access_count)
             else:
@@ -304,7 +318,7 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
         show_plot: bool = True,
         plot_access_count: bool = False,
     ) -> None:
-        """Provides a visual of the TensorAccessSequence using a graph.
+        """Provide a visual of the TensorAccessSequence using a graph.
 
         Args:
             title (str | None, optional): The title of the graph. Defaults to None.
@@ -340,8 +354,8 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
         )
 
     def compare_access_orders(self, other: TensorAccessSequence) -> bool:
-        """
-        This function creates an alternative way to compare access pattern sequences.
+        """Compare access pattern sequences for functional equivalency.
+
         Sometimes access patterns with different sizes/strides are functionally equivalent;
         to detect functional equivalency, this function uses iterators produced by
         access_generator() to compare the access patterns. This is more performant than
@@ -361,7 +375,7 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
                 return False
         return True
 
-    def __contains__(self, tap: TensorAccessPattern):
+    def __contains__(self, tap: object):
         return tap in self._taps
 
     def __iter__(self):
@@ -370,17 +384,17 @@ class TensorAccessSequence(abc.MutableSequence, abc.Iterable):
     def __len__(self) -> int:
         return len(self._taps)
 
-    def __getitem__(self, idx: int) -> TensorAccessPattern:
+    def __getitem__(self, idx):
         return self._taps[idx]
 
-    def __setitem__(self, idx: int, tap: TensorAccessPattern):
+    def __setitem__(self, idx, tap):
         if self._tensor_dims != tap.tensor_dims:
             raise ValueError(
                 f"Cannot add TensorAccessPattern with tensor dims {tap.tensor_dims} to TensorAccessSequence with tensor dims {self._tensor_dims}"
             )
         self._taps[idx] = deepcopy(tap)
 
-    def __delitem__(self, idx: int):
+    def __delitem__(self, idx):
         del self._taps[idx]
 
     def insert(self, index: int, value: TensorAccessPattern):

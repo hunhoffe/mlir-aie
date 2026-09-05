@@ -1,10 +1,7 @@
 //===- AIECanonicalizeDevice.cpp --------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2023 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,7 +39,7 @@ struct AIECanonicalizeDevicePass
     // the new op quite yet.
     OpBuilder builder(moduleOp->getContext());
 
-    Location location = builder.getUnknownLoc();
+    Location location = moduleOp.getLoc();
     auto deviceOp = DeviceOp::create(
         builder, location,
         AIEDeviceAttr::get(builder.getContext(), AIEDevice::xcvc1902),

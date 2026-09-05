@@ -1,11 +1,15 @@
-﻿﻿
+﻿<!-- Copyright (C) 2021 Xilinx, Inc.
+Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
+
+﻿
 # AIE Basic Design Patterns
 
 This document is an introduction to using the AIE dialect in practice and provides basic patterns that one would use in order to generate low level configurations for the AI engine. 
 
 ## Using AIE Cores
 
-[Core Example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/03_sync_with_locks/aie.mlir)
+[Core Example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/aie/03_sync_with_locks/aie.mlir)
 
 We can use the AIE Cores as below to perform some operations
 
@@ -30,7 +34,7 @@ Perform some operations on the buffer in the core
 ```
 
 ## Single-buffered Communication
-[Single-buffer DMA example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/05_tiledma/aie.mlir)
+[Single-buffer DMA example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/aie/05_tiledma/aie.mlir)
 
 Define the AIE tiles you want to communicate between. Here Tile (7,1) will be the source and (7,2) the destination.
 
@@ -62,7 +66,7 @@ Start the Memory Map to Stream DMA from the source:
 	%dma0 = AIE.dma_start("MM2S", 0, ^bd0, ^end)
 	^bd0:
 		AIE.use_lock(%lock71, "Acquire", 0) // Acquire in State 0
-		AIE.dma_bd(%buf71 : memref<512xi32>, 0, 512)
+		AIE.dma_bd(%buf71 : memref<512xi32> offset = 0 len = 512)
 		AIE.use_lock(%lock71, "Release", 1) // Release in State 1
 		br ^end 
 	^end:
@@ -76,7 +80,7 @@ Start the Stream to Memory Map DMA from the destination:
 	%dma0 = AIE.dma_start("S2MM", 0, ^bd0, ^end)
 	^bd0:
 		AIE.use_lock(%lock72, "Acquire", 0)
-		AIE.dma_bd(%buf72 : memref<512xi32>, 0, 512)
+		AIE.dma_bd(%buf72 : memref<512xi32> offset = 0 len = 512)
 		AIE.use_lock(%lock72, "Release", 1)
 		br ^end 
 	^end:
@@ -102,7 +106,7 @@ At the end, we release the lock back in state 0. This allows for the memory to r
 
 ## Double-buffered Communication
 
-[Double-buffer DMA example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/17_shim_dma_with_core/aie.mlir)
+[Double-buffer DMA example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/aie/17_shim_dma_with_core/aie.mlir)
 
 This example uses the same setup as the previous. For Tile (7,2) we can define an additional lock and buffer and change the buffers to be half the size:
 ```
@@ -118,12 +122,12 @@ Then we can write the Stream to Memory Map DMA transfer with 2 buffer descriptor
 	%dma0 = AIE.dma_start("S2MM", 0, ^bd0, ^end)
 	^bd0:
 		AIE.use_lock(%lock72_0, "Acquire", 0)
-		AIE.dma_bd(%buf72_0: memref<256xi32>, 0, 256)
+		AIE.dma_bd(%buf72_0 : memref<256xi32> offset = 0 len = 256)
 		AIE.use_lock(%lock72_0, "Release", 1)
 		br ^bd1 // point to the next BD, or termination
 	^bd1:
 		AIE.use_lock(%lock72_1, "Acquire", 0)
-		AIE.dma_bd(%buf72_1: memref<256xi32>, 0, 256)
+		AIE.dma_bd(%buf72_1 : memref<256xi32> offset = 0 len = 256)
 		AIE.use_lock(%lock72_1, "Release", 1)
 		br ^bd0 // point to the next BD, or termination
 	^end:
@@ -154,7 +158,7 @@ We can use the core in a similar fashion, using the two locks to perform operati
 
 ## Controlling from the ARM Processor
 
-[Controlling From ARM](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/17_shim_dma_with_core/aie.mlir)
+[Controlling From ARM](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/aie/17_shim_dma_with_core/aie.mlir)
 
 We can perform some operations from the ARM processor and configure the lock to start the transfer. Here is a simple example where we write to a buffer, and begin the data transfer all from the host code.
 
@@ -175,7 +179,7 @@ Start the Memory Map to Stream DMA from the source:
 	%dma0 = AIE.dma_start("MM2S", 0, ^bd0, ^end)
 	^bd0:
 		AIE.use_lock(%lock71, "Acquire", 1) // Acquire in State 0
-		AIE.dma_bd(%buf71 : memref<512xi32>, 0, 512)
+		AIE.dma_bd(%buf71 : memref<512xi32> offset = 0 len = 512)
 		AIE.use_lock(%lock71, "Release", 1) // Release in State 1
 		br ^end 
 	^end:
@@ -189,7 +193,7 @@ Start the Stream to Memory Map DMA from the destination:
 	%dma0 = AIE.dma_start("S2MM", 0, ^bd0, ^end)
 	^bd0:
 		AIE.use_lock(%lock72, "Acquire", 0)
-		AIE.dma_bd(%buf72 : memref<512xi32>, 0, 512)
+		AIE.dma_bd(%buf72 : memref<512xi32> offset = 0 len = 512)
 		AIE.use_lock(%lock72, "Release", 1)
 		br ^end 
 	^end:
@@ -216,7 +220,7 @@ XAieTile_LockRelease(&(TileInst[7][1]), 0, 1, 0); // Release lock
 This allows the data transfer to begin
 
 ## Static DDR Configuration
-[Static DDR](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/17_shim_dma_with_core/aie.mlir)
+[Static DDR](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/aie/17_shim_dma_with_core/aie.mlir)
 
 To read/write from DDR, we declare an external buffer with a location and size
 ```
@@ -232,8 +236,8 @@ We can then use the shim_dma to read/write from that location:
 	%dma0 = AIE.dma_start("MM2S", 0, ^bd0, ^end) \\Read
 	^bd0:
 		AIE.use_lock(%lock70 , "Acquire", 0)
-		AIE.dma_bd(%ext_buffer : memref<512xi32>, 0, 512)
-		AIE.use_lock(%lolock70 k72, "Release", 1)
+		AIE.dma_bd(%ext_buffer : memref<512xi32> offset = 0 len = 512)
+		AIE.use_lock(%lock70, "Release", 1)
 		br ^end 
 	^end:
 	AIE.end
@@ -278,12 +282,12 @@ module {
 	%srcDma = AIE.dma_start("MM2S", 0, ^bd0, ^end)
 	^bd0:
 		AIE.use_lock(%l72_0, "Acquire", 1)
-		AIE.dma_bd(%buf72_0 : memref<256xi32>, 0, 256)
+		AIE.dma_bd(%buf72_0 : memref<256xi32> offset = 0 len = 256)
 		AIE.use_lock(%l72_0, "Release", 0)
 	br ^bd1
 	^bd1:
 		AIE.use_lock(%l72_1, "Acquire", 1)
-		AIE.dma_bd(%buf72_1 : memref<256xi32>, 0, 256)
+		AIE.dma_bd(%buf72_1 : memref<256xi32> offset = 0 len = 256)
 		AIE.use_lock(%l72_1, "Release", 0)
 	br ^bd0
 	^end:
@@ -344,7 +348,7 @@ XAieTile_LockRelease(&(TileInst[7][2]), 1, 0x1, 0);
 
 ## Using AIE ObjectFIFOs
 
-[ObjectFIFO Example](https://github.com/Xilinx/mlir-aie/tree/main/test/objectFifo-stateful-transform/non_adjacency_test_1.aie.mlir)
+[ObjectFIFO Example](https://github.com/Xilinx/mlir-aie/tree/main/test/objectFifo-stateful-transform/base/non_adjacency_test_1.mlir)
 
 An objectFIFO can be established between two or more tiles. Broadcast is possible from one producer tile to multiple consumer tiles.
 Unlike a typical FIFO, elements are not pushed to nor popped from the objectFIFO. Instead, a pool of memory elements is allocated to the objectFIFO by the objectFIFO lowering pass, i.e., AIEObjectFifoStatefulTransform.mlir. 
@@ -360,7 +364,7 @@ AIE.objectfifo @of0 (%tile12, {tile33}, 2 : i32) : !AIE.objectfifo<memref<16xi32
 After subsequent conversion passes, each of the objectFifo elements is instantiated as an AIE.buffer with an AIE.lock.
 
 objectFIFO operations have a 'port' attribute which indicates whether a tile is a 'producer' or a 'consumer' of that objectFIFO.
-Operations can be performed on the objectFIFO in the cores: elements can be acquired from the objectFIFO and accessed via an AIE.objectfifosubview type, then released: 
+Operations can be performed on the objectFIFO in the cores: elements can be acquired from the objectFIFO, which returns one memref per element, then released: 
 ```
 %core12 = AIE.core(%tile12) {
 	%c0 = arith.constant 0 : index
@@ -368,8 +372,7 @@ Operations can be performed on the objectFIFO in the cores: elements can be acqu
 	%height = arith.constant 12 : index
 
 	scf.for %indexInHeight = %c0 to %height step %c1 {
-		%subview = AIE.objectfifo.acquire @of0 (Produce, 1) : !AIE.objectfifosubview<memref<16xi32>>
-		%elem0 = AIE.objectfifo.subview.access %subview[0] : !AIE.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+		%elem0 = AIE.objectfifo.acquire @of0 (Produce, 1) : memref<16xi32>
 		call @some_work(%elem0) : (memref<16xi32>) -> ()
 		AIE.objectfifo.release @of0 (Produce, 1)
 	}
@@ -383,8 +386,7 @@ Operations can be performed on the objectFIFO in the cores: elements can be acqu
 	%height = arith.constant 12 : index
 
 	scf.for %indexInHeight = %c0 to %height step %c1 { 
-		%subview = AIE.objectfifo.acquire @of0 (Consume, 1) : !AIE.objectfifosubview<memref<16xi32>>
-		%elem0 = AIE.objectfifo.subview.access %subview[0] : !AIE.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+		%elem0 = AIE.objectfifo.acquire @of0 (Consume, 1) : memref<16xi32>
 		call @some_work(%elem0) : (memref<16xi32>) -> ()
 		AIE.objectfifo.release @of0 (Consume, 1)
 	}
@@ -403,13 +405,11 @@ In the default lowering, loops that contain objectFIFO operations are unrolled b
 	%height = arith.constant 12 : index
 
 	scf.for %indexInHeight = %c0 to %height step %c2 {
-		%subview0 = AIE.objectfifo.acquire @of0 (Produce, 1) : !AIE.objectfifosubview<memref<16xi32>>
-		%elem00 = AIE.objectfifo.subview.access %subview0[0] : !AIE.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+		%elem00 = AIE.objectfifo.acquire @of0 (Produce, 1) : memref<16xi32>
 		call @some_work(%elem00) : (memref<16xi32>) -> ()
 		AIE.objectfifo.release @of0 (Produce, 1)
 
-		%subview1 = AIE.objectfifo.acquire @of0 (Produce, 1) : !AIE.objectfifosubview<memref<16xi32>>
-		%elem10 = AIE.objectfifo.subview.access %subview1[0] : !AIE.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+		%elem10 = AIE.objectfifo.acquire @of0 (Produce, 1) : memref<16xi32>
 		call @some_work(%elem10) : (memref<16xi32>) -> ()
 		AIE.objectfifo.release @of0 (Produce, 1)
 	}
@@ -457,7 +457,7 @@ Another lowering technique generates MLIR operations that ensure the acquire / r
 	aie.end
 }
 ```
-This lowering can be enabled for each core by setting the `dynamic_objfifo_lowering` attribute of the CoreOp to true, or enabled for all the cores in the design at once by setting the `dynamic-objFifos` flag of aiecc (which is then passed to the --aie-objectFifo-stateful-transform lowering pass).
+This lowering can be made the default for every core by passing the `--dynamic-objFifos` flag of aiecc (forwarded to the `default-dynamic` option of the `--aie-objectFifo-unroll` pass). Individual cores override that default in either direction by setting the `dynamic_objfifo_lowering` attribute of the CoreOp: `true` keeps the core's loops rolled (dynamic), `false` unrolls them (static).
 
 ObjectFIFOs can be established between tiles on the shim row and AIE tiles in order to bring data in from or out to external memory locations. These external memory locations are pointed to using AIE.external_buffer operations and they need to be explicitly registered to an objectFIFO so that it knows where the data has been allocated externally (in this case, the objectFIFO lowering will only allocate memory elements required by AIE tiles):
 ```
@@ -487,28 +487,9 @@ module @objectFIFO  {
 }
 ```
 
-At a higher abstraction level, a process can be registered to an objectFIFO using access patterns and work functions:
-```
-module @objectFIFO  {
-    %tile12 = AIE.tile(1, 2)
-    %tile33 = AIE.tile(3, 3)
-
-    AIE.objectfifo @of1 (%tile12, {tile33}, 2 : i32) : !AIE.objectfifo<memref<16xi32>>
-
-    %prodAcqPattern = arith.constant dense<[1]> : tensor<1xi32>
-    %prodRelPattern = arith.constant dense<[1]> : tensor<1xi32>
-    %prodLength = arith.constant 12 : index
-    func @producer_work() -> () {
-        return
-    }
-
-    AIE.objectfifo.register_process @of1 (Produce, %prodAcqPattern : tensor<1xi32>, %prodRelPattern : tensor<1xi32>, @producer_work, %prodLength)
-}
-```
-
 ## Using AIE broadcast_packet
 
-[broadcast_packet Example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/23_broadcast_packet/aie.mlir)
+[broadcast_packet Example](https://github.com/Xilinx/mlir-aie/tree/main/test/unit_tests/aie/23_broadcast_packet/aie.mlir)
 
 The broadcast_packet operation is a logical connection that combines broadcast and packet-switch data transferring mechanism.
 

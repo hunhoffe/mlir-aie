@@ -1,15 +1,13 @@
 # answer_2.py -*- Python -*-
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2025 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 import sys
 import numpy as np
 
-from aie.iron import Program, Runtime, Worker, ObjectFifo
+from aie.iron import Out, In, CompileTime, Program, Runtime, Worker, ObjectFifo
 from aie.iron.controlflow import range_
 from aie.helpers.taplib import TensorTiler2D
 
@@ -17,14 +15,17 @@ import aie.iron as iron
 
 
 @iron.jit
-def exercise_5a(input0, output):
+def exercise_5a(
+    input0: In,
+    output: Out,
+    *,
+    data_size: CompileTime[int],
+    element_type: CompileTime[type],
+):
     # Define tile size
     tile_height = 3
     tile_width = 8
     tile_size = tile_height * tile_width
-
-    data_size = input0.numel()
-    element_type = input0.dtype
 
     data_ty = np.ndarray[(data_size,), np.dtype[element_type]]
     tile_ty = np.ndarray[(tile_size,), np.dtype[element_type]]
@@ -50,15 +51,15 @@ def exercise_5a(input0, output):
     my_worker = Worker(core_fn, [of_in.cons(), of_out.prod()])
 
     # To/from AIE-array runtime data movement
-    rt = Runtime()
-    with rt.sequence(data_ty, data_ty) as (a_in, c_out):
-        rt.start(my_worker)
+    def sequence(a_in, c_out, in_h, out_h):
         for t in simple_tiler:
-            rt.fill(of_in.prod(), a_in, t)
-        rt.drain(of_out.cons(), c_out, wait=True)
+            in_h.fill(a_in, t)
+        out_h.drain(c_out, wait=True)
+
+    rt = Runtime(sequence, [data_ty, data_ty, of_in.prod(), of_out.cons()])
 
     # Create the program from the device type and runtime
-    my_program = Program(iron.get_current_device(), rt)
+    my_program = Program(iron.get_current_device(), rt, workers=[my_worker])
 
     # Place components (assign them resources on the device) and generate an MLIR module
     return my_program.resolve_program()
@@ -81,7 +82,7 @@ def main():
 
     # JIT-compile the kernel then launches the kernel with the given arguments. Future calls
     # to the kernel will use the same compiled kernel and loaded code objects
-    exercise_5a(input0, output)
+    exercise_5a(input0, output, data_size=input0.numel(), element_type=input0.dtype)
 
     # Check the correctness of the result
     USE_REF_VEC = False  # Set to False to switch to output for user testing

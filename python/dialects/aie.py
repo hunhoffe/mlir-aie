@@ -1,4 +1,4 @@
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# Copyright (C) 2022 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 from dataclasses import dataclass
 import inspect
@@ -10,8 +10,9 @@ import numpy as np
 
 from ._aie_enum_gen import *
 from ._aie_ops_gen import *
-from ._aie_ops_gen import _Dialect
+from ._aie_ops_gen import _Dialect, DMABDOp as _DMABDOp
 from ._ods_common import _cext
+from .transform.structured import MixedValues, _dispatch_mixed_values
 from .func import FuncOp
 from ..helpers.dialects.func import call
 from ..extras.dialects.arith import ScalarValue, constant
@@ -26,7 +27,6 @@ from array import array
 
 # noinspection PyUnresolvedReferences
 from .._mlir_libs._aie import (
-    ObjectFifoSubviewType,
     ObjectFifoType,
     get_target_model,
     aie_llvm_link,
@@ -36,7 +36,6 @@ from .._mlir_libs._aie import (
     generate_control_packets,
     translate_npu_to_binary,
     register_dialect,
-    translate_aie_vec_to_cpp,
     translate_mlir_to_llvmir,
     transaction_binary_to_mlir,
     tile_like_is_core_tile,
@@ -62,6 +61,7 @@ from ..ir import (
     Block,
     BlockList,
     DenseElementsAttr,
+    DenseI32ArrayAttr,
     DictAttr,
     FunctionType,
     InsertionPoint,
@@ -80,6 +80,25 @@ from ..ir import (
 register_dialect(get_dialect_registry())
 assert _cext.globals._check_dialect_module_loaded("aie")
 
+# The generated `use_lock` builder takes the lock value as an SSA i32 operand.
+# Wrap it so callers may still pass a plain Python int (materialized as an
+# arith.constant) or omit the value entirely (defaults to 1), while also
+# accepting a Value for runtime-parameterized lock values.
+from ._aie_ops_gen import use_lock as _use_lock
+
+
+def use_lock(
+    lock, action, value=None, *, blocking=None, acq_en=None, loc=None, ip=None
+):
+    if value is None:
+        value = 1
+    if isinstance(value, int):
+        value = constant(value, T.i32())
+    return _use_lock(
+        lock, action, value, blocking=blocking, acq_en=acq_en, loc=loc, ip=ip
+    )
+
+
 # Included in aie instead of aiex to avoid circular imports, as buffer uses this
 from ._aiex_ops_gen import NpuWriteRTPOp
 
@@ -89,7 +108,79 @@ class npu_write_rtp(NpuWriteRTPOp):
         buff_name = buffer
         if isinstance(buffer, BufferOp):
             buff_name = buffer.sym_name.value
+        # `value` is an SSA i32 operand; materialize a constant from a plain int
+        # while still accepting a Value for runtime-parameterized sequences.
+        if isinstance(value, int):
+            value = constant(value, T.i32())
         super().__init__(buffer=buff_name, index=index, value=value, loc=loc, ip=ip)
+
+
+def _as_i32(v):
+    """Materialize an arith.constant i32 from a Python/NumPy int, pass a Value
+    through unchanged, or return None for None. Shared by the npu scalar op
+    wrappers in aiex.py (imported from this module)."""
+    if v is None:
+        return None
+    if isinstance(v, (int, np.integer)):
+        return constant(int(v), T.i32())
+    return v
+
+
+def _split_i32_scalar(v):
+    """Split a dma_bd offset/len argument into (operand, static_attr): a Python
+    int becomes the static attribute, an SSA Value becomes the runtime operand,
+    and None leaves both unset. Unlike ``_as_i32``, an int stays an attribute
+    rather than being materialized as an arith.constant operand."""
+    if v is None:
+        return None, None
+    if isinstance(v, (int, np.integer)):
+        return None, int(v)
+    return v, None
+
+
+def dma_bd(
+    buffer,
+    sizes: MixedValues | None = None,
+    strides: MixedValues | None = None,
+    offset=None,
+    transfer_len=None,
+    **kwargs,
+):
+    """User-facing aie.dma_bd builder with a single interleaved list per
+    dimension-list, mirroring aiex.npu.dma_memcpy_nd.
+
+    ``sizes`` and ``strides`` each accept one sequence where entries may be
+    Python ints (constant) or SSA Values (runtime).  ``offset`` and
+    ``transfer_len`` accept ints or Values; a plain int lands in the
+    static_offset/static_len attribute while a Value becomes a runtime operand.
+    (``transfer_len`` maps to the op's ``len`` operand; the Python name avoids
+    shadowing the builtin and matches ``shim_dma_bd``.)
+
+    Example::
+
+        %len = ...
+        aie.dma_bd(%buf sizes=[16, %n] strides=[16, 1]
+                   offset=0 len=%len)
+    """
+    dyn_sizes, _packed_sizes, static_sizes = _dispatch_mixed_values(sizes or [])
+    dyn_strides, _packed_strides, static_strides = _dispatch_mixed_values(strides or [])
+
+    offset_operand, static_offset = _split_i32_scalar(offset)
+    len_operand, static_len = _split_i32_scalar(transfer_len)
+
+    # Leave the static arrays unset when there is no ND layout so they elide.
+    return _DMABDOp(
+        buffer,
+        sizes=dyn_sizes,
+        strides=dyn_strides,
+        static_sizes=static_sizes if static_sizes else None,
+        static_strides=static_strides if static_strides else None,
+        offset=offset_operand,
+        len=len_operand,
+        static_offset=static_offset,
+        static_len=static_len,
+        **kwargs,
+    )
 
 
 class external_func(FuncOp):
@@ -100,16 +191,68 @@ class external_func(FuncOp):
         inputs: List of input types (numpy dtypes or MLIR types).
         outputs: List of output types.  Defaults to [].
         visibility: MLIR symbol visibility.  Defaults to ``"private"``.
-        link_with: Optional path to the object file (``.o``) that implements
-            this function.  Sets the ``link_with`` string attribute on the
-            generated ``func.func`` op; the ``aie-assign-core-link-files`` pass
-            reads this attribute and propagates it into the CoreOp's
-            ``link_files`` attribute for the linker.
+        link_with: Optional name of the artifact that implements this function
+            -- an object file, an archive, or an LLVM IR file (``.ll``/``.bc``).
+            Sets the ``link_with`` string attribute on the generated
+            ``func.func`` op; the ``aie-assign-core-link-files`` pass reads this
+            attribute and propagates it into the CoreOp's ``link_files``
+            attribute.  How the artifact is consumed is decided by
+            ``link_with_mode``, not by the file suffix.
+        link_with_mode: Optional link policy for ``link_with``.  The only
+            currently-valid value is ``"merge"``: aiecc merges the artifact into
+            the core's LLVM module with ``llvm-link`` before codegen instead of
+            object-linking it.  Requires ``link_with``.  When omitted, the
+            artifact is object-linked, whatever its suffix.
+        stack_size_override: Declared upper bound, in bytes, on the stack that
+            this function's call subtree uses. It replaces the number aiecc's
+            analysis computes, even when it is smaller. See
+            `programming_guide/core_data_memory.md` for when to set it.
     """
 
     def __init__(
-        self, name: str, inputs, outputs=None, visibility="private", link_with=None
+        self,
+        name: str,
+        inputs,
+        outputs=None,
+        visibility="private",
+        link_with=None,
+        link_with_mode=None,
+        stack_size_override=None,
     ):
+        # Validate before building the op so a rejected declaration never lands
+        # in the IR at the current insertion point.
+        if link_with_mode is not None:
+            if link_with is None:
+                raise ValueError(
+                    f"external_func '{name}': link_with_mode requires link_with "
+                    "to be set."
+                )
+            if link_with_mode != "merge":
+                raise ValueError(
+                    f"external_func '{name}': invalid link_with_mode "
+                    f"'{link_with_mode}'; the only supported value is 'merge'."
+                )
+        if stack_size_override is not None:
+            if not isinstance(stack_size_override, int) or isinstance(
+                stack_size_override, bool
+            ):
+                raise ValueError(
+                    f"external_func '{name}': stack_size_override must be an int, "
+                    f"got {type(stack_size_override).__name__}."
+                )
+            if stack_size_override < 0:
+                raise ValueError(
+                    f"external_func '{name}': stack_size_override must be >= 0, "
+                    f"got {stack_size_override}."
+                )
+            # The attribute is a signless i32. A larger value wraps and turns
+            # the override into an undercount.
+            if stack_size_override > 2**31 - 1:
+                raise ValueError(
+                    f"external_func '{name}': stack_size_override must fit in a "
+                    f"signed 32-bit integer (<= {2**31 - 1}), got "
+                    f"{stack_size_override}."
+                )
         if outputs is None:
             outputs = []
         for i, ty in enumerate(inputs):
@@ -125,6 +268,12 @@ class external_func(FuncOp):
         )
         if link_with is not None:
             self.operation.attributes["link_with"] = StringAttr.get(link_with)
+        if link_with_mode is not None:
+            self.operation.attributes["link_with_mode"] = StringAttr.get(link_with_mode)
+        if stack_size_override is not None:
+            self.operation.attributes["stack_size_override"] = IntegerAttr.get(
+                IntegerType.get_signless(32), stack_size_override
+            )
 
     def __call__(self, *call_args):
         return call(self, call_args)
@@ -147,6 +296,15 @@ def packet_info_attr_builder(tups: Tuple[int] | List[int], context=None):
     assert (isinstance(tups, list) or isinstance(tups, Tuple)) and len(tups) == 2
     return Attribute.parse(
         f"#aie.packet_info<pkt_type = {tups[0]}, pkt_id = {tups[1]}>", context=context
+    )
+
+
+@register_attribute_builder("BDIterationAttr")
+def bd_iteration_attr_builder(tup: Tuple[int] | List[int], context=None):
+    assert (isinstance(tup, list) or isinstance(tup, tuple)) and len(tup) == 3
+    return Attribute.parse(
+        f"#aie.bd_iteration<size = {tup[0]}, stride = {tup[1]}, current = {tup[2]}>",
+        context=context,
     )
 
 
@@ -261,7 +419,7 @@ class ContextManagedBlock:
 
 
 """
-A dictionary of ContextManagedBlocks, a specialization of ir.Block, keyed by arbitrary values, which automatically appends a new block at the end of `root_block_list` whenever a non-existant block is attempted to be accessed.
+A dictionary of ContextManagedBlocks, a specialization of ir.Block, keyed by arbitrary values, which automatically appends a new block at the end of `root_block_list` whenever a non-existent block is attempted to be accessed.
 """
 
 
@@ -464,10 +622,19 @@ class object_fifo(ObjectFifoCreateOp):
         via_DMA=None,
         plio=None,
         padDimensions=None,
+        padValue=None,
         disable_synchronization=None,
         iter_count=None,
+        consumer_datatype=None,
+        packet=None,
+        packet_id=None,
     ):
         self.datatype = try_convert_np_type_to_mlir_type(datatype)
+        self.consumer_datatype = (
+            try_convert_np_type_to_mlir_type(consumer_datatype)
+            if consumer_datatype is not None
+            else None
+        )
         if not isinstance(consumerTiles, List):
             consumerTiles = [consumerTiles]
         if dimensionsFromStreamPerConsumer is None:
@@ -475,6 +642,9 @@ class object_fifo(ObjectFifoCreateOp):
         if dimensionsToStream is None:
             dimensionsToStream = []
         of_Ty = TypeAttr.get(ObjectFifoType.get(self.datatype))
+        consumerElemType = None
+        if self.consumer_datatype is not None:
+            consumerElemType = TypeAttr.get(ObjectFifoType.get(self.consumer_datatype))
         if initValues is not None:
             values = []
             for e in initValues:
@@ -494,28 +664,28 @@ class object_fifo(ObjectFifoCreateOp):
             via_DMA=via_DMA,
             plio=plio,
             padDimensions=padDimensions,
+            padValue=padValue,
             disable_synchronization=disable_synchronization,
             initValues=initValues,
             iter_count=iter_count,
+            packet=packet,
+            packet_id=packet_id,
         )
+        if consumerElemType is not None:
+            self.attributes["consumerElemType"] = consumerElemType
 
     def acquire(self, port, num_elem):
-        subview_t = ObjectFifoSubviewType.get(self.datatype)
-        acq = ObjectFifoAcquireOp(subview_t, port, self.sym_name.value, num_elem)
-
-        objects = []
-        if acq.size.value == 1:
-            return ObjectFifoSubviewAccessOp(
-                self.datatype, acq.subview, acq.size.value - 1
-            ).result
-        for i in range(acq.size.value):
-            objects.append(
-                ObjectFifoSubviewAccessOp(self.datatype, acq.subview, i).result
-            )
-        return objects
+        # Use consumer_datatype for consumer-side acquire if available
+        dt = self.datatype
+        if self.consumer_datatype is not None and port == ObjectFifoPort.Consume:
+            dt = self.consumer_datatype
+        acq = ObjectFifoAcquireOp([dt] * num_elem, self.sym_name.value, port=port)
+        if num_elem == 1:
+            return acq.objects[0]
+        return list(acq.objects)
 
     def release(self, port, num_elem):
-        return objectfifo_release(port, self.sym_name.value, num_elem)
+        return objectfifo_release(self.sym_name.value, num_elem, port=port)
 
     def register_external_buffers(self, tile, external_buffers):
         return objectfifo_register_external_buffers(
@@ -534,6 +704,12 @@ class object_fifo(ObjectFifoCreateOp):
         int_stream_port = IntegerAttr.get(T.i32(), stream_port)
         self.attributes["aie_stream"] = int_stream_end
         self.attributes["aie_stream_port"] = int_stream_port
+
+    def set_prod_dma_channel(self, channel):
+        self.attributes["prod_dma_channel"] = IntegerAttr.get(T.i32(), channel)
+
+    def set_cons_dma_channels(self, channels):
+        self.attributes["cons_dma_channels"] = DenseI32ArrayAttr.get(list(channels))
 
 
 # Create an aie objectFifo_link between input and output objectFifos.
@@ -600,7 +776,7 @@ def trace_event(event, *, label=None, loc=None, ip=None):
     return TraceEventOp(event=event, label=label, loc=loc, ip=ip)
 
 
-def trace_packet(id, type, *, loc=None, ip=None):
+def trace_packet(id=None, type=None, *, loc=None, ip=None):
     return TracePacketOp(id=id, type_=type, loc=loc, ip=ip)
 
 
@@ -635,8 +811,9 @@ def trace_start_config(name, *, loc=None, ip=None):
 def trace_host_config(
     buffer_size,
     *,
-    arg_idx=4,
+    reuse_output_buffer=False,
     routing=TraceShimRouting.Single,
+    egress_shim_col=0,
     loc=None,
     ip=None,
 ):
@@ -647,8 +824,9 @@ def trace_host_config(
             raise ValueError(f"Unknown routing strategy: {routing}.")
     return TraceHostConfigOp(
         buffer_size=buffer_size,
-        arg_idx=arg_idx,
+        reuse_output_buffer=reuse_output_buffer,
         routing=routing,
+        egress_shim_col=egress_shim_col,
         loc=loc,
         ip=ip,
     )
@@ -703,7 +881,9 @@ def dma(
     num_blocks=1,
     loop=None,
     repeat_count=None,
+    out_of_order=False,
     sym_name=None,
+    pad_value: int = 0,
     loc=None,
     ip=None,
 ):
@@ -716,7 +896,9 @@ def dma(
         num_bds=num_blocks,
         loop=loop,
         repeat_count=repeat_count,
+        out_of_order=out_of_order,
         sym_name=sym_name,
+        pad_value=pad_value or None,
         loc=loc,
         ip=ip,
     )
@@ -743,6 +925,8 @@ class DMAStartOp(DMAStartOp):
         dest: Successor | Block | None = None,
         chain: Successor | Block | None = None,
         repeat_count: int | None = None,
+        pad_value: int | None = None,
+        out_of_order: bool = False,
         loc=None,
         ip=None,
     ):
@@ -760,6 +944,8 @@ class DMAStartOp(DMAStartOp):
             dest,
             chain,
             repeat_count=repeat_count,
+            pad_value=pad_value,
+            out_of_order=out_of_order,
             loc=loc,
             ip=ip,
         )
@@ -780,6 +966,8 @@ def dma_start(
     dest: Successor | Block | ContextManagedBlock | None = None,
     chain: Successor | Block | ContextManagedBlock | None = None,
     repeat_count: int = 0,
+    pad_value: int = 0,
+    out_of_order: bool = False,
     loc=None,
     ip=None,
 ):
@@ -793,6 +981,8 @@ def dma_start(
         loc=loc,
         ip=ip,
         repeat_count=repeat_count,
+        pad_value=pad_value or None,
+        out_of_order=out_of_order,
     )
     return op.dest, op.chain
 

@@ -1,15 +1,13 @@
 # aie2.py -*- Python -*-
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2025 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 import numpy as np
 import sys
 
-from aie.iron import Program, Runtime, Worker, ObjectFifo
+from aie.iron import Out, In, CompileTime, Program, Runtime, Worker, ObjectFifo
 from aie.iron.controlflow import range_
 
 import aie.iron as iron
@@ -27,7 +25,7 @@ tile_ty = np.ndarray[(num_elements,), np.dtype[data_type]]
 # Parameters:
 #     - use_cache (bool): Use cached MLIR module if available. Defaults to True.
 @iron.jit
-def aie2p(input0, output):
+def aie2p(input0: In, output: Out):
     # Dataflow with ObjectFifos
     # ObjectFifos represent a dataflow connection between endpoints in the AIE array.
     # The IRON placement step relies on ObjectFifoHandles to infer the endpoints of ObjectFifos.
@@ -63,14 +61,14 @@ def aie2p(input0, output):
     # Note: The task to start the workers currently only registers the workers as part of the Program, but
     # does not launch the Workers themselves. This means that this task can be added in the sequence at
     # any point and does not need to be the first one.
-    rt = Runtime()
-    with rt.sequence(tile_ty, tile_ty) as (a_in, c_out):
-        rt.start(my_worker)
-        rt.fill(of_in.prod(), a_in)
-        rt.drain(of_out.cons(), c_out, wait=True)
+    def sequence(a_in, c_out, in_h, out_h):
+        in_h.fill(a_in)
+        out_h.drain(c_out, wait=True)
+
+    rt = Runtime(sequence, [tile_ty, tile_ty, of_in.prod(), of_out.cons()])
 
     # Create the program from the device type and runtime
-    my_program = Program(iron.get_current_device(), rt)
+    my_program = Program(iron.get_current_device(), rt, workers=[my_worker])
 
     # Place components (assign them resources on the device) and generate an MLIR module
     # The placer will use available information, such as the ObjectFifoHandles, to place the components.

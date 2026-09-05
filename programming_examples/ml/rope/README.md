@@ -1,11 +1,8 @@
 <!---//===- README.md --------------------------*- Markdown -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//-->
 
 # Rotary Position Embedding (ROPE) Example
@@ -27,6 +24,12 @@ This design implements a `bfloat16`-based Rotary Position Embedding (RoPE) opera
 - `trace_size`: Size of the trace buffer (for debugging/profiling)
 
 ## Usage
+
+### Standalone JIT verification
+
+```shell
+python3 rope.py --dev npu2
+```
 
 ### C++ Testbench
 

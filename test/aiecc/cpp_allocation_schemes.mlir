@@ -1,10 +1,7 @@
 //===- cpp_allocation_schemes.mlir -----------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,14 +9,16 @@
 
 // Test buffer allocation scheme options
 
-// RUN: aiecc --no-xchesscc --no-xbridge --alloc-scheme=basic-sequential --verbose %s | FileCheck %s --check-prefix=BASIC
-// RUN: aiecc --no-xchesscc --no-xbridge --alloc-scheme=bank-aware --verbose %s | FileCheck %s --check-prefix=BANK
+// RUN: aiecc --alloc-scheme=basic-sequential --get-input-with-addresses --verbose %s 2>&1 | FileCheck %s --check-prefix=BASIC
+// RUN: aiecc --alloc-scheme=bank-aware --get-input-with-addresses --verbose %s 2>&1 | FileCheck %s --check-prefix=BANK
 
-// BASIC: alloc-scheme=basic-sequential
-// BASIC: Compilation completed successfully
+// Each allocation scheme must produce valid buffer addresses
+// (input_with_addresses), which is the artifact this test verifies.
+// BASIC: ({{[0-9]+}}/{{[0-9]+}}) input_with_addresses.mlir
+// BASIC: wrote edge 'input_with_addresses.mlir'
 
-// BANK: alloc-scheme=bank-aware
-// BANK: Compilation completed successfully
+// BANK: ({{[0-9]+}}/{{[0-9]+}}) input_with_addresses.mlir
+// BANK: wrote edge 'input_with_addresses.mlir'
 
 module {
   aie.device(npu1_1col) {
@@ -33,8 +32,7 @@ module {
       %c1 = arith.constant 1 : index
       %c128 = arith.constant 128 : index
 
-      %subview = aie.objectfifo.acquire @fifo(Consume, 1) : !aie.objectfifosubview<memref<128xi32>>
-      %elem = aie.objectfifo.subview.access %subview[0] : !aie.objectfifosubview<memref<128xi32>> -> memref<128xi32>
+      %elem = aie.objectfifo.acquire @fifo(Consume, 1) : memref<128xi32>
 
       scf.for %i = %c0 to %c128 step %c1 {
         %val = memref.load %elem[%i] : memref<128xi32>

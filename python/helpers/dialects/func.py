@@ -1,24 +1,44 @@
-import numpy as np
-from functools import lru_cache, update_wrapper
-import sys
-from typing import get_args, get_origin
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-from ...extras.meta import op_region_builder
-from ...extras.util import get_user_code_loc, make_maybe_no_args_decorator
-from ..util import get_arg_types, NpuDType, try_convert_np_type_to_mlir_type
-from ...dialects._ods_common import get_op_result_or_op_results
-from ...dialects.func import *
-from ...ir import (
+import inspect
+from functools import update_wrapper
+from typing import Any, List, get_args, get_origin
+
+import numpy as np
+
+from ...dialects._ods_common import (  # pyright: ignore[reportMissingImports]
+    get_op_result_or_op_results,
+)
+from ...dialects.func import (  # pyright: ignore[reportMissingImports]
+    CallOp,
+    FuncOp,
+    ReturnOp,
+)
+from ...extras.dialects.arith import (  # pyright: ignore[reportMissingImports]
+    ScalarValue,
+    index_cast,
+)
+from ...extras.meta import op_region_builder  # pyright: ignore[reportMissingImports]
+from ...extras.util import (  # pyright: ignore[reportMissingImports]
+    get_user_code_loc,
+    make_maybe_no_args_decorator,
+)
+from ...ir import (  # pyright: ignore[reportMissingImports]
+    Context,
     FlatSymbolRefAttr,
     FunctionType,
+    IndexType,
     InsertionPoint,
-    OpView,
+    IntegerType,
     Operation,
+    OpResult,
+    OpView,
     Type,
     TypeAttr,
     Value,
 )
-from ...extras.dialects.arith import ScalarValue
+from ..util import NpuDType, get_arg_types, try_convert_np_type_to_mlir_type
 
 
 def call(
@@ -35,6 +55,7 @@ def call(
     if loc is None:
         loc = get_user_code_loc()
     if isinstance(callee_or_results, FuncOp.__base__):
+        func_op: Any = callee_or_results
         if not isinstance(arguments_or_callee, (list, tuple)):
             raise ValueError(
                 "when constructing a call to a function, expected "
@@ -45,22 +66,33 @@ def call(
             raise ValueError(
                 "unexpected third argument when constructing a call" + "to a function"
             )
-        if len(arguments_or_callee) != len(
-            callee_or_results.function_type.value.inputs
-        ):
+        if len(arguments_or_callee) != len(func_op.function_type.value.inputs):
             raise ValueError(
-                f"Expected {len(callee_or_results.function_type.value.inputs)} arguments, but got {len(arguments_or_callee)} arguments"
+                f"Expected {len(func_op.function_type.value.inputs)} arguments, but got {len(arguments_or_callee)} arguments"
             )
         args = []
         for i, a in enumerate(arguments_or_callee):
+            expected_type = func_op.function_type.value.inputs[i]
+            operand: Any = a
             if isinstance(a, (int, float)):
                 # Get the type to convert the python value to based on the expected input to the function
                 # TODO: should check if it's safe to do this? What is int value is outside range?
-                args.append(
-                    ScalarValue(
-                        a, dtype=callee_or_results.function_type.value.inputs[i]
-                    )
+                args.append(ScalarValue(a, dtype=expected_type))
+            elif (
+                isinstance(a, (Value, Operation, OpView, OpResult))
+                and isinstance(
+                    (
+                        operand.type
+                        if isinstance(a, (Value, OpResult))
+                        else operand.result.type
+                    ),
+                    IndexType,
                 )
+                and isinstance(expected_type, IntegerType)
+            ):
+                # Auto-cast index-typed values (e.g. loop induction variables from range_)
+                # to the integer type expected by the function signature.
+                args.append(index_cast(a, to=expected_type))
             else:
                 args.append(a)
         if not all(isinstance(a, (Value, Operation, OpView)) for a in args):
@@ -68,8 +100,8 @@ def call(
 
         return get_op_result_or_op_results(
             call_op_ctor(
-                callee_or_results.function_type.value.results,
-                FlatSymbolRefAttr.get(callee_or_results.sym_name.value),
+                func_op.function_type.value.results,
+                FlatSymbolRefAttr.get(func_op.sym_name.value),
                 args,
                 loc=loc,
                 ip=ip,
@@ -104,17 +136,20 @@ def call(
 
 
 def isalambda(v):
-    LAMBDA = lambda: 0
+    # A `def` here would defeat the check: Python only assigns the literal
+    # name "<lambda>" to actual lambda expressions, not to `def`s.
+    LAMBDA = lambda: 0  # noqa: E731
+
     return isinstance(v, type(LAMBDA)) and v.__name__ == LAMBDA.__name__
 
 
 def prep_func_types(sig, return_types):
     assert not (
-        not sig.return_annotation is inspect.Signature.empty and len(return_types) > 0
-    ), f"func can use return annotation or explicit return_types but not both"
+        sig.return_annotation is not inspect.Signature.empty and len(return_types) > 0
+    ), "func can use return annotation or explicit return_types but not both"
     return_types = (
         sig.return_annotation
-        if not sig.return_annotation is inspect.Signature.empty
+        if sig.return_annotation is not inspect.Signature.empty
         else return_types
     )
     if not isinstance(return_types, (tuple, list)):
@@ -127,7 +162,7 @@ def prep_func_types(sig, return_types):
     input_types = [
         p.annotation
         for p in sig.parameters.values()
-        if not p.annotation is inspect.Signature.empty
+        if p.annotation is not inspect.Signature.empty
     ]
     # convert ndarray types to memref types
     assert all(
@@ -169,21 +204,24 @@ class FuncBase:
 
         self.body_builder = body_builder
         self.func_name = self.body_builder.__name__
-        self.func_op_ctor = func_op_ctor
+        self.func_op_ctor: Any = func_op_ctor
         self.return_op_ctor = return_op_ctor
         self.call_op_ctor = call_op_ctor
         self.arg_attrs = arg_attrs
         self.res_attrs = res_attrs
         self.loc = loc
         self.ip = ip
-        self._func_op = None
+        # FuncOp cache keyed by id(Context). A single @func decorated at
+        # module scope can be reused across multiple @iron.jit designs;
+        # each design builds in its own MLIR Context, so caching one
+        # FuncOp globally would hand back a symbol bound to a stale
+        # Context. Keying by current Context invalidates automatically.
+        self._func_op_by_ctx: dict = {}
         # in case this function lives inside a class
         self.qualname = qualname
 
         self.sym_visibility = sym_visibility
-        self.func_attrs = func_attrs
-        if self.func_attrs is None:
-            self.func_attrs = {}
+        self.func_attrs: dict = func_attrs if func_attrs is not None else {}
 
         if return_types is None:
             return_types = []
@@ -195,7 +233,7 @@ class FuncBase:
         if self._is_decl():
             assert len(self.input_types) == len(
                 sig.parameters
-            ), f"func decl needs all input types annotated"
+            ), "func decl needs all input types annotated"
             self.sym_visibility = "private"
             self.emit()
 
@@ -204,6 +242,17 @@ class FuncBase:
 
     def __str__(self):
         return str(f"{self.__class__} {self.__dict__}")
+
+    @property
+    def _func_op(self):
+        return self._func_op_by_ctx.get(id(Context.current))
+
+    @_func_op.setter
+    def _func_op(self, value):
+        if value is None:
+            self._func_op_by_ctx.pop(id(Context.current), None)
+        else:
+            self._func_op_by_ctx[id(Context.current)] = value
 
     def emit(self, *call_args, force=False) -> FuncOp:
         if self._func_op is None or force:
@@ -251,9 +300,13 @@ class FuncBase:
                 nonlocal return_types
                 results = self.body_builder(*args)
                 if isinstance(results, (tuple, list)):
-                    return_types.extend(get_arg_types(results))
+                    arg_types = get_arg_types(results)
                 elif results is not None:
-                    return_types.extend(get_arg_types([results]))
+                    arg_types = get_arg_types([results])
+                else:
+                    arg_types = None
+                if arg_types is not None:
+                    return_types.extend(arg_types)
                 return results
 
             builder_wrapper(grab_results)
@@ -296,7 +349,7 @@ def func(
         loc=loc,
         ip=ip,
     )
-    func = update_wrapper(func, f)
+    update_wrapper(func, f)
     if emit:
         func.emit()
     return func

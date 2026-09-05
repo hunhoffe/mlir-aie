@@ -1,10 +1,8 @@
 //===- AIEPathfinder.h ------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,6 +15,7 @@
 #include <algorithm>
 #include <iostream>
 #include <list>
+#include <optional>
 #include <set>
 
 namespace xilinx::AIE {
@@ -51,6 +50,9 @@ using SwitchboxConnect = struct SwitchboxConnect {
   std::vector<std::vector<int>> packetFlowCount;
   // only sharing the channel with the same packet group id
   std::vector<std::vector<int>> packetGroupId;
+  // packet ids currently routed through each channel (and its crossbar
+  // row/column); a channel may be shared only among distinct ids.
+  std::vector<std::vector<std::set<int>>> packetIds;
   // flags indicating priority routings
   std::vector<std::vector<bool>> isPriority;
 
@@ -65,6 +67,8 @@ using SwitchboxConnect = struct SwitchboxConnect {
     packetFlowCount.resize(srcPorts.size(),
                            std::vector<int>(dstPorts.size(), 0));
     packetGroupId.resize(srcPorts.size(), std::vector<int>(dstPorts.size(), 0));
+    packetIds.resize(srcPorts.size(),
+                     std::vector<std::set<int>>(dstPorts.size()));
     isPriority.resize(srcPorts.size(),
                       std::vector<bool>(dstPorts.size(), false));
   }
@@ -127,6 +131,10 @@ using Flow = struct Flow {
   bool isPriorityFlow;
   PathEndPoint src;
   std::vector<PathEndPoint> dsts;
+  // packet id carried by this flow (nullopt for circuit flows); a channel may
+  // be shared only among distinct ids so same-id flows never merge then fan
+  // out.
+  std::optional<int> packetId;
 };
 
 // A SwitchSetting defines the required settings for a Switchbox for a flow
@@ -188,9 +196,9 @@ public:
   virtual void initialize(int maxCol, int maxRow,
                           const AIETargetModel &targetModel) = 0;
   virtual void addFlow(TileID srcCoords, Port srcPort, TileID dstCoords,
-                       Port dstPort, bool isPacketFlow,
+                       Port dstPort, std::optional<int> packetId,
                        bool isPriorityFlow) = 0;
-  virtual void sortFlows(const int maxCol, const int maxRow) = 0;
+  virtual void sortFlows() = 0;
   virtual bool addFixedConnection(SwitchboxOp switchboxOp) = 0;
   virtual std::optional<std::map<PathEndPoint, SwitchSettings>>
   findPaths(int maxIterations) = 0;
@@ -202,14 +210,50 @@ public:
   void initialize(int maxCol, int maxRow,
                   const AIETargetModel &targetModel) override;
   void addFlow(TileID srcCoords, Port srcPort, TileID dstCoords, Port dstPort,
-               bool isPacketFlow, bool isPriorityFlow) override;
-  void sortFlows(const int maxCol, const int maxRow) override;
+               std::optional<int> packetId, bool isPriorityFlow) override;
+  void sortFlows() override;
   bool addFixedConnection(SwitchboxOp switchboxOp) override;
   std::optional<std::map<PathEndPoint, SwitchSettings>>
   findPaths(int maxIterations) override;
-  std::map<PathEndPoint, PathEndPoint> dijkstraShortestPaths(PathEndPoint src);
 
 private:
+  // A directed edge in the dense routing graph: from some node to node `dst`,
+  // realized by switchbox-connect `sb` at matrix position (i, j). `sb`, `i` and
+  // `j` index live into `graph` so demand reads always see the current
+  // iteration's weights.
+  struct Edge {
+    int dst;
+    SwitchboxConnect *sb;
+    int i;
+    int j;
+  };
+
+  // A `Port` is (bundle, channel) with no direction, so one dense node stands
+  // for both a switchbox port's input side and its output side. Dijkstra
+  // therefore searches over states, not nodes: a state is a node paired with
+  // the side of that port the stream is currently on. A stream enters a
+  // switchbox on an input port, crosses the crossbar once to an output port,
+  // and then rides the wire to the neighbour's input port -- so In only ever
+  // takes intra-switchbox edges and Out only ever takes inter-switchbox ones.
+  // Without the split, Dijkstra can chain two crossbar hops through one port
+  // and turn the stream around inside a switchbox; the settings it emits then
+  // dead-end and AIECreatePathFindFlows reports the flow as unroutable.
+  enum PortSide : int { In = 0, Out = 1 };
+  static int stateId(int nodeId, PortSide side) { return 2 * nodeId + side; }
+  static int stateNode(int state) { return state >> 1; }
+
+  // Build the dense integer node numbering and per-node adjacency from `graph`
+  // and `flows`. Topology is fixed across congestion iterations, so this runs
+  // once. Edge order per node matches the legacy PathEndPoint-sorted order to
+  // preserve identical routing output.
+  void buildRoutingGraph();
+
+  // Dijkstra over the dense graph from dense node `srcId`, whose port is the
+  // stream's entry into its switchbox and so starts on the In side. Fills
+  // `preds` (predecessor state id, or -1) and `predEdge` (the edge taken to
+  // reach each state). Reuses the scratch buffers below.
+  void dijkstraShortestPaths(int srcId);
+
   // Flows to be routed
   std::vector<Flow> flows;
   // Represent all routable paths as a graph
@@ -218,11 +262,22 @@ private:
   // switchbox otherwise, it represents connections (South, North, West, East)
   // accross two switchboxes
   std::map<std::pair<TileID, TileID>, SwitchboxConnect> graph;
-  // Channels available in the network
-  // The key is a PathEndPoint representing the start of a path
-  // The value is a vector of PathEndPoints representing the possible ends of
-  // the path
-  std::map<PathEndPoint, std::vector<PathEndPoint>> channels;
+
+  // Dense routing graph (built once by buildRoutingGraph()).
+  bool graphBuilt = false;
+  std::map<PathEndPoint, int> nodeIds;      // PathEndPoint -> dense id
+  std::vector<PathEndPoint> nodes;          // dense id -> PathEndPoint
+  std::vector<std::vector<Edge>> adjacency; // dense id -> out-edges
+
+  // Dijkstra scratch, indexed by state id (2 * nodes.size()) and reused across
+  // calls.
+  std::vector<double> distance;
+  std::vector<uint64_t> indexInHeap;
+  std::vector<int8_t> colors;
+  std::vector<int> preds;
+  std::vector<Edge> predEdge;
+
+  int getOrAddNodeId(const PathEndPoint &pep);
 };
 
 // DynamicTileAnalysis integrates the Pathfinder class into the MLIR

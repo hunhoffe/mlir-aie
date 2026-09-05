@@ -1,10 +1,8 @@
 //===- AIEXPasses.h ---------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,22 +20,35 @@ namespace xilinx::AIEX {
 
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIECreateCoresPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIECreateLocksPass();
-std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIEHerdRoutingPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIELowerMemcpyPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIELowerMulticastPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIEBroadcastPacketPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIEDmaToNpuPass();
-std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIENpuToCertPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIEDecomposeLargeDmaBdPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createAIENpuToCertPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIECertPagesPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createAIEXToStandardPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createAIESCFToControlFlowPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIEMaterializeBDChainsPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIEMaterializeRuntimeSequencesPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createAIEFuseTraceBuffersPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIEResolveAddressPatchBuffersPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIEAssignRuntimeSequenceBDIDsPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIEReserveRuntimeBDIDsPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIEUnrollRuntimeSequenceLoopsPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIELowerDynamicBDPoolPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIEDMATasksToNPUPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
@@ -48,8 +59,13 @@ std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIECtrlPacketInferTilesPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIELowerSetLockPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIELowerDmaChannelResetPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIELowerCoreResetPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
+createAIEVerifyRuntimeRearmPass();
+std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIETransformBfpTypesPass();
-std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>> createAIELowerSetLockPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIETxnToControlPacketPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
@@ -58,6 +74,11 @@ std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIEExpandLoadPdiPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIEXInlineTraceConfigPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createAIELowerScratchpadParametersPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createAIELowerScratchpadParametersPass(
+    AIELowerScratchpadParametersOptions options);
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

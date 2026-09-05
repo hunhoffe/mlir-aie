@@ -1,10 +1,7 @@
 //===- aie.mlir ------------------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2024 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,15 +32,19 @@ module {
         scf.for %arg1 = %c0 to %c8 step %c1 {
             memref.store %c3_i32, %input_buffer[%arg1] : memref<8xi32>
         }
-        aie.use_lock(%input_lock0, AcquireGreaterEqual, 1)
-        aie.use_lock(%output_lock1, AcquireGreaterEqual, 1)
+        %c1_ul0 = arith.constant 1 : i32
+        aie.use_lock(%input_lock0, AcquireGreaterEqual, %c1_ul0)
+        %c1_ul1 = arith.constant 1 : i32
+        aie.use_lock(%output_lock1, AcquireGreaterEqual, %c1_ul1)
         scf.for %arg1 = %c0 to %c8 step %c1 {
             %1 = memref.load %input_buffer[%arg1] : memref<8xi32>
             %2 = arith.addi %1, %c1_i32 : i32
             memref.store %2, %output_buffer[%arg1] : memref<8xi32>
         }
-        aie.use_lock(%output_lock0, Release, 1)
-        aie.use_lock(%input_lock1, Release, 1)
+        %c1_ul2 = arith.constant 1 : i32
+        aie.use_lock(%output_lock0, Release, %c1_ul2)
+        %c1_ul3 = arith.constant 1 : i32
+        aie.use_lock(%input_lock1, Release, %c1_ul3)
       }
       aie.end
     }
@@ -51,9 +52,11 @@ module {
     %mem_0_2 = aie.mem(%tile_0_2) {
       %0 = aie.dma_start(MM2S, 0, ^bb1, ^bb2)
     ^bb1:
-      aie.use_lock(%output_lock0, AcquireGreaterEqual, 1)
+      %c1_ul4 = arith.constant 1 : i32
+      aie.use_lock(%output_lock0, AcquireGreaterEqual, %c1_ul4)
       aie.dma_bd(%output_buffer : memref<8xi32>) { len = 8 : i32 }
-      aie.use_lock(%output_lock1, Release, 1)
+      %c1_ul5 = arith.constant 1 : i32
+      aie.use_lock(%output_lock1, Release, %c1_ul5)
       aie.next_bd ^bb1
     ^bb2:
       aie.end
@@ -66,11 +69,19 @@ module {
       %c1_i64 = arith.constant 1 : i64
       %c8_i64 = arith.constant 8 : i64
 
-      aiex.npu.maskwrite32 {row = 2 : i32, column = 0 : i32, address = 1024 : ui32, value = 0x12345678 : ui32, mask = 0xF0F0F0F0 : ui32}
-      aiex.npu.maskwrite32 {buffer = @input_buffer, address = 1 : ui32, value = 0x9ABCDEF0 : ui32, mask = 0x0F0F0F0F : ui32}
+      %cst_npu_0 = arith.constant 1024 : i32
+      %cst_npu_1 = arith.constant 0x12345678 : i32
+      %cst_npu_2 = arith.constant 0xF0F0F0F0 : i32
+      aiex.npu.maskwrite32(%cst_npu_0, %cst_npu_1, %cst_npu_2) {column = 0 : i32, row = 2 : i32} : i32, i32, i32
+      %cst_npu_3 = arith.constant 1 : i32
+      %cst_npu_4 = arith.constant 0x9ABCDEF0 : i32
+      %cst_npu_5 = arith.constant 0x0F0F0F0F : i32
+      aiex.npu.maskwrite32(%cst_npu_3, %cst_npu_4, %cst_npu_5) {buffer = @input_buffer} : i32, i32, i32
 
       aiex.npu.dma_memcpy_nd(%arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64] [%c1_i64, %c1_i64, %c1_i64, %c8_i64] [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {id = 0 : i64, issue_token = true, metadata = @out0} : memref<8xi32>
-      aiex.npu.write32 { row = 2 : i32, column = 0 : i32, address = 0x0001F000 : ui32, value = 1 : ui32 }
+      %cst_npu_6 = arith.constant 0x0001F000 : i32
+      %cst_npu_7 = arith.constant 1 : i32
+      aiex.npu.write32(%cst_npu_6, %cst_npu_7) {column = 0 : i32, row = 2 : i32} : i32, i32
       aiex.npu.dma_wait {symbol = @out0}
     }
   }

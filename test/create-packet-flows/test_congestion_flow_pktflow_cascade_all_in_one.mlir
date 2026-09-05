@@ -1,10 +1,7 @@
 //===- test_congestion_flow_pktflow_cascade_all_in_one.mlir ----*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,25 +21,24 @@
 // CHECK:      aie.switchbox(%[[tile_0_0]]) {
 // CHECK-NEXT:   aie.connect<South : 3, North : 3>
 // CHECK-NEXT:   aie.connect<South : 7, North : 5>
-// CHECK-NEXT:   aie.connect<North : 3, South : 2>
+// CHECK-NEXT:   aie.connect<North : 2, South : 2>
 // CHECK-NEXT:   %[[v0:.*]] = aie.amsel<0> (0)
 // CHECK-NEXT:   aie.masterset(South : 3, %[[v0]]) {keep_pkt_header = true}
-// CHECK-NEXT:   aie.packet_rules(North : 2) {
+// CHECK-NEXT:   aie.packet_rules(North : 3) {
 // CHECK-NEXT:     aie.rule(31, 8, %[[v0]])
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
-
 // CHECK:      aie.switchbox(%[[tile_0_1]]) {
 // CHECK-NEXT:   aie.connect<South : 3, DMA : 0>
 // CHECK-NEXT:   aie.connect<South : 5, DMA : 1>
 // CHECK-NEXT:   aie.connect<DMA : 2, North : 5>
-// CHECK-NEXT:   aie.connect<North : 1, DMA : 2>
-// CHECK-NEXT:   aie.connect<DMA : 3, South : 3>
+// CHECK-NEXT:   aie.connect<North : 0, DMA : 2>
+// CHECK-NEXT:   aie.connect<DMA : 3, South : 2>
 // CHECK-NEXT:   %[[v0:.*]] = aie.amsel<0> (0)
 // CHECK-NEXT:   %[[v1:.*]] = aie.amsel<1> (0)
-// CHECK-NEXT:   aie.masterset(South : 2, %[[v1]])
+// CHECK-NEXT:   aie.masterset(South : 3, %[[v1]])
 // CHECK-NEXT:   aie.masterset(North : 1, %[[v0]])
-// CHECK-NEXT:   aie.packet_rules(North : 2) {
+// CHECK-NEXT:   aie.packet_rules(North : 3) {
 // CHECK-NEXT:     aie.rule(31, 8, %[[v1]])
 // CHECK-NEXT:   }
 // CHECK-NEXT:   aie.packet_rules(DMA : 0) {
@@ -58,7 +54,7 @@
 // CHECK-NEXT:   aie.connect<South : 1, DMA : 0>
 // CHECK-NEXT:   aie.connect<South : 5, DMA : 1>
 // CHECK-NEXT:   aie.connect<DMA : 2, North : 5>
-// CHECK-NEXT:   aie.connect<North : 1, DMA : 2>
+// CHECK-NEXT:   aie.connect<North : 3, DMA : 2>
 // CHECK-NEXT:   aie.connect<DMA : 3, South : 2>
 // CHECK-NEXT:   %[[v0:.*]] = aie.amsel<0> (0)
 // CHECK-NEXT:   aie.masterset(North : 1, %[[v0]])
@@ -92,7 +88,7 @@
 // CHECK-NEXT:   aie.connect<South : 0, DMA : 0>
 // CHECK-NEXT:   aie.connect<South : 1, DMA : 1>
 // CHECK-NEXT:   aie.connect<DMA : 2, North : 5>
-// CHECK-NEXT:   aie.connect<North : 1, DMA : 2>
+// CHECK-NEXT:   aie.connect<North : 3, DMA : 2>
 // CHECK-NEXT:   aie.connect<DMA : 3, South : 2>
 // CHECK-NEXT:   %[[v0:.*]] = aie.amsel<0> (0)
 // CHECK-NEXT:   aie.masterset(North : 1, %[[v0]])

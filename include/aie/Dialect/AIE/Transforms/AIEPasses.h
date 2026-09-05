@@ -1,10 +1,8 @@
 //===- AIEPasses.h ----------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +18,13 @@
 #include "mlir/Pass/Pass.h"
 
 namespace xilinx::AIE {
+
+/// Discardable attribute set by `--aie-objectfifo-lower-cores` on `scf.for`
+/// loops containing ObjectFifo accesses -- the loop unroll factor (the least
+/// common multiple of the depths of the objectFifos accessed within the
+/// loop) consumed by the `AIEObjectFifoUnroll` pass.
+inline constexpr llvm::StringLiteral kObjectFifoUnrollHintAttrName =
+    "aie.unroll_hint";
 
 #define GEN_PASS_DECL
 #define GEN_PASS_DEF_AIEROUTEPATHFINDERFLOWS
@@ -47,8 +52,6 @@ std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIELocalizeLocksPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
 createAIENormalizeAddressSpacesPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createAIERouteFlowsPass();
-std::unique_ptr<mlir::OperationPass<mlir::func::FuncOp>>
-createAIEVectorOptPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
 createAIEVectorToPointerLoopsPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
@@ -56,16 +59,27 @@ createAIEVectorTransferLoweringPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIEHoistVectorTransferPointersPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEPathfinderPass();
+std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEObjectFifoUnrollPass();
+std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEObjectFifoSplitPass();
+std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEObjectFifoVerifyPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
-createAIEObjectFifoStatefulTransformPass();
+createAIEObjectFifoAllocatePass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
-createAIEObjectFifoRegisterProcessPass();
+createAIEObjectFifoAllocatePass(bool packetSwitched);
+std::unique_ptr<mlir::OperationPass<DeviceOp>>
+createAIEObjectFifoLowerDMAsPass();
+std::unique_ptr<mlir::OperationPass<DeviceOp>>
+createAIEObjectFifoLowerCoresPass();
+std::unique_ptr<mlir::OperationPass<DeviceOp>>
+createAIEObjectFifoErasePoolsPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIELowerCascadeFlowsPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
 createAIEAssignBufferDescriptorIDsPass();
 std::unique_ptr<mlir::OperationPass<DeviceOp>>
+createAIEObjectFifoLivenessPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIEGenerateColumnControlOverlayPass();
-std::unique_ptr<mlir::OperationPass<DeviceOp>>
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIEGenerateColumnControlOverlayPass(
     const AIEGenerateColumnControlOverlayOptions &options);
 std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEAssignTileCtrlIDsPass();
@@ -78,15 +92,20 @@ std::unique_ptr<mlir::OperationPass<DeviceOp>> createAIEInsertTraceFlowsPass();
 #define GEN_PASS_REGISTRATION
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h.inc"
 
-/// Overall Flow:
-/// rewrite switchboxes to assign unassigned connections, ensure this can be
-/// done concurrently ( by different threads)
-/// 1. Goal is to rewrite all flows in the device into switchboxes + shim-mux
-/// 2. multiple passes of the rewrite pattern rewriting streamswitch
-/// configurations to routes
-/// 3. rewrite flows to stream-switches using 'weights' from analysis pass.
-/// 4. check a region is legal
-/// 5. rewrite stream-switches (within a bounding box) back to flows
+/// Register `aie-objectFifo-stateful-transform` as a pipeline over the passes
+/// that lower `aie.objectfifo`.
+void registerAIEObjectFifoPipeline();
+
+/// \brief Routes flows in a device by lowering them to stream-switch
+/// configurations.
+///
+/// Overall flow:
+/// 1. Rewrite all flows in the device into switchboxes + shim-mux.
+/// 2. Run multiple passes of the rewrite pattern, rewriting stream-switch
+///    configurations to routes.
+/// 3. Rewrite flows to stream-switches using 'weights' from the analysis pass.
+/// 4. Check that a region is legal.
+/// 5. Rewrite stream-switches (within a bounding box) back to flows.
 struct AIEPathfinderPass
     : impl::AIERoutePathfinderFlowsBase<AIEPathfinderPass> {
 
@@ -99,7 +118,7 @@ struct AIEPathfinderPass
 
   typedef std::pair<TileID, Port> PhysPort;
 
-  bool findPathToDest(SwitchSettings settings, TileID currTile,
+  bool findPathToDest(const SwitchSettings &settings, TileID currTile,
                       WireBundle currDestBundle, int currDestChannel,
                       TileID finalTile, WireBundle finalDestBundle,
                       int finalDestChannel);

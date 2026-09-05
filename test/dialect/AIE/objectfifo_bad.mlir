@@ -1,11 +1,8 @@
 //===- objectfifo_bad.mlir --------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//
 
 // RUN: not aie-opt -split-input-file %s 2>&1 | FileCheck %s
@@ -50,6 +47,78 @@ aie.device(xcve2302) {
    %tile12 = aie.tile(1, 2)
    %tile23 = aie.tile(2, 3)
 
-   aie.objectfifo @of0 (%tile12, {%tile23}, 2 : i32) : !aie.objectfifo<memref<2x2xi32>> = [dense<[[4, 5], [6, 7]]> : memref<2x2xi32>, 
+   aie.objectfifo @of0 (%tile12, {%tile23}, 2 : i32) : !aie.objectfifo<memref<2x2xi32>> = [dense<[[4, 5], [6, 7]]> : memref<2x2xi32>,
                                                                                           dense<[[0, 1, 2], [3, 4, 5]]> : memref<2x2xi32>]
+}
+
+// -----
+
+// CHECK: producer element size (35) must be an integer multiple of consumer element size (10)
+
+aie.device(npu2) {
+   %tile01 = aie.tile(0, 1)
+   %tile02 = aie.tile(0, 2)
+
+   aie.objectfifo @of0 (%tile01, {%tile02}, 1 : i32) : !aie.objectfifo<memref<35xi32>> -> !aie.objectfifo<memref<10xi32>>
+}
+
+// -----
+
+// CHECK: producer and consumer must have the same scalar element type
+
+aie.device(npu2) {
+   %tile01 = aie.tile(0, 1)
+   %tile02 = aie.tile(0, 2)
+
+   aie.objectfifo @of0 (%tile01, {%tile02}, 1 : i32) : !aie.objectfifo<memref<40xi32>> -> !aie.objectfifo<memref<10xf32>>
+}
+
+// -----
+
+// CHECK: consumer element count must be positive
+
+aie.device(npu2) {
+   %tile01 = aie.tile(0, 1)
+   %tile02 = aie.tile(0, 2)
+
+   aie.objectfifo @of0 (%tile01, {%tile02}, 1 : i32) : !aie.objectfifo<memref<40xi32>> -> !aie.objectfifo<memref<0xi32>>
+}
+
+// -----
+
+// The direction of a route endpoint is read off the route that names it, so a
+// second flow would leave it ambiguous.
+
+// CHECK: 'aie.route_endpoint' op drives one channel, so at most one flow may name it, but it is named 2 times
+
+aie.device(npu1) {
+  %tile02 = aie.tile(0, 2)
+  %shim0 = aie.tile(0, 0)
+  %shim1 = aie.tile(1, 0)
+
+  aie.objectfifo.pool @p(%tile02) {depth = 2 : i32} : memref<16xi32> {
+    aie.objectfifo.segment @s0 {offset = 0 : i32, size = 16 : i32}
+  }
+  aie.objectfifo.core_endpoint @fill(%tile02) fills @p
+  aie.objectfifo.dma_endpoint @drain(%tile02) drains @p
+
+  aie.route_endpoint @mid(%shim1) DMA
+  aie.route_endpoint @sink(%shim0) DMA
+
+  aie.route from @drain to [@mid]
+  aie.route from @mid to [@sink]
+}
+
+// -----
+
+// Both ends of one flow is the same ambiguity.
+
+// CHECK: 'aie.route_endpoint' op drives one channel, so at most one flow may name it, but it is named 2 times
+
+aie.device(npu1) {
+  %shim0 = aie.tile(0, 0)
+
+  aie.route_endpoint @loop(%shim0) DMA
+
+  aie.route from @loop to [@loop]
 }

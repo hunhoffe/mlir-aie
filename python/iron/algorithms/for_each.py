@@ -1,23 +1,77 @@
 # for_each.py -*- Python -*-
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2026 Advanced Micro Devices, Inc.
 """``for_each``: apply a function in-place over a tiled tensor on an AIE core."""
 
 import numpy as np
-
-from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.controlflow import range_
-import aie.iron as iron
+from aie.iron.dataflow import ObjectFifo
+from aie.iron.kernel import ExternalFunction
+from aie.iron.program import Program
+from aie.iron.runtime import Runtime
+from aie.iron.worker import Worker
+from aie.utils import get_current_device
 
 
-def for_each(func, tensor, *params, tile_size=16):
+def for_each(func, tensor_ty, tile_size=16):
+    """In-place transform using a tensor type descriptor.
+
+    Accepts a numpy ``ndarray`` type descriptor instead of a real tensor.
+    Intended for use inside ``@iron.jit`` generator bodies where shape and
+    dtype are expressed as ``CompileTime[T]`` parameters::
+
+        @iron.jit
+        def my_design(data: InOut,
+                      N: CompileTime[int], dtype: CompileTime[type] = np.int32):
+            tensor_ty = np.ndarray[(N,), np.dtype[dtype]]
+            return iron.algorithms.for_each(lambda x: x + 1, tensor_ty)
+
+    Args:
+        func: Function or `ExternalFunction` to apply.
+        tensor_ty: A numpy ``ndarray`` type (e.g. ``np.ndarray[(1024,),
+            np.dtype[np.int32]]``). Shape and dtype are inferred from this.
+        tile_size (int, optional): Number of elements per tile. Defaults to 16.
+
+    Returns:
+        mlir.ir.Module: The compiled MLIR module.
     """
-    In-place transform. Internally uses separate input/output ObjectFifos,
-    but fills and drains to same tensor.
+    try:
+        shape_arg, dtype_arg = tensor_ty.__args__
+        num_elements = 1
+        for dim in shape_arg:
+            num_elements *= dim
+        dtype = dtype_arg.__args__[0]
+    except Exception as exc:
+        raise TypeError(
+            f"for_each expects a numpy ndarray type such as "
+            f"np.ndarray[(N,), np.dtype[np.int32]], got {tensor_ty!r}"
+        ) from exc
+
+    n = tile_size
+    if num_elements % n != 0:
+        raise ValueError(
+            f"Number of elements ({num_elements}) must be a multiple of "
+            f"tile size ({n})"
+        )
+
+    _dtype = dtype
+
+    class _TypeDescriptor:
+        shape = (num_elements,)
+        size = num_elements
+        dtype = _dtype
+
+    fake_tensor = _TypeDescriptor()
+    return _for_each_real(func, fake_tensor, tile_size=tile_size)
+
+
+def _for_each_real(func, tensor, *params, tile_size=16):
+    """In-place transform.
+
+    Internally uses separate input/output ObjectFifos, but fills and drains to
+    same tensor.
 
     Args:
         func: Function to apply, either a lambda/callable or ExternalFunction.
@@ -37,7 +91,7 @@ def for_each(func, tensor, *params, tile_size=16):
     Returns:
         mlir.ir.Module: The compiled MLIR module ready for execution.
     """
-    is_external_func = isinstance(func, iron.ExternalFunction)
+    is_external_func = isinstance(func, ExternalFunction)
     num_elements = np.size(tensor)
 
     # Validate tile_size matches ExternalFunction's tile_size() if defined
@@ -135,27 +189,43 @@ def for_each(func, tensor, *params, tile_size=16):
     worker = Worker(core_body, fn_args=worker_args)
 
     # Runtime operations
-    rt = Runtime()
     all_types = [tensor_ty] + param_tensor_types
-    with rt.sequence(*all_types) as seq_args:
-        if len(all_types) == 1:
-            tensor_arg = seq_args
-            param_seq_args = []
-        else:
-            tensor_arg = seq_args[0]
-            param_seq_args = seq_args[1:]
+    n_params = len(param_tensor_types)
 
-        rt.start(worker)
+    def sequence(*args):
+        # args = tensor_arg, *param_args, in_h, out_h, *param_prods
+        tensor_arg = args[0]
+        param_seq_args = args[1 : 1 + n_params]
+        in_h = args[1 + n_params]
+        out_h = args[2 + n_params]
+        param_prods = args[3 + n_params :]
 
         # Fill input ObjectFifo from tensor
-        rt.fill(of_in.prod(), tensor_arg)
+        in_h.fill(tensor_arg)
 
         # Fill tensor param ObjectFifos (ExternalFunction only)
-        for of_param, param_arg in zip(param_of_list, param_seq_args):
-            rt.fill(of_param.prod(), param_arg)
+        for of_param_prod, param_arg in zip(param_prods, param_seq_args):
+            of_param_prod.fill(param_arg)
 
         # Drain output ObjectFifo back to same tensor
-        rt.drain(of_out.cons(), tensor_arg, wait=True)
+        out_h.drain(tensor_arg, wait=True)
+
+    rt = Runtime(
+        sequence,
+        [
+            *all_types,
+            of_in.prod(),
+            of_out.cons(),
+            *[p.prod() for p in param_of_list],
+        ],
+    )
 
     # Place program components and generate an MLIR module
-    return Program(iron.get_current_device(), rt).resolve_program()
+    device = get_current_device()
+    if device is None:
+        raise RuntimeError(
+            "iron.algorithms.for_each requires an active NPU device. "
+            "Call iron.set_current_device() or ensure DefaultNPURuntime is initialized "
+            "before calling for_each."
+        )
+    return Program(device, rt, workers=[worker]).resolve_program()

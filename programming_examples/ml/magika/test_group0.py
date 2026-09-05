@@ -1,20 +1,20 @@
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2024 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
 
-import sys
+import argparse
 import math
-
-import time
 import os
-import numpy as np
-import aie.utils.test as test_utils
+import sys
+import time
+
 import aie.iron as iron
-from aie.utils import TraceConfig, HostRuntime, NPUKernel, DefaultNPURuntime
-from pathlib import Path
+import ml_dtypes
+import numpy as np
+from aie.utils import DefaultNPURuntime, HostRuntime, NPUKernel, TraceConfig
+from aie.utils.hostruntime.argparse import add_runtime_args
+from aie.utils.ml import DataShaper
 
 
 def get_evm(array_len, gold, dut):
@@ -40,8 +40,6 @@ def main(opts):
 
     num_iter = 1
     npu_time_total = 0
-    npu_time_min = 9999999
-    npu_time_max = 0
     trace_size = opts.trace_size
     enable_trace = opts.trace_size > 0
     trace_after_output = False
@@ -53,7 +51,6 @@ def main(opts):
     dtype_in = np.dtype("int16")
     dtype_out = np.dtype("int16")
 
-    shape_in = (2048,)
     shape_out = (4096 * 32,)
 
     # ------------------------------------------------------
@@ -92,7 +89,7 @@ def main(opts):
         trace_config = TraceConfig(
             trace_size=trace_size,
             trace_file=trace_file,
-            ddr_id=-1 if trace_after_output else 4,
+            reuse_output_buffer=trace_after_output,
             enable_ctrl_pkts=False,
             last_tensor_shape=out.shape,
             last_tensor_dtype=out.dtype,
@@ -103,29 +100,27 @@ def main(opts):
     # Main run loop
     # ------------------------------------------------------
     for i in range(num_iter):
-        start = time.time_ns()
-        ret = DefaultNPURuntime.run(kernel_handle, buffers)
-        stop = time.time_ns()
+        start = time.perf_counter_ns()
+        DefaultNPURuntime.run(kernel_handle, buffers)
+        stop = time.perf_counter_ns()
 
-        if enable_trace:
+        if trace_config is not None:
             trace_buffer, _ = HostRuntime.extract_trace_from_args(buffers, trace_config)
             trace_buffer = trace_buffer.view(np.uint32)
             trace_config.write_trace(trace_buffer)
 
-        out_tensor = out.numpy()
-        if not isinstance(out_tensor, np.ndarray):
-            out_tensor = out_tensor.numpy()
-        aie_output = out_tensor
-        print(f"aie_output size: {aie_output.size}")
-
         npu_time = stop - start
         npu_time_total = npu_time_total + npu_time
+
+    out_tensor = out.numpy()
+    if not isinstance(out_tensor, np.ndarray):
+        out_tensor = out_tensor.numpy()
+    aie_output = out_tensor
+    print(f"aie_output size: {aie_output.size}")
 
     # ------------------------------------------------------
     # Reorder output data-layout
     # ------------------------------------------------------
-    import ml_dtypes
-
     aie_output_int = aie_output.astype(int)
     aie_output_int.tofile(log_folder + "/aie_output_int.txt", sep="\n", format="%d")
     aie_output_bfloat16 = aie_output.view(ml_dtypes.bfloat16)
@@ -142,8 +137,6 @@ def main(opts):
     print("\nAvg NPU time: {}us.".format(int((npu_time_total / num_iter) / 1000)))
 
     ref = np.loadtxt("./data/g0b.txt")
-
-    from aie.utils.ml import DataShaper
 
     ds = DataShaper()
     reshape_ref = ref.reshape(8, 64, 512)
@@ -169,6 +162,7 @@ def main(opts):
 
 
 if __name__ == "__main__":
-    p = test_utils.create_default_argparser()
+    p = argparse.ArgumentParser()
+    add_runtime_args(p, with_io_sizes=True)
     opts = p.parse_args(sys.argv[1:])
     main(opts)

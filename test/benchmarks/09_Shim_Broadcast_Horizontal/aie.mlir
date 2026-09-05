@@ -1,14 +1,12 @@
 //===- aie.mlir ------------------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: %PYTHON aiecc.py %VitisSysrootFlag% --host-target=%aieHostTargetTriplet% %link_against_hsa% %s %test_lib_flags %S/test.cpp -o test.elf
+// RUN: %aiecc --xchesscc --xbridge %VitisSysrootFlag% --host-target=%aieHostTargetTriplet% %link_against_hsa% %s %test_lib_flags -o test.elf -- %S/test.cpp
 // RUN: %run_on_board ./test.elf
 
 module @benchmark09_shim_broadcast {
@@ -20,6 +18,6 @@ aie.device(xcvc1902) {
   %60 = aie.tile(6,0)
   aie.lock(%t72, 1) { sym_name = "lock1" }
   aie.lock(%t72, 2) { sym_name = "lock2" }
-  
+
 }
 }

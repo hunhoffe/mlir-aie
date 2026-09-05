@@ -1,14 +1,11 @@
 <!---//===- README.md ---------------------------------------*- Markdown -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//-->
 
-# <ins>From Stream Data Layout Transformations</ins>
+# From Stream Data Layout Transformations
 
 In the [from_stream.py](./from_stream.py) design we first bring `24xi32` data from external memory to L2 memory (i.e., a Mem tile) with `of_in0`. We then use `of_in1` to forward the data from the `MemTile` to `my_worker` and apply a data layout transformation as the data is read from the AXI stream into local memory by the Worker tile's DMA. Two FIFOs then move the output data from the Worker first to L2 via `of_out1`, then to external memory via `of_out0` as `24xi32` tensors. All FIFOs use double buffers.
 
@@ -38,10 +35,10 @@ If we imagine the 24-element wide tensor as 3 rows of 8 elements, the transforma
 
 > **NOTE:**  While the end-result is the same, the pattern in this example differs from the one in the [to_stream_transformations](../to_stream_transformations/) design. This is because the Worker has no control over how the data arrives from the AXI stream, whereas in the [to_stream.py](../to_stream_transformations/to_stream.py) example, the Worker can access the data directly in the order in which it will push it onto the stream.
 
-It is possible to compile, run and test this design with the following commands:
+The design is wrapped in `@iron.jit`, so a single command JIT-compiles and runs it on the attached NPU:
 ```bash
-make
-make run
+python3 from_stream.py
+python3 from_stream.py --dev npu --emit-mlir > aie.mlir
 ```
 
-The [test.cpp](./test.cpp) as well as the `# To/from AIE-array data movement` section of the design code will be described in detail in [Section 2d](../../section-2d/).
+The `# To/from AIE-array data movement` section of the design code is described in detail in [Section 2d](../../section-2d/).

@@ -1,10 +1,7 @@
 //===- logical_tile_op_withops.mlir ----------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2026 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,6 +31,7 @@ module @test_core_tile_elements {
   }
 }
 
+
 // -----
 
 // Test MemTileDMAOp, BufferOp, LockOp with LogicalTileOp<MemTile>
@@ -54,6 +52,7 @@ module @test_mem_tile_elements {
   }
 }
 
+
 // -----
 
 // Test ShimDMAOp, LockOp with LogicalTileOp<ShimNOCTile>
@@ -72,6 +71,7 @@ module @test_shim_noc_tile_elements {
   }
 }
 
+
 // -----
 
 // Test ObjectFifoCreateOp with LogicalTileOp
@@ -87,6 +87,7 @@ module @test_objectfifo_shim_to_core {
     aie.end
   }
 }
+
 
 // -----
 
@@ -110,6 +111,7 @@ module @test_objectfifo_link {
   }
 }
 
+
 // -----
 
 // Test ShimDMAAllocationOp with LogicalTileOp<ShimNOCTile>
@@ -128,6 +130,7 @@ module @test_shim_dma_allocation {
   }
 }
 
+
 // -----
 
 // Mixed LogicalTileOp and TileOp usage
@@ -144,6 +147,7 @@ module @test_mixed_tile_types {
   }
 }
 
+
 // -----
 
 // Test DMAConfigureTaskOp with LogicalTileOp
@@ -154,7 +158,7 @@ module @test_dma_configure_task {
 
     aie.runtime_sequence(%arg0: memref<1024xi32>) {
       %task = aiex.dma_configure_task(%shim_tile, MM2S, 0) {
-        aie.dma_bd(%buffer : memref<1024xi32>, 0, 1024) {bd_id = 0 : i32}
+        aie.dma_bd(%buffer : memref<1024xi32> offset = 0 len = 1024) {bd_id = 0 : i32}
         aie.end
       }
       aiex.dma_start_task(%task)
@@ -162,6 +166,7 @@ module @test_dma_configure_task {
     aie.end
   }
 }
+
 
 // -----
 
@@ -173,7 +178,7 @@ module @test_dma_configure_task_memtile {
 
     aie.runtime_sequence(%arg0: memref<256xi32>) {
       %task = aiex.dma_configure_task(%mem_tile, S2MM, 0) {
-        aie.dma_bd(%buffer_in : memref<256xi32>, 0, 256) {bd_id = 0 : i32}
+        aie.dma_bd(%buffer_in : memref<256xi32> len = 256) {bd_id = 0 : i32}
         aie.end
       }
       aiex.dma_start_task(%task)
@@ -181,6 +186,29 @@ module @test_dma_configure_task_memtile {
     aie.end
   }
 }
+
+
+// -----
+
+// Test DMAConfigureTaskForOp whose shim_dma_allocation is bound to a logical
+// tile: the verifier must defer (not resolve the concrete tile) rather than
+// hard-asserting in ShimDMAAllocationOp::getTileOp().
+module @test_dma_configure_task_for_logical {
+  aie.device(npu2) {
+    %shim_tile = aie.logical_tile<ShimNOCTile>(?, ?)
+    aie.shim_dma_allocation @alloc0(%shim_tile, MM2S, 0)
+
+    aie.runtime_sequence(%arg0: memref<1024xi32>) {
+      %task = aiex.dma_configure_task_for @alloc0 {
+        aie.dma_bd(%arg0 : memref<1024xi32> offset = 0 len = 1024) {bd_id = 0 : i32}
+        aie.end
+      }
+      aiex.dma_start_task(%task)
+    }
+    aie.end
+  }
+}
+
 
 // -----
 
@@ -197,6 +225,7 @@ module @test_cascade_flow_logical_tiles {
     aie.end
   }
 }
+
 
 // -----
 

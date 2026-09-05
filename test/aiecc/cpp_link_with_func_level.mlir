@@ -1,10 +1,7 @@
 //===- cpp_link_with_func_level.mlir ---------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,11 +30,9 @@ module {
     func.func private @f(memref<16xi32>, memref<16xi32>) attributes {link_with = "f.o"}
 
     %core_0_2 = aie.core(%tile_0_2) {
-      %subview_in = aie.objectfifo.acquire @of_in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @of_in(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @of_out(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @of_out(Produce, 1) : memref<16xi32>
 
       func.call @f(%elem_in, %elem_out) : (memref<16xi32>, memref<16xi32>) -> ()
 

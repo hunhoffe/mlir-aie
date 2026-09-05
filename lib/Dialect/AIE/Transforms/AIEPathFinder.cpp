@@ -1,16 +1,15 @@
 //===- AIEPathfinder.cpp ----------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
 #include "aie/Dialect/AIE/Transforms/AIEPathFinder.h"
 #include "d_ary_heap.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_os_ostream.h"
 
@@ -37,48 +36,40 @@ LogicalResult DynamicTileAnalysis::runAnalysis(DeviceOp &device) {
   for (PacketFlowOp pktFlowOp : device.getOps<PacketFlowOp>()) {
     Region &r = pktFlowOp.getPorts();
     Block &b = r.front();
-    Port srcPort, dstPort;
-    TileOp srcTile, dstTile;
-    TileID srcCoords, dstCoords;
-    // Pass 1: extract source (order-independent: dest may appear before source)
+    SmallVector<std::pair<TileID, Port>, 4> sources;
+    // Pass 1: collect all sources (order-independent; supports fan-in).
     for (Operation &Op : b.getOperations()) {
       if (auto pktSource = dyn_cast<PacketSourceOp>(Op)) {
-        srcTile = dyn_cast<TileOp>(pktSource.getTile().getDefiningOp());
-        srcPort = pktSource.port();
-        srcCoords = {srcTile.colIndex(), srcTile.rowIndex()};
+        auto srcTile = cast<TileOp>(pktSource.getTile().getDefiningOp());
+        sources.push_back(
+            {{srcTile.colIndex(), srcTile.rowIndex()}, pktSource.port()});
       }
     }
-    if (!srcTile)
+    if (sources.empty())
       return pktFlowOp.emitOpError("packet_flow has no packet_source");
 
-    // Pass 2: process each destination using the source extracted above
+    bool priorityFlow = pktFlowOp.getPriorityRoute().value_or(false);
+    // Pass 2: add a flow from every source to every destination so
+    // fan-in topologies are routed (not just the last source).
     for (Operation &Op : b.getOperations()) {
       if (auto pktDest = dyn_cast<PacketDestOp>(Op)) {
-        dstTile = dyn_cast<TileOp>(pktDest.getTile().getDefiningOp());
-        dstPort = pktDest.port();
-        dstCoords = {dstTile.colIndex(), dstTile.rowIndex()};
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\tAdding Packet Flow: (" << srcCoords.col << ", "
-                   << srcCoords.row << ")"
-                   << stringifyWireBundle(srcPort.bundle) << srcPort.channel
-                   << " -> (" << dstCoords.col << ", " << dstCoords.row << ")"
-                   << stringifyWireBundle(dstPort.bundle) << dstPort.channel
-                   << "\n");
-        // todo: support many-to-one & many-to-many?
-        bool priorityFlow =
-            pktFlowOp.getPriorityRoute()
-                ? *pktFlowOp.getPriorityRoute()
-                : false; // Flows such as control packet flows are routed in
-                         // priority, to ensure routing consistency.
-        pathfinder->addFlow(srcCoords, srcPort, dstCoords, dstPort,
-                            /*isPktFlow*/ true, priorityFlow);
+        auto dstTile = cast<TileOp>(pktDest.getTile().getDefiningOp());
+        Port dstPort = pktDest.port();
+        TileID dstCoords = {dstTile.colIndex(), dstTile.rowIndex()};
+        for (auto &[srcCoords, srcPort] : sources) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "\tAdding Packet Flow: (" << srcCoords.col << ", "
+                     << srcCoords.row << ")"
+                     << stringifyWireBundle(srcPort.bundle) << srcPort.channel
+                     << " -> (" << dstCoords.col << ", " << dstCoords.row << ")"
+                     << stringifyWireBundle(dstPort.bundle) << dstPort.channel
+                     << "\n");
+          pathfinder->addFlow(srcCoords, srcPort, dstCoords, dstPort,
+                              pktFlowOp.IDInt(), priorityFlow);
+        }
       }
     }
   }
-
-  // Sort ctrlPktFlows into a deterministic order; concat ctrlPktFlows to flows
-  pathfinder->sortFlows(device.getTargetModel().columns(),
-                        device.getTargetModel().rows());
 
   // Add circuit flows.
   for (FlowOp flowOp : device.getOps<FlowOp>()) {
@@ -95,8 +86,11 @@ LogicalResult DynamicTileAnalysis::runAnalysis(DeviceOp &device) {
                << stringifyWireBundle(dstPort.bundle) << dstPort.channel
                << "\n");
     pathfinder->addFlow(srcCoords, srcPort, dstCoords, dstPort,
-                        /*isPktFlow*/ false, /*isPriorityFlow*/ false);
+                        /*packetId=*/std::nullopt, /*isPriorityFlow=*/false);
   }
+
+  // Canonicalize all flows after both packet and circuit flows are collected.
+  pathfinder->sortFlows();
 
   // add existing connections so Pathfinder knows which resources are
   // available search all existing SwitchBoxOps for exising connections
@@ -188,6 +182,21 @@ ShimMuxOp DynamicTileAnalysis::getShimMux(OpBuilder &builder, int col) {
 
 void Pathfinder::initialize(int maxCol, int maxRow,
                             const AIETargetModel &targetModel) {
+  // Reset all state so a Pathfinder instance can be safely reused across
+  // analyses/devices. In particular the dense-graph cache below must be
+  // rebuilt for the new topology; leaving graphBuilt set would reuse stale
+  // node IDs and adjacency.
+  graph.clear();
+  flows.clear();
+  graphBuilt = false;
+  nodeIds.clear();
+  nodes.clear();
+  adjacency.clear();
+  distance.clear();
+  indexInHeap.clear();
+  colors.clear();
+  preds.clear();
+  predEdge.clear();
 
   std::map<WireBundle, int> maxChannels;
   auto intraconnect = [&](int col, int row) {
@@ -232,8 +241,7 @@ void Pathfinder::initialize(int maxCol, int maxRow,
             // wordaround for shimMux
             auto isBundleInList = [](WireBundle bundle,
                                      std::vector<WireBundle> bundles) {
-              return std::find(bundles.begin(), bundles.end(), bundle) !=
-                     bundles.end();
+              return llvm::find(bundles, bundle) != bundles.end();
             };
             const std::vector<WireBundle> bundles = {
                 WireBundle::DMA, WireBundle::NOC, WireBundle::PLIO};
@@ -295,15 +303,16 @@ void Pathfinder::initialize(int maxCol, int maxRow,
 // Add a flow from src to dst can have an arbitrary number of dst locations
 // due to fanout.
 void Pathfinder::addFlow(TileID srcCoords, Port srcPort, TileID dstCoords,
-                         Port dstPort, bool isPacketFlow, bool isPriorityFlow) {
+                         Port dstPort, std::optional<int> packetId,
+                         bool isPriorityFlow) {
   // check if a flow with this source already exists
-  for (auto &[_, prioritized, src, dsts] : flows) {
+  for (auto &[_, prioritized, src, dsts, pid] : flows) {
     if (src.coords == srcCoords && src.port == srcPort) {
       if (isPriorityFlow) {
         prioritized = true;
-        dsts.emplace(dsts.begin(), PathEndPoint{dstCoords, dstPort});
+        dsts.emplace(dsts.begin(), dstCoords, dstPort);
       } else
-        dsts.emplace_back(PathEndPoint{dstCoords, dstPort});
+        dsts.emplace_back(dstCoords, dstPort);
       return;
     }
   }
@@ -313,9 +322,9 @@ void Pathfinder::addFlow(TileID srcCoords, Port srcPort, TileID dstCoords,
   // channel sharing will happen within the same group ID
   // for circuit flows, group ID is always -1, and no channel sharing
   int packetGroupId = -1;
-  if (isPacketFlow) {
+  if (packetId.has_value()) {
     bool found = false;
-    for (auto &[existingId, _, src, dsts] : flows) {
+    for (auto &[existingId, _, src, dsts, pid] : flows) {
       if (src.coords == srcCoords && src.port == srcPort) {
         packetGroupId = existingId;
         found = true;
@@ -335,38 +344,38 @@ void Pathfinder::addFlow(TileID srcCoords, Port srcPort, TileID dstCoords,
     }
   }
   // If no existing flow was found with this source, create a new flow.
-  flows.push_back(
-      Flow{packetGroupId, isPriorityFlow, PathEndPoint{srcCoords, srcPort},
-           std::vector<PathEndPoint>{PathEndPoint{dstCoords, dstPort}}});
+  flows.push_back(Flow{
+      packetGroupId, isPriorityFlow, PathEndPoint{srcCoords, srcPort},
+      std::vector<PathEndPoint>{PathEndPoint{dstCoords, dstPort}}, packetId});
 }
 
 // Sort flows to (1) get deterministic routing, and (2) perform routings on
 // prioritized flows before others, for routing consistency on those flows.
-void Pathfinder::sortFlows(const int maxCol, const int maxRow) {
-  std::vector<Flow> priorityFlows;
-  std::vector<Flow> normalFlows;
-  for (auto f : flows) {
-    if (f.isPriorityFlow)
-      priorityFlows.push_back(f);
-    else
-      normalFlows.push_back(f);
-  }
-  std::sort(priorityFlows.begin(), priorityFlows.end(),
-            [](const auto &lhs, const auto &rhs) {
-              // Compare tuple of properties in priority order:
-              // (col, row, bundle, channel)
-              auto lhsKey =
-                  std::make_tuple(lhs.src.coords.col, lhs.src.coords.row,
-                                  getWireBundleAsInt(lhs.src.port.bundle),
-                                  lhs.src.port.channel);
-              auto rhsKey =
-                  std::make_tuple(rhs.src.coords.col, rhs.src.coords.row,
-                                  getWireBundleAsInt(rhs.src.port.bundle),
-                                  rhs.src.port.channel);
-              return lhsKey < rhsKey;
-            });
-  flows = priorityFlows;
-  flows.insert(flows.end(), normalFlows.begin(), normalFlows.end());
+void Pathfinder::sortFlows() {
+  auto endpointLess = [](const PathEndPoint &lhs, const PathEndPoint &rhs) {
+    return std::make_tuple(lhs.coords.col, lhs.coords.row,
+                           getWireBundleAsInt(lhs.port.bundle),
+                           lhs.port.channel) <
+           std::make_tuple(rhs.coords.col, rhs.coords.row,
+                           getWireBundleAsInt(rhs.port.bundle),
+                           rhs.port.channel);
+  };
+
+  for (auto &flow : flows)
+    std::sort(flow.dsts.begin(), flow.dsts.end(), endpointLess);
+
+  auto flowRank = [](const Flow &flow) {
+    if (flow.isPriorityFlow)
+      return 0;
+    if (flow.packetGroupId >= 0)
+      return 1;
+    return 2;
+  };
+  std::sort(flows.begin(), flows.end(), [&](const Flow &lhs, const Flow &rhs) {
+    if (flowRank(lhs) != flowRank(rhs))
+      return flowRank(lhs) < flowRank(rhs);
+    return endpointLess(lhs.src, rhs.src);
+  });
 }
 
 // Keep track of connections already used in the AIE; Pathfinder algorithm
@@ -402,94 +411,159 @@ bool Pathfinder::addFixedConnection(SwitchboxOp switchboxOp) {
 
 static constexpr double INF = std::numeric_limits<double>::max();
 
-std::map<PathEndPoint, PathEndPoint>
-Pathfinder::dijkstraShortestPaths(PathEndPoint src) {
-  // Use std::map instead of DenseMap because DenseMap doesn't let you
-  // overwrite tombstones.
-  std::map<PathEndPoint, double> distance;
-  std::map<PathEndPoint, PathEndPoint> preds;
-  std::map<PathEndPoint, uint64_t> indexInHeap;
-  enum Color { WHITE, GRAY, BLACK };
-  std::map<PathEndPoint, Color> colors;
-  typedef d_ary_heap_indirect<
-      /*Value=*/PathEndPoint, /*Arity=*/4,
-      /*IndexInHeapPropertyMap=*/std::map<PathEndPoint, uint64_t>,
-      /*DistanceMap=*/std::map<PathEndPoint, double> &,
-      /*Compare=*/std::less<>>
-      MutableQueue;
-  MutableQueue Q(distance, indexInHeap);
+namespace {
+enum Color : int8_t { WHITE = 0, GRAY = 1, BLACK = 2 };
+} // namespace
 
-  distance[src] = 0.0;
-  Q.push(src);
-  while (!Q.empty()) {
-    src = Q.top();
-    Q.pop();
+int Pathfinder::getOrAddNodeId(const PathEndPoint &pep) {
+  auto it = nodeIds.find(pep);
+  if (it != nodeIds.end())
+    return it->second;
+  int id = static_cast<int>(nodes.size());
+  nodeIds[pep] = id;
+  nodes.push_back(pep);
+  return id;
+}
 
-    // get all channels src connects to
-    if (channels.count(src) == 0) {
-      auto &sb = graph[std::make_pair(src.coords, src.coords)];
-      for (size_t i = 0; i < sb.srcPorts.size(); i++) {
-        for (size_t j = 0; j < sb.dstPorts.size(); j++) {
-          if (sb.srcPorts[i] == src.port &&
-              sb.connectivity[i][j] == Connectivity::AVAILABLE) {
-            // connections within the same switchbox
-            channels[src].push_back(PathEndPoint{src.coords, sb.dstPorts[j]});
-          }
-        }
-      }
-      // connections to neighboring switchboxes
-      std::vector<std::pair<TileID, Port>> neighbors = {
-          {{src.coords.col, src.coords.row - 1},
-           {WireBundle::North, src.port.channel}},
-          {{src.coords.col - 1, src.coords.row},
-           {WireBundle::East, src.port.channel}},
-          {{src.coords.col, src.coords.row + 1},
-           {WireBundle::South, src.port.channel}},
-          {{src.coords.col + 1, src.coords.row},
-           {WireBundle::West, src.port.channel}}};
-
-      for (const auto &[neighborCoords, neighborPort] : neighbors) {
-        if (graph.count(std::make_pair(src.coords, neighborCoords)) > 0 &&
-            src.port.bundle == getConnectingBundle(neighborPort.bundle)) {
-          auto &sb = graph[std::make_pair(src.coords, neighborCoords)];
-          if (std::find(sb.dstPorts.begin(), sb.dstPorts.end(), neighborPort) !=
-              sb.dstPorts.end())
-            channels[src].push_back({neighborCoords, neighborPort});
-        }
-      }
-      std::sort(channels[src].begin(), channels[src].end());
-    }
-
-    for (auto &dest : channels[src]) {
-      if (distance.count(dest) == 0)
-        distance[dest] = INF;
-      auto &sb = graph[std::make_pair(src.coords, dest.coords)];
-      size_t i = std::distance(
-          sb.srcPorts.begin(),
-          std::find(sb.srcPorts.begin(), sb.srcPorts.end(), src.port));
-      size_t j = std::distance(
-          sb.dstPorts.begin(),
-          std::find(sb.dstPorts.begin(), sb.dstPorts.end(), dest.port));
-      assert(i < sb.srcPorts.size());
-      assert(j < sb.dstPorts.size());
-      bool relax = distance[src] + sb.demand[i][j] < distance[dest];
-      if (colors.count(dest) == 0) {
-        // was WHITE
-        if (relax) {
-          distance[dest] = distance[src] + sb.demand[i][j];
-          preds[dest] = src;
-          colors[dest] = GRAY;
-        }
-        Q.push(dest);
-      } else if (colors[dest] == GRAY && relax) {
-        distance[dest] = distance[src] + sb.demand[i][j];
-        preds[dest] = src;
-      }
-    }
-    colors[src] = BLACK;
+// Build the dense integer node numbering and per-node adjacency once. The graph
+// topology is fixed across congestion iterations (only the demand weights
+// change), so this is computed a single time and the edges carry live pointers
+// into `graph` for demand lookups. Edge order per node matches the legacy
+// PathEndPoint-sorted channel order to preserve identical routing output.
+void Pathfinder::buildRoutingGraph() {
+  // Seed the dense node set with all flow endpoints (the only nodes Dijkstra is
+  // ever started from or traced back to). Remaining nodes are discovered lazily
+  // as edge destinations below, exactly mirroring the legacy on-demand channel
+  // expansion in dijkstraShortestPaths.
+  for (auto &f : flows) {
+    getOrAddNodeId(f.src);
+    for (auto &d : f.dsts)
+      getOrAddNodeId(d);
   }
 
-  return preds;
+  // Process nodes by growing index; getOrAddNodeId() may append new nodes as
+  // edge destinations are discovered, so re-read nodes.size() each iteration.
+  for (size_t id = 0; id < nodes.size(); id++) {
+    PathEndPoint src = nodes[id];
+    // Collect destination PathEndPoints exactly as the legacy lazy channel
+    // discovery did, then sort by PathEndPoint for deterministic edge order.
+    std::vector<PathEndPoint> dests;
+    auto intraIt = graph.find(std::make_pair(src.coords, src.coords));
+    if (intraIt != graph.end()) {
+      auto &sb = intraIt->second;
+      for (size_t i = 0; i < sb.srcPorts.size(); i++)
+        for (size_t j = 0; j < sb.dstPorts.size(); j++)
+          if (sb.srcPorts[i] == src.port &&
+              sb.connectivity[i][j] == Connectivity::AVAILABLE)
+            dests.emplace_back(src.coords, sb.dstPorts[j]);
+    }
+    std::vector<std::pair<TileID, Port>> neighbors = {
+        {{src.coords.col, src.coords.row - 1},
+         {WireBundle::North, src.port.channel}},
+        {{src.coords.col - 1, src.coords.row},
+         {WireBundle::East, src.port.channel}},
+        {{src.coords.col, src.coords.row + 1},
+         {WireBundle::South, src.port.channel}},
+        {{src.coords.col + 1, src.coords.row},
+         {WireBundle::West, src.port.channel}}};
+    for (const auto &[neighborCoords, neighborPort] : neighbors) {
+      auto nIt = graph.find(std::make_pair(src.coords, neighborCoords));
+      if (nIt != graph.end() &&
+          src.port.bundle == getConnectingBundle(neighborPort.bundle)) {
+        auto &sb = nIt->second;
+        if (llvm::find(sb.dstPorts, neighborPort) != sb.dstPorts.end())
+          dests.emplace_back(neighborCoords, neighborPort);
+      }
+    }
+    std::sort(dests.begin(), dests.end());
+
+    std::vector<Edge> edges;
+    edges.reserve(dests.size());
+    for (auto &dest : dests) {
+      auto &sb = graph[std::make_pair(src.coords, dest.coords)];
+      int i = static_cast<int>(std::distance(
+          sb.srcPorts.begin(), llvm::find(sb.srcPorts, src.port)));
+      int j = static_cast<int>(std::distance(
+          sb.dstPorts.begin(), llvm::find(sb.dstPorts, dest.port)));
+      assert(i < static_cast<int>(sb.srcPorts.size()));
+      assert(j < static_cast<int>(sb.dstPorts.size()));
+      int destId = getOrAddNodeId(dest);
+      edges.push_back(Edge{destId, &sb, i, j});
+    }
+    // getOrAddNodeId above may have reallocated `adjacency` via index growth in
+    // later iterations, but we only assign this node's edges now.
+    if (adjacency.size() < nodes.size())
+      adjacency.resize(nodes.size());
+    adjacency[id] = std::move(edges);
+  }
+  size_t n = nodes.size();
+  if (adjacency.size() < n)
+    adjacency.resize(n);
+
+  // Size the reusable Dijkstra scratch buffers. These are indexed by state id,
+  // i.e. two entries per node -- one per side of the port.
+  distance.assign(2 * n, INF);
+  indexInHeap.assign(2 * n, 0);
+  colors.assign(2 * n, WHITE);
+  preds.assign(2 * n, -1);
+  predEdge.assign(2 * n, Edge{-1, nullptr, 0, 0});
+  graphBuilt = true;
+}
+
+// Dijkstra over the dense graph from dense node `srcId`, searching states
+// (node, PortSide) rather than bare nodes. Fills the `preds` and `predEdge`
+// scratch buffers, both indexed by state id. The push/relax control flow
+// (including the WHITE-node always-push behavior and the absence of a heap
+// decrease-key) is inherited from the legacy PathEndPoint-keyed version.
+void Pathfinder::dijkstraShortestPaths(int srcId) {
+  llvm::fill(distance, INF);
+  llvm::fill(colors, static_cast<int8_t>(WHITE));
+  llvm::fill(preds, -1);
+  llvm::fill(indexInHeap, uint64_t{0});
+
+  using MutableQueue = d_ary_heap_indirect<
+      /*Value=*/int, /*Arity=*/4,
+      /*IndexInHeapPropertyMap=*/std::vector<uint64_t> &,
+      /*DistanceMap=*/std::vector<double> &,
+      /*Compare=*/std::less<>>;
+  MutableQueue Q(distance, indexInHeap);
+
+  // The flow source port feeds into its switchbox, so the search starts on the
+  // In side and the first edge taken is necessarily a crossbar hop.
+  int srcState = stateId(srcId, In);
+  distance[srcState] = 0.0;
+  Q.push(srcState);
+  while (!Q.empty()) {
+    int s = Q.top();
+    Q.pop();
+    // In takes crossbar edges and lands on the Out side of the port it picks;
+    // Out takes the wire to the neighbour and lands on that tile's In side. Any
+    // other pairing would either turn the stream around inside a switchbox or
+    // ride a wire the crossbar was never set to drive.
+    const bool sIsOut = (s & 1) == Out;
+    for (Edge &e : adjacency[stateNode(s)]) {
+      const bool isIntra = e.sb->srcCoords == e.sb->dstCoords;
+      if (sIsOut == isIntra)
+        continue;
+      int dst = stateId(e.dst, isIntra ? Out : In);
+      double w = e.sb->demand[e.i][e.j];
+      bool relax = distance[s] + w < distance[dst];
+      if (colors[dst] == WHITE) {
+        if (relax) {
+          distance[dst] = distance[s] + w;
+          preds[dst] = s;
+          predEdge[dst] = e;
+          colors[dst] = GRAY;
+        }
+        Q.push(dst);
+      } else if (colors[dst] == GRAY && relax) {
+        distance[dst] = distance[s] + w;
+        preds[dst] = s;
+        predEdge[dst] = e;
+      }
+    }
+    colors[s] = BLACK;
+  }
 }
 
 // Perform congestion-aware routing for all flows which have been added.
@@ -502,6 +576,13 @@ std::optional<std::map<PathEndPoint, SwitchSettings>>
 Pathfinder::findPaths(const int maxIterations) {
   LLVM_DEBUG(llvm::dbgs() << "\t---Begin Pathfinder::findPaths---\n");
   std::map<PathEndPoint, SwitchSettings> routingSolution;
+  // Build the dense routing graph once; topology is invariant across
+  // iterations.
+  if (!graphBuilt)
+    buildRoutingGraph();
+  // Stamp-based "processed" set (avoids O(n) clears per flow).
+  std::vector<uint32_t> processedStamp(2 * nodes.size(), 0);
+  uint32_t curStamp = 0;
   // initialize all Channel histories to 0
   for (auto &[_, sb] : graph) {
     for (size_t i = 0; i < sb.srcPorts.size(); i++) {
@@ -556,6 +637,7 @@ Pathfinder::findPaths(const int maxIterations) {
           sb.usedCapacity[i][j] = 0;
           sb.packetFlowCount[i][j] = 0;
           sb.packetGroupId[i][j] = -1;
+          sb.packetIds[i][j].clear();
         }
       }
     }
@@ -564,45 +646,68 @@ Pathfinder::findPaths(const int maxIterations) {
     // update used_capacity for the path between them
 
     for (const auto &[_, flows] : groupedFlows) {
-      for (const auto &[packetGroupId, isPriority, src, dsts] : flows) {
+      for (const auto &[packetGroupId, isPriority, src, dsts, packetId] :
+           flows) {
         // Use dijkstra to find path given current demand from the start
         // switchbox; find the shortest paths to each other switchbox. Output is
-        // in the predecessor map, which must then be processed to get
+        // in the predecessor arrays, which must then be processed to get
         // individual switchbox settings
-        std::set<PathEndPoint> processed;
-        std::map<PathEndPoint, PathEndPoint> preds = dijkstraShortestPaths(src);
+        int srcId = nodeIds.at(src);
+        dijkstraShortestPaths(srcId);
 
         // trace the path of the flow backwards via predecessors
         // increment used_capacity for the associated channels
         SwitchSettings switchSettings;
-        processed.insert(src);
+        ++curStamp;
+        processedStamp[stateId(srcId, In)] = curStamp;
         for (auto endPoint : dsts) {
           if (endPoint == src) {
-            // route to self
+            // Route to self: the port is both ends, so there is no path to
+            // trace. The source was stamped on the In side, so falling through
+            // would trace back from an Out state Dijkstra never reached.
             switchSettings[src.coords].srcs.push_back(src.port);
             switchSettings[src.coords].dsts.push_back(src.port);
+            continue;
           }
-          auto curr = endPoint;
+          // A destination port is driven by its switchbox, so it is reached on
+          // the Out side.
+          int currId = stateId(nodeIds.at(endPoint), Out);
           // trace backwards until a vertex already processed is reached
-          while (!processed.count(curr)) {
-            auto &sb = graph[std::make_pair(preds[curr].coords, curr.coords)];
-            size_t i =
-                std::distance(sb.srcPorts.begin(),
-                              std::find(sb.srcPorts.begin(), sb.srcPorts.end(),
-                                        preds[curr].port));
-            size_t j = std::distance(
-                sb.dstPorts.begin(),
-                std::find(sb.dstPorts.begin(), sb.dstPorts.end(), curr.port));
-            assert(i < sb.srcPorts.size());
-            assert(j < sb.dstPorts.size());
+          while (processedStamp[currId] != curStamp) {
+            // If Dijkstra never reached this node it has no predecessor; the
+            // destination is unroutable under the current demand. Bail out of
+            // this iteration rather than indexing with a -1 predecessor.
+            if (preds[currId] < 0)
+              return std::nullopt;
+            const PathEndPoint &curr = nodes[stateNode(currId)];
+            const Edge &e = predEdge[currId];
+            int predId = preds[currId];
+            const PathEndPoint &pred = nodes[stateNode(predId)];
+            SwitchboxConnect &sb = *e.sb;
+            int i = e.i;
+            int j = e.j;
             sb.isPriority[i][j] = isPriority;
-            if (packetGroupId >= 0 &&
-                (sb.packetGroupId[i][j] == -1 ||
-                 sb.packetGroupId[i][j] == packetGroupId)) {
+            // Packet flows in the same group may share a channel, but only if
+            // their ids differ, so two same-id flows never merge onto a channel
+            // and then fan back out to separate destinations.
+            // packetGroupId only becomes >= 0 when packetId has a value (see
+            // Pathfinder::addFlow), so the dereferences below are safe; the
+            // checker just can't correlate the two across this while loop's
+            // back edge.
+            // NOLINTBEGIN(bugprone-unchecked-optional-access)
+            bool sameGroupUnseen = packetGroupId >= 0 && packetId.has_value() &&
+                                   (sb.packetGroupId[i][j] == -1 ||
+                                    sb.packetGroupId[i][j] == packetGroupId) &&
+                                   sb.packetIds[i][j].count(*packetId) == 0;
+            if (sameGroupUnseen) {
+              int packetIdValue = *packetId;
+              // NOLINTEND(bugprone-unchecked-optional-access)
               for (size_t k = 0; k < sb.srcPorts.size(); k++) {
                 for (size_t l = 0; l < sb.dstPorts.size(); l++) {
-                  if (k == i || l == j) {
+                  if (k == static_cast<size_t>(i) ||
+                      l == static_cast<size_t>(j)) {
                     sb.packetGroupId[k][l] = packetGroupId;
+                    sb.packetIds[k][l].insert(packetIdValue);
                   }
                 }
               }
@@ -618,13 +723,12 @@ Pathfinder::findPaths(const int maxIterations) {
             // if at capacity, bump demand to discourage using this Channel
             // this means the order matters!
             sb.bumpDemand(i, j);
-            if (preds[curr].coords == curr.coords) {
-              switchSettings[preds[curr].coords].srcs.push_back(
-                  preds[curr].port);
+            if (pred.coords == curr.coords) {
+              switchSettings[pred.coords].srcs.push_back(pred.port);
               switchSettings[curr.coords].dsts.push_back(curr.port);
             }
-            processed.insert(curr);
-            curr = preds[curr];
+            processedStamp[currId] = curStamp;
+            currId = predId;
           }
         }
         // add this flow to the proposed solution

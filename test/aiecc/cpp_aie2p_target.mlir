@@ -1,10 +1,7 @@
 //===- cpp_aie2p_target.mlir -----------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,16 +9,15 @@
 
 // Test AIE2P (Strix) target compilation
 
-// RUN: aiecc --no-xchesscc --no-xbridge --verbose %s | FileCheck %s
+// RUN: aiecc --get-npu-insts --get-core-elfs --verbose %s 2>&1 | FileCheck %s
 
-// CHECK: Successfully parsed input file
-// CHECK: Found 1 AIE device
-// CHECK: Detected AIE target: AIE2p
-// CHECK: Running resource allocation pipeline in-memory
-// CHECK: Resource allocation pipeline completed successfully
-// CHECK: Running routing pipeline in-memory
-// CHECK: Compiling core (0, 2)
-// CHECK: Compilation completed successfully
+// Pipeline coverage plus AIE2p target detection, verified via the aie2p
+// code-generation triple.
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) input.mlir
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) placed.mlir
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) input_physical.mlir
+// CHECK: exec:{{.*}}--march=aie2p
+// CHECK: wrote edge 'insts_
 
 module {
   aie.device(npu2) {
@@ -36,11 +32,9 @@ module {
       %c1 = arith.constant 1 : index
       %c32 = arith.constant 32 : index
 
-      %subview_in = aie.objectfifo.acquire @in(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+      %elem_in = aie.objectfifo.acquire @in(Consume, 1) : memref<32xi32>
 
-      %subview_out = aie.objectfifo.acquire @out(Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+      %elem_out = aie.objectfifo.acquire @out(Produce, 1) : memref<32xi32>
 
       scf.for %i = %c0 to %c32 step %c1 {
         %val = memref.load %elem_in[%i] : memref<32xi32>

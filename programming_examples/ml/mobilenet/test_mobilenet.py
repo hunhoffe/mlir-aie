@@ -1,22 +1,21 @@
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2024 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
-import sys
-import torch
-import torch.nn as nn
-import sys
+import argparse
+import json
 import math
-from aie.utils.ml import DataShaper
-import time
 import os
-import numpy as np
+import sys
+import time
+
 import aie.iron as iron
-from aie.utils import DefaultNPURuntime
-from aie.utils import TraceConfig, HostRuntime, NPUKernel, DefaultNPURuntime
-import aie.utils.test as test_utils
+import numpy as np
+import torch  # pyright: ignore[reportMissingImports]
+import torch.nn.functional as F  # pyright: ignore[reportMissingImports]
+from aie.utils import DefaultNPURuntime, HostRuntime, NPUKernel, TraceConfig
+from aie.utils.hostruntime.argparse import add_runtime_args
+from aie.utils.ml import DataShaper
 
 
 def convert_to_numpy(array):
@@ -26,10 +25,6 @@ def convert_to_numpy(array):
         return array.cpu().numpy()
     else:
         raise TypeError("Unsupported array type")
-
-
-import json
-import torch.nn.functional as F
 
 
 def pad_tensor(tensor, target_shape):
@@ -370,8 +365,6 @@ def main(opts):
 
     num_iter = 1
     npu_time_total = 0
-    npu_time_min = 9999999
-    npu_time_max = 0
     trace_size = 16384
     # enable_trace = False
     enable_trace = 0
@@ -383,7 +376,6 @@ def main(opts):
     # ------------------------------------------------------
     dtype_in = np.dtype("int8")
     dtype_wts = np.dtype("int8")
-    dtype_out = np.dtype("uint8")
     dtype_out_aie = np.dtype("uint16")
     # dtype_out = np.dtype("int8")
 
@@ -406,7 +398,6 @@ def main(opts):
     )
 
     print("total weights:::", shape_total_wts)
-    shape_in_act = (tensorInH, InC_vec, tensorInW, vectorSize)  #'YCXC8' , 'CYX'
     shape_out = (tensorOutH, OutC_vec, tensorOutW, vectorSize)  # HCWC8
     shape_out_final = (OutC_vec * vectorSize, tensorOutH, tensorOutW)  # CHW
 
@@ -425,7 +416,7 @@ def main(opts):
     ds = DataShaper()
 
     before_input = np.loadtxt(
-        data_dir + "before_ifm_mem_fmt_1x1.txt", delimiter=",", dtype="uint8"
+        data_dir + "before_ifm_mem_fmt_1x1.txt", delimiter=",", dtype="int8"
     )
     before_input = before_input.reshape(tensorInC, tensorInH, tensorInW)
 
@@ -459,7 +450,6 @@ def main(opts):
     # bn12_wts2_3 = np.loadtxt(data_dir + "bn12_2_3_chain.txt", delimiter=",", dtype="int32")
 
     bn13_wts1 = np.loadtxt(data_dir + "bn13_1_chain.txt", delimiter=",", dtype="int32")
-    bn13_wts2 = np.loadtxt(data_dir + "bn13_2_chain.txt", delimiter=",", dtype="int32")
     bn13_wts3_put = np.loadtxt(
         data_dir + "bn13_3_put_chain.txt", delimiter=",", dtype="int32"
     )
@@ -467,7 +457,6 @@ def main(opts):
         data_dir + "bn13_3_get_chain.txt", delimiter=",", dtype="int32"
     )
     bn14_wts1 = np.loadtxt(data_dir + "bn14_1_chain.txt", delimiter=",", dtype="int32")
-    bn14_wts2 = np.loadtxt(data_dir + "bn14_2_chain.txt", delimiter=",", dtype="int32")
     bn14_wts3_put = np.loadtxt(
         data_dir + "bn14_3_put_chain.txt", delimiter=",", dtype="int32"
     )
@@ -497,8 +486,8 @@ def main(opts):
     # ------------------------------------------------------
     # Setup buffers run loop
     # ------------------------------------------------------
-    in1 = iron.tensor(ifm_mem_fmt, dtype=dtype_in)
-    in2 = iron.tensor(total_wts, dtype=dtype_wts)
+    in1 = iron.tensor(ifm_mem_fmt.astype(dtype_in), dtype=dtype_in)
+    in2 = iron.tensor(total_wts.astype(dtype_wts), dtype=dtype_wts)
     out = iron.zeros(shape_out, dtype=dtype_out_aie)
     buffers = [in1, in2, out]
 
@@ -517,9 +506,9 @@ def main(opts):
     # Main run loop
     # ------------------------------------------------------
     for i in range(num_iter):
-        start = time.time_ns()
+        start = time.perf_counter_ns()
         DefaultNPURuntime.run(kernel_handle, buffers)
-        stop = time.time_ns()
+        stop = time.perf_counter_ns()
         npu_time = stop - start
         npu_time_total = npu_time_total + npu_time
 
@@ -546,19 +535,12 @@ def main(opts):
         np.abs((golden.astype(int)) - (ofm_mem_fmt_out.astype(int)))
     )
     print("max_difference:", max_difference)
-    # Find the indices where the mismatch happens
-    # Find the indices where the mismatch happens
-    mismatch_indices = np.where(golden != ofm_mem_fmt_out)
-
-    # Extract mismatch values
-    mismatch_values_golden = golden[mismatch_indices]
-    mismatch_values_ofm = ofm_mem_fmt_out[mismatch_indices]
 
     # Print mismatch indices and corresponding values
     print("golden shape: ", golden.shape)
     print("Output shape: ", ofm_mem_fmt_out.shape)
 
-    # TODO Disabled to not print mistmatches to stdout for now
+    # TODO Disabled to not print mismatches to stdout for now
     # print("Mismatch indices and corresponding values:")
     # for idx, (golden_value, ofm_value) in zip(
     #     zip(*mismatch_indices), zip(mismatch_values_golden, mismatch_values_ofm)
@@ -570,12 +552,6 @@ def main(opts):
     print(
         "\n***WARNING**** Temporary check where we accept atol=9, whereas it should be 1"
     )
-    if enable_trace:
-        # trace_buffer = full_output[3920:]
-        print("trace_buffer shape: ", trace_buffer.shape)
-        print("trace_buffer dtype: ", trace_buffer.dtype)
-        # write_out_trace(trace_buffer, str(opts.trace_file))
-        write_out_trace(trace_buffer, "trace.txt")
     if np.allclose(
         ofm_mem_fmt_out,
         golden_output,
@@ -591,6 +567,7 @@ def main(opts):
 
 
 if __name__ == "__main__":
-    p = test_utils.create_default_argparser()
+    p = argparse.ArgumentParser()
+    add_runtime_args(p, with_io_sizes=True)
     opts = p.parse_args(sys.argv[1:])
     main(opts)

@@ -1,4 +1,4 @@
-# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# Copyright (C) 2025 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 # RUN: %python %s | FileCheck %s
@@ -20,8 +20,10 @@ from aie.iron.device import (
 # CHECK:     %[[TILE:.*]] = aie.logical_tile<CoreTile>(?, ?)
 # CHECK:     %[[LOCK:.*]] = aie.lock(%[[TILE]])
 # CHECK:     %{{.*}} = aie.core(%[[TILE]]) {
-# CHECK:         aie.use_lock(%[[LOCK]], Acquire, 1)
-# CHECK:         aie.use_lock(%[[LOCK]], Release, 1)
+# CHECK:         %{{.*}} = arith.constant 1 : i32
+# CHECK:         aie.use_lock(%[[LOCK]], Acquire, %{{.*}})
+# CHECK:         %{{.*}} = arith.constant 1 : i32
+# CHECK:         aie.use_lock(%[[LOCK]], Release, %{{.*}})
 # CHECK:     }
 # CHECK:     aie.runtime_sequence(%arg0: memref<16xi32>) {
 # CHECK:       aiex.set_lock(%[[LOCK]], 1)
@@ -46,13 +48,14 @@ def my_barrier():
 
     # Runtime operations to move data to/from the AIE-array
     external_type = np.ndarray[(16,), np.dtype[np.int32]]
-    rt = Runtime()
-    with rt.sequence(external_type) as (x):
-        rt.start(worker)
-        rt.set_barrier(workerBarrier, 1)
+
+    def sequence(x):
+        workerBarrier.set(1)
+
+    rt = Runtime(sequence, [external_type])
 
     # Place components (assign them resources on the device) and generate an MLIR module
-    return print(Program(NPU2Col1(), rt).resolve_program())
+    return print(Program(NPU2Col1(), rt, workers=[worker]).resolve_program())
 
 
 my_barrier()

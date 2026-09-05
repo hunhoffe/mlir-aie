@@ -1,26 +1,22 @@
 //===- cpp_full_elf_generation.mlir ---------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
 // Test full ELF generation via aiebu-asm aie2_config target.
-// This tests --generate-full-elf and --full-elf-name options.
+// This tests --get-full-elf and --full-elf-name options.
 
 // REQUIRES: peano
 
-// RUN: aiecc --no-xchesscc --no-xbridge --generate-full-elf --full-elf-name=test_full.elf --verbose %s 2>&1 | FileCheck %s
+// RUN: aiecc --get-full-elf --full-elf-name=test_full.elf --verbose %s 2>&1 | FileCheck %s
 
-// CHECK: Successfully parsed input file
-// CHECK: Found 1 AIE device
-// CHECK: Generating full ELF with 1 device
-// CHECK: Generated config.json
-// CHECK: Generated full ELF: test_full.elf
-// CHECK: Compilation completed successfully
+// Full ELF via aiebu-asm aie2_config target: config JSON then full ELF,
+// honoring --full-elf-name.
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) full_elf_config.json
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) test_full.elf
+// CHECK: wrote edge 'test_full.elf'
 
 module {
   aie.device(npu1_1col) {
@@ -36,11 +32,9 @@ module {
       %c16 = arith.constant 16 : index
       %c1_i32 = arith.constant 1 : i32
 
-      %subview_in = aie.objectfifo.acquire @of_in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @of_in(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @of_out(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @of_out(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>

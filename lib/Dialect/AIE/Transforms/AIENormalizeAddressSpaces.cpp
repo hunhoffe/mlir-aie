@@ -1,10 +1,8 @@
 //===- AIENormalizeAddressSpaces.cpp ----------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,7 +21,7 @@ using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::AIE;
 
-Type memRefToDefaultAddressSpace(Type t) {
+static Type memRefToDefaultAddressSpace(Type t) {
   if (auto memRefType = llvm::dyn_cast<MemRefType>(t);
       memRefType && memRefType.getMemorySpace() != nullptr) {
     // Preserve ptr::GenericSpaceAttr - it's needed for ptr dialect

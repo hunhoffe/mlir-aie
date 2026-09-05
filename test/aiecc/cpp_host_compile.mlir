@@ -1,42 +1,38 @@
 //===- cpp_host_compile.mlir -----------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
-// Test host compilation flags with C++ aiecc.
-// Uses dry-run mode since we don't have actual host source files.
+// Test host compilation flags with aiecc. Host source files and any extra host
+// compiler arguments are passed after the `--` separator; everything before
+// `--` is parsed strictly by aiecc (unknown options are rejected, not silently
+// forwarded). Runs use dry-run (-n) so the observable aie_inc generation and
+// host clang++ invocation are checked without depending on a real host link.
 
 // REQUIRES: peano
 
-// Test: aie_inc.cpp generation is triggered by --compile-host
-// RUN: aiecc --no-xchesscc --no-xbridge --compile-host -n --verbose %s 2>&1 | FileCheck %s
-// RUN: aiecc --no-xchesscc --no-xbridge --compile-host --host-target=aarch64-linux-gnu -n --verbose %s 2>&1 | FileCheck %s --check-prefix=AARCH64
+// RUN: echo "int main(){return 0;}" > %t.cpp
 
-// Test: full host compilation with -I/-L/-l/-o and host source file
-// RUN: aiecc --no-xchesscc --no-xbridge --compile-host -n --verbose \
-// RUN:   -I/some/include -L/some/lib -lsomelib %s /tmp/host_test.cpp -o host_out 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=HOSTFULL
+// aie_inc.cpp generation and host clang++ (C++17) are triggered by --get-host.
+// RUN: aiecc --get-host -n --verbose %s -- %t.cpp 2>&1 | FileCheck %s
 
-// CHECK: Generating aie_inc.cpp for device
-// CHECK: aie-translate
-// CHECK: --aie-generate-xaie
+// --host-target propagates to the host compiler target triple.
+// RUN: aiecc --get-host --host-target=aarch64-linux-gnu -n --verbose %s -- %t.cpp 2>&1 | FileCheck %s --check-prefix=AARCH64
 
-// AARCH64: Generating aie_inc.cpp for device
-// AARCH64: aie-translate
-// AARCH64: --aie-generate-xaie
+// Host source files and extra flags after `--` are forwarded verbatim, in
+// order, to the host clang++ driver. This works for AIE2 host compilation
+// (device is npu1_1col below), not just AIE1.
+// RUN: aiecc --get-host -n --verbose %s -- -I/some/include -L/some/lib -lsomelib %t.cpp 2>&1 | FileCheck %s --check-prefix=HOSTFULL
 
-// HOSTFULL: clang++
-// HOSTFULL-SAME: -std=c++17
-// HOSTFULL: -I/some/include
-// HOSTFULL: -L/some/lib
-// HOSTFULL: -lsomelib
-// HOSTFULL: /tmp/host_test.cpp
-// HOSTFULL: -o host_out
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) aie_inc.cpp
+// CHECK: exec:{{.*}}clang++{{.*}}-std=c++17
+
+// AARCH64: exec:{{.*}}clang++{{.*}}--target=aarch64-linux-gnu
+
+// HOSTFULL: ({{[0-9]+}}/{{[0-9]+}}) aie_inc.cpp
+// HOSTFULL: exec:{{.*}}clang++{{.*}}-I/some/include{{.*}}-L/some/lib{{.*}}-lsomelib{{.*}}.cpp
 
 module {
   aie.device(npu1_1col) {
@@ -52,11 +48,9 @@ module {
       %c16 = arith.constant 16 : index
       %c1_i32 = arith.constant 1 : i32
 
-      %subview_in = aie.objectfifo.acquire @of_in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @of_in(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @of_out(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @of_out(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>

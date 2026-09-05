@@ -1,16 +1,13 @@
 //===- AIETargets.cpp -------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
 #include "aie/Targets/AIETargets.h"
 
-#include "aie/Dialect/ADF/ADFDialect.h"
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEVec/IR/AIEVecDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
@@ -23,6 +20,7 @@
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Ptr/IR/PtrOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -37,6 +35,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <fstream>
 #include <iostream>
@@ -49,7 +48,7 @@ using namespace mlir::vector;
 using namespace xilinx;
 using namespace xilinx::AIE;
 
-llvm::json::Value attrToJSON(Attribute &attr) {
+static llvm::json::Value attrToJSON(Attribute &attr) {
   if (auto a = llvm::dyn_cast<StringAttr>(attr))
     return {a.getValue().str()};
 
@@ -100,7 +99,7 @@ static void registerDialects(DialectRegistry &registry) {
 
 // Output the buffer map for the given buffer operations, with the given offset.
 // The offset is different depending on where the buffers are accessed from.
-void writeBufferMap(raw_ostream &output, BufferOp buf, int offset) {
+static void writeBufferMap(raw_ostream &output, BufferOp buf, int offset) {
   std::string bufName(buf.name().getValue());
   int bufferBaseAddr = getBufferBaseAddress(buf);
   int numBytes = buf.getAllocationSize();
@@ -158,6 +157,15 @@ void registerAIETranslations() {
       llvm::cl::desc(
           "Select binary (true) or text (false) output for supported "
           "translations. e.g. aie-npu-to-binary, aie-ctrlpkt-to-bin"));
+  static llvm::cl::opt<bool> npuFoldDDRAddrOffset(
+      "aie-npu-fold-ddr-addr-offset", llvm::cl::init(true),
+      llvm::cl::desc(
+          "For aie-npu-to-binary: fold the AIE DDR-aperture offset into the "
+          "arg_plus of DDR address patches for host arguments beyond the "
+          "firmware-translated set. Required for the xclbin + "
+          "instruction-buffer "
+          "runtime; must be false for the full-ELF (xrt.ext.kernel) runtime, "
+          "which translates all host buffer addresses itself."));
   static llvm::cl::opt<std::string> deviceName(
       "aie-device-name", llvm::cl::init(""),
       llvm::cl::desc("Specify which device to translate"));
@@ -165,6 +173,14 @@ void registerAIETranslations() {
       "aie-sequence-name", llvm::cl::init(""),
       llvm::cl::desc(
           "Specify the name of the aiex.runtime_sequence to translate"));
+  static llvm::cl::opt<std::string> npuEmitLocmap(
+      "aie-npu-emit-locmap", llvm::cl::init(""),
+      llvm::cl::value_desc("filename"),
+      llvm::cl::desc(
+          "For aie-npu-to-binary, also write a JSON sidecar mapping each "
+          "transaction word's byte offset to its source MLIR Location (and "
+          "regdb register name where applicable) to the given file. The binary "
+          "is still emitted to the main output."));
 
   TranslateFromMLIRRegistration registrationMMap(
       "aie-generate-mmap", "Generate AIE memory map",
@@ -305,22 +321,10 @@ void registerAIETranslations() {
       },
       registerDialects);
 
-  TranslateFromMLIRRegistration registrationXADF(
-      "adf-generate-cpp-graph", "Translate ADFDialect to C++ graph",
-      ADFGenerateCPPGraph, [](DialectRegistry &registry) {
-        registry.insert<xilinx::ADF::ADFDialect>();
-        registerDialects(registry);
-      });
   TranslateFromMLIRRegistration registrationXAIE(
       "aie-generate-xaie", "Generate libxaie configuration",
       [](ModuleOp module, raw_ostream &output) {
         return AIETranslateToXAIEV2(module, output, deviceName);
-      },
-      registerDialects);
-  TranslateFromMLIRRegistration registrationHSA(
-      "aie-generate-hsa", "Generate hsa data movement configuration",
-      [](ModuleOp module, raw_ostream &output) {
-        return AIETranslateToHSA(module, output, deviceName);
       },
       registerDialects);
   TranslateFromMLIRRegistration registrationXJSON(
@@ -369,10 +373,14 @@ void registerAIETranslations() {
       "aie-npu-to-binary", "Translate npu instructions to binary",
       [](ModuleOp module, raw_ostream &output) {
         std::vector<uint32_t> instructions;
-        auto r = AIETranslateNpuToBinary(module, instructions, deviceName,
-                                         sequenceName);
+        std::vector<TxnLocEntry> locmap;
+        bool emitLocmap = !npuEmitLocmap.empty();
+        auto r = AIETranslateNpuToBinary(
+            module, instructions, deviceName, sequenceName,
+            emitLocmap ? &locmap : nullptr, npuFoldDDRAddrOffset);
         if (failed(r))
           return r;
+        // The binary (or hex text) is always emitted to the main output.
         if (outputBinary) {
           output.write(reinterpret_cast<const char *>(instructions.data()),
                        instructions.size() * sizeof(uint32_t));
@@ -380,7 +388,28 @@ void registerAIETranslations() {
           for (auto w : instructions)
             output << llvm::format("%08X\n", w);
         }
+        // With -aie-npu-emit-locmap=<file>, additionally write the JSON
+        // location sidecar (mapping each transaction word's byte offset to its
+        // source MLIR Location) to that file.
+        if (emitLocmap) {
+          std::error_code ec;
+          llvm::raw_fd_ostream locFile(npuEmitLocmap, ec,
+                                       llvm::sys::fs::OF_Text);
+          if (ec) {
+            llvm::errs() << "Error opening locmap file '" << npuEmitLocmap
+                         << "': " << ec.message() << "\n";
+            return failure();
+          }
+          emitNpuLocmapJSON(locFile, deviceName, /*binaryName=*/"", locmap);
+        }
         return success();
+      },
+      registerDialects);
+  TranslateFromMLIRRegistration registrationNpuToCpp(
+      "aie-npu-to-cpp",
+      "Translate npu instructions to a C++ TXN-builder function",
+      [](ModuleOp module, raw_ostream &output) {
+        return AIETranslateNpuToCpp(module, output);
       },
       registerDialects);
   TranslateFromMLIRRegistration registrationCtrlPkt(

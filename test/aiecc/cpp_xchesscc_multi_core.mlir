@@ -1,26 +1,26 @@
 //===- cpp_xchesscc_multi_core.mlir -----------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
-// Test xchesscc compilation with multiple cores
+// Test xchesscc compilation with multiple cores.
+// Both cores (0, 2) and (0, 3) must be compiled to objects with xchesscc and
+// linked into ELFs with the xbridge (+l) linker; Peano's llc is never used.
 
 // REQUIRES: chess
 
-// RUN: aiecc --xchesscc --xbridge --verbose %s 2>&1 | FileCheck %s
+// Give this run private output/work dirs: Chess drops scratch and aiecc emits
+// the per-core elfs_<core> dir into the output dir, so concurrent runs sharing
+// a directory (as the lit suite does) would clobber each other.
+// RUN: aiecc --xchesscc --xbridge -v --output-dir=%t --tmpdir=%t.prj %s 2>&1 | FileCheck %s
 
-// CHECK: Successfully parsed input file
-// CHECK: Found 1 AIE device
-// CHECK-DAG: Compiling core (0, 2)
-// CHECK-DAG: Compiling core (0, 3)
-// CHECK: Compiled with xchesscc
-// CHECK: Linked with xbridge
-// CHECK: Compilation completed successfully
+// CHECK-DAG: xchesscc_wrapper aie2 {{.*}} -c {{.*}}-o {{.*}}objects_main_core_0_2.o
+// CHECK-DAG: xchesscc_wrapper aie2 {{.*}} -c {{.*}}-o {{.*}}objects_main_core_0_3.o
+// CHECK-DAG: xchesscc_wrapper aie2 {{.*}}+l {{.*}}-o {{.*}}elfs_main_core_0_2.elf
+// CHECK-DAG: xchesscc_wrapper aie2 {{.*}}+l {{.*}}-o {{.*}}elfs_main_core_0_3.elf
+// CHECK-NOT: {{[^ ]*llc }}
 
 module {
   aie.device(npu1_1col) {
@@ -39,11 +39,9 @@ module {
       %c16 = arith.constant 16 : index
       %c1_i32 = arith.constant 1 : i32
 
-      %subview_in = aie.objectfifo.acquire @of_in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @of_in(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @of_mid(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @of_mid(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>
@@ -63,11 +61,9 @@ module {
       %c16 = arith.constant 16 : index
       %c2_i32 = arith.constant 2 : i32
 
-      %subview_in = aie.objectfifo.acquire @of_mid(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @of_mid(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @of_out(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @of_out(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>

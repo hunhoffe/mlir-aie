@@ -1,10 +1,7 @@
 //===- test_error_dma_len_overflow.mlir ------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2024 Advanced Micro Devices, Inc. or its affiliates
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,7 +23,7 @@ module {
       %srcDma = aie.dma_start(MM2S, 0, ^bd0, ^end)
     ^bd0:
       %buf = aie.external_buffer { sym_name = "myBuffer_0_0_0" } : memref<536870912xi64>
-      aie.dma_bd(%buf : memref<536870912xi64>, 0, 536870912)
+      aie.dma_bd(%buf : memref<536870912xi64> offset = 0 len = 536870912)
       aie.next_bd ^end
     ^end:
       aie.end

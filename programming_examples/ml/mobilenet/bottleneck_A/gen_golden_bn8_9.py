@@ -1,37 +1,33 @@
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2024 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
 
-import torch
-import torch.nn as nn
-import sys
 import math
-from aie.utils.ml import DataShaper
-import time
 import os
+from pathlib import Path
+
 import numpy as np
-import aie.iron as iron
-from aie.utils import DefaultNPURuntime
-from aie.utils import TraceConfig, HostRuntime, NPUKernel, DefaultNPURuntime
-import aie.utils.test as test_utils
-from brevitas.nn import QuantConv2d, QuantIdentity, QuantReLU
-from brevitas.quant.fixed_point import (
+import torch  # pyright: ignore[reportMissingImports]
+import torch.nn as nn  # pyright: ignore[reportMissingImports]
+from aie.utils.ml import DataShaper
+from brevitas.nn import (  # pyright: ignore[reportMissingImports]
+    QuantConv2d,
+    QuantIdentity,
+    QuantReLU,
+)
+from brevitas.quant.fixed_point import (  # pyright: ignore[reportMissingImports]
     Int8ActPerTensorFixedPoint,
     Int8WeightPerTensorFixedPoint,
     Uint8ActPerTensorFixedPoint,
 )
 
-sys.path.append("..")
-import mb_utils
+from .. import mb_utils
 
 torch.use_deterministic_algorithms(True)
-import json
 
-log_dir = "log/"
-data_dir = "data/"
+log_dir = str(Path(__file__).parent / "log") + "/"
+data_dir = str(Path(__file__).parent / "data") + "/"
 
 # Read the existing scale factors
 scale_factor_file = "scale_factors_fused_bn8+bn9.json"
@@ -126,11 +122,6 @@ def main():
         1,
     )
     print("Total weights size: ", shape_total_wts)
-
-    shape_in_act = (tensorInH, InC_vec, tensorInW, vectorSize)  #'YCXC8' , 'CYX'
-    shape_out = (tensorOutH, OutC_vec, tensorOutW, vectorSize)  # HCWC8
-    size_out = tensorOutH * OutC_vec * tensorOutW * vectorSize
-    shape_out_final = (OutC_vec * vectorSize, tensorOutH, tensorOutW)  # CHW
 
     # ------------------------------------------------------
     # Initialize activation, weights, scaling factor for int8 model
@@ -294,11 +285,13 @@ def main():
         bn9_project=bneck_9_OutC3,
     )
 
+    import torch.utils.data as data_utils  # pyright: ignore[reportMissingImports]
+    import torchvision  # pyright: ignore[reportMissingImports]
+    from brevitas_examples.imagenet_classification.ptq.ptq_common import (  # pyright: ignore[reportMissingImports]
+        calibrate,
+    )
     from mb_utils import ExpandChannels
-    from brevitas_examples.imagenet_classification.ptq.ptq_common import calibrate
-    import torchvision
-    import torch.utils.data as data_utils
-    from torchvision import transforms
+    from torchvision import transforms  # pyright: ignore[reportMissingImports]
 
     # Define the image preprocessing pipeline
     transform = transforms.Compose(
@@ -310,7 +303,6 @@ def main():
             ExpandChannels(target_channels=tensorInC),  # Expand to 80 channels
         ]
     )
-    data_dir = "data"
 
     # test_dataset = torchvision.datasets.ImageNet(
     #     root=data_dir, train=False, transform=transform, download=True)
@@ -321,9 +313,9 @@ def main():
     # calib_loader = torch.utils.data.DataLoader(dataset=val_sub, batch_size=32, shuffle=False)
 
     src_data = "/group/xrlabs2/imagenet/calibration"
-    datset = torchvision.datasets.ImageFolder(src_data, transform)
+    dataset = torchvision.datasets.ImageFolder(src_data, transform)
     indices = torch.arange(4)
-    val_sub = data_utils.Subset(datset, indices)
+    val_sub = data_utils.Subset(dataset, indices)
     calib_loader = torch.utils.data.DataLoader(
         dataset=val_sub, batch_size=32, shuffle=False
     )
@@ -407,7 +399,6 @@ def main():
 
     mb_utils.write_scale_factors(log_dir + scale_factor_file, scale_factors)
 
-    atol = block_9_skip_add
     # ------------------------------------------------------
     # Reorder input data-layout
     # ------------------------------------------------------

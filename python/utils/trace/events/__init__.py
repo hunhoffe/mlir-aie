@@ -1,8 +1,5 @@
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#
-# (c) Copyright 2025-2026 Advanced Micro Devices, Inc. or its affiliates
 #
 """Trace events enumerations for AIE architectures.
 
@@ -15,25 +12,27 @@ under architecture-agnostic names (CoreEvent, etc.) for convenience.
 Use get_events_for_device() to select the correct architecture.
 """
 
+import typing
 from enum import IntEnum
 from types import SimpleNamespace
-import typing
 
-from aie.dialects._aie_enum_gen import (
+from aie.dialects._aie_enum_gen import (  # pyright: ignore[reportMissingImports]
     CoreEventAIE,
-    MemEventAIE,
-    ShimTileEventAIE,
     CoreEventAIE2,
-    MemEventAIE2,
-    ShimTileEventAIE2,
-    MemTileEventAIE2,
     CoreEventAIE2P,
+    MemEventAIE,
+    MemEventAIE2,
     MemEventAIE2P,
-    ShimTileEventAIE2P,
+    MemTileEventAIE2,
     MemTileEventAIE2P,
+    ShimTileEventAIE,
+    ShimTileEventAIE2,
+    ShimTileEventAIE2P,
 )
-
-from aie.dialects.aie import WireBundle, DMAChannelDir
+from aie.dialects.aie import (
+    DMAChannelDir,  # pyright: ignore[reportAttributeAccessIssue]
+    WireBundle,  # pyright: ignore[reportAttributeAccessIssue]
+)
 
 # Default to AIE2 for backwards compatibility
 CoreEvent = CoreEventAIE2
@@ -92,19 +91,21 @@ PortEventCodes = _get_port_events(CoreEvent)
 MemTilePortEventCodes = _get_port_events(MemTileEvent)
 ShimTilePortEventCodes = _get_port_events(ShimTileEvent)
 
+_AnyEvent = typing.Union[
+    CoreEvent, MemEvent, ShimTileEvent, MemTileEvent
+]  # pyright: ignore[reportInvalidTypeForm]
+
 
 class GenericEvent:
-    def __init__(
-        self, code: typing.Union[CoreEvent, MemEvent, ShimTileEvent, MemTileEvent]
-    ):
-        self.code: typing.Union[CoreEvent, MemEvent, ShimTileEvent, MemTileEvent] = code
+    def __init__(self, code: _AnyEvent):  # pyright: ignore[reportInvalidTypeForm]
+        self.code: _AnyEvent = code  # pyright: ignore[reportInvalidTypeForm]
 
     def get_register_writes(self):
-        """
-        Sub-classes for specific events that require writing to a specific
-        register should overwrite this method to return a dicitionary
-        address -> register value.
+        """Return the register writes required for this event as ``address -> value``.
 
+        Sub-classes for specific events that require writing to a specific
+        register should overwrite this method to return a dictionary
+        address -> register value.
         Note that if multiple event(-types) request writing to the same
         register, their writes will be ORed together. (This makes sense if
         configuration requires only writing some bits of the whole register.)
@@ -113,8 +114,7 @@ class GenericEvent:
 
 
 class BasePortEvent(GenericEvent):
-    """
-    Base class for port monitoring events.
+    """Base class for port monitoring events.
 
     Port events (PORT_RUNNING_N, PORT_IDLE_N, PORT_STALLED_N, PORT_TLAST_N) monitor
     activity on stream switch ports. The suffix N (0-7) determines which hardware
@@ -161,8 +161,7 @@ class BasePortEvent(GenericEvent):
 
 
 class PortEvent(BasePortEvent):
-    """
-    Configure a port monitor slot for core tile tracing.
+    """Configure a port monitor slot for core tile tracing.
 
     Example:
         # Monitor DMA channel 0 input with PORT_RUNNING_0
@@ -187,8 +186,7 @@ class PortEvent(BasePortEvent):
 
 
 class MemTilePortEvent(BasePortEvent):
-    """
-    Configure a port monitor slot for mem tile tracing.
+    """Configure a port monitor slot for mem tile tracing.
 
     Example:
         # Monitor DMA channel 0 output with PORT_RUNNING_0
@@ -213,8 +211,7 @@ class MemTilePortEvent(BasePortEvent):
 
 
 class ShimTilePortEvent(BasePortEvent):
-    """
-    Configure a port monitor slot for shim tile tracing.
+    """Configure a port monitor slot for shim tile tracing.
 
     Example:
         # Monitor South port channel 2 input with PORT_RUNNING_0

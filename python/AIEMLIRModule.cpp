@@ -1,6 +1,6 @@
 //===- AIEMLIRModule.cpp ----------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2022 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -57,16 +57,6 @@ NB_MODULE(_aie, m) {
           "Get an instance of ObjectFifoType with given element type.",
           "self"_a, "type"_a = nb::none());
 
-  nanobind_adaptors::mlir_type_subclass(m, "ObjectFifoSubviewType",
-                                        aieTypeIsObjectFifoSubviewType)
-      .def_classmethod(
-          "get",
-          [](const nb::object &cls, const MlirType type) {
-            return cls(aieObjectFifoSubviewTypeGet(type));
-          },
-          "Get an instance of ObjectFifoSubviewType with given element type.",
-          "self"_a, "type"_a = nb::none());
-
   nanobind_adaptors::mlir_type_subclass(m, "blockFloatType",
                                         aieTypeIsBlockFloatType)
       .def_classmethod(
@@ -88,13 +78,6 @@ NB_MODULE(_aie, m) {
       throw nb::python_error();
     return nb::steal<nb::str>(pyS);
   };
-
-  m.def(
-      "translate_aie_vec_to_cpp",
-      [&stealCStr](MlirOperation op, bool aie2) {
-        return stealCStr(aieTranslateAIEVecToCpp(op, aie2));
-      },
-      "module"_a, "aie2"_a = false);
 
   m.def(
       "translate_mlir_to_llvmir",
@@ -358,6 +341,10 @@ NB_MODULE(_aie, m) {
            [](PyAieTargetModel &self) {
              return aieTargetModelIsNPU(self.get());
            })
+      .def("get_target_arch",
+           [](PyAieTargetModel &self) {
+             return aieTargetModelGetTargetArch(self.get());
+           })
       .def("get_column_shift",
            [](PyAieTargetModel &self) {
              return aieTargetModelGetColumnShift(self.get());
@@ -387,4 +374,31 @@ NB_MODULE(_aie, m) {
       "tile_like_is_shim_tile",
       [](MlirOperation op) { return aieTileLikeIsShimNOCorPLTile(op); },
       "Returns true if the tile operation is a shim tile (NOC or PL).");
+
+  // #aie.trace_buffer and #aie.trace_slice field access
+  m.def(
+      "trace_buffer_fields",
+      [](MlirAttribute attr) {
+        if (!aieAttrIsTraceBuffer(attr)) {
+          throw nb::value_error("not a #aie.trace_buffer attribute");
+        }
+        return nb::make_tuple(
+            aieTraceBufferGetArgIndex(attr), aieTraceBufferGetOffset(attr),
+            aieTraceBufferGetSize(attr), aieTraceBufferGetDedicated(attr));
+      },
+      "Returns (arg_index, offset, size, dedicated) of a #aie.trace_buffer.");
+  m.def(
+      "trace_slice_fields",
+      [](MlirAttribute attr) {
+        if (!aieAttrIsTraceSlice(attr)) {
+          throw nb::value_error("not a #aie.trace_slice attribute");
+        }
+        MlirStringRef device = aieTraceSliceGetDevice(attr);
+        MlirStringRef sequence = aieTraceSliceGetSequence(attr);
+        return nb::make_tuple(std::string(device.data, device.length),
+                              std::string(sequence.data, sequence.length),
+                              aieTraceSliceGetOffset(attr),
+                              aieTraceSliceGetSize(attr));
+      },
+      "Returns (device, sequence, offset, size) of a #aie.trace_slice.");
 }

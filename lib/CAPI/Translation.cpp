@@ -1,10 +1,7 @@
 //===- Translation.cpp ------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023-2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2023-2024 Advanced Micro Devices, Inc. or its affiliates
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,17 +34,6 @@
 using namespace llvm;
 using namespace mlir;
 using namespace xilinx::AIE;
-
-MlirStringRef aieTranslateAIEVecToCpp(MlirOperation moduleOp, bool aie2) {
-  std::string cpp;
-  llvm::raw_string_ostream os(cpp);
-  ModuleOp mod = llvm::cast<ModuleOp>(unwrap(moduleOp));
-  if (failed(xilinx::aievec::translateAIEVecToCpp(mod, aie2, os)))
-    return mlirStringRefCreate(nullptr, 0);
-  char *cStr = static_cast<char *>(malloc(cpp.size()));
-  cpp.copy(cStr, cpp.size());
-  return mlirStringRefCreate(cStr, cpp.size());
-};
 
 MlirStringRef aieTranslateModuleToLLVMIR(MlirOperation moduleOp) {
   std::string llvmir;
@@ -128,19 +114,6 @@ MlirStringRef aieTranslateToXAIEV2(MlirOperation moduleOp,
   llvm::raw_string_ostream os(xaie);
   ModuleOp mod = llvm::cast<ModuleOp>(unwrap(moduleOp));
   if (failed(AIETranslateToXAIEV2(
-          mod, os, llvm::StringRef(deviceName.data, deviceName.length))))
-    return mlirStringRefCreate(nullptr, 0);
-  char *cStr = static_cast<char *>(malloc(xaie.size()));
-  xaie.copy(cStr, xaie.size());
-  return mlirStringRefCreate(cStr, xaie.size());
-}
-
-MlirStringRef aieTranslateToHSA(MlirOperation moduleOp,
-                                MlirStringRef deviceName) {
-  std::string xaie;
-  llvm::raw_string_ostream os(xaie);
-  ModuleOp mod = llvm::cast<ModuleOp>(unwrap(moduleOp));
-  if (failed(AIETranslateToHSA(
           mod, os, llvm::StringRef(deviceName.data, deviceName.length))))
     return mlirStringRefCreate(nullptr, 0);
   char *cStr = static_cast<char *>(malloc(xaie.size()));

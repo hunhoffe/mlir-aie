@@ -1,10 +1,7 @@
 //===- memTileDMA2.mlir ----------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023-2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2023-2024 Advanced Micro Devices, Inc. or its affiliates
 //
 //===----------------------------------------------------------------------===//
 
@@ -53,16 +50,19 @@ module @aie_module  {
   %m01 = aie.memtile_dma(%t01) {
       %srcDma = aie.dma_start(S2MM, 0, ^bd0, ^end)
     ^bd0:
-      aie.dma_bd(%buf_w : memref<16xi32>, 0, 16)
-      aie.use_lock(%lock_w, "Release", 1)
+      aie.dma_bd(%buf_w : memref<16xi32> offset = 0 len = 16)
+      %c1_ul1 = arith.constant 1 : i32
+      aie.use_lock(%lock_w, "Release", %c1_ul1)
       aie.next_bd ^bd1
     ^bd1:
-      aie.dma_bd(%buf_l : memref<16xi32>, 0, 16)
-      aie.use_lock(%lock_l, "Release", 1)
+      aie.dma_bd(%buf_l : memref<16xi32> offset = 0 len = 16)
+      %c1_ul2 = arith.constant 1 : i32
+      aie.use_lock(%lock_l, "Release", %c1_ul2)
       aie.next_bd ^bd2
     ^bd2:
-      aie.dma_bd(%buf_e : memref<16xi32>, 0, 16)
-      aie.use_lock(%lock_e, "Release", 1)
+      aie.dma_bd(%buf_e : memref<16xi32> offset = 0 len = 16)
+      %c1_ul3 = arith.constant 1 : i32
+      aie.use_lock(%lock_e, "Release", %c1_ul3)
       aie.next_bd ^end
     ^end:
       aie.end

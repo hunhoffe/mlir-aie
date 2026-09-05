@@ -1,18 +1,15 @@
 //===- aie.mlir ------------------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2023, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
 // This tests the multi-dimensional (n-D) address generation function of AIE2
 // buffer descriptors.
 
-// REQUIRES: aiesimulator, valid_xchess_license, !hsa
-// RUN: %PYTHON aiecc.py --aiesim --xchesscc --xbridge %VitisSysrootFlag% --host-target=%aieHostTargetTriplet% %link_against_hsa% %s %test_lib_flags %extraAieCcFlags% %S/test.cpp -o test.elf
+// REQUIRES: aiesimulator, valid_xchess_license
+// RUN: %aiecc --get-aiesim --xchesscc --xbridge %VitisSysrootFlag% --host-target=%aieHostTargetTriplet% %link_against_hsa% %s %test_lib_flags %extraAieCcFlags% -o test.elf -- %S/test.cpp
 // RUN: %run_on_vck5000 ./test.elf
 // RUN: sh -c 'aie.mlir.prj/aiesim.sh; exit 0' | FileCheck %s
 
@@ -48,7 +45,8 @@ module @tutorial_2b {
                 scf.yield %cp : i32
             }
 
-            aie.use_lock(%lock14_done, "Release", 1)
+            %c1_ul1 = arith.constant 1 : i32
+            aie.use_lock(%lock14_done, "Release", %c1_ul1)
 
             aie.end
         }
@@ -58,25 +56,33 @@ module @tutorial_2b {
         }
 
         %mem14 = aie.mem(%tile14) {
+          %c0_i32 = arith.constant 0 : i32
+          %c128_i32 = arith.constant 128 : i32
           %srcDma = aie.dma_start("MM2S", 0, ^bd0, ^end)
           ^bd0:
-            aie.use_lock(%lock14_done, "AcquireGreaterEqual", 1)
+            %c1_ul2 = arith.constant 1 : i32
+            aie.use_lock(%lock14_done, "AcquireGreaterEqual", %c1_ul2)
                                                              ////////// new //////////
-            aie.dma_bd(%buf14 : memref<128xi32>, 0, 128, [<size = 2, stride = 1>, <size = 8, stride = 1>, <size = 8, stride = 8>])
+            aie.dma_bd(%buf14 : memref<128xi32> offset = 0 len = 128 sizes = [2, 8, 8] strides = [1, 1, 8])
                                                             // w, s    w, s    w,  s
                                                             // dim 2,  dim 1,  dim 0
-            aie.use_lock(%lock14_sent, "Release", 1)
+            %c1_ul3 = arith.constant 1 : i32
+            aie.use_lock(%lock14_sent, "Release", %c1_ul3)
             aie.next_bd ^end
           ^end:
             aie.end
         }
 
         %mem34 = aie.mem(%tile34) {
+          %c0_i32 = arith.constant 0 : i32
+          %c128_i32 = arith.constant 128 : i32
           %dstDma = aie.dma_start("S2MM", 0, ^bd0, ^end)
           ^bd0:
-            aie.use_lock(%lock34_wait, "AcquireGreaterEqual", 1)
-            aie.dma_bd(%buf34 : memref<128xi32>, 0, 128)
-            aie.use_lock(%lock34_recv, "Release", 1)
+            %c1_ul4 = arith.constant 1 : i32
+            aie.use_lock(%lock34_wait, "AcquireGreaterEqual", %c1_ul4)
+            aie.dma_bd(%buf34 : memref<128xi32> offset = 0 len = 128)
+            %c1_ul5 = arith.constant 1 : i32
+            aie.use_lock(%lock34_recv, "Release", %c1_ul5)
             aie.next_bd ^end
           ^end:
             aie.end

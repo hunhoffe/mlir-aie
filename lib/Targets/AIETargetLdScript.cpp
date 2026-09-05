@@ -1,10 +1,7 @@
 //===- AIETargetLdScript.cpp -----------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2023 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -83,21 +80,58 @@ LogicalResult xilinx::AIE::AIETranslateToLdScript(ModuleOp module,
       TileID srcCoord = {tile.colIndex(), tile.rowIndex()};
       const auto &targetModel = getTargetModel(tile);
 
-      // Figure out how much memory we have left for random allocations
+      // Figure out how much memory we have left for compiler-generated
+      // sections (.data/.rodata/.bss) that are not explicitly placed; these are
+      // emitted into the "data" region below. Buffers are placed by the
+      // buffer-address allocator, which (in bank-aware mode) can leave the free
+      // space fragmented -- pick the largest free gap across the stack and this
+      // tile's buffers within the tile's local memory.
       auto core = tile.getCoreOp();
-      int max = core.getStackSize();
+      int localMemSize = targetModel.getLocalMemorySize();
+
+      // Collect occupied [start, end) intervals in tile-local coordinates: the
+      // stack sits at the bottom of memory, followed by the placed buffers.
+      SmallVector<std::pair<int, int>, 8> occupied;
+      occupied.push_back({0, core.getEffectiveStackSize()});
       for (auto buf : buffers[tiles[srcCoord]]) {
         int bufferBaseAddr = getBufferBaseAddress(buf);
         int numBytes = buf.getAllocationSize();
-        max = std::max(max, bufferBaseAddr + numBytes);
+        occupied.push_back({bufferBaseAddr, bufferBaseAddr + numBytes});
       }
-      int origin = targetModel.getMemInternalBaseAddress(srcCoord) + max;
-      int length = targetModel.getLocalMemorySize() - max;
+      std::sort(occupied.begin(), occupied.end());
+
+      // Sweep the intervals to find the largest free gap not covered by any of
+      // them within [0, localMemSize).
+      int bestGapStart = 0;
+      int bestGapLen = 0;
+      int cursor = 0;
+      auto considerGap = [&](int gapStart, int gapEnd) {
+        if (gapEnd - gapStart > bestGapLen) {
+          bestGapLen = gapEnd - gapStart;
+          bestGapStart = gapStart;
+        }
+      };
+      for (auto &iv : occupied) {
+        if (iv.first > cursor)
+          considerGap(cursor, iv.first);
+        cursor = std::max(cursor, iv.second);
+      }
+      // Trailing gap above the highest occupied address.
+      if (cursor < localMemSize)
+        considerGap(cursor, localMemSize);
+
+      int origin =
+          targetModel.getMemInternalBaseAddress(srcCoord) + bestGapStart;
+      int length = bestGapLen;
+      // Was hardcoded to 0x20000 -- eight times the real 0x4000 -- which let
+      // an overflowing core link cleanly and fail much later in aie-rt's ELF
+      // loader instead of here, at the linker, naming the section.
       output << R"THESCRIPT(
 MEMORY
 {
-   program (RX) : ORIGIN = 0, LENGTH = 0x0020000
 )THESCRIPT";
+      output << "   program (RX) : ORIGIN = 0, LENGTH = 0x"
+             << llvm::utohexstr(targetModel.getProgramMemorySize()) << "\n";
       output << "   data (!RX) : ORIGIN = 0x" << llvm::utohexstr(origin)
              << ", LENGTH = 0x" << llvm::utohexstr(length);
       output << R"THESCRIPT(
@@ -140,7 +174,7 @@ SECTIONS
 
 )THESCRIPT";
       auto doBuffer = [&](std::optional<TileID> tile, int offset,
-                          std::string dir) {
+                          const std::string &dir) {
         if (tile) {
           if (tiles.count(*tile))
             for (auto buf : buffers[tiles[*tile]])
@@ -160,7 +194,7 @@ SECTIONS
       output << "_sp_start_value_DM_stack = .;\n";
 
       if (auto core = tile.getCoreOp())
-        output << ". += 0x" << llvm::utohexstr(core.getStackSize())
+        output << ". += 0x" << llvm::utohexstr(core.getEffectiveStackSize())
                << "; /* stack */\n";
       else
         output << "/* no stack allocated */\n";
@@ -179,13 +213,15 @@ SECTIONS
       // them inside SECTIONS is invalid linker script syntax.
       output << "}\n";
       if (auto coreOp = tile.getCoreOp()) {
+        // `link_files` holds the ordinary final-link inputs (object files)
         if (auto filesAttr = coreOp.getLinkFiles()) {
           // Canonical path: link_files populated by aie-assign-core-link-files.
           for (auto f : filesAttr->getAsRange<mlir::StringAttr>())
             output << "INPUT(" << f.getValue() << ")\n";
         } else if (auto fileAttr = coreOp.getLinkWith()) {
           // Deprecated fallback: core-level link_with was not migrated by
-          // aie-assign-core-link-files (e.g., the pass was not run).
+          // aie-assign-core-link-files (e.g., the pass was not run). It carries
+          // no mode, so it is always an ordinary link input.
           output << "INPUT(" << fileAttr.value().str() << ")\n";
         }
 

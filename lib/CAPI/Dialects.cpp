@@ -1,10 +1,7 @@
 //===- Dialects.cpp ---------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2022-2024 Advanced Micro Devices, Inc. or its affiliates
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,19 +32,6 @@ bool aieTypeIsObjectFifoType(MlirType type) {
 
 MlirType aieObjectFifoTypeGet(MlirType type) {
   return wrap(xilinx::AIE::AIEObjectFifoType::get(
-      llvm::cast<mlir::MemRefType>(unwrap(type))));
-}
-
-//===---------------------------------------------------------------------===//
-// ObjectFifoSubviewType
-//===---------------------------------------------------------------------===//
-
-bool aieTypeIsObjectFifoSubviewType(MlirType type) {
-  return llvm::isa<xilinx::AIE::AIEObjectFifoSubviewType>(unwrap(type));
-}
-
-MlirType aieObjectFifoSubviewTypeGet(MlirType type) {
-  return wrap(xilinx::AIE::AIEObjectFifoSubviewType::get(
       llvm::cast<mlir::MemRefType>(unwrap(type))));
 }
 
@@ -94,4 +78,50 @@ bool aieTileLikeIsShimPLTile(MlirOperation op) {
 bool aieTileLikeIsShimNOCorPLTile(MlirOperation op) {
   auto tileLike = llvm::dyn_cast<xilinx::AIE::TileLike>(unwrap(op));
   return tileLike && tileLike.isShimNOCorPLTile();
+}
+
+//===---------------------------------------------------------------------===//
+// TraceBufferAttr / TraceSliceAttr
+//===---------------------------------------------------------------------===//
+
+bool aieAttrIsTraceBuffer(MlirAttribute attr) {
+  return llvm::isa<xilinx::AIE::TraceBufferAttr>(unwrap(attr));
+}
+
+uint32_t aieTraceBufferGetArgIndex(MlirAttribute attr) {
+  return llvm::cast<xilinx::AIE::TraceBufferAttr>(unwrap(attr)).getArgIndex();
+}
+
+uint32_t aieTraceBufferGetOffset(MlirAttribute attr) {
+  return llvm::cast<xilinx::AIE::TraceBufferAttr>(unwrap(attr)).getOffset();
+}
+
+uint32_t aieTraceBufferGetSize(MlirAttribute attr) {
+  return llvm::cast<xilinx::AIE::TraceBufferAttr>(unwrap(attr)).getSize();
+}
+
+bool aieTraceBufferGetDedicated(MlirAttribute attr) {
+  return llvm::cast<xilinx::AIE::TraceBufferAttr>(unwrap(attr)).getDedicated();
+}
+
+bool aieAttrIsTraceSlice(MlirAttribute attr) {
+  return llvm::isa<xilinx::AIE::TraceSliceAttr>(unwrap(attr));
+}
+
+MlirStringRef aieTraceSliceGetDevice(MlirAttribute attr) {
+  return wrap(
+      llvm::cast<xilinx::AIE::TraceSliceAttr>(unwrap(attr)).getDevice());
+}
+
+MlirStringRef aieTraceSliceGetSequence(MlirAttribute attr) {
+  return wrap(
+      llvm::cast<xilinx::AIE::TraceSliceAttr>(unwrap(attr)).getSequence());
+}
+
+uint32_t aieTraceSliceGetOffset(MlirAttribute attr) {
+  return llvm::cast<xilinx::AIE::TraceSliceAttr>(unwrap(attr)).getOffset();
+}
+
+uint32_t aieTraceSliceGetSize(MlirAttribute attr) {
+  return llvm::cast<xilinx::AIE::TraceSliceAttr>(unwrap(attr)).getSize();
 }

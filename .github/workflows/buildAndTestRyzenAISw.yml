@@ -1,4 +1,11 @@
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
 name: Build and Test with Ryzen AI Sofware
+
+permissions:
+  contents: read
+  packages: read
 
 on:
   push:
@@ -41,7 +48,7 @@ jobs:
     steps:
 
       - name: Free disk space
-        uses: descriptinc/free-disk-space@main
+        uses: descriptinc/free-disk-space@1b4b157593c6801212a2ed488c205e0a810b4592  # main
         with:
           tool-cache: true
           android: true
@@ -55,10 +62,10 @@ jobs:
         run: |
           docker system prune -a -f
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: "true"
-      - uses: uraimo/run-on-arch-action@v3
+      - uses: uraimo/run-on-arch-action@fd7aa8593480287702b446a273a68f788a9bad3a  # v3
         name: Build and Test
         id: runcmd
         with:
@@ -98,13 +105,26 @@ jobs:
                 --requirements python/requirements.txt \
                 --install-non-eudsl
             pip install -r python/requirements_ml.txt
+            # Ryzen AI 1.3 SDK is cp310-only (see python3.10 sed above).
+            # requirements_dev.lock targets py>=3.11 (drops cibuildwheel 3.x
+            # transitively); fall back to the loose .txt here.
             pip install -r python/requirements_dev.txt
 
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
 
             cd /workspace
-            pip -q download mlir==$VERSION \
-              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+            for attempt in 1 2 3; do
+              rm -f mlir-*.whl
+              if pip -q download mlir==$VERSION \
+                -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "Failed to download MLIR wheel after ${attempt} attempts" >&2
+                exit 1
+              fi
+              sleep $((attempt * 5))
+            done
             unzip -q mlir-*.whl
 
             mkdir -p /workspace/install
@@ -121,7 +141,6 @@ jobs:
                 -DXRT_ROOT=/opt/xilinx/xrt \
                 -DAIE_ENABLE_PYTHON_PASSES=OFF \
                 -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
-                -DAIE_INCLUDE_INTEGRATION_TESTS=OFF \
                 -DAIE_VITIS_COMPONENTS='AIE2;AIE2P' \
                 -DPython3_EXECUTABLE=$(which python) \
                 -DLLVM_EXTERNAL_LIT=$(which lit) \
@@ -131,7 +150,7 @@ jobs:
 
             ninja install
             # filter out slow tests (e.g. create-flows/vecmul_4x4_slow_test.mlir) due to timeout.
-            export LIT_OPTS="-sv --timeout 600 --filter-out slow_test"
+            export LIT_OPTS="-j1 -sv --timeout 600 --filter-out slow_test"
             ninja check-aie
 
             popd

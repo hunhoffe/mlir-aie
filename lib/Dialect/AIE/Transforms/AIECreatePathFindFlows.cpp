@@ -1,10 +1,8 @@
 //===- AIECreatePathfindFlows.cpp -------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,7 +15,13 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Tools/mlir-translate/MlirTranslateMain.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
+
+#include <cstdint>
 
 using namespace mlir;
 using namespace xilinx;
@@ -46,8 +50,8 @@ struct ConvertFlowsToInterconnect : OpConversionPattern<FlowOp> {
     auto point = rewriter.saveInsertionPoint();
     rewriter.setInsertionPoint(b.getTerminator());
 
-    ConnectOp::create(rewriter, rewriter.getUnknownLoc(), inBundle, inIndex,
-                      outBundle, outIndex);
+    ConnectOp::create(rewriter, flowOp.getLoc(), inBundle, inIndex, outBundle,
+                      outIndex);
 
     rewriter.restoreInsertionPoint(point);
 
@@ -216,7 +220,8 @@ struct AIEOpRemoval : OpConversionPattern<MyOp> {
   }
 };
 
-bool AIEPathfinderPass::findPathToDest(SwitchSettings settings, TileID currTile,
+bool AIEPathfinderPass::findPathToDest(const SwitchSettings &settings,
+                                       TileID currTile,
                                        WireBundle currDestBundle,
                                        int currDestChannel, TileID finalTile,
                                        WireBundle finalDestBundle,
@@ -267,6 +272,205 @@ bool AIEPathfinderPass::findPathToDest(SwitchSettings settings, TileID currTile,
   return false;
 }
 
+namespace {
+struct CoverCube {
+  int mask;
+  int value;
+  // cov[i] is set iff this cube matches match id i.
+  llvm::SmallBitVector cov;
+};
+} // namespace
+
+// Minimum set cover by branch-and-bound: find the fewest `cubes` whose coverage
+// (cube.cov) unions to every match id still set in `uncovered`. `sel` is the
+// current partial pick; `bestSel`/`bestSize` hold the smallest full cover so
+// far and are updated in place.
+static void bnbMinCover(ArrayRef<CoverCube> cubes,
+                        const llvm::SmallBitVector &uncovered,
+                        SmallVectorImpl<int> &sel, int &bestSize,
+                        SmallVectorImpl<int> &bestSel) {
+
+  // base case
+  if (uncovered.none()) {
+    if (static_cast<int>(sel.size()) < bestSize) {
+      bestSize = static_cast<int>(sel.size());
+      bestSel.assign(sel.begin(), sel.end());
+    }
+    return;
+  }
+
+  // bound: adding a cube would only tie the best
+  if (static_cast<int>(sel.size()) + 1 >= bestSize) {
+    return;
+  }
+
+  // most constrained variable: find the least-covered, uncovered matchId
+  int pick = -1;
+  int pickCount = static_cast<int>(cubes.size()) + 1;
+
+  for (int id = uncovered.find_first(); id != -1;
+       id = uncovered.find_next(id)) {
+    int c = 0;
+
+    for (const CoverCube &cb : cubes) {
+      if (cb.cov.test(id)) {
+        c++;
+      }
+    }
+
+    if (c < pickCount) {
+      pickCount = c;
+      pick = id;
+    }
+  }
+
+  // branch: try each cube that covers the chosen id, recursing on the rest.
+  for (int i = 0; i < static_cast<int>(cubes.size()); ++i) {
+    if (!cubes[i].cov.test(pick)) {
+      continue;
+    }
+
+    sel.push_back(i);
+    llvm::SmallBitVector next = uncovered;
+    next.reset(cubes[i].cov); // next &= ~cov
+    bnbMinCover(cubes, next, sel, bestSize, bestSel);
+    sel.pop_back();
+  }
+}
+
+// Cover `matchIds` (a group's packet ids) with the fewest (mask, value) rules
+// that match every specified id and no `avoidIds` (other ids on the same slave
+// port). A rule matches id x iff (x & mask) == value; ids in neither set are
+// don't-cares, free to over-claim.
+//
+// Based on Quine-McCluskey:
+//   1. Enumerate prime implicants: maximal cubes (a cube is one (mask, value))
+//      that match >=1 matchIds and no avoidIds.
+//   2. Pick the fewest of those cubes that cover all match ids (bnbMinCover).
+//   3. Tighten each chosen cube to the smallest enclosing cube of the ids it
+//      took, so it claims no more don't-cares than necessary; the one-cube case
+//      reduces to the old common-bits mask.
+static SmallVector<std::pair<int, int>>
+computeSubcubeCover(const SmallVector<int, 4> &matchIds,
+                    const llvm::SmallSet<int, 8> &avoidIds, int idBits) {
+
+  // id space and full mask, sized from the target's packet-id width.
+  const int numIds = 1 << idBits;
+  const int idMask = numIds - 1;
+
+  auto hitsAvoid = [&](int mask, int value) {
+    return llvm::any_of(avoidIds, [&](int o) { return (o & mask) == value; });
+  };
+
+  llvm::SmallBitVector matchMask(numIds);
+  for (int id : matchIds) {
+    matchMask.set(id);
+  }
+
+  // phase 1: enumerate prime implicants. small (3^idBits), so brute force.
+  SmallVector<CoverCube> primes;
+  for (int mask = 0; mask < numIds; ++mask) {
+    for (int value = 0; value < numIds; ++value) {
+      // valid cube := value covered by mask, avoids properly
+      if ((value & mask) != value) {
+        continue;
+      }
+      if (hitsAvoid(mask, value)) {
+        continue;
+      }
+
+      // record covering
+      llvm::SmallBitVector cov(numIds);
+      for (int id : matchIds) {
+        if ((id & mask) == value) {
+          cov.set(id);
+        }
+      }
+
+      if (cov.none()) {
+        continue;
+      }
+
+      // prime = maximal, i.e., no checked mask bit can be dropped without
+      // covering an avoidId.
+      bool isPrime = true;
+      for (int b = 0; b < idBits; ++b) {
+        if (!((mask >> b) & 1)) {
+          continue;
+        }
+
+        if (!hitsAvoid(mask & ~(1 << b), value & ~(1 << b))) {
+          isPrime = false;
+          break;
+        }
+      }
+
+      if (isPrime) {
+        primes.push_back({mask, value, std::move(cov)});
+      }
+    }
+  }
+
+  // phase 2: pick the fewest primes that cover every match id (bnb).
+  SmallVector<int> sel, bestSel;
+  int bestSize = static_cast<int>(matchIds.size()) + 1;
+
+  bnbMinCover(primes, matchMask, sel, bestSize, bestSel);
+
+  SmallVector<std::pair<int, int>> chosen;
+  for (int i : bestSel) {
+    chosen.push_back({primes[i].mask, primes[i].value});
+  }
+
+  if (chosen.empty()) {
+    // unreachable: a single-id cube always covers
+    for (int id : matchIds) {
+      chosen.push_back({idMask, id});
+    }
+  }
+
+  // phase 3: tighten each chosen cube to match only the ids it took.
+  // maximal -> over-claim don't-cares -> more mask bits narrow the cube.
+  //
+  // e.g., {2,4} avoid {0}:
+  //   prime (mask 00010, value 00010): 2 & 00010 = 00010 == value -> hit
+  //                                    6 & 00010 = 00010 == value -> also hit
+  //   tight (mask 11111, value 00010): 2 & 11111 = 00010 == value -> hit
+  //                                    6 & 11111 = 00110 != value -> dropped
+  //                                    0 & 11111 = 00000 != value -> avoided
+
+  SmallVector<SmallVector<int, 4>, 4> assigned(chosen.size());
+  for (int id : matchIds) {
+    for (int c = 0; c < static_cast<int>(chosen.size()); ++c) {
+      if ((id & chosen[c].first) == chosen[c].second) {
+        assigned[c].push_back(id);
+        break;
+      }
+    }
+  }
+
+  SmallVector<std::pair<int, int>> cover;
+  for (const SmallVector<int, 4> &ids : assigned) {
+    if (ids.empty()) {
+      continue;
+    }
+
+    int mask = idMask;
+    for (int i = 0; i < idBits; ++i) {
+      int bit = (ids.front() >> i) & 1;
+      for (int id : ids) {
+        if (((id >> i) & 1) != bit) {
+          mask &= ~(1 << i);
+          break;
+        }
+      }
+    }
+    cover.push_back({mask, ids.front() & mask});
+  }
+
+  return cover;
+}
+
 LogicalResult
 AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
                                    DynamicTileAnalysis &analyzer) {
@@ -284,6 +488,8 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
   DenseMap<PhysPort, BoolAttr> keepPktHeaderAttr;
   // Map from tileID and master ports to flags labelling control packet flows
   DenseMap<std::pair<PhysPort, int>, bool> ctrlPktFlows;
+  // Set of master ports that belong to control packet overlay flows
+  DenseSet<PhysPort> ctrlPktOverlayMasterPorts;
 
   for (auto tileOp : device.getOps<TileOp>()) {
     int col = tileOp.colIndex();
@@ -297,62 +503,76 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
     Region &r = pktFlowOp.getPorts();
     Block &b = r.front();
     int flowID = pktFlowOp.IDInt();
-    Port srcPort, destPort;
-    TileOp srcTile, destTile;
-    TileID srcCoords, destCoords;
+    SmallVector<std::pair<TileID, Port>, 4> sources;
 
-    // Pass 1: extract source (order-independent: dest may appear before source)
+    // Pass 1: collect all sources (order-independent; supports fan-in).
     for (Operation &Op : b.getOperations()) {
       if (auto pktSource = dyn_cast<PacketSourceOp>(Op)) {
-        srcTile = dyn_cast<TileOp>(pktSource.getTile().getDefiningOp());
-        srcPort = pktSource.port();
-        srcCoords = {srcTile.colIndex(), srcTile.rowIndex()};
+        auto srcTile = cast<TileOp>(pktSource.getTile().getDefiningOp());
+        sources.push_back(
+            {{srcTile.colIndex(), srcTile.rowIndex()}, pktSource.port()});
       }
     }
-    if (!srcTile)
+    if (sources.empty())
       return pktFlowOp.emitOpError("packet_flow has no packet_source");
-    // Pass 2: process each destination using the source extracted above
+    // Pass 2: lower each (source, destination) pair so fan-in flows lay
+    // down switchbox connections for every source, not just the last one.
     for (Operation &Op : b.getOperations()) {
-      if (auto pktDest = dyn_cast<PacketDestOp>(Op)) {
-        destTile = dyn_cast<TileOp>(pktDest.getTile().getDefiningOp());
-        destPort = pktDest.port();
-        destCoords = {destTile.colIndex(), destTile.rowIndex()};
-        // Assign "keep_pkt_header flag"
-        auto keep = pktFlowOp.getKeepPktHeader();
-        keepPktHeaderAttr[{destTile.getTileID(), destPort}] =
-            keep ? BoolAttr::get(Op.getContext(), *keep) : nullptr;
+      auto pktDest = dyn_cast<PacketDestOp>(Op);
+      if (!pktDest)
+        continue;
+      auto destTile = cast<TileOp>(pktDest.getTile().getDefiningOp());
+      Port destPort = pktDest.port();
+      TileID destCoords = {destTile.colIndex(), destTile.rowIndex()};
+      // Assign "keep_pkt_header flag"
+      auto keep = pktFlowOp.getKeepPktHeader();
+      keepPktHeaderAttr[{destTile.getTileID(), destPort}] =
+          keep ? BoolAttr::get(Op.getContext(), *keep) : nullptr;
 
+      for (auto &[srcCoords, srcPort] : sources) {
         TileID srcSB = {srcCoords.col, srcCoords.row};
-        if (PathEndPoint srcPoint = {srcSB, srcPort};
-            !analyzer.processedFlows[srcPoint]) {
-          SwitchSettings settings = analyzer.flowSolutions[srcPoint];
-          // add connections for all the Switchboxes in SwitchSettings
-          for (const auto &[curr, setting] : settings) {
-            assert(setting.srcs.size() == setting.dsts.size());
-            TileID currTile = {curr.col, curr.row};
-            for (size_t i = 0; i < setting.srcs.size(); i++) {
-              Port src = setting.srcs[i];
-              Port dest = setting.dsts[i];
-              // reject false broadcast
-              if (!findPathToDest(settings, currTile, dest.bundle, dest.channel,
-                                  destCoords, destPort.bundle,
-                                  destPort.channel))
-                continue;
-              Connect connect = {{src.bundle, src.channel},
-                                 {dest.bundle, dest.channel}};
-              if (std::find(switchboxes[currTile].begin(),
-                            switchboxes[currTile].end(),
-                            std::pair{connect, flowID}) ==
-                  switchboxes[currTile].end())
-                switchboxes[currTile].push_back({connect, flowID});
-              // Assign "control packet flows" flag per switchbox, based on
-              // packet flow op attribute
-              auto ctrlPkt = pktFlowOp.getPriorityRoute();
-              ctrlPktFlows[{{currTile, dest}, flowID}] =
-                  ctrlPkt ? *ctrlPkt : false;
-            }
+        PathEndPoint srcPoint = {srcSB, srcPort};
+        if (analyzer.processedFlows[srcPoint])
+          continue;
+        SwitchSettings settings = analyzer.flowSolutions[srcPoint];
+        // Track whether the source's own switch connection survives routing.
+        bool srcRouted = false;
+        // add connections for all the Switchboxes in SwitchSettings
+        for (const auto &[curr, setting] : settings) {
+          assert(setting.srcs.size() == setting.dsts.size());
+          TileID currTile = {curr.col, curr.row};
+          for (size_t i = 0; i < setting.srcs.size(); i++) {
+            Port src = setting.srcs[i];
+            Port dest = setting.dsts[i];
+            // reject false broadcast
+            if (!findPathToDest(settings, currTile, dest.bundle, dest.channel,
+                                destCoords, destPort.bundle, destPort.channel))
+              continue;
+            if (currTile == srcSB && src.bundle == srcPort.bundle &&
+                src.channel == srcPort.channel)
+              srcRouted = true;
+            Connect connect = {{src.bundle, src.channel},
+                               {dest.bundle, dest.channel}};
+            if (std::find(
+                    switchboxes[currTile].begin(), switchboxes[currTile].end(),
+                    std::pair{connect, flowID}) == switchboxes[currTile].end())
+              switchboxes[currTile].push_back({connect, flowID});
+            // Assign "control packet flows" flag per switchbox, based on
+            // packet flow op attribute
+            auto ctrlPkt = pktFlowOp.getPriorityRoute();
+            ctrlPktFlows[{{currTile, dest}, flowID}] =
+                ctrlPkt ? *ctrlPkt : false;
           }
         }
+        if (!srcRouted)
+          return pktFlowOp.emitOpError()
+                 << "packet flow source (" << srcCoords.col << ", "
+                 << srcCoords.row << ") " << stringifyWireBundle(srcPort.bundle)
+                 << srcPort.channel << " could not be routed to destination ("
+                 << destCoords.col << ", " << destCoords.row << ") "
+                 << stringifyWireBundle(destPort.bundle) << destPort.channel
+                 << "; the pathfinder produced an incomplete routing for this "
+                    "placement.";
       }
     }
   }
@@ -367,10 +587,12 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
       Port destPort = conn.dst;
       auto sourceFlow =
           std::make_pair(std::make_pair(tileId, sourcePort), flowID);
-      if (ctrlPktFlows[{{tileId, destPort}, flowID}])
+      if (ctrlPktFlows[{{tileId, destPort}, flowID}]) {
         ctrlPacketFlows[sourceFlow].push_back({tileId, destPort});
-      else
+        ctrlPktOverlayMasterPorts.insert({tileId, destPort});
+      } else {
         packetFlows[sourceFlow].push_back({tileId, destPort});
+      }
       slavePorts.push_back(sourceFlow);
       LLVM_DEBUG(llvm::dbgs() << "flowID " << flowID << ':'
                               << stringifyWireBundle(sourcePort.bundle) << " "
@@ -571,8 +793,7 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
 
       for (auto dest : packetFlow.second) {
         Port port = dest.second;
-        if (std::find(existingPorts.begin(), existingPorts.end(), port) ==
-            existingPorts.end())
+        if (llvm::find(existingPorts, port) == existingPorts.end())
           hasNonOverlap = true;
         else
           hasOverlap = true;
@@ -739,7 +960,7 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
         continue;
 
       for (auto dest1 : dests1) {
-        if (std::find(dests2.begin(), dests2.end(), dest1) == dests2.end()) {
+        if (llvm::find(dests2, dest1) == dests2.end()) {
           matched = false;
           break;
         }
@@ -758,59 +979,11 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
     }
   }
 
-  std::map<std::pair<PhysPort, int>, int> slaveMasks;
-  for (const auto &group : slaveGroups) {
-    // Iterate over all the ID values in a group
-    // If bit n-th (n <= 5) of an ID value differs from bit n-th of another ID
-    // value, the bit position should be "don't care", and we will set the
-    // mask bit of that position to 0
-    int mask[5] = {-1, -1, -1, -1, -1};
-    for (auto port : group) {
-      int ID = port.second;
-      for (int i = 0; i < 5; i++) {
-        if (mask[i] == -1)
-          mask[i] = ID >> i & 0x1;
-        else if (mask[i] != (ID >> i & 0x1))
-          mask[i] = 2; // found bit difference --> mark as "don't care"
-      }
-    }
-
-    int maskValue = 0;
-    for (int i = 4; i >= 0; i--) {
-      if (mask[i] == 2) // don't care
-        mask[i] = 0;
-      else
-        mask[i] = 1;
-      maskValue = (maskValue << 1) + mask[i];
-    }
-    for (auto port : group)
-      slaveMasks[port] = maskValue;
-  }
-
-#ifndef NDEBUG
-  LLVM_DEBUG(llvm::dbgs() << "CHECK Slave Masks\n");
-  for (auto map : slaveMasks) {
-    PhysPort port = map.first.first;
-    TileOp tile = analyzer.getTile(builder, port.first);
-    WireBundle bundle = port.second.bundle;
-    int channel = port.second.channel;
-    int ID = map.first.second;
-    int mask = map.second;
-
-    LLVM_DEBUG(llvm::dbgs()
-               << "Port " << tile << " " << stringifyWireBundle(bundle) << " "
-               << channel << '\n');
-    LLVM_DEBUG(llvm::dbgs() << "Mask "
-                            << "0x" << llvm::Twine::utohexstr(mask) << '\n');
-    LLVM_DEBUG(llvm::dbgs() << "ID "
-                            << "0x" << llvm::Twine::utohexstr(ID) << '\n');
-    for (int i = 0; i < 31; i++) {
-      if ((i & mask) == (ID & mask))
-        LLVM_DEBUG(llvm::dbgs() << "matches flow ID "
-                                << "0x" << llvm::Twine::utohexstr(i) << '\n');
-    }
-  }
-#endif
+  // Ids on each slave port; a group covers its own and avoids the rest.
+  std::map<PhysPort, llvm::SmallSet<int, 8>> idsOnPort;
+  for (const auto &group : slaveGroups)
+    for (auto member : group)
+      idsOnPort[member.first].insert(member.second);
 
   // Realize the routes in MLIR
 
@@ -819,11 +992,11 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
   for (const auto &swMap : mastersets) {
     TileID tileId = swMap.first.first;
     TileOp tileOp = analyzer.getTile(builder, tileId);
-    if (std::none_of(tiles.begin(), tiles.end(),
-                     [&tileOp](const std::pair<const xilinx::AIE::TileID,
-                                               Operation *> &tileMapEntry) {
-                       return tileMapEntry.second == tileOp.getOperation();
-                     })) {
+    if (llvm::none_of(tiles,
+                      [&tileOp](const std::pair<const xilinx::AIE::TileID,
+                                                Operation *> &tileMapEntry) {
+                        return tileMapEntry.second == tileOp.getOperation();
+                      })) {
       tiles[{tileOp.colIndex(), tileOp.rowIndex()}] = tileOp;
     }
   }
@@ -832,13 +1005,13 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
     Operation *tileOp = map.second;
     TileOp tile = cast<TileOp>(map.second);
     TileID tileId = tile.getTileID();
+    Location tileLoc = tile.getLoc();
 
     // Create a switchbox for the routes and insert inside it.
     builder.setInsertionPointAfter(tileOp);
     SwitchboxOp swbox =
         analyzer.getSwitchbox(builder, tile.colIndex(), tile.rowIndex());
-    SwitchboxOp::ensureTerminator(swbox.getConnections(), builder,
-                                  builder.getUnknownLoc());
+    SwitchboxOp::ensureTerminator(swbox.getConnections(), builder, tileLoc);
     Block &b = swbox.getConnections().front();
     builder.setInsertionPoint(b.getTerminator());
 
@@ -859,8 +1032,7 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
         if (amselOpNeededVector[amselValue]) {
           int arbiterID = a;
           int msel = i;
-          auto amsel = AMSelOp::create(builder, builder.getUnknownLoc(),
-                                       arbiterID, msel);
+          auto amsel = AMSelOp::create(builder, tileLoc, arbiterID, msel);
           amselOps[amselValue] = amsel;
         }
       }
@@ -885,9 +1057,11 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
         amsels.push_back(amselOps[msel]);
       }
 
-      MasterSetOp::create(builder, builder.getUnknownLoc(),
-                          builder.getIndexType(), bundle, channel, amsels,
-                          keepPktHeaderAttr[{tileId, tileMaster}]);
+      auto msOp = MasterSetOp::create(builder, tileLoc, builder.getIndexType(),
+                                      bundle, channel, amsels,
+                                      keepPktHeaderAttr[{tileId, tileMaster}]);
+      if (ctrlPktOverlayMasterPorts.contains({tileId, tileMaster}))
+        msOp->setAttr("is_ctrl_pkt_overlay", builder.getUnitAttr());
     }
 
     // Generate the packet rules
@@ -903,43 +1077,103 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
       int channel = port.second.channel;
       auto slave = port.second;
 
-      int mask = slaveMasks[group.front()];
-      int ID = group.front().second & mask;
+      SmallVector<int, 4> matchIds;
+      for (auto member : group)
+        matchIds.push_back(member.second);
 
-      // Verify that we actually map all the ID's correctly.
-#ifndef NDEBUG
-      for (auto slave : group)
-        assert((slave.second & mask) == ID);
-#endif
+      uint32_t maxPacketId = device.getTargetModel().getMaxPacketId();
+      for (int id : matchIds)
+        if (id > static_cast<int>(maxPacketId)) {
+          return mlir::emitError(tileLoc)
+                 << "packet id " << id << " exceeds the maximum of "
+                 << maxPacketId;
+        }
+
+      int idBits = llvm::Log2_32_Ceil(maxPacketId + 1);
+      llvm::SmallSet<int, 8> avoidIds = idsOnPort[port];
+      for (int id : matchIds)
+        avoidIds.erase(id);
+      SmallVector<std::pair<int, int>> cover =
+          computeSubcubeCover(matchIds, avoidIds, idBits);
+
+      LLVM_DEBUG({
+        llvm::dbgs() << "packet cover " << stringifyWireBundle(bundle)
+                     << channel << ": matchIds {";
+        for (int id : matchIds)
+          llvm::dbgs() << ' ' << id;
+        llvm::dbgs() << " } avoidIds {";
+        for (int id : avoidIds)
+          llvm::dbgs() << ' ' << id;
+        llvm::dbgs() << " } ->";
+        for (auto [m, v] : cover)
+          llvm::dbgs() << " rule(" << m << ", " << v << ")";
+        llvm::dbgs() << '\n';
+      });
+
+      for (int id : matchIds)
+        assert(llvm::any_of(cover,
+                            [&](std::pair<int, int> c) {
+                              return (id & c.first) == c.second;
+                            }) &&
+               "subcube cover misses a match id");
+      for (int id : avoidIds)
+        assert(llvm::none_of(cover,
+                             [&](std::pair<int, int> c) {
+                               return (id & c.first) == c.second;
+                             }) &&
+               "subcube cover over-claims an avoid id");
+
       Value amsel = amselOps[slaveAMSels[group.front()]];
+
+      // Check if this group is a ctrl-pkt overlay flow
+      bool isCtrlPktGroup = ctrlPacketFlows.count(group.front()) > 0;
 
       PacketRulesOp packetrules;
       if (slaveRules.count(slave) == 0) {
-        packetrules = PacketRulesOp::create(builder, builder.getUnknownLoc(),
-                                            bundle, channel);
+        packetrules = PacketRulesOp::create(builder, tileLoc, bundle, channel);
         PacketRulesOp::ensureTerminator(packetrules.getRules(), builder,
-                                        builder.getUnknownLoc());
+                                        tileLoc);
+        if (isCtrlPktGroup)
+          packetrules->setAttr("is_ctrl_pkt_overlay", builder.getUnitAttr());
         slaveRules[slave] = packetrules;
       } else
         packetrules = slaveRules[slave];
 
       Block &rules = packetrules.getRules().front();
 
-      // Verify ID mapping against all other rules of the same slave.
+      // A fan-out whose cover exceeds the slave port's packet-rule slots needs
+      // channel-level restructuring, not masking.
+      uint32_t slotLimit = device.getTargetModel().getNumSlaveSlots();
+      uint32_t existingSlots = 0;
+      for (auto rule : rules.getOps<PacketRuleOp>()) {
+        (void)rule;
+        existingSlots++;
+      }
+      if (existingSlots + cover.size() > slotLimit) {
+        packetrules->emitOpError("slave port packet rules exceed the ")
+            << slotLimit << "-slot limit (" << existingSlots << " + "
+            << cover.size() << ").";
+        return failure();
+      }
+
+      // The cover avoids this port's avoidIds by construction; this catches a
+      // conflict only against rules from another source (e.g. hand-authored).
       for (auto rule : rules.getOps<PacketRuleOp>()) {
         auto verifyMask = rule.maskInt();
         auto verifyValue = rule.valueInt();
-        if ((group.front().second & verifyMask) == verifyValue) {
-          rule->emitOpError("can lead to false packet id match for id ")
-              << ID << ", which is not supposed to pass through this port.";
-          rule->emitRemark("Please consider changing all uses of packet id ")
-              << ID << " to avoid deadlock.";
-          return failure();
-        }
+        for (int id : matchIds)
+          if ((id & verifyMask) == verifyValue) {
+            rule->emitOpError("can lead to false packet id match for id ")
+                << id << ", which is not supposed to pass through this port.";
+            rule->emitRemark("Please consider changing all uses of packet id ")
+                << id << " to avoid deadlock.";
+            return failure();
+          }
       }
 
       builder.setInsertionPoint(rules.getTerminator());
-      PacketRuleOp::create(builder, builder.getUnknownLoc(), mask, ID, amsel);
+      for (auto [mask, value] : cover)
+        PacketRuleOp::create(builder, tileLoc, mask, value, amsel);
     }
   }
 
@@ -996,13 +1230,13 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
           pktrules.setSourceBundle(WireBundle::South);
           if (pktrules.getSourceChannel() == 0) {
             pktrules.setSourceChannel(3);
-            ConnectOp::create(builder, builder.getUnknownLoc(), WireBundle::DMA,
-                              0, WireBundle::North, 3);
+            ConnectOp::create(builder, tileOp.getLoc(), WireBundle::DMA, 0,
+                              WireBundle::North, 3);
           }
           if (pktrules.getSourceChannel() == 1) {
             pktrules.setSourceChannel(7);
-            ConnectOp::create(builder, builder.getUnknownLoc(), WireBundle::DMA,
-                              1, WireBundle::North, 7);
+            ConnectOp::create(builder, tileOp.getLoc(), WireBundle::DMA, 1,
+                              WireBundle::North, 7);
           }
         }
       }
@@ -1027,13 +1261,13 @@ AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder,
           mtset.setDestBundle(WireBundle::South);
           if (mtset.getDestChannel() == 0) {
             mtset.setDestChannel(2);
-            ConnectOp::create(builder, builder.getUnknownLoc(),
-                              WireBundle::North, 2, WireBundle::DMA, 0);
+            ConnectOp::create(builder, tileOp.getLoc(), WireBundle::North, 2,
+                              WireBundle::DMA, 0);
           }
           if (mtset.getDestChannel() == 1) {
             mtset.setDestChannel(3);
-            ConnectOp::create(builder, builder.getUnknownLoc(),
-                              WireBundle::North, 3, WireBundle::DMA, 1);
+            ConnectOp::create(builder, tileOp.getLoc(), WireBundle::North, 3,
+                              WireBundle::DMA, 1);
           }
         }
       }
@@ -1084,54 +1318,55 @@ void AIEPathfinderPass::runOnOperation() {
         sw = analyzer.coordToSwitchbox[{col, row}];
       else
         continue;
+      Location loc = tile.getLoc();
       if (col > 0) {
         // connections east-west between stream switches
         if (analyzer.coordToSwitchbox.count({col - 1, row})) {
           auto westsw = analyzer.coordToSwitchbox[{col - 1, row}];
-          WireOp::create(builder, builder.getUnknownLoc(), westsw,
-                         WireBundle::East, sw, WireBundle::West);
+          WireOp::create(builder, loc, westsw, WireBundle::East, sw,
+                         WireBundle::West);
         }
       }
       if (row > 0) {
         // connections between abstract 'core' of tile
-        WireOp::create(builder, builder.getUnknownLoc(), tile, WireBundle::Core,
-                       sw, WireBundle::Core);
+        WireOp::create(builder, loc, tile, WireBundle::Core, sw,
+                       WireBundle::Core);
         // connections between abstract 'dma' of tile
-        WireOp::create(builder, builder.getUnknownLoc(), tile, WireBundle::DMA,
-                       sw, WireBundle::DMA);
+        WireOp::create(builder, loc, tile, WireBundle::DMA, sw,
+                       WireBundle::DMA);
         // connections north-south inside array ( including connection to shim
         // row)
         if (analyzer.coordToSwitchbox.count({col, row - 1})) {
           auto southsw = analyzer.coordToSwitchbox[{col, row - 1}];
-          WireOp::create(builder, builder.getUnknownLoc(), southsw,
-                         WireBundle::North, sw, WireBundle::South);
+          WireOp::create(builder, loc, southsw, WireBundle::North, sw,
+                         WireBundle::South);
         }
       } else if (row == 0) {
         if (tile.isShimNOCTile()) {
           if (analyzer.coordToShimMux.count({col, 0})) {
             auto shimsw = analyzer.coordToShimMux[{col, 0}];
             WireOp::create(
-                builder, builder.getUnknownLoc(), shimsw,
+                builder, loc, shimsw,
                 WireBundle::North, // Changed to connect into the north
                 sw, WireBundle::South);
             // PLIO is attached to shim mux
             if (analyzer.coordToPLIO.count(col)) {
               auto plio = analyzer.coordToPLIO[col];
-              WireOp::create(builder, builder.getUnknownLoc(), plio,
-                             WireBundle::North, shimsw, WireBundle::South);
+              WireOp::create(builder, loc, plio, WireBundle::North, shimsw,
+                             WireBundle::South);
             }
 
             // abstract 'DMA' connection on tile is attached to shim mux ( in
             // row 0 )
-            WireOp::create(builder, builder.getUnknownLoc(), tile,
-                           WireBundle::DMA, shimsw, WireBundle::DMA);
+            WireOp::create(builder, loc, tile, WireBundle::DMA, shimsw,
+                           WireBundle::DMA);
           }
         } else if (tile.isShimPLTile()) {
           // PLIO is attached directly to switch
           if (analyzer.coordToPLIO.count(col)) {
             auto plio = analyzer.coordToPLIO[col];
-            WireOp::create(builder, builder.getUnknownLoc(), plio,
-                           WireBundle::North, sw, WireBundle::South);
+            WireOp::create(builder, loc, plio, WireBundle::North, sw,
+                           WireBundle::South);
           }
         }
       }

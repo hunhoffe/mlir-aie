@@ -1,10 +1,7 @@
 //===- cpp_parallel_compilation.mlir ---------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,16 +9,21 @@
 
 // Test parallel core compilation with -j option
 
-// RUN: aiecc --no-xchesscc --no-xbridge --verbose -j 2 %s | FileCheck %s
+// RUN: aiecc --get-npu-insts --get-core-elfs --verbose -j 2 %s 2>&1 | FileCheck %s
 
-// CHECK: Successfully parsed input file
-// CHECK: Device 'main' with 2 core(s)
-// CHECK: Compiling 2 core(s) in parallel (2 threads)
-// CHECK: Compiling core
-// CHECK: Compiling core
-// CHECK: Generated ELF
-// CHECK: Generated ELF
-// CHECK: Compilation completed successfully
+// Parallel compilation (-j 2): both cores are compiled and linked.
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) input.mlir
+// CHECK-DAG: exec:{{.*}}core_0_2
+// CHECK-DAG: exec:{{.*}}core_1_2
+// CHECK: wrote edge 'insts_
+
+// Parallel per-core slicing must emit the same object as serial compilation.
+// Compile the same design both ways into separate tmpdirs and diff the per-core
+// objects: byte-identical objects pin the slicing equivalence claim.
+// RUN: aiecc --tmpdir=%t.ser %s
+// RUN: aiecc -j 2 --tmpdir=%t.par %s
+// RUN: diff %t.ser/objects_main_core_0_2/objects_main_core_0_2.o %t.par/objects_main_core_0_2/objects_main_core_0_2.o
+// RUN: diff %t.ser/objects_main_core_1_2/objects_main_core_1_2.o %t.par/objects_main_core_1_2/objects_main_core_1_2.o
 
 module {
   aie.device(npu2_4col) {
@@ -39,11 +41,9 @@ module {
       %c1 = arith.constant 1 : index
       %c16 = arith.constant 16 : index
 
-      %subview_in = aie.objectfifo.acquire @in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @in(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @mid(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @mid(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>
@@ -61,11 +61,9 @@ module {
       %c1 = arith.constant 1 : index
       %c16 = arith.constant 16 : index
 
-      %subview_in = aie.objectfifo.acquire @mid(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @mid(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @out(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @out(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>

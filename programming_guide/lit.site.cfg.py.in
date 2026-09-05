@@ -1,10 +1,8 @@
 # ./lit.site.cfg.py.in -*- Python -*-
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
 
 @LIT_SITE_CFG_IN_HEADER@
 
@@ -51,9 +49,6 @@ config.aie_obj_root = r"""@AIE_BINARY_DIR@"""
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = r"""@CMAKE_CURRENT_BINARY_DIR@"""
 
-config.hsa_dir = r"""@hsa-runtime64_DIR@"""
-config.hsa_found = lit.util.pythonize_bool(r"""@hsa-runtime64_FOUND@""")
-
 # pass on vitis settings
 config.enable_chess_tests = @CONFIG_ENABLE_CHESS_TESTS@
 config.enable_board_tests = @CONFIG_ENABLE_BOARD_TESTS@
@@ -82,7 +77,6 @@ except KeyError:
     key, = e.args
     lit_config.fatal("unable to find %r parameter, use '--param=%s=VALUE'" % (key,key))
 
-config.aie_include_integration_tests = r"""@AIE_INCLUDE_INTEGRATION_TESTS@"""
 
 import lit.llvm
 lit.llvm.initialize(lit_config, config)

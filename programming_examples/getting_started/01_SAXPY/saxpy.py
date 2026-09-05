@@ -1,18 +1,24 @@
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2025 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
-from ml_dtypes import bfloat16
-import numpy as np
-import sys
-import os
+from pathlib import Path
 
 import aie.iron as iron
-from aie.iron import ExternalFunction
-from aie.iron import ObjectFifo, Program, Runtime, Worker
+import numpy as np
+from aie.iron import (
+    CompileTime,
+    ExternalFunction,
+    In,
+    ObjectFifo,
+    Out,
+    Program,
+    Runtime,
+    Worker,
+)
 from aie.utils.config import cxx_header_path
+from aie.utils.verify import assert_pass
+from ml_dtypes import bfloat16
 
 
 # JIT decorator for IRON
@@ -20,9 +26,14 @@ from aie.utils.config import cxx_header_path
 # Parameters:
 #     - use_cache (bool): Use cached MLIR module if available. Defaults to True.
 @iron.jit
-def saxpy(input0, input1, output):
-    N = input0.shape[0]  # Tensor size
-    element_type = output.dtype
+def saxpy(
+    input0: In,
+    input1: In,
+    output: Out,
+    *,
+    N: CompileTime[int],
+    element_type: CompileTime[type]
+):
 
     # --------------------------------------------------------------------------
     # In-Array Data Movement
@@ -44,7 +55,7 @@ def saxpy(input0, input1, output):
 
     saxpy_kernel = ExternalFunction(
         "saxpy",
-        source_file=os.path.join(os.path.dirname(__file__), "saxpy.cc"),
+        source_file=str(Path(__file__).parent / "saxpy.cc"),
         arg_types=[in_ty, in_ty, out_ty],
         include_dirs=[cxx_header_path()],
     )
@@ -66,18 +77,21 @@ def saxpy(input0, input1, output):
     # DRAM-NPU data movement and work dispatch
     # --------------------------------------------------------------------------
 
-    rt = Runtime()
-    with rt.sequence(in_ty, in_ty, out_ty) as (a_x, a_y, c_z):
-        rt.start(worker)
-        rt.fill(of_x.prod(), a_x)
-        rt.fill(of_y.prod(), a_y)
-        rt.drain(of_z.cons(), c_z, wait=True)
+    def sequence(a_x, a_y, c_z, x_prod, y_prod, z_cons):
+        x_prod.fill(a_x)
+        y_prod.fill(a_y)
+        z_cons.drain(c_z, wait=True)
+
+    rt = Runtime(
+        sequence,
+        [in_ty, in_ty, out_ty, of_x.prod(), of_y.prod(), of_z.cons()],
+    )
 
     # --------------------------------------------------------------------------
     # Place and generate MLIR program
     # --------------------------------------------------------------------------
 
-    my_program = Program(iron.get_current_device(), rt)
+    my_program = Program(iron.get_current_device(), rt, workers=[worker])
     return my_program.resolve_program()
 
 
@@ -96,26 +110,11 @@ def main():
 
     # JIT-compile the kernel then launches the kernel with the given arguments. Future calls
     # to the kernel will use the same compiled kernel and loaded code objects
-    saxpy(input0, input1, output)
+    saxpy(input0, input1, output, N=data_size, element_type=element_type)
 
-    # Check the correctness of the result and print any mismatches
-    ref_vec = [3 * input0[i] + input1[i] for i in range(data_size)]
-
-    errors = 0
-    for index, (actual, ref) in enumerate(zip(output, ref_vec)):
-        if actual != ref:
-            print(f"Error at {index}: {actual} != {ref}")
-            errors += 1
-
-    # If the result is correct, exit with a success code
-    # Otherwise, exit with a failure code
-    if not errors:
-        print("\nPASS!\n")
-        sys.exit(0)
-    else:
-        print("\nError count: ", errors)
-        print("\nfailed.\n")
-        sys.exit(1)
+    # Numpy reference of `3*x + y` and a one-line tolerance check.
+    ref = 3 * input0.numpy() + input1.numpy()
+    assert_pass(output.numpy(), ref, fail_msg="saxpy output does not match 3*x + y")
 
 
 if __name__ == "__main__":

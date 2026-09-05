@@ -1,10 +1,7 @@
 //===- AIEToConfiguration.h -------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,7 +43,8 @@ mlir::LogicalResult generateAndInsertConfigOps(
     llvm::StringRef clElfDir = "",
     AIEToConfigurationOutputType outputType =
         AIEToConfigurationOutputType::Transaction,
-    std::string blockwrite_prefix = "config_blockwrite_data_");
+    const std::string &blockwrite_prefix = "config_blockwrite_data_",
+    bool skipCtrlPktOverlay = false);
 
 // --------------------------------------------------------------------------
 // Device reset

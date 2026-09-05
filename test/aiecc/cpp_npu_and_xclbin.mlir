@@ -1,10 +1,7 @@
 //===- cpp_npu_and_xclbin.mlir ---------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,19 +9,17 @@
 
 // Test NPU instruction and xclbin generation
 
-// RUN: aiecc --no-xchesscc --no-xbridge --aie-generate-npu-insts --aie-generate-xclbin --verbose %s | FileCheck %s
+// RUN: aiecc --get-npu-insts --get-xclbin --verbose %s 2>&1 | FileCheck %s
 
-// CHECK: Successfully parsed input file
-// CHECK: Running resource allocation pipeline in-memory
-// CHECK: Resource allocation pipeline completed successfully
-// CHECK: Running routing pipeline in-memory
-// CHECK: Routing pipeline completed successfully
-// CHECK: Compiling core (0, 2)
-// CHECK: Generating NPU instructions for device
-// CHECK: Generating CDO artifacts for device
-// CHECK: Generated PDI
-// CHECK: Generated xclbin
-// CHECK: Compilation completed successfully
+// Full NPU + xclbin flow: routing -> CDO -> PDI -> partition metadata ->
+// xclbin, with npu instructions emitted alongside.
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) input_physical.mlir
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) cdo_{{.*}}
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) {{.*}}.pdi
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) partition_{{.*}}.json
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) aie.xclbin
+// CHECK-DAG: wrote edge 'insts_
+// CHECK-DAG: wrote edge 'aie.xclbin'
 
 module {
   aie.device(npu1_1col) {
@@ -38,8 +33,7 @@ module {
       %c1 = arith.constant 1 : index
       %c64 = arith.constant 64 : index
 
-      %subview = aie.objectfifo.acquire @data(Consume, 1) : !aie.objectfifosubview<memref<64xi32>>
-      %elem = aie.objectfifo.subview.access %subview[0] : !aie.objectfifosubview<memref<64xi32>> -> memref<64xi32>
+      %elem = aie.objectfifo.acquire @data(Consume, 1) : memref<64xi32>
 
       scf.for %i = %c0 to %c64 step %c1 {
         %val = memref.load %elem[%i] : memref<64xi32>

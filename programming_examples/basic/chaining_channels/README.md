@@ -1,11 +1,8 @@
 <!---//===- README.md --------------------------*- Markdown -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//-->
 
 # <ins>Chaining Channels</ins>
@@ -14,11 +11,11 @@ This reference design demonstrates low-level DMA control and channel chaining on
 
 ## Overview
 
-This [design](./chaining_channels_placed.py) showcases advanced DMA programming techniques:
+This [design](./chaining_channels.py) showcases advanced DMA programming techniques:
 
 1. **MemTile Buffer Initialization**: A 1kB buffer in MemTile (row 1) is initialized with values 1-256 using the `initial_value` parameter.
 
-2. **Explicit DMA Control**: The MemTile DMA is controlled via explicit locks rather than automatic ObjectFIFO management. The DMA waits for a lock release triggered by `npu_write32` in the runtime sequence.
+2. **Explicit DMA Control**: The MemTile DMA is controlled via explicit locks rather than automatic ObjectFifo management. The DMA waits for a lock release triggered by `npu_write32` in the runtime sequence.
 
 3. **Low-Level Runtime Sequence**: Uses explicit DMA buffer descriptor operations:
    - `npu_writebd` - Configure buffer descriptors with lock parameters

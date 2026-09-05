@@ -1,10 +1,7 @@
 //===- cpp_f32_relu.mlir - Regression test for #2945 ------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,10 +12,12 @@
 
 // REQUIRES: peano
 
-// RUN: aiecc --no-xchesscc --no-xbridge --verbose %s | FileCheck %s
+// RUN: aiecc --get-xclbin --verbose %s 2>&1 | FileCheck %s
 
-// CHECK: LLVM lowering pipeline completed successfully
-// CHECK: Compilation completed successfully
+// Regression: without the fix, LLVM translation fails on unrealized casts.
+// Reaching routing and a successful xclbin write proves lowering succeeded.
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) input_physical.mlir
+// CHECK: wrote edge 'aie.xclbin'
 
 module attributes {dlti.dl_spec = #dlti.dl_spec<index = 32>} {
   aie.device(npu1_1col) {

@@ -1,14 +1,11 @@
 <!---//===- README.md ---------------------------------------*- Markdown -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//-->
 
-# <ins>To Stream Data Layout Transformations</ins>
+# To Stream Data Layout Transformations
 
 In the [to_stream.py](./to_stream.py) design we first bring `24xi32` data from external memory to L2 memory (i.e., a Mem tile) with `of_in0`. We then use `of_in1` to forward the data from the `MemTile` to `my_worker`. Two FIFOs then move the output data from the Worker:
 - first to L2 via `of_out1`, applying a data layout transformation as the data is pushed onto the AXI stream by the Worker tile's DMA,
@@ -37,10 +34,10 @@ for i in range(8):
 ```
 If we imagine the 24-element wide tensor as 3 rows of 8 elements, the transformation above describes a column-major access pattern.
 
-It is possible to compile, run and test this design with the following commands:
+The design is wrapped in `@iron.jit`, so a single command JIT-compiles and runs it on the attached NPU:
 ```bash
-make
-make run
+python3 to_stream.py
+python3 to_stream.py --dev npu --emit-mlir > aie.mlir
 ```
 
-The [test.cpp](./test.cpp) as well as the `# To/from AIE-array data movement` section of the design code will be described in detail in [Section 2d](../../section-2d/).
+The `# To/from AIE-array data movement` section of the design code is described in detail in [Section 2d](../../section-2d/).

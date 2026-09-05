@@ -1,24 +1,25 @@
 //===- cpp_aie2p_vector_add.mlir - Regression test for #2950 ------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
-// Regression test for #2950: C++ aiecc must correctly propagate the aie-target
+// Regression test for #2950: aiecc must correctly propagate the aie-target
 // option to convert-vector-to-aievec sub-pipelines. Without the fix, aie2p
 // targets fall back to aie1 lowering patterns (producing aievec_aie1 ops),
 // which causes aie-standard-lowering to fail to extract core functions.
 
 // REQUIRES: peano
 
-// RUN: aiecc --no-xchesscc --no-xbridge --verbose %s | FileCheck %s
+// RUN: aiecc --get-xclbin --verbose %s 2>&1 | FileCheck %s
 
-// CHECK: LLVM lowering pipeline completed successfully
-// CHECK: Compilation completed successfully
+// Regression: the aie2p vector lowering must succeed (without the fix,
+// aie-standard-lowering fails to extract core functions). Reaching a
+// successful aie2p code-generation exec and xclbin write proves it.
+// CHECK: ({{[0-9]+}}/{{[0-9]+}}) input_physical.mlir
+// CHECK: exec:{{.*}}--march=aie2p
+// CHECK: wrote edge 'aie.xclbin'
 
 module {
   aie.device(npu2) {

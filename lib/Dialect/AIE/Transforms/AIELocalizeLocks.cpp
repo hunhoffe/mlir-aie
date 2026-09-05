@@ -1,11 +1,9 @@
 //===- AIELocalizeLocks.cpp ---------------------------------------*- C++
 //-*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2019-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2019 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,7 +37,7 @@ struct AIELocalizeLocksPass
       // Collect the locks used in this core.
       const auto &targetModel = getTargetModel(coreOp);
 
-      auto thisTile = dyn_cast<TileOp>(coreOp.getTile().getDefiningOp());
+      auto thisTile = cast<TileOp>(coreOp.getTile().getDefiningOp());
       int col = thisTile.colIndex();
       int row = thisTile.rowIndex();
 
@@ -55,7 +53,7 @@ struct AIELocalizeLocksPass
         int dstRow = tile.rowIndex();
 
         const auto &targetModel = getTargetModel(tile);
-        for (auto user : tile.getResult().getUsers())
+        for (auto *user : tile.getResult().getUsers())
           if (auto lock = dyn_cast<LockOp>(user)) {
             // At this point, we are iterating over all locks that are
             // accessible from within the current core coreOp. We only need to
@@ -80,7 +78,7 @@ struct AIELocalizeLocksPass
                 OpBuilder::atBlockBegin(&coreOp.getBody().front());
 
             Value coreLockIDValue = arith::ConstantIndexOp::create(
-                builder, builder.getUnknownLoc(), localLockIndex);
+                builder, lock.getLoc(), localLockIndex);
             lock.getResult().replaceUsesWithIf(
                 coreLockIDValue, [&](OpOperand &opOperand) {
                   return opOperand.getOwner()->getParentOp() == coreOp;

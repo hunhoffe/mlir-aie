@@ -1,7 +1,7 @@
 //===- AIETargetShared.cpp --------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2021 Xilinx Inc.
-// Copyright (C) 2021-2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2021-2022 Xilinx, Inc.
+// Copyright (C) 2022-2023 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //
@@ -154,6 +154,31 @@ llvm::SetVector<Block *> getOrderedChainOfBlocks(Region *region) {
     }
   }
   return blockVector;
+}
+
+llvm::SmallPtrSet<Block *, 8>
+collectOutOfOrderBlocks(const llvm::SetVector<Block *> &blockVector) {
+  // Scoped to this channel only.
+  llvm::SmallPtrSet<Block *, 8> channelHeads;
+  for (Block *block : blockVector)
+    for (auto startOp : block->getOps<DMAStartOp>())
+      channelHeads.insert(startOp.getDest());
+
+  llvm::SmallPtrSet<Block *, 8> oooBlocks;
+  for (Block *block : blockVector)
+    for (auto startOp : block->getOps<DMAStartOp>()) {
+      if (!startOp.getOutOfOrder())
+        continue;
+      Block *b = startOp.getDest();
+      while (b && oooBlocks.insert(b).second && b->getNumSuccessors() > 0) {
+        Block *next = b->getSuccessor(0);
+        // Another channel's head or this own channel's head.
+        if (channelHeads.contains(next))
+          break;
+        b = next;
+      }
+    }
+  return oooBlocks;
 }
 
 } // namespace xilinx::AIE

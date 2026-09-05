@@ -1,17 +1,19 @@
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
 from copy import deepcopy
 from functools import partial
-import numpy as np
 from typing import Sequence
 
+import numpy as np
+from aie.utils.tensor_factory import ceildiv
+
 from .tas import TensorAccessSequence
-from .utils import ceildiv, validate_and_clean_sizes_strides, validate_tensor_dims
+from .utils import validate_and_clean_sizes_strides, validate_tensor_dims
 
 
 class TensorTiler2D:
-    """
-    This is a generator (similar to factory pattern) class which produces TensorAccessSequences
-    for common 2-dimensional tiling patterns.
-    """
+    """A generator (similar to factory pattern) class which produces TensorAccessSequences for common 2-dimensional tiling patterns."""
 
     _DTYPE = np.int32
     _NUM_DIMS = 2
@@ -31,8 +33,9 @@ class TensorTiler2D:
         pattern_repeat: int = 1,
         prune_step: bool = True,
     ) -> TensorAccessSequence:
-        """The simple_tiler is a special case of the group_tiler. The simple_tiler produces a TensorAccessSequence
-        with one TensorAccessPattern per tile.
+        """Produce a TensorAccessSequence with one TensorAccessPattern per tile.
+
+        The simple_tiler is a special case of the group_tiler.
 
         Args:
             tensor_dims (Sequence[int]): The dimensions of the tensor to tile.
@@ -70,8 +73,9 @@ class TensorTiler2D:
         allow_partial: bool = False,
         prune_step: bool = True,
     ) -> TensorAccessSequence:
-        """The group_tiler is a special case of the step_tiler. The group_tiler produces a TensorAccessSequence
-        with a group of tiles per TensorAccesspattern in the sequence.
+        """Produce a TensorAccessSequence with a group of tiles per TensorAccessPattern in the sequence.
+
+        The group_tiler is a special case of the step_tiler.
 
         Args:
             tensor_dims (Sequence[int]): The dimensions of the tensor to tile.
@@ -118,7 +122,12 @@ class TensorTiler2D:
         pattern_repeat: int = 1,
         prune_step: bool = True,
     ) -> TensorAccessSequence:
-        """
+        """Build a TensorAccessSequence by tiling a tensor with explicit per-dimension steps.
+
+        This is the general-purpose tiler that the simpler ``simple_tiler`` /
+        ``group_tiler`` factories delegate to. It produces one
+        TensorAccessPattern per tile group, giving full control over tile
+        size, group repeats, per-dimension step, and iteration order.
 
         Args:
             tensor_dims (Sequence[int]): The dimensions of the tensor to tile.
@@ -128,8 +137,12 @@ class TensorTiler2D:
             tile_col_major (bool, optional): Iterate column major within each tile. Defaults to False.
             tile_group_col_major (bool, optional): Iterate column major between tiles in a group within a TensorAccessSequence. Defaults to False.
             iter_col_major (bool, optional): Iterate column major over tiles within the TensorAccessSequence. Defaults to False.
-            allow_partial (bool, optional): _description_. Defaults to False.
-            pattern_repeat (int, optional): _description_. Defaults to 1.
+            allow_partial (bool, optional): Whether to allow partial tile groups. A tensor
+                always decomposes into tiles evenly, but it may not decompose into tile
+                *groups* evenly. When False, a partial tile grouping raises a ValueError;
+                when True, partial groupings at the tensor edges are permitted. Defaults
+                to False.
+            pattern_repeat (int, optional): Apply the access pattern n times within a single TensorAccessPattern. Defaults to 1.
             prune_step (bool, optional): Prune the iteration steps in the tiling process. Defaults to True.
 
         Raises:
@@ -141,7 +154,6 @@ class TensorTiler2D:
             TensorAccessSequence: A TensorAccessSequence with one tile grouping per TensorAccessPattern,
                 where the tile grouping may or may not be contiguous.
         """
-
         # Validate dimensions
         if tile_group_steps is None:
             tile_group_steps = (1,) * cls._NUM_DIMS
@@ -196,7 +208,7 @@ class TensorTiler2D:
             step_dims=tile_group_steps,
             repeat_dims=tile_group_repeats,
         )
-        num_steps = np.prod(steps_per_dim)
+        num_steps = int(np.prod(steps_per_dim))
 
         # Define a function to calculate the offset of each tap in the sequence.
         def offset_fn(step_num: int, _prev_offset: int) -> int:
@@ -213,7 +225,11 @@ class TensorTiler2D:
                 total_offset += (
                     offset
                     * tile_dim
-                    * (np.prod(tensor_dims[dim + 1 :]) if dim < num_dims - 1 else 1)
+                    * (
+                        int(np.prod(tensor_dims[dim + 1 :]))
+                        if dim < num_dims - 1
+                        else 1
+                    )
                 )
             return total_offset
 
@@ -428,9 +444,12 @@ class TensorTiler2D:
 
         # May calculate sizes/strides with some unused values in upper dimensions
         # Let's remove those.
-        iter_sizes, iter_strides = validate_and_clean_sizes_strides(
+        cleaned_sizes, cleaned_strides = validate_and_clean_sizes_strides(
             iter_sizes, iter_strides
         )
+        assert cleaned_sizes is not None and cleaned_strides is not None
+        iter_sizes = list(cleaned_sizes)
+        iter_strides = list(cleaned_strides)
 
         # This is the one special case which is device specific
         # Namely we can only have a pure repeat (nonzero size, 0 stride) in the uppermost (0th) dimension.
@@ -444,8 +463,8 @@ class TensorTiler2D:
                 )
             iter_sizes[0] = pattern_repeat
 
-        iter_sizes, iter_strides = validate_and_clean_sizes_strides(
+        cleaned_sizes, cleaned_strides = validate_and_clean_sizes_strides(
             iter_sizes, iter_strides
         )
-
-        return iter_sizes, iter_strides
+        assert cleaned_sizes is not None and cleaned_strides is not None
+        return cleaned_sizes, cleaned_strides

@@ -1,10 +1,8 @@
 //===- AIE.td ----------------------------------------------*- tablegen -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2019-2022 Xilinx, Inc.
+// Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2019 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +26,9 @@ def AIE_Dialect : Dialect {
   }];
   let useDefaultTypePrinterParser = 1;
   let useDefaultAttributePrinterParser = 1;
+  // Python wrappers in dialects/aie.py and AIEX lowerings emit arith.constant
+  // and other operations, so this dialect depends on arith being available.
+  let dependentDialects = ["::mlir::arith::ArithDialect"];
 }
 
 #endif // AIE_BASE

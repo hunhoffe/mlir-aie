@@ -1,10 +1,7 @@
 //===- AIECtrlPacketToDma.cpp -----------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2024 Advanced Micro Devices Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -13,6 +10,7 @@
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/AIEX/Transforms/AIEXPasses.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
@@ -65,7 +63,7 @@ struct AIECtrlPacketToDmaPass
   void runOnOperation() override {
     DeviceOp device = getOperation();
     const auto &targetModel = device.getTargetModel();
-    auto ctx = device->getContext();
+    auto *ctx = device->getContext();
     auto loc = device->getLoc();
 
     if (targetModel.getTargetArch() == AIEArch::AIE1)
@@ -83,8 +81,9 @@ struct AIECtrlPacketToDmaPass
 
       IRMapping mapping;
 
-      auto newSeq =
-          AIE::RuntimeSequenceOp::create(builder, loc, f.getSymNameAttr());
+      auto newSeq = AIE::RuntimeSequenceOp::create(
+          builder, loc, f.getSymNameAttr(), BoolAttr{}, f.getTraceBufferAttr(),
+          f.getTraceSlicesAttr());
       newSeq.getBody().push_back(new Block);
 
       // Copy the arguments from the old sequence to the new one.
@@ -99,7 +98,7 @@ struct AIECtrlPacketToDmaPass
 
       // Using dynamic shape for ctrl pkt stream.
       auto ctrlPktMemrefType = MemRefType::get(
-          ShapedType::kDynamic, IntegerType::get(ctx, 32), nullptr, 0);
+          ShapedType::kDynamic, IntegerType::get(ctx, 32), nullptr, nullptr);
       auto newBlockArg = newSeq.getBody().addArgument(ctrlPktMemrefType, loc);
 
       builder.setInsertionPointToStart(&newSeq.getBody().front());
@@ -134,10 +133,11 @@ struct AIECtrlPacketToDmaPass
         // Calculate control packet size
         int64_t ctrlPktSize = 0;
         auto data = ctrlPktOp.getData();
+        auto length = ctrlPktOp.getLength();
         if (data)
           ctrlPktSize = data->size();
-        else if (ctrlPktOp.getLength())
-          ctrlPktSize = *ctrlPktOp.getLength();
+        else if (length)
+          ctrlPktSize = *length;
         ctrlPktSize++; // Ctrl info word
         ctrlPktSize++; // Packet header
 
@@ -192,18 +192,22 @@ struct AIECtrlPacketToDmaPass
 
         SymbolRefAttr metadata =
             SymbolRefAttr::get(builder.getContext(), batchIt->shimDmaAllocName);
-        NpuDmaMemcpyNdOp::create(builder, builder.getUnknownLoc(), newBlockArg,
+        NpuDmaMemcpyNdOp::create(builder, loc, newBlockArg,
                                  SmallVector<Value>{}, SmallVector<Value>{},
                                  SmallVector<Value>{}, ArrayRef(staticOffsets),
                                  ArrayRef(staticSizes), ArrayRef(staticStrides),
-                                 nullptr, metadata, 0, true, 0, 0, 0, 0, 0, 0);
+                                 nullptr, metadata, 0, true, 0, 0, 0, 0, 0, 0,
+                                 /*burst_length=*/0,
+                                 /*axcache=*/IntegerAttr(),
+                                 /*offset_parameter=*/FlatSymbolRefAttr(),
+                                 /*offset_state_table_idx=*/IntegerAttr());
 
-        auto shimRow = builder.getI32IntegerAttr(0);
-        auto shimCol = builder.getI32IntegerAttr(col);
-        auto dir = builder.getI32IntegerAttr(1); // MM2S
-        auto chan = builder.getI32IntegerAttr(batchIt->shimChan);
-        auto col_num = builder.getI32IntegerAttr(1);
-        auto row_num = builder.getI32IntegerAttr(1);
+        Value shimRow = AIEX::createConstantI32(builder, loc, 0);
+        Value shimCol = AIEX::createConstantI32(builder, loc, col);
+        Value dir = AIEX::createConstantI32(builder, loc, 1); // MM2S
+        Value chan = AIEX::createConstantI32(builder, loc, batchIt->shimChan);
+        Value col_num = AIEX::createConstantI32(builder, loc, 1);
+        Value row_num = AIEX::createConstantI32(builder, loc, 1);
         AIEX::NpuSyncOp::create(builder, loc, shimCol, shimRow, dir, chan,
                                 col_num, row_num);
         ++batchIt;
@@ -212,7 +216,7 @@ struct AIECtrlPacketToDmaPass
       erased.push_back(f);
     }
 
-    for (auto e : erased)
+    for (auto *e : erased)
       e->erase();
   }
 };

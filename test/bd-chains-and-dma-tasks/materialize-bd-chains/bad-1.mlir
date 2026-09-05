@@ -1,9 +1,7 @@
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// (c) Copyright 2024 AMD Inc.
 
 // RUN: aie-opt --verify-diagnostics --aie-materialize-bd-chains %s
 // XFAIL:*
@@ -17,13 +15,13 @@ module {
     %tile_0_2 = aie.tile(0, 2)
 
     aie.bd_chain @simple_chain(%buf: memref<8xi16>) {
-            aie.dma_bd(%buf : memref<8xi16>, 0, 8)
+            aie.dma_bd(%buf : memref<8xi16> offset = 0 len = 8)
             aie.next_bd ^bd1
         ^bd1:
-            aie.dma_bd(%buf : memref<8xi16>, 0, 8)
+            aie.dma_bd(%buf : memref<8xi16> offset = 0 len = 8)
             aie.end
         ^bd2:
-            aie.dma_bd(%buf : memref<8xi16>, 0, 8)
+            aie.dma_bd(%buf : memref<8xi16> offset = 0 len = 8)
             // expected-error@+1 {{Block ending in this terminator does not form a chain with entry block}}
             aie.end
     }

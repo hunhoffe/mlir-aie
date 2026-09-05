@@ -1,8 +1,6 @@
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025 AMD Inc.
 
 # RUN: %run_on_npu1% %pytest %s
 # RUN: %run_on_npu2% %pytest %s
@@ -23,34 +21,28 @@ def test_parallel_compilation_subprocess():
 
     # Create a temporary cache directory for this test
     with tempfile.TemporaryDirectory() as temp_cache_dir:
-        # Create a simple test script that does JIT compilation
+        # Create a simple test script that does JIT compilation.
+        # Uses In/Out + CompileTime[T] (the post-unify-compilation-workflow API);
+        # an unannotated def simple_add(input0, input1, output) would trip
+        # Guard 1-A / TypeError at compile time because tensor params would
+        # be classified as scalar_params and never forwarded to the generator.
         test_script = """
 import sys
 import numpy as np
 import aie.iron as iron
-from aie.iron import ObjectFifo, Program, Runtime, Worker
+from aie.iron import CompileTime, In, Out, ObjectFifo, Program, Runtime, Worker
 
 from aie.iron.controlflow import range_
 
 @iron.jit
-def simple_add(input0, input1, output):
-    if input0.shape != input1.shape:
-        raise ValueError(f"Input shapes are not equal ({input0.shape} != {input1.shape}).")
-    if input0.shape != output.shape:
-        raise ValueError(f"Input and output shapes are not equal ({input0.shape} != {output.shape}).")
-    if len(np.shape(input0)) != 1:
-        raise ValueError("Function only supports vectors.")
-    num_elements = np.size(input0)
+def simple_add(
+    input0: In, input1: In, output: Out,
+    *, num_elements: CompileTime[int], dtype: CompileTime[type],
+):
     n = 16
     if num_elements % n != 0:
         raise ValueError(f"Number of elements ({num_elements}) must be a multiple of {n}.")
     N_div_n = num_elements // n
-
-    if input0.dtype != input1.dtype:
-        raise ValueError(f"Input data types are not the same ({input0.dtype} != {input1.dtype}).")
-    if input0.dtype != output.dtype:
-        raise ValueError(f"Input and output data types are not the same ({input0.dtype} != {output.dtype}).")
-    dtype = input0.dtype
 
     # Define tensor types
     tensor_ty = np.ndarray[(num_elements,), np.dtype[dtype]]
@@ -78,15 +70,18 @@ def simple_add(input0, input1, output):
     worker = Worker(core_body, fn_args=[of_in1.cons(), of_in2.cons(), of_out.prod()])
 
     # Runtime operations to move data to/from the AIE-array
-    rt = Runtime()
-    with rt.sequence(tensor_ty, tensor_ty, tensor_ty) as (A, B, C):
-        rt.start(worker)
-        rt.fill(of_in1.prod(), A)
-        rt.fill(of_in2.prod(), B)
-        rt.drain(of_out.cons(), C, wait=True)
+    def sequence(A, B, C, in1_h, in2_h, out_h):
+        in1_h.fill(A)
+        in2_h.fill(B)
+        out_h.drain(C, wait=True)
+
+    rt = Runtime(
+        sequence,
+        [tensor_ty, tensor_ty, tensor_ty, of_in1.prod(), of_in2.prod(), of_out.cons()],
+    )
 
     # Place program components (assign them resources on the device) and generate an MLIR module
-    return Program(iron.get_current_device(), rt).resolve_program()
+    return Program(iron.get_current_device(), rt, workers=[worker]).resolve_program()
 
 # Test the compilation
 try:
@@ -96,8 +91,15 @@ try:
     input1 = iron.randint(1, 100, (num_elements,), dtype=dtype, device="npu")
     output = iron.zeros_like(input0)
 
-    # This should trigger JIT compilation and cache access
-    simple_add(input0, input1, output)
+    if input0.shape != input1.shape or input0.shape != output.shape:
+        raise ValueError("All three tensors must share the same shape.")
+    if input0.dtype != input1.dtype or input0.dtype != output.dtype:
+        raise ValueError("All three tensors must share the same dtype.")
+    if len(input0.shape) != 1:
+        raise ValueError("Function only supports vectors.")
+
+    # This should trigger JIT compilation and cache access.
+    simple_add(input0, input1, output, num_elements=num_elements, dtype=dtype)
     print("SUCCESS")
 except Exception as e:
     print(f"ERROR: {type(e).__name__}: {str(e)}")
@@ -115,7 +117,7 @@ except Exception as e:
 
         for i in range(num_processes):
             env = os.environ.copy()
-            env["IRON_CACHE_HOME"] = temp_cache_dir
+            env["NPU_CACHE_HOME"] = temp_cache_dir
             process = subprocess.Popen(
                 [sys.executable, script_path],
                 stdout=subprocess.PIPE,

@@ -1,9 +1,7 @@
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2025 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025 Advanced Micro Devices Inc.
 
 function(install_headers SRCPATH BUILDPATH INSTALLPATH HEADERS_NAME)
   message("Installing ${HEADERS_NAME} includes from ${SRCPATH} in ${INSTALLPATH}/${HEADERS_NAME}")
@@ -13,8 +11,10 @@ function(install_headers SRCPATH BUILDPATH INSTALLPATH HEADERS_NAME)
 
   message("Copying ${HEADERS_NAME} includes from ${SRCPATH} to ${BUILDPATH}/${HEADERS_NAME}")
   
-  # copy header files into build area
-  file(GLOB_RECURSE headers_to_copy ${SRCPATH}/*.h ${SRCPATH}/*.hpp)
+  # Include .cc/.cpp so build/include matches install/include for in-tree
+  # tests that resolve kernel sources via cxx_header_path().
+  file(GLOB_RECURSE headers_to_copy
+       ${SRCPATH}/*.h ${SRCPATH}/*.hpp ${SRCPATH}/*.cc ${SRCPATH}/*.cpp)
   foreach(header ${headers_to_copy})
       file(RELATIVE_PATH rel_path ${SRCPATH} ${header})
 

@@ -1,10 +1,7 @@
 //===- AIEMaterializeBDChains.cpp -------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2024 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,6 +12,7 @@
 #include "mlir/Analysis/CallGraph.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -31,9 +29,14 @@ using namespace xilinx::AIEX;
 
 struct DMAStartBdChainForOpPattern : RewritePattern {
 
-  DMAStartBdChainForOpPattern(MLIRContext *ctx)
+  // Symbol-lookup cache used for speedier `ShimDMAAllocationOp` lookups
+  const mlir::SymbolTable &symbolTable;
+
+  DMAStartBdChainForOpPattern(MLIRContext *ctx,
+                              const mlir::SymbolTable &symbolTable)
       : RewritePattern(DMAStartBdChainForOp::getOperationName(),
-                       PatternBenefit(1), ctx) {}
+                       PatternBenefit(1), ctx),
+        symbolTable(symbolTable) {}
 
   LogicalResult matchAndRewrite(Operation *op_any,
                                 PatternRewriter &rewriter) const override {
@@ -41,10 +44,9 @@ struct DMAStartBdChainForOpPattern : RewritePattern {
     if (!op) {
       return failure();
     }
-    AIE::DeviceOp device = op->getParentOfType<AIE::DeviceOp>();
 
     AIE::ShimDMAAllocationOp alloc_op =
-        AIE::ShimDMAAllocationOp::getForSymbol(device, op.getAlloc());
+        symbolTable.lookup<AIE::ShimDMAAllocationOp>(op.getAlloc());
     if (!alloc_op) {
       return op.emitOpError("no shim DMA allocation found for symbol");
     }
@@ -129,8 +131,10 @@ struct AIEMaterializeBDChainsPass
     rewriter_config.setRegionSimplificationLevel(
         GreedySimplifyRegionLevel::Disabled);
 
+    mlir::SymbolTable symbolTable(device);
+
     RewritePatternSet patterns_0(ctx);
-    patterns_0.insert<DMAStartBdChainForOpPattern>(ctx);
+    patterns_0.insert<DMAStartBdChainForOpPattern>(ctx, symbolTable);
     DMAConfigureTaskOp::getCanonicalizationPatterns(patterns_0, ctx);
     if (failed(applyPatternsGreedily(device, std::move(patterns_0),
                                      rewriter_config))) {

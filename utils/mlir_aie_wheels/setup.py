@@ -1,23 +1,28 @@
+# Copyright (C) 2023-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+import hashlib
 import os
 import platform
 import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from pprint import pprint
-from textwrap import dedent
 from typing import Union
 
 from importlib_metadata import files
 from setuptools import Extension, setup, find_packages
 from setuptools.command.build_ext import build_ext
 from setuptools.command.develop import develop
+from setuptools.command.egg_info import egg_info
 from setuptools.command.install import install
 
 sys.path.append(os.path.dirname(__file__))
 from vendor_eudsl import install_eudsl
+from _version_helper import _git, get_version
 
 
 def check_env(build, default=0):
@@ -53,6 +58,22 @@ def _windows_short_dir(name: str, *, clean: bool = False) -> Path:
         _remove_tree(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _windows_path_key(path: Path) -> str:
+    # Junction and build-cache names must remain short but unique per checkout.
+    normalized = os.path.normcase(os.fspath(path.resolve()))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:10]
+
+
+def _windows_build_cache_name(
+    source_dir: Path, generator: str, python_tag: str, arch: str, rtti: str
+) -> str:
+    generator_key = re.sub(r"[^a-z0-9]+", "-", generator.lower()).strip("-")
+    return (
+        f"main-{_windows_path_key(source_dir)}-{generator_key or 'default'}-"
+        f"{python_tag}-{arch}-{rtti}"
+    )
 
 
 def _windows_short_alias(name: str, target: Path) -> Path:
@@ -179,12 +200,19 @@ class CMakeBuild(build_ext):
         cmake_module_root = MLIR_AIE_SOURCE_DIR
 
         if platform.system() == "Windows":
-            # Keep source and dependency paths short without moving the installed trees.
-            cmake_source_dir = _windows_short_alias("src", cmake_source_dir).absolute()
+            # Keep paths short without allowing one checkout to repoint
+            # another checkout's junctions.
+            source_alias = f"src-{_windows_path_key(cmake_source_dir)}"
+            cmake_source_dir = _windows_short_alias(
+                source_alias, cmake_source_dir
+            ).absolute()
             cmake_module_root = cmake_source_dir
+            dependency_alias = (
+                f"{_windows_tree_alias_name(MLIR_INSTALL_ABS_PATH.name)}-"
+                f"{_windows_path_key(MLIR_INSTALL_ABS_PATH)}"
+            )
             MLIR_INSTALL_ABS_PATH = _windows_short_alias(
-                _windows_tree_alias_name(MLIR_INSTALL_ABS_PATH.name),
-                MLIR_INSTALL_ABS_PATH,
+                dependency_alias, MLIR_INSTALL_ABS_PATH
             ).absolute()
 
         cmake_args = [
@@ -200,7 +228,7 @@ class CMakeBuild(build_ext):
             "-DCMAKE_C_VISIBILITY_PRESET=hidden",
             "-DCMAKE_CXX_VISIBILITY_PRESET=hidden",
             "-DBUILD_SHARED_LIBS=OFF",
-            # get rid of that annoying af git on the end of .17git
+            # Strip the trailing "git" from the version suffix (e.g. ".17git").
             "-DLLVM_VERSION_SUFFIX=",
             # Disables generation of "version soname" (i.e. libFoo.so.<version>), which
             # causes pure duplication of various shlibs for Python wheels.
@@ -209,7 +237,8 @@ class CMakeBuild(build_ext):
             f"-DLLVM_ENABLE_RTTI={os.getenv('ENABLE_RTTI', 'ON')}",
             f"-DAIE_VITIS_COMPONENTS={os.getenv('AIE_VITIS_COMPONENTS', 'AIE2')}",
             "-DAIE_ENABLE_BINDINGS_PYTHON=ON",
-            "-DAIE_ENABLE_PYTHON_PASSES=OFF",
+            "-DAIE_BUILD_LSP_SERVER=OFF",
+            "-DAIE_BUILD_VISUALIZE=OFF",
             "-DMLIR_DETECT_PYTHON_ENV_PRIME_SEARCH=ON",
             # not used on MSVC, but no harm
         ]
@@ -233,6 +262,21 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_CXX_FLAGS=/MT /wd4065",
                 "-DLLVM_USE_CRT_MINSIZEREL=MT",
                 "-DLLVM_USE_CRT_RELEASE=MT",
+            ]
+        elif platform.system() == "Linux":
+            # MSVC's Release default is /OPT:REF, which strips unreferenced
+            # functions and data. Mirror that on Linux with per-section
+            # emission + gc-sections. (MSVC's /OPT:ICF equivalent would be
+            # lld's --icf=safe, but GNU ld in the cibuildwheel manylinux
+            # container doesn't understand that flag and the configure-time
+            # try-compile aborts before lld is even built.)
+            size_cflags = "-ffunction-sections -fdata-sections"
+            cmake_args += [
+                f"-DCMAKE_C_FLAGS={size_cflags}",
+                f"-DCMAKE_CXX_FLAGS={size_cflags}",
+                "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--gc-sections",
+                "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--gc-sections",
+                "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,--gc-sections",
             ]
 
         cmake_args_dict = get_cross_cmake_args()
@@ -282,18 +326,41 @@ class CMakeBuild(build_ext):
         cleanup_build_temp = False
         build_temp = Path(self.build_temp) / ext.name
         if platform.system() == "Windows":
-            build_temp = _windows_short_dir("main", clean=True)
-            cleanup_build_temp = True
+            python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+            arch = re.sub(
+                r"[^a-z0-9]+",
+                "-",
+                os.getenv("CIBW_ARCHS", "native").lower(),
+            )
+            rtti = "rtti" if check_env("ENABLE_RTTI", 1) else "no-rtti"
+            build_temp = _windows_short_dir(
+                _windows_build_cache_name(
+                    Path(ext.sourcedir), cmake_generator, python_tag, arch, rtti
+                )
+            )
         elif not build_temp.exists():
             build_temp.mkdir(parents=True)
 
         print("ENV", pprint(os.environ), file=sys.stderr)
         print("cmake", " ".join(cmake_args), file=sys.stderr)
 
+        configure_args = list(cmake_args)
+        if platform.system() == "Windows":
+            # cibuildwheel recreates its build venv on each run. Refresh cached
+            # Python and pybind11 paths while retaining the compiled build tree.
+            configure_args[:0] = [
+                "-UPython3_*",
+                "-U_Python3_*",
+                "-UPython_*",
+                "-U_Python_*",
+                "-Upybind11_*",
+                "-UPYBIND11_*",
+            ]
+
         build_succeeded = False
         try:
             subprocess.run(
-                ["cmake", _cmake_path(cmake_source_dir), *cmake_args],
+                ["cmake", _cmake_path(cmake_source_dir), *configure_args],
                 cwd=build_temp,
                 check=True,
             )
@@ -303,11 +370,100 @@ class CMakeBuild(build_ext):
                 check=True,
             )
 
+            # C API headers and CDO static driver headers are not needed by
+            # downstream C++ consumers (e.g. mlir-air) that build against the
+            # AIE dialect directly.
+            dev_paths = [
+                Path(install_dir) / "include" / "aie-c",
+                Path(install_dir) / "include" / "bootgen_c_api.h",
+                Path(install_dir) / "include" / "xaienginecdo_static",
+            ]
+            for p in dev_paths:
+                if p.is_dir():
+                    shutil.rmtree(p)
+                elif p.exists():
+                    p.unlink()
+
+            # CMake leaks staging directories and __pycache__ caches into the
+            # install prefix; none belong in a shipped wheel.
+            #
+            # NOTE: lib/objects-Release is intentionally kept. It holds the
+            # per-object object files (.o on Linux/macOS, .obj on Windows) for
+            # AIE's ENABLE_AGGREGATION libraries (obj.AIERT/obj.AIETargets/
+            # obj.AIECAPI, ~2 MB) which the exported
+            # lib/cmake/aie/MLIRTargets-release.cmake references via
+            # IMPORTED_OBJECTS. Pruning it leaves dangling references and makes
+            # downstream find_package(AIE) fail its import check.
+            for leaked in [
+                Path(install_dir) / "src",
+            ]:
+                if leaked.exists():
+                    shutil.rmtree(leaked)
+            for pycache in Path(install_dir).rglob("__pycache__"):
+                shutil.rmtree(pycache, ignore_errors=True)
+
+            # Upstream MLIR's Python install ships bindings for every dialect
+            # it knows about. Prune the ones nothing in the AIE Python tree
+            # imports (verified via grep across the install). pdl / irdl /
+            # nvgpu are kept — they're pulled in transitively by extras /
+            # dialects.ext.
+            unused_dialects = (
+                "spirv",
+                "omp",
+                "smt",
+                "shard",
+                "sparse_tensor",
+                "x86",
+                "amdgpu",
+                "shape",
+                "emitc",
+            )
+            dialects_dirs = list(Path(install_dir).rglob("mlir/dialects"))
+            for d in dialects_dirs:
+                for stem in unused_dialects:
+                    for f in d.glob(f"_{stem}_*.py"):
+                        f.unlink()
+                    front = d / f"{stem}.py"
+                    if front.exists():
+                        front.unlink()
+                async_pkg = d / "async_dialect"
+                if async_pkg.is_dir():
+                    shutil.rmtree(async_pkg)
+
             # Vendor eudsl-python-extras
             # Install eudsl to install_dir/python so it merges with mlir-aie's package structure (aie/extras).
             target_dir = Path(install_dir) / "python"
             req_file = Path(MLIR_AIE_SOURCE_DIR) / "python" / "requirements.txt"
             install_eudsl(req_file, target_dir)
+
+            aie_pkg_dir = Path(install_dir) / "python" / "aie"
+            aie_pkg_dir.mkdir(parents=True, exist_ok=True)
+            sha = _git("rev-parse", "--short=7", "HEAD") or "unknown"
+            build_date = (
+                datetime.now(timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
+            (aie_pkg_dir / "_version.py").write_text(
+                f'__version__ = "{get_version()}"\n'
+                f'__commit__ = "{sha}"\n'
+                f'__build_date__ = "{build_date}"\n'
+            )
+
+            init_file = aie_pkg_dir / "__init__.py"
+            reexport_marker = "# >>> mlir-aie wheel build metadata"
+            reexport_block = (
+                f"\n{reexport_marker}\n"
+                "from ._version import __version__, __commit__, __build_date__\n"
+                "# <<< mlir-aie wheel build metadata\n"
+            )
+            existing_init = (
+                init_file.read_text(encoding="utf-8") if init_file.exists() else ""
+            )
+            if reexport_marker not in existing_init:
+                with init_file.open("a", encoding="utf-8") as f:
+                    f.write(reexport_block)
+
             build_succeeded = True
         finally:
             if cleanup_build_temp and build_succeeded:
@@ -334,19 +490,20 @@ class InstallWithPth(install):
             pth_file.write("mlir_aie/python")
 
 
-def get_version():
-    if "AIE_WHEEL_VERSION" in os.environ and os.environ["AIE_WHEEL_VERSION"].lstrip(
-        "v"
-    ):
-        return os.environ["AIE_WHEEL_VERSION"].lstrip("v")
-    release_version = "0.0.1"
-    commit_hash = os.environ.get("AIE_PROJECT_COMMIT", "deadbeef")
-    now = datetime.now()
-    timestamp = os.environ.get(
-        "DATETIME", f"{now.year}{now.month:02}{now.day:02}{now.hour:02}"
-    )
-    suffix = "" if check_env("ENABLE_RTTI", 1) else "-no_rtti"
-    return f"{release_version}.{timestamp}+{commit_hash}{suffix}"
+class EggInfoWithTopLevel(egg_info):
+    """Override the auto-derived top_level.txt.
+
+    setuptools derives top_level.txt from the CMakeExtension's name
+    (``_mlir_aie``), which is just a placeholder — the wheel actually
+    installs the ``mlir_aie`` package tree. Fix the metadata so
+    ``pip uninstall`` and other top-level scanners see reality.
+    """
+
+    def run(self):
+        super().run()
+        top_level_path = os.path.join(self.egg_info, "top_level.txt")
+        with open(top_level_path, "w") as f:
+            f.write("mlir_aie\n")
 
 
 MLIR_AIE_SOURCE_DIR = Path(
@@ -377,21 +534,66 @@ def parse_requirements(filename):
         return requirements
 
 
+_license = MLIR_AIE_SOURCE_DIR / "LICENSE"
+if _license.exists():
+    shutil.copy(_license, Path(__file__).parent / "LICENSE")
+
 setup(
+    name="mlir-aie" if check_env("ENABLE_RTTI", 1) else "mlir-aie-no-rtti",
     version=get_version(),
+    description="An MLIR-based toolchain for AMD AI Engine-enabled devices.",
+    long_description=(
+        (Path(MLIR_AIE_SOURCE_DIR) / "README.md").read_text(encoding="utf-8")
+        if (Path(MLIR_AIE_SOURCE_DIR) / "README.md").exists()
+        else "An MLIR-based toolchain for AMD AI Engine-enabled devices. "
+        "See https://github.com/Xilinx/mlir-aie"
+    ),
+    long_description_content_type="text/markdown",
+    author="AMD Inc.",
+    author_email="joseph.melber@amd.com",
+    url="https://github.com/Xilinx/mlir-aie",
     license="Apache-2.0 WITH LLVM-exception",
+    license_files=["LICENSE"],
+    project_urls={
+        "Source": "https://github.com/Xilinx/mlir-aie",
+        "Issues": "https://github.com/Xilinx/mlir-aie/issues",
+        "Documentation": "https://xilinx.github.io/mlir-aie/",
+    },
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "License :: OSI Approved :: Apache Software License",
+        "Topic :: Software Development :: Compilers",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Operating System :: POSIX :: Linux",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: MacOS",
+    ],
+    entry_points={
+        "console_scripts": [
+            "aie-opt = aie.tools:aie_opt",
+            "aie-reset = aie.tools:aie_reset",
+            "aie-translate = aie.tools:aie_translate",
+            "aiecc = aie.tools:aiecc",
+            "bootgen = aie.tools:bootgen",
+            "txn2mlir.py = aie.compiler.txn2mlir.main:main",
+            "xchesscc_wrapper = aie.tools:xchesscc_wrapper",
+        ],
+    },
     include_package_data=True,
-    # note the name here isn't relevant because it's the install (CMake install target) directory that'll be used to
-    # actually build the wheel.
     ext_modules=[CMakeExtension("_mlir_aie", sourcedir=MLIR_AIE_SOURCE_DIR)],
     cmdclass={
         "build_ext": CMakeBuild,
         "develop": DevelopWithPth,
+        "egg_info": EggInfoWithTopLevel,
         "install": InstallWithPth,
     },
     zip_safe=False,
-    packages=find_packages(exclude=["wheelhouse", "python_bindings", "mlir-aie"]),
-    python_requires=">=3.10",
+    packages=find_packages(exclude=["wheelhouse", "mlir-aie"]),
+    python_requires=">=3.11",
     install_requires=parse_requirements(
         Path(MLIR_AIE_SOURCE_DIR) / "python" / "requirements.txt"
     ),

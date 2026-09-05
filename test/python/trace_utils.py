@@ -1,9 +1,7 @@
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2024-2026 Advanced Micro Devices, Inc.
 
 # RUN: %python %s | FileCheck %s
 
@@ -68,10 +66,13 @@ def passthroughKernel():
                     of_in.release(ObjectFifoPort.Consume, 1)
                     of_out.release(ObjectFifoPort.Produce, 1)
 
-            # Configure tracing with custom events on multiple tiles
+            # Configure tracing with custom events on multiple tiles.
+            # configure_trace() leaves the packet id unset so
+            # -aie-insert-trace-flows can assign it in (col, row) order
+            # after placement; only `type` is materialized here.
             # CHECK: aie.trace @trace_core_1(%{{.*}}) {
             # CHECK:   aie.trace.mode "Event-Time"
-            # CHECK:   aie.trace.packet id = 1 type = core
+            # CHECK:   aie.trace.packet type = core
             # CHECK:   aie.trace.event <"INSTR_EVENT_1">
             # CHECK:   aie.trace.event <"INSTR_EVENT_0">
             # CHECK:   aie.trace.event <"INSTR_VECTOR">
@@ -86,7 +87,7 @@ def passthroughKernel():
             # CHECK:   aie.trace.stop broadcast = 14
             # CHECK: }
             # CHECK: aie.trace @trace_shim_2(%{{.*}}) {
-            # CHECK:   aie.trace.packet id = 2 type = shimtile
+            # CHECK:   aie.trace.packet type = shimtile
             # CHECK:   aie.trace.event <"DMA_S2MM_0_START_TASK">
             # CHECK:   aie.trace.event <"DMA_S2MM_1_START_TASK">
             # CHECK:   aie.trace.event <"DMA_MM2S_0_START_TASK">
@@ -118,12 +119,12 @@ def passthroughKernel():
 
             # Verify start_trace() generates host_config and start_config ops
             # CHECK: aie.runtime_sequence
-            # CHECK:   aie.trace.host_config buffer_size = 8192
+            # CHECK:   aie.trace.host_config {buffer_size = 8192 : i32}
             # CHECK:   aie.trace.start_config @trace_core_1
             # CHECK:   aie.trace.start_config @trace_shim_2
             @runtime_sequence(tensor_ty, tensor_ty, tensor_ty)
             def sequence(inTensor, outTensor, notUsed):
-                trace_utils.start_trace(trace_size=8192, ddr_id=4)
+                trace_utils.start_trace(trace_size=8192)
 
                 npu_dma_memcpy_nd(
                     metadata=of_in,

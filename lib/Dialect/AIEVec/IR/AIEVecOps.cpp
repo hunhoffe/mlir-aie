@@ -1,10 +1,7 @@
 //===---- AIEVecOps.cpp - MLIR AIE Vector Dialect Operations ----*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2022-2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2022-2024 Advanced Micro Devices, Inc. or its affiliates
 //
 //===----------------------------------------------------------------------===//
 // This file implements AIE vector op printing, pasing, and verification.
@@ -231,7 +228,7 @@ OpFoldResult CastOp::fold(FoldAdaptor adaptor) {
 
 // SRS fold method. It will fold with a preceding UPS operation.
 OpFoldResult SRSOp::fold(FoldAdaptor adaptor) {
-  auto srcDefOp = getSource().getDefiningOp();
+  auto *srcDefOp = getSource().getDefiningOp();
   if (!srcDefOp)
     return nullptr;
 
@@ -239,7 +236,7 @@ OpFoldResult SRSOp::fold(FoldAdaptor adaptor) {
   if (!upsOp)
     return nullptr;
 
-  auto shiftDefOp = getShift().getDefiningOp();
+  auto *shiftDefOp = getShift().getDefiningOp();
   if (!shiftDefOp)
     return nullptr;
 
@@ -306,10 +303,9 @@ LogicalResult SRSOp::verify() {
   if (isa<IntegerType>(atype) && stypeWidth >= atypeWidth)
     return emitError("the element type of source accumulator must be "
                      "wider than that of the result vector");
-  else if (isa<FloatType>(atype) && stypeWidth != 16 &&
-           stypeWidth != atypeWidth)
-    return emitError("the element type of source accumulator must be "
-                     "same as the result vector");
+  if (isa<FloatType>(atype) && stypeWidth != 16 && stypeWidth != atypeWidth)
+    return emitError("the element type of         source accumulator must be "
+                     "same as the result         vector");
 
   return success();
 }
@@ -368,7 +364,7 @@ OpFoldResult UPSOp::fold(FoldAdaptor adaptor) {
   // TODO: ignored here. Somebody should take a careful look at it.
   // TODO: In next llvm version: auto srsDefOp =
   // adaptor.getSource().getDefiningOp();
-  auto srcDefOp = getSource().getDefiningOp();
+  auto *srcDefOp = getSource().getDefiningOp();
   if (!srcDefOp)
     return nullptr;
   auto srsOp = llvm::dyn_cast<SRSOp>(srcDefOp);
@@ -676,7 +672,7 @@ void aievec::FMAElemOp::print(OpAsmPrinter &p) {
 
 // Verify MulElem and FMAElem op.
 template <typename T>
-LogicalResult verifyMulFMAElemOp(T op) {
+static LogicalResult verifyMulFMAElemOp(T op) {
   // Verify the types
   auto lhsType = llvm::dyn_cast<VectorType>(op.getLhs().getType());
   auto rhsType = llvm::dyn_cast<VectorType>(op.getRhs().getType());
@@ -739,8 +735,9 @@ LogicalResult aievec::FMAElemOp::verify() {
 }
 
 // Parse MulElem and FMAElem op.
-ParseResult parseMulFMAElemOp(OpAsmParser &parser, OperationState &result,
-                              bool isFMAElemOp = true) {
+static ParseResult parseMulFMAElemOp(OpAsmParser &parser,
+                                     OperationState &result,
+                                     bool isFMAElemOp = true) {
   llvm::SMLoc typesLoc;
   SmallVector<Type, 3> types;
   OpAsmParser::UnresolvedOperand lhs, rhs, acc;
@@ -899,14 +896,14 @@ ConcatOp::inferReturnTypes(MLIRContext *, std::optional<Location>,
                              adaptor.getSources().end());
   unsigned totalLength = 0;
   for (auto source : srcs) {
-    VectorType type = llvm::dyn_cast<VectorType>(source.getType());
+    VectorType type = llvm::cast<VectorType>(source.getType());
     assert(type.getRank() == 1 &&
            "only rank 1 vectors currently supported by concat");
     totalLength += type.getDimSize(0);
   }
   inferredReturnTypes.push_back(VectorType::get(
       {totalLength},
-      llvm::dyn_cast<VectorType>(srcs[0].getType()).getElementType()));
+      llvm::cast<VectorType>(srcs[0].getType()).getElementType()));
   return success();
 }
 
@@ -1018,36 +1015,50 @@ void UnpackOp::print(OpAsmPrinter &p) { printPackUnpackOp<UnpackOp>(p, *this); }
 
 // Verify Pack and Unpack op.
 template <typename T>
-LogicalResult verifyPackUnpackOp(T op) {
+static LogicalResult verifyPackUnpackOp(T op) {
   // Verify the types
   auto sourceType = llvm::dyn_cast<VectorType>(op.getSource().getType());
   auto resultType = llvm::dyn_cast<VectorType>(op.getResult().getType());
   if (!sourceType || !resultType)
     return op.emitError("requires vector type");
 
-  // The number of lanes must match
   unsigned sourceLanes = getVectorLaneSize(sourceType);
   unsigned resultLanes = getVectorLaneSize(resultType);
-  if (sourceLanes != resultLanes)
-    return op.emitError("The number of lanes in input and "
-                        "output vector must match");
 
   Type stype = sourceType.getElementType();
-  unsigned stypeWidth = stype.getIntOrFloatBitWidth();
   Type rtype = resultType.getElementType();
+  // Pack/unpack are integer packing ops; reject non-integer element types
+  // (e.g. f16/bf16) even though they share bitwidths with the legal forms.
+  if (!isa<IntegerType>(stype) || !isa<IntegerType>(rtype))
+    return op.emitError("requires integer element types");
+  unsigned stypeWidth = stype.getIntOrFloatBitWidth();
   unsigned rtypeWidth = rtype.getIntOrFloatBitWidth();
 
   if (isa<PackOp>(op)) {
-    // The datatype of source must be i16, and datatype of result must be i8
-    if (stypeWidth != 16)
-      return op.emitError("input must be an int16 vector");
-    if (rtypeWidth != 8)
-      return op.emitError("output must be an int8 vector");
+    // Pack: i16 -> i8 with matching lane count (existing AIE2 path) OR
+    // i8 -> i8 with input lanes = 2 * output lanes (AIE2P int4 path; the
+    // result carries 2 packed nibbles per byte).
+    bool legalI16I8 =
+        stypeWidth == 16 && rtypeWidth == 8 && sourceLanes == resultLanes;
+    bool legalI8I4Packed =
+        stypeWidth == 8 && rtypeWidth == 8 && sourceLanes == 2 * resultLanes;
+    if (!legalI16I8 && !legalI8I4Packed)
+      return op.emitError(
+          "pack must narrow i16->i8 (same lanes) or i8->i8 (input lanes = "
+          "2 * output lanes, int4-packed)");
   } else {
-    if (stypeWidth != 8)
-      return op.emitError("input must be an int8 vector");
-    if (rtypeWidth != 16)
-      return op.emitError("output must be an int16 vector");
+    // Unpack: i8 -> i16 with matching lane count (existing AIE2 path) OR
+    // i8 -> i8 with output lanes = 2 * input lanes (AIE2P int4 path; the
+    // input carries 2 packed nibbles per byte and the output expands each
+    // nibble into a full byte).
+    bool legalI8I16 =
+        stypeWidth == 8 && rtypeWidth == 16 && sourceLanes == resultLanes;
+    bool legalI4PackedI8 =
+        stypeWidth == 8 && rtypeWidth == 8 && resultLanes == 2 * sourceLanes;
+    if (!legalI8I16 && !legalI4PackedI8)
+      return op.emitError(
+          "unpack must widen i8->i16 (same lanes) or i8->i8 (output lanes = "
+          "2 * input lanes, int4-packed)");
   }
 
   return success();
@@ -1058,7 +1069,8 @@ LogicalResult PackOp::verify() { return verifyPackUnpackOp<PackOp>(*this); }
 LogicalResult UnpackOp::verify() { return verifyPackUnpackOp<UnpackOp>(*this); }
 
 // Parse Pack and Unpack op.
-ParseResult parsePackUnpackOp(OpAsmParser &parser, OperationState &result) {
+static ParseResult parsePackUnpackOp(OpAsmParser &parser,
+                                     OperationState &result) {
   llvm::SMLoc typesLoc;
   SmallVector<Type, 2> types;
   OpAsmParser::UnresolvedOperand source;
@@ -1449,7 +1461,7 @@ void aievec::FMAConvOp::print(OpAsmPrinter &p) {
 
 // Verify MulConv and FMAConv op.
 template <typename T>
-LogicalResult verifyMulFMAConvOp(T op) {
+static LogicalResult verifyMulFMAConvOp(T op) {
   // Verify the types
   auto lhsType = llvm::dyn_cast<VectorType>(op.getLhs().getType());
   auto rhsType = llvm::dyn_cast<VectorType>(op.getRhs().getType());
@@ -1518,8 +1530,9 @@ LogicalResult aievec::FMAConvOp::verify() {
 }
 
 // Parse MulConv and FMAConv op.
-ParseResult parseMulFMAConvOp(OpAsmParser &parser, OperationState &result,
-                              bool isFMAConvOp = true) {
+static ParseResult parseMulFMAConvOp(OpAsmParser &parser,
+                                     OperationState &result,
+                                     bool isFMAConvOp = true) {
   llvm::SMLoc typesLoc;
   SmallVector<Type, 3> types;
   OpAsmParser::UnresolvedOperand lhs, rhs, acc;

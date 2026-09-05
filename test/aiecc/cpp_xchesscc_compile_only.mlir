@@ -1,27 +1,26 @@
 //===- cpp_xchesscc_compile_only.mlir ---------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
-// Test xchesscc compile-only mode (--no-link)
-// This generates object files without linking to ELF
+// Test xchesscc compile-only: requesting the object output (--get=objects_{0}.o)
+// compiles the core with xchesscc (Chess intrinsic-wrapper link + xchesscc -c)
+// but does not link it into an ELF, and Peano's llc is never used.
 
 // REQUIRES: chess
 
-// RUN: aiecc --xchesscc --no-link --verbose %s 2>&1 | FileCheck %s
+// Give this run private output/work dirs: Chess drops scratch and the requested
+// objects_<core> dir goes to the output dir, so concurrent runs sharing a
+// directory (as the lit suite does) would clobber each other.
+// RUN: aiecc --xchesscc --get='objects_{0}.o' -v --output-dir=%t --tmpdir=%t.prj %s 2>&1 | FileCheck %s
 
-// CHECK: Successfully parsed input file
-// CHECK: Found 1 AIE device
-// CHECK: Compiling core
-// CHECK: Applied IR downgrade for Chess
-// CHECK: Linked with chess intrinsic wrapper
-// CHECK: Compiled with xchesscc
-// CHECK: Compilation completed successfully
+// CHECK: chess-llvm-link
+// CHECK-SAME: chess_intrinsic_wrapper
+// CHECK: xchesscc_wrapper aie2 {{.*}} -c {{.*}}-o {{.*}}objects_
+// CHECK-NOT: elfs_
+// CHECK-NOT: {{[^ ]*llc }}
 
 module {
   aie.device(npu1_1col) {
@@ -37,11 +36,9 @@ module {
       %c16 = arith.constant 16 : index
       %c1_i32 = arith.constant 1 : i32
 
-      %subview_in = aie.objectfifo.acquire @of_in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @of_in(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @of_out(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @of_out(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>

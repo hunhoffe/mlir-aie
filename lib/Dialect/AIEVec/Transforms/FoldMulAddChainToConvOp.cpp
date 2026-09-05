@@ -1,10 +1,8 @@
 //===--FoldMulAddChainToConvOp.cpp - Fold Mul Add Chain To AIEVec Conv Op--===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2023 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 // This is the implementation of the folding pass from mul add chain
@@ -21,6 +19,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "fold-mul-add-chain-to-conv"
@@ -77,8 +76,8 @@ struct LongestConvMACChainAnalysis {
     int64_t bcastDist; // Must be 1 or 2
   };
 
-  typedef SmallVector<std::unique_ptr<ConvMac>, 8> ConvMacChain;
-  typedef SmallVector<ConvMacChainGroup, 8> ConvMacChainGroupList;
+  using ConvMacChain = SmallVector<std::unique_ptr<ConvMac>, 8>;
+  using ConvMacChainGroupList = SmallVector<ConvMacChainGroup, 8>;
 
   std::unique_ptr<ConvMacChain> convMacChain;
   ConvMacChainGroupList groupsInChain;
@@ -140,7 +139,7 @@ struct LongestConvMACChainAnalysis {
   // yet, this method will generate them.
   const ConvMacChainGroupList &getGroupsInChain() {
     // If there's no group or it's been computed already, return stored list.
-    if (groupsInChain.size() > 0 || !convMacChain || convMacChain->size() == 0)
+    if (!groupsInChain.empty() || !convMacChain || convMacChain->empty())
       return groupsInChain;
 
     uint64_t grpStartIdx = 0;
@@ -215,18 +214,17 @@ struct LongestConvMACChainAnalysis {
 
   bool canChainBeReplacedWithConvOps() {
     const auto &groups = getGroupsInChain();
-    if (groups.size() == 0)
+    if (groups.empty())
       return false;
-    for (const auto &group : groups)
-      if (group.signalShift == -1 || group.bcastShift == -1 ||
-          group.bcastDist == -1)
-        return false;
-    return true;
+    return llvm::all_of(groups, [](const auto &group) {
+      return group.signalShift != -1 && group.bcastShift != -1 &&
+             group.bcastDist != -1;
+    });
   }
 
   std::unique_ptr<ConvMac> getConvMacFromMulOp(arith::MulIOp mulOp) {
-    auto mulOpLhsDefOp = mulOp.getLhs().getDefiningOp();
-    auto mulOpRhsDefOp = mulOp.getRhs().getDefiningOp();
+    auto *mulOpLhsDefOp = mulOp.getLhs().getDefiningOp();
+    auto *mulOpRhsDefOp = mulOp.getRhs().getDefiningOp();
     if (!mulOpLhsDefOp || !mulOpRhsDefOp)
       return nullptr;
 
@@ -246,7 +244,7 @@ struct LongestConvMACChainAnalysis {
       opBwdSlices.insert(mulOpOperand);
 
       LLVM_DEBUG(llvm::dbgs() << "opBwdSlices = [\n");
-      for ([[maybe_unused]] auto op : opBwdSlices) {
+      for ([[maybe_unused]] auto *op : opBwdSlices) {
         LLVM_DEBUG(llvm::dbgs() << *op << "\n");
       }
       LLVM_DEBUG(llvm::dbgs() << "]\n");
@@ -267,7 +265,7 @@ struct LongestConvMACChainAnalysis {
              isa<aievec::ExtOp>(opBwdSlices[sliceSz - 1]))) {
           convMacRhs = opBwdSlices[sliceSz - 3]->getOperand(0);
           convMacBcastIdx =
-              dyn_cast<aievec::BroadcastOp>(opBwdSlices[sliceSz - 2]).getIdx();
+              cast<aievec::BroadcastOp>(opBwdSlices[sliceSz - 2]).getIdx();
           return true;
         }
       }
@@ -293,8 +291,7 @@ struct LongestConvMACChainAnalysis {
     else
       extOp = dyn_cast<aievec::ExtOp>(mulOpLhsDefOp);
 
-    // XXX: Actually, ExtOp might not exist but should work anyway.
-    // XXX: Should it, though?
+    // The ExtOp may be absent; bail out of the fold in that case.
     if (!extOp)
       return nullptr;
 
@@ -335,28 +332,27 @@ struct LongestConvMACChainAnalysis {
     auto upChainAccMulOp = acc.getDefiningOp<arith::MulIOp>();
     if (upChainAccMulOp) {
       auto convMac2 = getConvMacFromMulOp(upChainAccMulOp);
-      // XXX: We pre-sort the top two MACs to make sure that an undefined
-      // XXX: accumulator ends up on top of the chain.
-      // XXX: But it might not be necessary? CHECK!
+      // Pre-sort the top two MACs so that an undefined accumulator ends up
+      // at the top of the chain.
       if (convMac2 && convMac->lhs == convMac2->lhs &&
-          convMac->rhs == convMac->rhs) {
+          convMac->rhs == convMac2->rhs) {
         if (convMac->bcastIdx < convMac2->bcastIdx &&
             convMac->shift < convMac2->shift) {
           convMac2->topOfChainMulConv = std::move(convMac);
           convMac2->acc = acc;
           return convMac2;
-        } else if (convMac->bcastIdx > convMac2->bcastIdx &&
-                   convMac->shift > convMac2->shift) {
+        }
+        if (convMac->bcastIdx > convMac2->bcastIdx &&
+            convMac->shift > convMac2->shift) {
           convMac->topOfChainMulConv = std::move(convMac2);
           convMac->acc = acc;
           return convMac;
-        } else {
-          // WARNING: In this situation, the chain is ambiguous and picking one
-          // WARNING: option over the other may result in a successful
-          // WARNING: and/or better replacement. Here, we are assuming that
-          // WARNING: is going to be either one or the other, or it won't
-          // WARNING: matter.
         }
+        // WARNING: In this situation, the         chain is ambiguous and
+        // picking one WARNING: option over the         other may result in a
+        // successful WARNING: and/or better replacement.         Here, we are
+        // assuming that WARNING: is going to be either         one or the
+        // other, or it won't WARNING: matter.
       } else {
         convMac->topOfChainMulConv = std::move(convMac2);
       }
@@ -389,10 +385,8 @@ struct LongestConvMACChainAnalysis {
     convMacChain->push_back(std::move(macConvChainElem));
   }
 };
-// HACK: For some reason, it's not possible to access the analysis manager from
-// HACK: within an analysis, but we need it to build the analysis recursively.
-// HACK: If there is a good reason not to do this, we should find an
-// HACK: alternative way to build the MAC chain.
+// The analysis manager is not directly accessible from within an analysis, but
+// it is needed to build the MAC chain recursively, so it is held here.
 AnalysisManager *LongestConvMACChainAnalysis::am = nullptr;
 
 // This conversion pattern folds a MAC chain into mul_conv and mac_conv
@@ -506,8 +500,7 @@ struct FoldMulAddChainToConvOpPattern
 namespace xilinx::aievec {
 
 void configureAIEVecConvOpTransformationLegalizations(ConversionTarget &target,
-                                                      AnalysisManager &am,
-                                                      TargetBackend backend) {
+                                                      AnalysisManager &am) {
   LongestConvMACChainAnalysis::am = &am;
   target.addLegalDialect<AIEVecDialect>();
   target.addLegalDialect<arith::ArithDialect>();
@@ -520,8 +513,7 @@ void configureAIEVecConvOpTransformationLegalizations(ConversionTarget &target,
 
 void populateAIEVecConvOpTransformationPatterns(RewritePatternSet &patterns,
                                                 AnalysisManager &am,
-                                                unsigned shiftParam,
-                                                TargetBackend backend) {
+                                                unsigned shiftParam) {
   patterns.add<FoldMulAddChainToConvOpPattern>(patterns.getContext(), am,
                                                shiftParam);
 }
@@ -584,8 +576,8 @@ struct AIEVecConvAnalysis
       for (uint64_t i = group.fromIdx; i < group.toIdx; i++) {
         auto shift = (*chain)[i]->shift;
         auto bcastIdx = (*chain)[i]->bcastIdx;
-        auto lhsOp = (*chain)[i]->lhs.getDefiningOp();
-        auto rhsOp = (*chain)[i]->rhs.getDefiningOp();
+        auto *lhsOp = (*chain)[i]->lhs.getDefiningOp();
+        auto *rhsOp = (*chain)[i]->rhs.getDefiningOp();
         if (!(*chain)[i]->acc)
           llvm::outs() << "  [mul_conv]\n";
         llvm::outs() << "    [Shift: " << std::to_string(shift) << "]: ";

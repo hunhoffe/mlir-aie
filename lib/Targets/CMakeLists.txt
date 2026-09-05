@@ -1,11 +1,8 @@
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2021-2022 Xilinx, Inc.
+# Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2021 Xilinx Inc.
-
-add_subdirectory(AIEVecToCpp)
 
 # for #include <elf.h>
 set(BOOTGEN_SOURCE_DIR ${PROJECT_SOURCE_DIR}/third_party/bootgen)
@@ -42,14 +39,13 @@ add_mlir_library(AIETargets
   AIETargets.cpp
   AIETargetBCF.cpp
   AIETargetCDODirect.cpp
+  AIETargetCppTxn.cpp
   AIETargetNPU.cpp
   AIETargetLdScript.cpp
   AIETargetUcCert.cpp
   AIETargetXAIEV2.cpp
-  AIETargetHSA.cpp
   AIETargetShared.cpp
   AIETargetSimulationFiles.cpp
-  ADFGenerateCppGraph.cpp
   AIEFlowsToJSON.cpp
   AIELLVMLink.cpp
 
@@ -86,7 +82,9 @@ add_mlir_library(AIETargets
   AIE
   AIEX
   AIEXUtils
-  ADF
+  MLIRAIEXToEmitC
+  MLIREmitCDialect
+  MLIRTargetCpp
 )
 
 target_link_libraries(AIETargets PRIVATE xaienginecdo_static)

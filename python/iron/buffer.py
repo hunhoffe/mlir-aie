@@ -1,32 +1,37 @@
 # buffer.py -*- Python -*-
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2024 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2024 Advanced Micro Devices, Inc.
 """Named memory region accessible by both Workers and the Runtime."""
 
-import numpy as np
-from typing import Sequence
+import itertools
+from typing import TYPE_CHECKING, Sequence
 
-from .. import ir  # type: ignore
+import numpy as np
+
+from .. import ir  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
 from ..dialects.aie import buffer
 from ..helpers.util import (
+    NpuDType,
     np_ndarray_type_get_dtype,
     np_ndarray_type_get_shape,
 )
 from .device import Tile
-from .resolvable import Resolvable, NotResolvedError
+from .resolvable import NotResolvedError, Resolvable
+
+if TYPE_CHECKING:
+    from .worker import Worker
 
 
 class Buffer(Resolvable):
     """A buffer that is available both to Workers and to the Runtime for operations.
+
     This is often used for Runtime Parameters.
     """
 
     # Used to generate unique names when none is provided during construction.
-    __gbuf_index = 0
+    _gbuf_index = itertools.count()
 
     def __init__(
         self,
@@ -35,16 +40,27 @@ class Buffer(Resolvable):
         name: str | None = None,
         tile: Tile | None = None,
         use_write_rtp: bool = False,
+        address: int | None = None,
     ):
-        """A Buffer is a memory region declared at the top-level of the design, allowing it to
-        be accessed by both Workers and the Runtime.
+        """Declare a memory region at the top-level of the design.
+
+        The buffer is accessible by both Workers and the Runtime.
 
         Args:
             type (type[np.ndarray] | None, optional): The type of the buffer. Defaults to None.
-            initial_value (np.ndarray | None, optional): An initial value to set the buffer to. Should be of same datatype and shape as the buffer. Defaults to None.
-            name (str | None, optional): The name of the buffer. If none is given, a unique name will be generated. Defaults to None.
-            tile (Tile | None, optional): The tile for the buffer. Automatically set to the Worker's tile when the buffer is passed in the Worker's fn_args list. Defaults to None.
-            use_write_rtp (bool, optional): If use_write_rtp, write_rtp/read_rtp operations will be generated. Otherwise, traditional write/read operations will be used. Defaults to False.
+            initial_value (np.ndarray | None, optional): An initial value to set the buffer
+                to. Should be of same datatype and shape as the buffer. Defaults to None.
+            name (str | None, optional): The name of the buffer. If none is given, a unique
+                name will be generated. Defaults to None.
+            tile (Tile | None, optional): The tile for the buffer. Automatically set to the
+                Worker's tile when the buffer is passed in the Worker's fn_args list.
+                Defaults to None.
+            use_write_rtp (bool, optional): If use_write_rtp, write_rtp/read_rtp operations
+                will be generated. Otherwise, traditional write/read operations will be
+                used. Defaults to False.
+            address (int | None, optional): Pin the buffer to a fixed L1 address. Needed
+                for host-written RTP buffers the runtime pokes at a hardcoded address.
+                Defaults to None (compiler-assigned).
 
         Raises:
             ValueError: If neither ``type`` nor ``initial_value`` is provided.
@@ -52,34 +68,50 @@ class Buffer(Resolvable):
         if type is None and initial_value is None:
             raise ValueError("Must provide either type, initial value, or both.")
         if type is None:
-            type = np.ndarray[initial_value.shape, np.dtype[initial_value.dtype]]
+            assert initial_value is not None
+            type = np.ndarray[initial_value.shape, np.dtype[initial_value.dtype.type]]
         self._initial_value = initial_value
         self._name = name
         self._op = None
         self._arr_type = type
         if not self._name:
-            self._name = f"buf_{self.__get_index()}"
+            self._name = f"buf_{next(Buffer._gbuf_index)}"
         self._use_write_rtp = use_write_rtp
+        self._address = address
         self._tile = tile
+        # Whether the user pinned this Buffer to an explicit tile at
+        # construction.  A Worker may auto-pin _tile later as a
+        # convenience, so `_tile is not None` is not a reliable signal of
+        # user intent; this flag is.  Only explicitly-placed Buffers may be
+        # shared (read) across Workers — see Worker.
+        self._explicit_tile = tile is not None
+        self._owner_worker: "Worker | None" = None
 
     @property
     def tile(self) -> Tile | None:
         """The tile this buffer is on."""
         return self._tile
 
-    @classmethod
-    def __get_index(cls) -> int:
-        idx = cls.__gbuf_index
-        cls.__gbuf_index += 1
-        return idx
+    def tiles(self) -> list:
+        """Tile dependency for Program.resolve tile discovery.
+
+        Pinned Buffers (e.g. a compute [`Worker`][iron.Worker] reading a
+        neighbor tile's L1 directly) need their tile registered with the
+        Device before `resolve` runs. Worker-attached Buffers without an
+        explicit placement get pinned to the Worker's tile in
+        [`Worker`][iron.Worker]'s constructor, which is already discoverable
+        via `Worker.tile`; this method just exposes any extra (cross-tile)
+        placements.
+        """
+        return [self._tile] if self._tile is not None else []
 
     @property
     def shape(self) -> Sequence[int]:
-        """The shape of the buffer"""
+        """The shape of the buffer."""
         return np_ndarray_type_get_shape(self._arr_type)
 
     @property
-    def dtype(self) -> np.dtype:
+    def dtype(self) -> NpuDType:
         """The per-element datatype of the buffer."""
         return np_ndarray_type_get_dtype(self._arr_type)
 
@@ -116,6 +148,7 @@ class Buffer(Resolvable):
                 tile=self._tile.op,
                 datatype=self._arr_type,
                 name=self._name,
+                address=self._address,
                 initial_value=self._initial_value,
                 use_write_rtp=self._use_write_rtp,
             )

@@ -1,10 +1,7 @@
 //===- cpp_link_with_unused_func.mlir ---------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2026 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,7 +14,7 @@ module {
   aie.device(npu1_1col) {
     %tile_0_2 = aie.tile(0, 2)
 
-    // expected-warning@+1 {{func 'never_called' has link_with but is never called from any core; its .o file will not be linked}}
+    // expected-warning@+1 {{func 'never_called' has link_with but is never called from any core; its artifact will not be linked or merged}}
     func.func private @never_called(memref<16xi32>) attributes {link_with = "x.o"}
 
     %core_0_2 = aie.core(%tile_0_2) {

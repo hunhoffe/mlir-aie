@@ -1,8 +1,6 @@
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2022-2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// (c) Copyright 2024 AMD Inc.
 
 #include <cassert>
 #include <cstring>
@@ -126,11 +124,11 @@ int main(int argc, const char *argv[]) {
     print_matrix(buf_out, SIZE_M, SIZE_N);
   }
 
-  if (memcmp(ref, buf_out, sizeof(ref)) == 0) {
-    std::cout << "PASS!" << std::endl;
-  } else {
+  if (memcmp(ref, buf_out, sizeof(ref)) != 0) {
     std::cout << "FAIL." << std::endl;
+    return 1;
   }
 
+  std::cout << "PASS!" << std::endl;
   return 0;
 }

@@ -1,45 +1,45 @@
-# SPDX-FileCopyrightText: Copyright (C) 2024-2026 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 import logging
 
-logger = logging.getLogger(__name__)
-
 from aie.dialects.aie import (
+    TraceMode,  # pyright: ignore[reportAttributeAccessIssue]
+    TracePacketType,  # pyright: ignore[reportAttributeAccessIssue]
+    WireBundle,  # pyright: ignore[reportAttributeAccessIssue]
+    get_target_model,  # pyright: ignore[reportAttributeAccessIssue]
     packetflow,
-    WireBundle,
     trace,
-    trace_mode,
     trace_event,
+    trace_host_config,
+    trace_mode,
     trace_packet,
     trace_port,
     trace_start,
-    trace_stop,
     trace_start_config,
-    trace_host_config,
-    TraceMode,
-    TracePacketType,
-    DMAChannelDir,
-    get_target_model,
+    trace_stop,
 )
 from aie.dialects.aiex import (
-    npu_write32,
-    npu_writebd,
-    npu_maskwrite32,
-    npu_address_patch,
+    npu_address_patch,  # pyright: ignore[reportAttributeAccessIssue]
+    npu_maskwrite32,  # pyright: ignore[reportAttributeAccessIssue]
     npu_sync,
+    npu_write32,  # pyright: ignore[reportAttributeAccessIssue]
+    npu_writebd,  # pyright: ignore[reportAttributeAccessIssue]
 )
+
 from .events import (
     BasePortEvent,
-    GenericEvent,
-    PortEvent,
     CoreEvent,
+    GenericEvent,
     MemEvent,
-    ShimTileEvent,
     MemTileEvent,
     MemTilePortEvent,
     PacketType,
+    PortEvent,
+    ShimTileEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 # Globally defined constants
 direction_s2mm = 0
@@ -83,7 +83,7 @@ def configure_shimtile_dma_aie2(
     enable_token=0,
     enable_packet=1,  # valid for mm2s xfer only
     packet_id=0,  # for mm2s xfer
-    packet_type=PacketType.CORE,  # for mm2s xfer
+    packet_type: PacketType | int = PacketType.CORE,  # for mm2s xfer
     shim_burst_length=64,
 ):
 
@@ -384,6 +384,7 @@ def configure_trace(
     coremem_events=None,
     memtile_events=None,
     shimtile_events=None,
+    core_trace_mode=TraceMode.EventTime,
 ):
     """Generate aie.trace ops for a list of tiles.
 
@@ -395,27 +396,56 @@ def configure_trace(
         start_broadcast: Broadcast channel for trace start event (default: 15).
         stop_broadcast: Broadcast channel for trace stop event (default: 14).
         coretile_events: List of events for core tile tracing (max 8).
-        coremem_events: List of events for core memory tracing (max 8).
+        coremem_events: List of events for core memory tracing (max 8). A
+            core tile needs to appear only once in tiles_to_trace to get a
+            memory trace from this; it does not need a second, duplicate
+            entry in the list.
         memtile_events: List of events for mem tile tracing (max 8).
         shimtile_events: List of events for shim tile tracing (max 8).
+        core_trace_mode: Trace mode for core tiles (default: Event-Time).
     """
     _configured_trace_names.clear()
 
     if not tiles_to_trace:
         return
 
-    packet_id = 1
+    # Packet IDs are intentionally NOT assigned here. IRON workers may be
+    # unplaced at this point, so a stable (col, row)-derived id can't be
+    # computed in Python. -aie-insert-trace-flows assigns ids in
+    # (col, row) order after the placer runs, keeping the trace overlay's
+    # routing-rule layout a pure function of the active trace tile set.
+    trace_seq = 1
     seen_core_tiles = set()
+    mem_traced_tiles = set()
 
+    # Build the (tile, is_mem_trace) work list. A core tile normally yields
+    # one core trace. It gets a second, memory-trace entry either from the
+    # legacy convention of listing the same tile twice in tiles_to_trace, or,
+    # new, simply by the caller passing coremem_events, so a single
+    # occurrence is enough to get both a core trace and a memory trace for
+    # that tile.
+    trace_specs = []
     for tile_op in tiles_to_trace:
-        # Determine if this is a core tile memory trace (second occurrence)
         is_mem_trace = False
         if tile_op.is_core_tile():
             if tile_op in seen_core_tiles:
                 is_mem_trace = True
             else:
                 seen_core_tiles.add(tile_op)
+        trace_specs.append((tile_op, is_mem_trace))
+        if is_mem_trace:
+            mem_traced_tiles.add(tile_op)
+    # Walk tiles_to_trace again rather than seen_core_tiles: trace_seq numbers
+    # the specs in order, so the appended entries have to come in the caller's
+    # tile order. Iterating the set would name them in whatever order the
+    # tiles happen to hash in, which is not stable across runs.
+    if coremem_events is not None:
+        for tile_op in tiles_to_trace:
+            if tile_op.is_core_tile() and tile_op not in mem_traced_tiles:
+                trace_specs.append((tile_op, True))
+                mem_traced_tiles.add(tile_op)
 
+    for tile_op, is_mem_trace in trace_specs:
         # Generate unique trace name based on tile type
         if tile_op.is_core_tile():
             trace_type = "mem" if is_mem_trace else "core"
@@ -426,7 +456,7 @@ def configure_trace(
         else:
             raise ValueError(f"Unknown tile type for tracing: {tile_op}")
 
-        trace_name = f"trace_{trace_type}_{packet_id}"
+        trace_name = f"trace_{trace_type}_{trace_seq}"
 
         # Get events for this tile type
         if tile_op.is_core_tile():
@@ -490,8 +520,10 @@ def configure_trace(
         @trace(tile_op, trace_name)
         def trace_body():
             if is_core_trace:
-                trace_mode(TraceMode.EventTime)
-            trace_packet(packet_id, packet_type)
+                trace_mode(core_trace_mode)
+            # id auto-assigned in (col, row) order by
+            # -aie-insert-trace-flows after placement.
+            trace_packet(type=packet_type)
 
             for event in padded_events:
                 trace_event(event)
@@ -509,13 +541,14 @@ def configure_trace(
             trace_stop(broadcast=stop_broadcast)
 
         _configured_trace_names.append(trace_name)
-        packet_id += 1
+        trace_seq += 1
 
 
 def start_trace(
     trace_size=8192,
-    ddr_id=4,
+    reuse_output_buffer=False,
     routing="single",
+    egress_shim_col=0,
 ):
     """Start tracing and configure trace output buffer.
 
@@ -524,17 +557,21 @@ def start_trace(
 
     Args:
         trace_size: Trace buffer size in bytes. Default is 8192.
-        ddr_id: DDR buffer index (0-4) mapping to XRT group_id (3-7).
-                Default is 4 (group_id 7). Set to -1 to append trace data
-                after the last runtime_sequence tensor argument.
+        reuse_output_buffer: When False (default), trace lowering appends a
+                dedicated trace-buffer argument to the runtime_sequence. When
+                True, trace data is written into the tail of the last existing
+                argument (an output buffer), saving a host buffer.
         routing: Shim routing strategy. Currently only "single" is supported,
                  which routes all traces to column 0's shim.
+        egress_shim_col: Column of the shim tile used to egress trace packets
+                 to DDR. Defaults to 0.
     """
     # Emit host_config op (handles string-to-enum conversion for routing)
     trace_host_config(
         buffer_size=trace_size,
-        arg_idx=ddr_id,
+        reuse_output_buffer=reuse_output_buffer,
         routing=routing,
+        egress_shim_col=egress_shim_col,
     )
 
     # Emit start_config for each configured trace

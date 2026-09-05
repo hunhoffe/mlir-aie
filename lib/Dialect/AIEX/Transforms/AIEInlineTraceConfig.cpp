@@ -1,10 +1,7 @@
 //===- AIEInlineTraceConfig.cpp ---------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 // Pass to inline trace.start_config and generate npu.write32
@@ -14,6 +11,7 @@
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/AIEX/Transforms/AIEXPasses.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
 
@@ -70,8 +68,8 @@ struct AIEInlineTraceConfigPass
 
       // Determine if we're accessing memory module from packet type
       bool isMem = false;
-      if (configOp.getPacketType()) {
-        isMem = (*configOp.getPacketType() == TracePacketType::Mem);
+      if (auto packetType = configOp.getPacketType()) {
+        isMem = (*packetType == TracePacketType::Mem);
       }
 
       // Process all trace.reg operations in the config
@@ -107,9 +105,10 @@ struct AIEInlineTraceConfigPass
         }
 
         // Generate aiex.npu.write32 operation with col/row
-        builder.create<AIEX::NpuWrite32Op>(
-            regOp.getLoc(), builder.getUI32IntegerAttr(regInfo->offset),
-            builder.getUI32IntegerAttr(value),
+        AIEX::NpuWrite32Op::create(
+            builder, regOp.getLoc(),
+            AIEX::createConstantI32(builder, regOp.getLoc(), regInfo->offset),
+            AIEX::createConstantI32(builder, regOp.getLoc(), value),
             nullptr,                        // buffer
             builder.getI32IntegerAttr(col), // column
             builder.getI32IntegerAttr(row)  // row

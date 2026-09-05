@@ -1,4 +1,11 @@
+# Copyright (C) 2021 Xilinx, Inc.
+# Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
 name: Build and Test across Python versions
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -37,19 +44,19 @@ jobs:
       # Run the tests on the Cartesian product of the following
       matrix:
         build_type: [ Assert, Release ]
-        ubuntu_version: [ 22.04, 24.04 ]
-        python_version: [ "3.10", "3.11", "3.12", "3.13", "3.14" ]
+        ubuntu_version: [ 24.04 ]
+        python_version: [ "3.11", "3.12", "3.13", "3.14" ]
 
     steps:
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get the project repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2
           submodules: "true"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python_version }}
 
@@ -60,7 +67,7 @@ jobs:
               --requirements python/requirements.txt \
               --install-non-eudsl
           pip install -r python/requirements_notebook.txt
-          pip install -r python/requirements_dev.txt
+          python -m pip install --require-hashes -r python/requirements_dev.lock
 
       - name: Install packages
         run: |
@@ -70,19 +77,42 @@ jobs:
         id: mlir-wheels
         run: |
           VERSION=$(utils/clone-llvm.sh --get-wheel-version)
-          pip -q download mlir==$VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          for attempt in 1 2 3; do
+            rm -f mlir-*.whl
+            if pip -q download mlir==$VERSION \
+              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to download MLIR wheel after ${attempt} attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           unzip -q mlir-*.whl
 
       - name: Ccache for C++ compilation
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03  # v1.2.23
         with:
           # Since there are now several compilation jobs running in parallel,
-          # use a different key per job to avoid a ccache writing race condition
-          key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
+          # use a different key per job to avoid a ccache writing race condition.
+          # python_version is part of that identity: without it the four Python
+          # legs of one build_type share a key, each stores a full cache every
+          # run, and only the newest is ever restored.
+          key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}-${{ matrix.python_version }}
           max-size: 1G
 
-      # Build the repo test target in debug mode to build and test.
+      # ccache defaults to comparing the compiler by mtime. GitHub-hosted
+      # runners reinstall the compiler every run with a fresh mtime, so every
+      # object misses even when the cache restores. Compare by content instead,
+      # matching what .github/actions/setup_ccache already does.
+      - name: Configure ccache
+        shell: bash
+        run: |
+          ccache --set-config=compiler_check=content
+          ccache --set-config=sloppiness=locale,time_macros
+
+      # Build the repo test target with assertions on to build and test.
       - name: Build and test (Assert)
         if: matrix.build_type == 'Assert'
         run: |
@@ -92,7 +122,7 @@ jobs:
 
           cmake .. \
             -GNinja \
-            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON \
@@ -117,7 +147,6 @@ jobs:
           # filter out slow tests (e.g. create-flows/vecmul_4x4_slow_test.mlir) due to timeout.
           export LIT_OPTS="-sv --timeout 600 --filter-out slow_test"
           ninja check-aie
-          ninja check-tutorials
           ninja check-reference-designs
           ninja check-programming-guide
 
@@ -153,6 +182,5 @@ jobs:
 
           ninja
           ninja check-aie
-          ninja check-tutorials
           ninja check-reference-designs
           ninja check-programming-guide

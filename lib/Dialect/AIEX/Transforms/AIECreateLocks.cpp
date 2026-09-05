@@ -1,10 +1,8 @@
 //===- AIECreateLocks.cpp ---------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2019-2022 Xilinx, Inc.
+// Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2019 Xilinx Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -13,6 +11,7 @@
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/AIEX/Transforms/AIEXPasses.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -54,13 +53,9 @@ struct Token2LockLowering : public OpConversionPattern<UseTokenOp> {
     Operation *Op = op.getOperation();
     Operation *parentOp = op->getParentOp();
 
-    if (CoreOp core = dyn_cast<CoreOp>(parentOp)) {
-    } else if (MemOp mem = dyn_cast<MemOp>(parentOp)) {
-    } else if (auto shimDma = dyn_cast<ShimDMAOp>(parentOp)) {
-    } else {
+    if (!isa<CoreOp, MemOp, ShimDMAOp>(parentOp))
       llvm_unreachable("A parent operation of UseTokenOp must be either CoreOp "
                        "or MemOp or ShimDMAOp");
-    }
 
     if (op.acquire()) {
       // Acquire lock from pair
@@ -138,6 +133,9 @@ static int getLockID(DenseMap<std::pair<Operation *, int>, int> &locks,
 
 struct AIECreateLocksPass
     : public xilinx::AIEX::impl::AIECreateLocksBase<AIECreateLocksPass> {
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<arith::ArithDialect>();
+  }
   void runOnOperation() override {
 
     DeviceOp device = getOperation();
@@ -192,16 +190,15 @@ struct AIECreateLocksPass
                       (!IsAcqUserCore && IsRelUserCore)))
         continue;
       assert(tileOp &&
-             "Sorry, the lock users of this chain do not have a common lock");
+             "the lock users of this chain do not have a common lock");
 
-      TileOp tile = dyn_cast<TileOp>(tileOp);
+      TileOp tile = cast<TileOp>(tileOp);
       int lockID = getLockID(locks, tileOp);
       assert(lockID >= 0 && "No more locks to allocate!");
       LLVM_DEBUG(llvm::dbgs() << "Shared tile \n"; tileOp->print(llvm::dbgs()));
       LLVM_DEBUG(llvm::dbgs() << " LockID: " << lockID << '\n');
       builder.setInsertionPointAfter(tileOp);
-      LockOp lock =
-          LockOp::create(builder, builder.getUnknownLoc(), tile, lockID, 0);
+      LockOp lock = LockOp::create(builder, tile.getLoc(), tile, lockID, 0);
 
       lockChains[std::make_pair(release, acquire)] = std::make_pair(lock, 1);
 
@@ -210,10 +207,10 @@ struct AIECreateLocksPass
         Operation *relFromPair = pair.second;
 
         if (relFromPair == release)
-          acqLocks[acqFromPair].push_back(std::make_pair(lock, 0));
+          acqLocks[acqFromPair].emplace_back(lock, 0);
 
         if (acqFromPair == acquire)
-          relLocks[relFromPair].push_back(std::make_pair(lock, 0));
+          relLocks[relFromPair].emplace_back(lock, 0);
       }
     }
 

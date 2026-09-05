@@ -1,14 +1,11 @@
 <!---//===- README.md --------------------------*- Markdown -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024-2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//-->
 
-# <ins>Section 4 - Performance Measurement & Vector Programming</ins>
+# Section 4 - Performance Measurement & Vector Programming
 
 Now that you've had a chance to walk through the components of compiling and running a program on the Ryzen™ AI hardware in [section-3](../section-3), we will start looking at how we measure performance and utilize vector programming techniques to fully leverage the power of the AI Engines for parallel compute.
 
@@ -19,4 +16,4 @@ It is helpful to first examine performance measurement before we delve into vect
 * [Section 4c - Kernel vectorization and optimization](./section-4c)
 
 -----
-[[Prev - Section 3](../section-3/)] [[Top](..)] [[Next - Section 5](../section-5/)]
+[Prev](../section-3/) &middot; [Top](..) &middot; [Next](../section-5/)

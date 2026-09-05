@@ -1,10 +1,7 @@
 //===- TargetModel.cpp - C API for AIE TargetModel ------------------------===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2024 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -159,12 +156,6 @@ uint32_t aieTargetModelGetNumBanks(AieTargetModel targetModel, int col,
   return unwrap(targetModel).getNumBanks(col, row);
 }
 
-uint32_t
-aieTargetModelGetMaxChannelNumForAdjacentMemTile(AieTargetModel targetModel,
-                                                 int col, int row) {
-  return unwrap(targetModel).getMaxChannelNumForAdjacentMemTile(col, row);
-}
-
 uint32_t aieTargetModelGetNumDestSwitchboxConnections(
     AieTargetModel targetModel, int col, int row, uint32_t bundle) {
   xilinx::AIE::WireBundle wireBundle =
@@ -199,6 +190,10 @@ uint32_t aieTargetModelGetNumSourceShimMuxConnections(
 
 bool aieTargetModelIsNPU(AieTargetModel targetModel) {
   return unwrap(targetModel).hasProperty(xilinx::AIE::AIETargetModel::IsNPU);
+}
+
+uint32_t aieTargetModelGetTargetArch(AieTargetModel targetModel) {
+  return static_cast<uint32_t>(unwrap(targetModel).getTargetArch());
 }
 
 uint32_t aieTargetModelGetColumnShift(AieTargetModel targetModel) {

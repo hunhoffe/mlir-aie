@@ -1,4 +1,4 @@
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (C) 2023 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 # RUN: %python %s | FileCheck %s
@@ -16,7 +16,6 @@ from aie.ir import InsertionPoint, Block
 
 from util import construct_and_print_module
 
-
 # CHECK:  module {
 # CHECK:    aie.device(xcve2302) {
 # CHECK:      %{{.*}}tile_0_0 = aie.tile(0, 0)
@@ -29,11 +28,10 @@ from util import construct_and_print_module
 # CHECK:      aie.objectfifo.allocate @of2(%{{.*}}tile_1_3)
 # CHECK:      aie.objectfifo @of3(%{{.*}}tile_0_0, {%{{.*}}tile_1_3}, 2 : i32) {aie_stream = 1 : i32, aie_stream_port = 1 : i32} : !aie.objectfifo<memref<256xi32>>
 # CHECK:      %core_1_2 = aie.core(%tile_1_2) {
-# CHECK:        %0 = aie.objectfifo.acquire @of0(Consume, 1) : !aie.objectfifosubview<memref<256xi32>>
-# CHECK:        %1 = aie.objectfifo.subview.access %0[0] : !aie.objectfifosubview<memref<256xi32>> -> memref<256xi32>
+# CHECK:        %0 = aie.objectfifo.acquire @of0(Consume, 1) : memref<256xi32>
 # CHECK:        %c0 = arith.constant 0 : index
 # CHECK:        %c10_i32 = arith.constant 10 : i32
-# CHECK:        memref.store %c10_i32, %1[%c0] : memref<256xi32>
+# CHECK:        memref.store %c10_i32, %0[%c0] : memref<256xi32>
 # CHECK:        aie.objectfifo.release @of0(Consume, 1)
 # CHECK:        aie.end
 # CHECK:      }

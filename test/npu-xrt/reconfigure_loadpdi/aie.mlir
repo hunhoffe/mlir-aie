@@ -1,4 +1,4 @@
-// (c) Copyright 2025 Advanced Micro Devices, Inc.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 // This test:
@@ -46,10 +46,10 @@ module {
 
         %t00 = aie.tile(0, 0)
         %t02 = aie.tile(0, 2)
-        
+
         aie.objectfifo @objfifo_in (%t00, {%t02}, 1 : i32) : !aie.objectfifo<memref<4xi32>>
         aie.objectfifo @objfifo_out(%t02, {%t00}, 1 : i32) : !aie.objectfifo<memref<4xi32>>
-        
+
         aie.core(%t02) {
             %c0 = arith.constant 0 : index
             %c1 = arith.constant 1 : index
@@ -60,10 +60,8 @@ module {
             %c_intmax = arith.constant 0xFFFFFE : index
 
             scf.for %niter = %c0 to %c_intmax step %c1 {
-            %subview_in  = aie.objectfifo.acquire @objfifo_in (Consume, 1) : !aie.objectfifosubview<memref<4xi32>>
-            %subview_out = aie.objectfifo.acquire @objfifo_out(Produce, 1) : !aie.objectfifosubview<memref<4xi32>>
-            %elem_in     = aie.objectfifo.subview.access %subview_in [0] : !aie.objectfifosubview<memref<4xi32>> -> memref<4xi32>
-            %elem_out    = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<4xi32>> -> memref<4xi32>
+            %elem_in = aie.objectfifo.acquire @objfifo_in (Consume, 1) : memref<4xi32>
+            %elem_out = aie.objectfifo.acquire @objfifo_out(Produce, 1) : memref<4xi32>
             scf.for %i = %c0 to %c4 step %c1 {
                 %0 = memref.load %elem_in[%i] : memref<4xi32>
                 %1 = arith.addi %0, %c2_i32 : i32
@@ -76,13 +74,13 @@ module {
         }
 
         aie.runtime_sequence @add_two_sequence(%a : memref<4xi32>) {
-            
+
             %t_in = aiex.dma_configure_task_for @objfifo_in {
-                aie.dma_bd(%a : memref<4xi32>, 0, 4)
+                aie.dma_bd(%a : memref<4xi32> offset = 0 len = 4)
                 aie.end
             }
             %t_out = aiex.dma_configure_task_for @objfifo_out {
-                aie.dma_bd(%a: memref<4xi32>, 0, 4)
+                aie.dma_bd(%a: memref<4xi32> offset = 0 len = 4)
                 aie.end
             } {issue_token = true}
             aiex.dma_start_task(%t_in)
@@ -96,10 +94,10 @@ module {
 
         %t00 = aie.tile(0, 0)
         %t02 = aie.tile(0, 2)
-        
+
         aie.objectfifo @objfifo_in (%t00, {%t02}, 1 : i32) : !aie.objectfifo<memref<4xi32>>
         aie.objectfifo @objfifo_out(%t02, {%t00}, 1 : i32) : !aie.objectfifo<memref<4xi32>>
-        
+
         aie.core(%t02) {
             %c0 = arith.constant 0 : index
             %c1 = arith.constant 1 : index
@@ -110,10 +108,8 @@ module {
             %c_intmax = arith.constant 0xFFFFFE : index
 
             scf.for %niter = %c0 to %c_intmax step %c1 {
-            %subview_in  = aie.objectfifo.acquire @objfifo_in (Consume, 1) : !aie.objectfifosubview<memref<4xi32>>
-            %subview_out = aie.objectfifo.acquire @objfifo_out(Produce, 1) : !aie.objectfifosubview<memref<4xi32>>
-            %elem_in     = aie.objectfifo.subview.access %subview_in [0] : !aie.objectfifosubview<memref<4xi32>> -> memref<4xi32>
-            %elem_out    = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<4xi32>> -> memref<4xi32>
+            %elem_in = aie.objectfifo.acquire @objfifo_in (Consume, 1) : memref<4xi32>
+            %elem_out = aie.objectfifo.acquire @objfifo_out(Produce, 1) : memref<4xi32>
             scf.for %i = %c0 to %c4 step %c1 {
                 %0 = memref.load %elem_in[%i] : memref<4xi32>
                 %1 = arith.addi %0, %c3_i32 : i32
@@ -126,13 +122,13 @@ module {
         }
 
         aie.runtime_sequence @add_three_sequence(%a : memref<4xi32>) {
-            
+
             %t_in = aiex.dma_configure_task_for @objfifo_in {
-                aie.dma_bd(%a : memref<4xi32>, 0, 4)
+                aie.dma_bd(%a : memref<4xi32> offset = 0 len = 4)
                 aie.end
             }
             %t_out = aiex.dma_configure_task_for @objfifo_out {
-                aie.dma_bd(%a: memref<4xi32>, 0, 4)
+                aie.dma_bd(%a: memref<4xi32> offset = 0 len = 4)
                 aie.end
             } {issue_token = true}
             aiex.dma_start_task(%t_in)

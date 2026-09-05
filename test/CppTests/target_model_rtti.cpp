@@ -1,10 +1,7 @@
 //===- target_model_rtti.cpp ------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2024 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,6 +63,28 @@ void test() {
                 AIE::NPU2TargetModel, AIE::VirtualizedNPU2TargetModel>(
           AIE::getTargetModel(AIE::AIEDevice::xcve2802))) {
     throw std::runtime_error("Failed xcve2802 !isa<>");
+  }
+
+  // AIEDevice::xcve3858 (AIE2PS provisional)
+  if (!llvm::isa<AIE::VE3858TargetModel>(
+          AIE::getTargetModel(AIE::AIEDevice::xcve3858))) {
+    throw std::runtime_error("Failed xcve3858 isa<VE3858TargetModel>");
+  }
+  if (!llvm::isa<AIE::AIE2PSTargetModel>(
+          AIE::getTargetModel(AIE::AIEDevice::xcve3858))) {
+    throw std::runtime_error("Failed xcve3858 isa<AIE2PSTargetModel>");
+  }
+  if (!llvm::isa<AIE::AIETargetModel>(
+          AIE::getTargetModel(AIE::AIEDevice::xcve3858))) {
+    throw std::runtime_error("Failed xcve3858 isa<AIETargetModel>");
+  }
+  if (llvm::isa<AIE::AIE1TargetModel, AIE::VC1902TargetModel,
+                AIE::VE2302TargetModel, AIE::VE2802TargetModel,
+                AIE::BaseNPU1TargetModel, AIE::BaseNPU2TargetModel,
+                AIE::VirtualizedNPU1TargetModel, AIE::NPU2TargetModel,
+                AIE::VirtualizedNPU2TargetModel>(
+          AIE::getTargetModel(AIE::AIEDevice::xcve3858))) {
+    throw std::runtime_error("Failed xcve3858 !isa<>");
   }
 
   // AIEDevice::npu1, AIEDevice::npu_1col, npu_2col, npu_3col, npu_4col

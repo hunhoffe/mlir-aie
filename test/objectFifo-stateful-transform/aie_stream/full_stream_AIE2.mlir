@@ -1,19 +1,15 @@
 //===- full_stream_AIE2.mlir ------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//
 
-// RUN: aie-opt --aie-objectFifo-stateful-transform %s | FileCheck %s
+// RUN: aie-opt --aie-objectFifo-stateful-transform --aie-objectFifo-unroll %s | FileCheck %s
 
 // CHECK: module @full_stream_AIE2 {
 // CHECK:   aie.device(xcve2302) {
 // CHECK:     %[[VAL_0:.*]] = aie.tile(1, 2)
-// CHECK:     %[[VAL_1:.*]] = aie.tile(1, 3)
 // CHECK:     %[[VAL_2:.*]] = aie.tile(3, 3)
 // CHECK:     aie.flow(%tile_1_2, Core : 1, %tile_3_3, Core : 1)
 // CHECK:   }

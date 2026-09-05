@@ -1,15 +1,16 @@
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2021-2022 Xilinx, Inc.
+# Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2021 Xilinx Inc.
 
 add_mlir_dialect_library(
   AIETransforms
   AIEPlacer.cpp
   AIEPlaceTiles.cpp
+  AIESAPlacer.cpp
   AIEAssignBufferDescriptorIDs.cpp
+  AIEObjectFifoLiveness.cpp
   AIEAssignBuffers.cpp
   AIEAssignCoreLinkFiles.cpp
   AIEAssignLockIDs.cpp
@@ -20,12 +21,18 @@ add_mlir_dialect_library(
   AIECanonicalizeDevice.cpp
   AIELocalizeLocks.cpp
   AIENormalizeAddressSpaces.cpp
-  AIEVectorOpt.cpp
   AIEVectorToPointerLoops.cpp
   AIEVectorTransferLowering.cpp
   AIEHoistVectorTransferPointers.cpp
-  AIEObjectFifoStatefulTransform.cpp
-  AIEObjectFifoRegisterProcess.cpp
+  AIEDMAChannelAnalysis.cpp
+  AIEObjectFifoAllocate.cpp
+  AIEObjectFifoLowerDMAs.cpp
+  AIEObjectFifoLowerCores.cpp
+  AIEObjectFifoErasePools.cpp
+  AIEObjectFifoPipeline.cpp
+  AIEObjectFifoSplit.cpp
+  AIEObjectFifoVerify.cpp
+  AIEObjectFifoUnroll.cpp
   AIELowerCascadeFlows.cpp
   AIEGenerateColumnControlOverlay.cpp
   AIETraceToConfig.cpp
@@ -47,5 +54,6 @@ add_mlir_dialect_library(
   MLIRIR
   MLIRPass
   MLIRSupport
+  MLIRSCFTransforms
   MLIRTransformUtils
   MLIRFuncDialect)

@@ -1,6 +1,8 @@
+<!-- Copyright (C) 2019-2025 Advanced Micro Devices, Inc. -->
+<!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # Building the MLIR-AIE Codebase on Linux
 
-These instructions will guide you through everything required for building and executing a program on the Ryzen™ AI NPU, starting from a fresh bare-bones **Ubuntu 24.04** or **Ubuntu 24.10** install. It is possible to use **Ubuntu 22.04** however you must follow the documentation on the [xdna-driver](https://github.com/amd/xdna-driver) repository to configure the Linux kernel, driver and runtime for deployment. 
+These instructions will guide you through everything required for building and executing a program on the Ryzen™ AI NPU, starting from a fresh bare-bones **Ubuntu 24.04** or **Ubuntu 24.10** install. It is possible to use **Ubuntu 22.04** however you must follow the documentation on the [xdna-driver](https://github.com/amd/xdna-driver) repository to configure the Linux kernel, driver and runtime for deployment.
 
 ## Initial Setup
 
@@ -9,7 +11,7 @@ These instructions will guide you through everything required for building and e
 If starting from `Ubuntu 24.04` you may need to update the Linux kernel to 6.11+ by installing the Hardware Enablement (HWE) stack:
 
   ```bash
-  sudo apt update 
+  sudo apt update
   sudo apt install --install-recommends linux-generic-hwe-24.04
   sudo reboot
   ```
@@ -23,7 +25,7 @@ Turn off SecureBoot (Allows for unsigned drivers to be installed):
 
 ### Install the XDNA™ Driver and XRT
 
-#### Install from upstream packages (Ubuntu 24.04 with Linux 6.17+)
+#### Install from upstream packages (Ubuntu 24.04 with Linux 6.17+) { #install-from-upstream-packages-ubuntu-2404 }
 
 Install the XDNA driver and XRT runtime from the AMD PPA:
 
@@ -101,9 +103,9 @@ xrt-smi examine
 1. Install the following packages needed for MLIR-AIE:
 
     ```bash
-    # Python versions 3.10, 3.12 and 3.13 are currently supported by our wheels
+    # Python versions 3.11, 3.12, 3.13, and 3.14 are currently supported by our wheels
     sudo apt install \
-    build-essential clang clang-14 lld lld-14 cmake ninja-build python3-venv python3-pip
+    build-essential clang clang-14 lld lld-14 cmake ninja-build python3-venv python3-pip uuid-dev
     ```
 
 ## Build and Install mlir-aie and IRON
@@ -124,7 +126,7 @@ xrt-smi examine
 
 1. Install required Python packages:
    ```bash
-   # Install basic Python requirements 
+   # Install basic Python requirements
    python3 -m pip install -r python/requirements.txt
    ```
 
@@ -133,7 +135,9 @@ xrt-smi examine
    # Install Python requirements for development and testing
    python3 -m pip install -r python/requirements_dev.txt
 
-   # This installs the pre-commit hooks defined in .pre-commit-config.yaml
+   # Install the pre-commit and pre-push hooks defined in .pre-commit-config.yaml
+   # (pre-push runs clang-format/black/ruff/clang-tidy to catch formatting and
+   # lint issues before CI)
    pre-commit install
    ```
 
@@ -142,26 +146,27 @@ xrt-smi examine
    bash ./utils/build-mlir-aie-from-wheels.sh
    ```
 
+1. (Optional) Generate a compile database so the `clang-tidy` pre-push hook
+   can run (see [CONTRIBUTING.md](../CONTRIBUTING.md#static-analysis-for-c-clang-tidy)):
+   ```bash
+   ninja -C build -t compdb > build/compile_commands.json
+   ```
+
 1. Setup environment
    ```bash
    source utils/env_setup.sh install
    ```
 
-## Build an IRON Design for AIEs in the AMD Ryzen™ AI NPU
+## Run an IRON Design on the AMD Ryzen™ AI NPU on Linux
 
-For your design of interest, for instance from [programming_examples](../programming_examples/), 2 steps are needed: (i) build the AIE design and then (ii) build the host code.
+The [programming examples](../programming_examples/) use either of two entry points. Most examples use standalone `@iron.jit` to compile, run, and verify directly from Python:
 
-### Build Device AIE Part
+```bash
+cd programming_examples/<category>/<example>
+python3 <example>.py
+```
 
-1. Goto the design of interest and run:
-   ```bash
-   make
-   ```
-
-1. Build host code and execute the design:
-    ```bash
-    make run
-    ```
+Examples with a separate native host, explicit artifact builds, or multi-stage workflow have a `Makefile`. Follow the example's README for its supported targets, such as `make run` or `make run_py`.
 
 ## Learn more
 
@@ -169,11 +174,7 @@ For your design of interest, for instance from [programming_examples](../program
 
 1. AIE API header library documentation for single-core AIE programming in C++ is avaiable [here](https://xilinx.github.io/aie_api/topics.html)
 
-## Contributing:
-
-Interested in contributing MLIR-AIE? [Information for developers](./CONTRIBUTING.md)
-
-## Alternative: Build XDNA™ Driver and XRT from source
+## Alternative: Build XDNA™ Driver and XRT from source { #alternative-build-xdna-driver-and-xrt-from-source }
 
 If the [upstream packages](#install-from-upstream-packages-ubuntu-2404) do not support your kernel or distribution, you can build the driver and XRT from source:
 
@@ -203,7 +204,7 @@ If the [upstream packages](#install-from-upstream-packages-ubuntu-2404) do not s
 ### Update BIOS:
 
 Be sure you have the latest BIOS for your laptop or mini PC, this will ensure the NPU (sometimes referred to as IPU) is enabled in the system. You may need to manually enable the NPU:
-   ```Advanced → CPU Configuration → IPU``` 
+   ```Advanced → CPU Configuration → IPU```
 
 > **NOTE:** Some manufacturers only provide Windows executables to update the BIOS, please do this before installing Ubuntu.
 

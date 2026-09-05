@@ -1,10 +1,7 @@
 //===- AIETxnToControlPacket.cpp --------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2025 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -99,15 +96,15 @@ struct ControlPacketSplitPattern
     }
 
     auto chunks = llvm::divideCeil(numElements, max_payload_size);
-    auto context = op.getContext();
+    auto *context = op.getContext();
     auto loc = op.getLoc();
     for (unsigned i = 0; i < chunks; ++i) {
       uint32_t startIdx = i * max_payload_size;
       uint32_t endIdx = std::min(startIdx + max_payload_size, numElements);
 
       SmallVector<int32_t, 4> chunkData;
-      for (auto it = data->begin() + startIdx; it != data->begin() + endIdx;
-           ++it) {
+      for (const auto *it = data->begin() + startIdx;
+           it != data->begin() + endIdx; ++it) {
         chunkData.push_back(*it);
       }
 

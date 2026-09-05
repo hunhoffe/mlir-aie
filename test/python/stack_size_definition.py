@@ -1,4 +1,4 @@
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (C) 2023 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 # RUN: %python %s | FileCheck %s
@@ -11,11 +11,14 @@ from aie.iron.device import NPU1
 
 my_worker = Worker(None, stack_size=2048, while_true=False)
 
-rt = Runtime()
-with rt.sequence():
-    rt.start(my_worker)
 
-my_program = Program(NPU1(), rt)
+def sequence():
+    pass
+
+
+rt = Runtime(sequence, [])
+
+my_program = Program(NPU1(), rt, workers=[my_worker])
 
 module = my_program.resolve_program()
 

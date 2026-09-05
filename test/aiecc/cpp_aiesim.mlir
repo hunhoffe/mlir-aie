@@ -1,32 +1,33 @@
 //===- cpp_aiesim.mlir -----------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
-// Test aiesim work folder generation with C++ aiecc.
+// Test aiesim work folder generation with aiecc.
 // Uses dry-run mode since aiesim requires actual xchesscc/aietools.
 
 // REQUIRES: chess
 
-// RUN: aiecc --xchesscc --xbridge --aiesim -n --verbose %s 2>&1 | FileCheck %s
+// RUN: aiecc --xchesscc --xbridge --get-aiesim -n --verbose %s 2>&1 | FileCheck %s
 
-// Verify aiesim requires xbridge
-// RUN: not aiecc --no-xbridge --aiesim -n %s 2>&1 | FileCheck %s --check-prefix=NOXBRIDGE
+// The negative --get-aiesim flag-interaction cases live in
+// cpp_aiesim_negated.mlir: they fire in resolveOptions() before any
+// toolchain is touched, so they don't need Chess and shouldn't be gated on
+// it.
 
-// CHECK: Generating aiesim work folder for device
-// CHECK: aie-translate
-// CHECK: --aie-mlir-to-xpe
-// CHECK: aie-translate
-// CHECK: --aie-mlir-to-shim-solution
-// CHECK: aie-translate
-// CHECK: --aie-mlir-to-scsim-config
-
-// NOXBRIDGE: Error: AIE Simulation (--aiesim) currently requires --xbridge
+// The sim/ work folder is assembled from declarative graph edges: the
+// graph/shim/scsim descriptors and routed flows are emitted in-process, and
+// the ps.so co-simulation model is linked from the toolchain's
+// genwrapper_for_ps.cpp. (--aie-mlir-to-* no longer shells out.)
+// CHECK-DAG: graph.xpe
+// CHECK-DAG: aieshim_solution.aiesol
+// CHECK-DAG: scsim_config.json
+// CHECK-DAG: flows_physical.json
+// CHECK-DAG: -D__AIESIM__
+// CHECK-DAG: genwrapper_for_ps.cpp
+// CHECK-DAG: {{.*}}ps.so
 
 module {
   aie.device(npu1_1col) {
@@ -42,11 +43,9 @@ module {
       %c16 = arith.constant 16 : index
       %c1_i32 = arith.constant 1 : i32
 
-      %subview_in = aie.objectfifo.acquire @of_in(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_in = aie.objectfifo.subview.access %subview_in[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_in = aie.objectfifo.acquire @of_in(Consume, 1) : memref<16xi32>
 
-      %subview_out = aie.objectfifo.acquire @of_out(Produce, 1) : !aie.objectfifosubview<memref<16xi32>>
-      %elem_out = aie.objectfifo.subview.access %subview_out[0] : !aie.objectfifosubview<memref<16xi32>> -> memref<16xi32>
+      %elem_out = aie.objectfifo.acquire @of_out(Produce, 1) : memref<16xi32>
 
       scf.for %i = %c0 to %c16 step %c1 {
         %val = memref.load %elem_in[%i] : memref<16xi32>

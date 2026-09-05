@@ -1,10 +1,7 @@
 //===- empty_device.mlir ---------------------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,7 +24,7 @@ module {
     aie.device(npu2_1col) @main {
         // CHECK: aie.runtime_sequence(%arg0: memref<1xi32>) {
         aie.runtime_sequence (%arg0: memref<1xi32>) {
-            // CHECK: aiex.npu.load_pdi {device_ref = @empty_0}
+            // CHECK: aiex.npu.load_pdi {device_ref = @empty_0, expand_mode = 0 : i32}
             aiex.npu.load_pdi { device_ref = @my_empty_device }
         }
         // CHECK: }

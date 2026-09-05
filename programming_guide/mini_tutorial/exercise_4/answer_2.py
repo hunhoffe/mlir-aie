@@ -1,15 +1,16 @@
 # answer_2.py -*- Python -*-
 #
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2025 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
 
 import sys
 import numpy as np
 
 from aie.iron import (
+    CompileTime,
+    In,
+    Out,
     Program,
     Runtime,
     Worker,
@@ -23,9 +24,12 @@ import aie.iron as iron
 
 
 @iron.jit
-def exercise_4(output):
-    data_size = output.numel()
-    element_type = output.dtype
+def exercise_4(
+    output: Out,
+    *,
+    data_size: CompileTime[int],
+    element_type: CompileTime[type],
+):
     data_ty = np.ndarray[(data_size,), np.dtype[element_type]]
 
     # Dataflow with ObjectFifos
@@ -55,21 +59,21 @@ def exercise_4(output):
     my_worker = Worker(core_fn, [rtps[0], of_out.prod(), workerBarrier])
 
     # To/from AIE-array runtime data movement
-    rt = Runtime()
-    with rt.sequence(data_ty) as (c_out):
+    def sequence(c_out, out_h):
         # Set runtime parameters
         def set_rtps(*args):
             for rtp in args:
                 for i in range(data_size):  # note difference with range_ in the Worker
                     rtp[i] = i
 
-        rt.inline_ops(set_rtps, rtps)
-        rt.set_barrier(workerBarrier, 1)
-        rt.start(my_worker)
-        rt.drain(of_out.cons(), c_out, wait=True)
+        set_rtps(*rtps)
+        workerBarrier.set(1)
+        out_h.drain(c_out, wait=True)
+
+    rt = Runtime(sequence, [data_ty, of_out.cons()])
 
     # Create the program from the device type and runtime
-    my_program = Program(iron.get_current_device(), rt)
+    my_program = Program(iron.get_current_device(), rt, workers=[my_worker])
 
     # Place components (assign them resources on the device) and generate an MLIR module
     return my_program.resolve_program()
@@ -87,7 +91,7 @@ def main():
 
     # JIT-compile the kernel then launches the kernel with the given arguments. Future calls
     # to the kernel will use the same compiled kernel and loaded code objects
-    exercise_4(output)
+    exercise_4(output, data_size=output.numel(), element_type=output.dtype)
 
     # Check the correctness of the result
     USE_INPUT_VEC = False  # Set to False to switch to output for user testing

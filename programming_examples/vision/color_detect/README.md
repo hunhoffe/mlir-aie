@@ -1,11 +1,8 @@
 <!---//===- README.md --------------------------*- Markdown -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//-->
 
 # <ins>Color Detect</ins>
@@ -26,21 +23,21 @@ Starting from tile (0, 2) data is processed by each compute tile and the result 
 
 Finally, the output is sent from tile (0, 5) to the Mem tile and then back to the output through the Shim tile.
 
-The placed design, found in (`color_detect_placed.py`)[./color_detect_placed.py] uses the placement described above. The primary design found in (`color_detect.py`)(./color_detect.py), which uses a higher-level form of IRON, does not explicitly set the placement values but otherwise describes an idential design.
+## Usage
 
-To compile the design:
+### Standalone (no Makefile, no OpenCV)
+
+```shell
+python3 color_detect.py
+```
+
+`-d npu2` for Strix; `-W` / `-H` override the image dimensions.  Verifies the output against a per-stage numpy reference (rgba2hue scalar formula + threshold + bitwise OR/AND + gray2rgba) that mirrors `aie_kernels/aie2/rgba2hue.cc` `rgba2hue_aie_scalar` plus the other kernel sources.
+
+### Makefile + C++ testbench (OpenCV)
+
 ```shell
 make
-make color_detect.exe
-```
-
-To compile the placed design:
-```shell
-env use_placed=1 make
-make color_detect.exe
-```
-
-To run the design:
-```shell
 make run
 ```
+
+For NPU2 (Strix): `make devicename=npu2 && make run devicename=npu2`.

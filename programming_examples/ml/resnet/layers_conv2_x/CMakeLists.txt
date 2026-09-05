@@ -1,8 +1,6 @@
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2023-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
 
 # parameters
 # -DOpenCV_DIR: Path to OpenCV install
@@ -31,7 +29,7 @@ include(../../../common.cmake)
 
 # Find packages
 find_package(OpenCV REQUIRED)
-message("opencv library paht: ${OpenCV_LIB_PATH}")
+message("opencv library path: ${OpenCV_LIB_PATH}")
 message("opencv libs: ${OpenCV_LIBS}")
 
 add_executable(${currentTarget}

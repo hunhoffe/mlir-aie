@@ -1,10 +1,7 @@
 //===- AIEXToStandard.cpp ---------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2023 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2023, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,6 +59,12 @@ struct AIEXToStandardPass
     removepatterns.add<AIEXOpRemoval<NpuWriteBdOp>>(m.getContext(), m);
     removepatterns.add<AIEXOpRemoval<NpuAddressPatchOp>>(m.getContext(), m);
     removepatterns.add<AIEXOpRemoval<NpuPreemptOp>>(m.getContext(), m);
+    removepatterns.add<AIEXOpRemoval<NpuCreateScratchpadOp>>(m.getContext(), m);
+    removepatterns.add<AIEXOpRemoval<NpuUpdateFromScratchpadOp>>(m.getContext(),
+                                                                 m);
+    removepatterns.add<AIEXOpRemoval<ScratchpadParameterOp>>(m.getContext(), m);
+    removepatterns.add<AIEXOpRemoval<SyncScratchpadParametersFromHostOp>>(
+        m.getContext(), m);
 
     if (failed(applyPartialConversion(m, target, std::move(removepatterns))))
       signalPassFailure();

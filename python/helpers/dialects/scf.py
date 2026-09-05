@@ -1,12 +1,29 @@
-import numpy as np
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+from contextlib import contextmanager
 from typing import Sequence
 
-from ...ir import IndexType, InsertionPoint, Value
-from ...dialects.scf import IfOp, ForOp, yield_
-from ...extras.dialects.arith import constant, index_cast
-from ...extras.util import get_user_code_loc
-from contextlib import contextmanager
-from ...extras import types as T
+import numpy as np
+
+from ...dialects.scf import (  # pyright: ignore[reportMissingImports]
+    ForOp,
+    IfOp,
+    yield_,
+)
+from ...extras import types as T  # pyright: ignore[reportMissingImports]
+from ...extras.dialects.arith import (  # pyright: ignore[reportMissingImports]
+    constant,
+    index_cast,
+)
+from ...extras.util import (  # pyright: ignore[reportMissingImports]
+    get_user_code_loc,
+)
+from ...ir import (  # pyright: ignore[reportMissingImports]
+    IndexType,
+    InsertionPoint,
+    Value,
+)
 
 
 def _for(
@@ -19,13 +36,13 @@ def _for(
     loc=None,
     ip=None,
 ):
-    """
-    This is nearly identical to the convenience wrapper in scf, but with the added insert_yield parameter.
+    """Emit an scf.for loop, like the convenience wrapper in scf but with an added insert_yield parameter.
+
     The insert_yield parameter defaults to True; if left as True, the user no longer needs to manually insert
     yield operations (```yield_([])```). If the user wishes to specify yield directly (such as if there is
     a return value from the loop body), insert_yield should be set to False.
 
-    I also added some handling of numpy data types for the loop variable
+    Also handles numpy data types for the loop variable.
     """
     if not (
         isinstance(start, int)
@@ -58,7 +75,7 @@ def _for(
     iter_args = tuple(for_op.inner_iter_args)
     with InsertionPoint(for_op.body):
         if len(iter_args) > 1:
-            yield iv, iter_args, for_op.results
+            yield iv, iter_args, tuple(for_op.results)
         elif len(iter_args) == 1:
             yield iv, iter_args[0], for_op.results[0]
         else:

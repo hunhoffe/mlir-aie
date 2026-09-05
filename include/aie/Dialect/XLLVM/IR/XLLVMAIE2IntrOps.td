@@ -1,10 +1,7 @@
 //===- XLLVMAIE2IntrOps.td - XLLVM AIE2 intr. op defs. ----*- tablegen -*-====//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2024 Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 // Defines external LLVM (XLLVM) intrinsic operations for AIE2 devices.
@@ -233,6 +230,18 @@ def SubACC2048AccFloatAIE2pIntrOp :
     Arguments<(ins VectorOfLengthAndType<[64], [F32]>:$lhs,
                    VectorOfLengthAndType<[64], [F32]>:$rhs,
                    I32:$conf)>;
+
+// ----- NEG -----
+
+def NegACC512AccFloatAIE2IntrOp
+    : AIEVec2_IntrOp<"ACC512.accfloat.neg.conf",
+                     [TypeIs<"res", VectorOfLengthAndType<[8], [I64]>>]>,
+      Arguments<(ins VectorOfLengthAndType<[8], [I64]>:$source, I32:$conf)>;
+
+def NegACC2048AccFloatAIE2pIntrOp
+    : AIEVec2p_IntrOp<"ACC2048.accfloat.neg.conf",
+                      [TypeIs<"res", VectorOfLengthAndType<[64], [F32]>>]>,
+      Arguments<(ins VectorOfLengthAndType<[64], [F32]>:$source, I32:$conf)>;
 
 // ----- SET -----
 
@@ -876,5 +885,21 @@ def VectorSel32AIE2pIntrOp :
     AIEVec2p_IntrOp<"vsel32",
         [TypeIs<"res", VectorOfLengthAndType<[16], [I32]>>]>,
     AIE2I32SelElem;
+
+// AIE2P int4-unpack intrinsics: take a 32xi8 (= 64 packed nibbles) and
+// produce 64xi8 (one full int8 per nibble). The i32 `sign` argument
+// selects unsigned (0) vs signed (1) interpretation of the nibbles.
+// Maps to llvm.aie2p.unpack.I512.I8.I4 / llvm.aie2p.unpack.I1024.I8.I4.
+def UnpackI512I8I4AIE2pIntrOp :
+    AIEVec2p_IntrOp<"unpack.I512.I8.I4",
+        [TypeIs<"res", VectorOfLengthAndType<[64], [I8]>>]>,
+    Arguments<(ins VectorOfLengthAndType<[32], [I8]>:$src,
+                   I32:$sign)>;
+
+def UnpackI1024I8I4AIE2pIntrOp :
+    AIEVec2p_IntrOp<"unpack.I1024.I8.I4",
+        [TypeIs<"res", VectorOfLengthAndType<[128], [I8]>>]>,
+    Arguments<(ins VectorOfLengthAndType<[64], [I8]>:$src,
+                   I32:$sign)>;
 
 #endif // AIE_DIALECT_XLLVM_IR_XLLVMAIE2INTROPS_TD

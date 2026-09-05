@@ -1,13 +1,10 @@
 aiofiles
-# dataclasses is deprecated above Python 3.6
-dataclasses>=0.6,<=0.8; python_version < "3.7"
-# NumPy: 1.26.x tops out at Python 3.12; NumPy 2.1+ for Python 3.13+
-# pyxrt may or may not function properly with cp313/cp314
-numpy>=1.19.5,<2.0; python_version < "3.13"
-numpy>=2.1.0,<3.0; python_version >= "3.13"
+numpy>=1.26,<2.3; python_version < "3.11"
+numpy>=2.4.6,<2.5; python_version == "3.11"
+numpy>=2.5.2,<3.0; python_version >= "3.12"
 rich
-ml_dtypes
+ml_dtypes>=0.6.0
 cloudpickle # required by eudsl when it is vendored instead of installed
 -f https://llvm.github.io/eudsl
-eudsl-python-extras==0.1.0.20260310.642+a6ab724 \
+eudsl-python-extras==0.1.0.20260801.905+68a0d7a \
   --config-settings=EUDSL_PYTHON_EXTRAS_HOST_PACKAGE_PREFIX=aie

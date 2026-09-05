@@ -1,0 +1,262 @@
+# test_markers.py -*- Python -*-
+#
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+
+# RUN: %pytest %s
+"""Unit tests for CompileTime[T], In, Out, InOut annotation markers — no NPU required."""
+
+import inspect
+from typing import Annotated, get_args, get_origin
+
+import pytest
+
+from aie.utils.compile.jit._introspect import (
+    _is_compile_param,
+    _is_tensor_param,
+    split_params,
+)
+from aie.utils.compile.jit.markers import CompileTime, In, InOut, Out
+
+# ---------------------------------------------------------------------------
+# CompileTime[T] — Annotated[T, ...] parameterisation
+#
+# CompileTime[T] is Annotated[T, ...] so pyright/mypy check callers against T
+# itself; get_origin/get_args below reflect that, not a bespoke generic.
+# ---------------------------------------------------------------------------
+
+
+def test_compile_int_origin_is_annotated():
+    assert get_origin(CompileTime[int]) is Annotated
+
+
+def test_compile_str_origin_is_annotated():
+    assert get_origin(CompileTime[str]) is Annotated
+
+
+def test_compile_float_origin_is_annotated():
+    assert get_origin(CompileTime[float]) is Annotated
+
+
+def test_compile_type_arg_preserved():
+    assert get_args(CompileTime[int])[0] is int
+    assert get_args(CompileTime[str])[0] is str
+
+
+def test_bare_compile_has_annotated_origin():
+    # Unlike a bespoke Generic[T], a bare (unsubscripted) Annotated[T, ...]
+    # alias already carries an Annotated origin -- this is why
+    # _is_compile_param(CompileTime) below is still True.
+    assert get_origin(CompileTime) is Annotated
+
+
+# ---------------------------------------------------------------------------
+# _is_compile_param
+# ---------------------------------------------------------------------------
+
+
+def test_is_compile_param_with_int():
+    assert _is_compile_param(CompileTime[int]) is True
+
+
+def test_is_compile_param_with_str():
+    assert _is_compile_param(CompileTime[str]) is True
+
+
+def test_is_compile_param_bare():
+    assert _is_compile_param(CompileTime) is True
+
+
+def test_is_compile_param_rejects_in():
+    assert _is_compile_param(In) is False
+
+
+def test_is_compile_param_rejects_out():
+    assert _is_compile_param(Out) is False
+
+
+def test_is_compile_param_rejects_inout():
+    assert _is_compile_param(InOut) is False
+
+
+def test_is_compile_param_rejects_builtin_types():
+    assert _is_compile_param(int) is False
+    assert _is_compile_param(float) is False
+    assert _is_compile_param(str) is False
+
+
+def test_is_compile_param_rejects_none():
+    assert _is_compile_param(None) is False
+
+
+def test_is_compile_param_rejects_empty():
+    assert _is_compile_param(inspect.Parameter.empty) is False
+
+
+# ---------------------------------------------------------------------------
+# _is_tensor_param
+# ---------------------------------------------------------------------------
+
+
+def test_is_tensor_param_in():
+    assert _is_tensor_param(In) is True
+
+
+def test_is_tensor_param_out():
+    assert _is_tensor_param(Out) is True
+
+
+def test_is_tensor_param_inout():
+    assert _is_tensor_param(InOut) is True
+
+
+def test_is_tensor_param_rejects_compile():
+    assert _is_tensor_param(CompileTime[int]) is False
+    assert _is_tensor_param(CompileTime) is False
+
+
+def test_is_tensor_param_rejects_scalars():
+    assert _is_tensor_param(int) is False
+    assert _is_tensor_param(float) is False
+    assert _is_tensor_param(str) is False
+
+
+def test_is_tensor_param_rejects_none():
+    assert _is_tensor_param(None) is False
+
+
+def test_is_tensor_param_rejects_empty():
+    assert _is_tensor_param(inspect.Parameter.empty) is False
+
+
+# ---------------------------------------------------------------------------
+# In / Out / InOut — distinct classes
+# ---------------------------------------------------------------------------
+
+
+def test_tensor_markers_are_distinct():
+    assert In is not Out
+    assert In is not InOut
+    assert Out is not InOut
+
+
+def test_tensor_markers_are_not_compile():
+    assert In is not CompileTime
+    assert Out is not CompileTime
+    assert InOut is not CompileTime
+
+
+# ---------------------------------------------------------------------------
+# split_params — comprehensive signature introspection
+# ---------------------------------------------------------------------------
+
+
+def test_split_params_all_compile():
+    def f(*, M: CompileTime[int], K: CompileTime[int]):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == ["M", "K"]
+    assert tensor_params == []
+    assert scalar_params == []
+
+
+def test_split_params_all_tensor():
+    def f(a: In, b: Out, c: InOut):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == []
+    assert tensor_params == ["a", "b", "c"]
+    assert scalar_params == []
+
+
+def test_split_params_all_scalar_annotated():
+    def f(x: int, y: float, z: str):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == []
+    assert tensor_params == []
+    assert scalar_params == ["x", "y", "z"]
+
+
+def test_split_params_all_unannotated():
+    def f(x, y, z):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == []
+    assert tensor_params == []
+    assert scalar_params == ["x", "y", "z"]
+
+
+def test_split_params_no_params():
+    def f():
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == []
+    assert tensor_params == []
+    assert scalar_params == []
+
+
+def test_split_params_mixed_all_three():
+    def f(a: In, b: Out, alpha: float, *, M: CompileTime[int], N: CompileTime[int]):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == ["M", "N"]
+    assert tensor_params == ["a", "b"]
+    assert scalar_params == ["alpha"]
+
+
+def test_split_params_inout_goes_in_tensor():
+    def f(x: InOut, *, M: CompileTime[int]):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert tensor_params == ["x"]
+    assert compile_params == ["M"]
+
+
+def test_split_params_preserves_declaration_order_for_tensors():
+    """Tensor params must come out in the same order as the function signature."""
+
+    def f(c: Out, a: In, b: InOut):
+        pass
+
+    _, tensor_params, _ = split_params(f)
+    assert tensor_params == ["c", "a", "b"]
+
+
+def test_split_params_preserves_declaration_order_for_compile():
+    def f(*, N: CompileTime[int], M: CompileTime[int], K: CompileTime[int]):
+        pass
+
+    compile_params, _, _ = split_params(f)
+    assert compile_params == ["N", "M", "K"]
+
+
+def test_split_params_compile_with_default():
+    """Parameters with defaults are still categorised correctly."""
+    import numpy as np
+
+    def f(a: In, *, M: CompileTime[int], dtype: CompileTime[type] = np.float32):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == ["M", "dtype"]
+    assert tensor_params == ["a"]
+    assert scalar_params == []
+
+
+def test_split_params_scalar_with_default():
+    def f(a: In, alpha: float = 1.0, *, N: CompileTime[int] = 512):
+        pass
+
+    compile_params, tensor_params, scalar_params = split_params(f)
+    assert compile_params == ["N"]
+    assert tensor_params == ["a"]
+    assert scalar_params == ["alpha"]

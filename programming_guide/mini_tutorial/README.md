@@ -1,10 +1,13 @@
-# <ins>IRON Mini Tutorial</ins>
+<!-- Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 
-> **Prerequisites:** These exercises require a physical Ryzen AI NPU (Phoenix/npu1 or Strix/npu2) with XRT installed, and the mlir-aie environment set up (see [docs/Building.md](../../docs/Building.md)). The `@iron.jit` decorator automatically detects your hardware — no manual device selection is needed. Each exercise is run directly with `python3 <exercise>.py`.
+# IRON Mini Tutorial
 
-## <ins>Key Components: Workers, ObjectFifos, Runtime</ins>
+> **Prerequisites:** These exercises require a physical Ryzen AI NPU (Phoenix/npu1 or Strix/npu2) with XRT installed, and the mlir-aie environment set up (see [docs/Building.md](../../Building.md)). The `@iron.jit` decorator automatically detects your hardware — no manual device selection is needed. Each exercise is run directly with `python3 <exercise>.py`.
 
-IRON provides an unplaced (deferred placement) [API](../../python/iron/) for NPU programming. Below are examples describing AIE compute code and the Object FIFO data movement primitive:
+## Key Components: Workers, ObjectFifos, Runtime
+
+IRON provides a Python [API](../../python/iron/) for NPU programming.  Tile placement can be deferred (no coordinates — the compiler picks) or explicit (pin to a `Tile(col, row)`); both styles use the same `Worker` / `ObjectFifo` / `Runtime` primitives shown below.
 
 Compute code using workers:
 ```python
@@ -27,7 +30,7 @@ my_worker = Worker(core_fn, [buffer]) # tile can be specified: tile=Tile(1, 3)
 ```
 More on the Worker in [Section 1](../section-1/README.md) of the programming guide and in the [worker.py](../../python/iron/worker.py).
 
-Object FIFO data movement primitive:
+ObjectFifo data movement primitive:
 ```python
 # Define tensor types
 data_size = 256
@@ -36,7 +39,7 @@ data_ty = np.ndarray[(data_size,), np.dtype[np.int32]]
 # Dataflow with ObjectFifos
 of_in = ObjectFifo(data_ty, name="in") # default depth is 2
 ```
-More on the Object FIFO in [Section 2a](../section-2/section-2a/README.md) of the programming guide and in the [objectfifo.py](../../python/iron/dataflow/objectfifo.py).
+More on the ObjectFifo in [Section 2a](../section-2/section-2a/README.md) of the programming guide and in the [objectfifo.py](../../python/iron/dataflow/objectfifo.py).
 
 The IRON code [example](./aie2.py) in this mini tutorial details the different parts of an IRON design. More information on the Runtime in particular can be found in [Section 2d](../section-2/section-2d/README.md) of the programming guide.
 
@@ -45,13 +48,13 @@ The IRON code [example](./aie2.py) in this mini tutorial details the different p
 
 2. Modify the code in [exercise_1](./exercise_1/exercise_1.py) so that the Worker receives its input data from external memory instead of using the local buffer, i.e. a passthrough.
 
-3. Modify the code in [exercise_1](./exercise_1/exercise_1.py) so that data is routed from external memory through a Mem tile and back only using ObjectFifos and without using Workers. For this, you will require the `forward()` function described in [Section 2b - Implicit Copy](../section-2/section-2b/03_Implicit_Copy/README.md) of the programming guide. Don't forget to `fill()` the input Object FIFO with data at runtime as described in [Section 2d](../section-2/section-2d/RuntimeTasks.md).
+3. Modify the code in [exercise_1](./exercise_1/exercise_1.py) so that data is routed from external memory through a Mem tile and back only using ObjectFifos and without using Workers. For this, you will require the `forward()` function described in [Section 2b - Implicit Copy](../section-2/section-2b/03_Implicit_Copy/README.md) of the programming guide. Don't forget to `fill()` the input ObjectFifo with data at runtime as described in [Section 2d](../section-2/section-2d/RuntimeTasks.md).
 
 4. Modify the code in [exercise_1](./exercise_1/exercise_1.py) so that data is first routed from external memory through a Mem tile to a Worker, which performs the passthrough, then send the data back out.
 
 5. Modify the code in [exercise_1](./exercise_1/exercise_1.py) such that the output of the Worker is routed through a Mem tile.
 
-## <ins>Complex Data Movement Patterns: Broadcast, Split, Join</ins>
+## Complex Data Movement Patterns: Broadcast, Split, Join
 
 IRON designs can be scaled to use multiple Workers easily: 
 ```python
@@ -71,11 +74,14 @@ for _ in range(n_workers):
         Worker(core_fn, [...])
     )
 
-rt = Runtime()
-with rt.sequence(data_ty, data_ty, data_ty) as (_, _, _):
-    rt.start(*workers)
+def sequence(a, b, c):
+    pass
+
+rt = Runtime(sequence, [data_ty, data_ty, data_ty])
+
+Program(device, rt, workers=workers).resolve_program()
 ```
-More on programming for multiple workers in [Section 2e](../section-2/section-2e/README.md) of the programming guide.
+More on programming for multiple workers in [Section 2e](../section-2/section-2e/) of the programming guide.
 
 Complex data movement patterns such as broadcast, split or join are supported using the `ObjectFifo`, and in particular the `ObjectFifoHandle`s, which can be either producer or consumer handles. These are used to determine a broadcast pattern with multiple consumers.
 
@@ -164,16 +170,16 @@ for worker in range(n_workers):
         Worker(core_fn, [of_outs[worker].prod()])
     )
 ```
-More on the Object FIFO data movement patterns in [Section 2b](../section-2/section-2b/README.md) of the programming guide.
+More on the ObjectFifo data movement patterns in [Section 2b](../section-2/section-2b/README.md) of the programming guide.
 
 ## <u>Exercises</u>
 1. Familiarize yourself with [exercise_2](./exercise_2/exercise_2.py). Modify the code in [exercise_2](./exercise_2/exercise_2.py) so that the input data is split between three workers and their outputs are joined before the final result is sent to external memory.
 
 2. Modify the code in [exercise_2](./exercise_2/exercise_2.py) such that the data sizes for each worker are uneven, for example: tile_sizes = [8, 24, 16].
 
-## <ins>Runtime Sequence</ins>
+## Runtime Sequence
 
-The arguments of the IRON runtime sequence describe buffers that will be available on the host side; the body of the sequence contains commands which describe how those buffers are moved into the AIE-array through `ObjectFifos`.
+The IRON runtime sequence is a plain Python function passed to `Runtime(sequence, fn_args)`. Leading `fn_args` entries describe buffers that will be available on the host side, and the body contains commands which describe how those buffers are moved into the AIE-array through `ObjectFifos`. The `ObjectFifoHandle`s the body fills/drains are passed as the trailing `fn_args` entries. `Worker`s are handed to the `Program` directly.
 
 ```python
 data_size = 256
@@ -183,18 +189,23 @@ data_ty = np.ndarray[(data_size,), np.dtype[np.int32]]
 of_in = ObjectFifo(data_ty, name="in")
 of_out = ObjectFifo(data_ty, name="out")
 
-rt = Runtime()
-with rt.sequence(tile_ty, tile_ty) as (a_in, c_out):
-    rt.start(my_worker)
-    rt.fill(of_in.prod(), a_in)
-    rt.drain(of_out.cons(), c_out, wait=True)
+def sequence(a_in, c_out, in_h, out_h):
+    in_h.fill(a_in)
+    out_h.drain(c_out, wait=True)
+
+rt = Runtime(
+    sequence,
+    [tile_ty, tile_ty, of_in.prod(), of_out.cons()],
+)
+
+Program(device, rt, workers=[my_worker]).resolve_program()
 ```
 
 Up to five buffers are supported in the runtime sequence, where the fifth is typically used for trace support. This is further described in [Section 4b](../section-4/section-4b/README.md) of the programming guide.
 
 Runtime sequence commands are submitted to and executed by a dedicated command processor in order. The command processor will wait on commands that are set to `wait` until a token associated with their completion is generated. When all the commands in the runtime sequence have been executed the command processor sends an interrupt to the host processor.
 
-IRON also supports grouping of runtime sequence commands using `task_group`s. Commands that are in the same group begin execution concurrently, and the completion of the group can be explicitly synchronized using the `finish_task_group()` command. These features can be combined to achieve an optimized grouping of waits for parallel tasks, as is shown in [this](../../programming_examples/basic/memcpy/README.md) programming example.
+IRON also supports grouping of runtime sequence commands using `TaskGroup`s. A task is added to a group by passing `group=` to `fill`/`drain`; commands that are in the same group begin execution concurrently, and the completion of the group can be explicitly synchronized using the group's `finish()` method. These features can be combined to achieve an optimized grouping of waits for parallel tasks, as is shown in [this](../../programming_examples/basic/memcpy/README.md) programming example.
 
 More on the runtime sequence in [Section 2d](../section-2/section-2d/RuntimeTasks.md) of the programming guide.
 
@@ -204,7 +215,7 @@ More on the runtime sequence in [Section 2d](../section-2/section-2d/RuntimeTask
 
 2. Restore the code in [exercise_3](./exercise_3/exercise_3.py) to its original version. Modify the code in [exercise_3](./exercise_3/exercise_3.py) to do an addition of two input tensors from external memory, i.e `out_C = in_A + in_B`.
 
-## <ins>Runtime Parameters and Barriers</ins>
+## Runtime Parameters and Barriers
 
 IRON supports Runtime Parameters which are set and propagated to the Workers at runtime.
 ```python
@@ -235,17 +246,14 @@ for worker in range(n_workers):
         Worker(core_fn, [rtps[worker]])
     )
 
-rt = Runtime()
-with rt.sequence(data_ty, data_ty, data_ty) as (_, _, _):
-
+def sequence(a, b, c):
     # Set runtime parameters
-    def set_rtps(*args):
-        for rtp in args:
-            rtp[0] = 50
-            rtp[1] = 255
-            rtp[2] = 0
+    for rtp in rtps:
+        rtp[0] = 50
+        rtp[1] = 255
+        rtp[2] = 0
 
-    rt.inline_ops(set_rtps, rtps)
+rt = Runtime(sequence, [data_ty, data_ty, data_ty])
 ```
 To ensure that RTPs are not read prematurely, `WorkerRuntimeBarriers` can be used to synchronize a Worker with the runtime sequence:
 ```python
@@ -274,14 +282,18 @@ for worker in range(n_workers):
         Worker(core_fn, [rtps[worker], workerBarriers[worker]])
     )
 
-rt = Runtime()
-with rt.sequence(data_ty, data_ty, data_ty) as (_, _, _):
+def sequence(a, b, c):
     # Set runtime parameters
-    # ...
-    rt.inline_ops(set_rtps, rtps)
-    
+    for rtp in rtps:
+        rtp[0] = 50
+        rtp[1] = 255
+        rtp[2] = 0
+
+    # Then release the barriers.
     for worker in range(n_workers):
-        rt.set_barrier(workerBarriers[worker], 1)
+        workerBarriers[worker].set(1)
+
+rt = Runtime(sequence, [data_ty, data_ty, data_ty])
 ```
 More on the runtime parameters and barriers in [Section 2d](../section-2/section-2d/RuntimeTasks.md) of the programming guide and in the [worker.py](../../python/iron/worker.py).
 
@@ -290,7 +302,7 @@ More on the runtime parameters and barriers in [Section 2d](../section-2/section
 
 2. The design fails because the Worker reads the RTP before the runtime sets it. Modify the code in [exercise_4](./exercise_4/exercise_4.py) such that the Worker uses a `WorkerRuntimeBarrier` to wait for the RTP to be set.
 
-## <ins>Advanced Topic: Data Layout Transformations</ins>
+## Advanced Topic: Data Layout Transformations
 
 AIE array DMAs can perform on-the-fly data transformations. Transformations on each dimension are expressed as a (size, stride) pair. Dimensions are given from highest to lowest:
 ```python
@@ -321,11 +333,16 @@ tap = TensorAccessPattern(
 
 A `TensorAccessPattern` can be applied to the `fill()` and `drain()` runtime operations:
 ```python
-rt = Runtime()
-with rt.sequence(data_ty, data_ty) as (a_in, c_out):
-    rt.start(my_worker)
-    rt.fill(of_in.prod(), a_in, tap)
-    rt.drain(of_out.cons(), c_out, tap, wait=True)
+def sequence(a_in, c_out, in_h, out_h):
+    in_h.fill(a_in, tap)
+    out_h.drain(c_out, tap, wait=True)
+
+rt = Runtime(
+    sequence,
+    [data_ty, data_ty, of_in.prod(), of_out.cons()],
+)
+
+Program(device, rt, workers=[my_worker]).resolve_program()
 ```
 
 The `TensorAccessPattern` can be visualized in two ways:
@@ -364,9 +381,9 @@ More on `taplib` in [tiling_exploration](../../programming_examples/basic/tiling
 dims = [(size_2, stride_2), (size_1, stride_1), (size_0, stride_0)]
 of_out = ObjectFifo(data_ty, name="out", dims_to_stream=dims)
 ```
-Offsets are currently not represented at the Object FIFO level and as such the dimensions should be applicable over the full size of the objects.
+Offsets are currently not represented at the ObjectFifo level and as such the dimensions should be applicable over the full size of the objects.
 
-More on the Object FIFO data layout transformations in [Section 2c](../section-2/section-2c/README.md) of the programming guide.
+More on the ObjectFifo data layout transformations in [Section 2c](../section-2/section-2c/README.md) of the programming guide.
 
 ## <u>Exercises</u>
 1. Familiarize yourself with [exercise_5a](./exercise_5/exercise_5a/exercise_5a.py). Use a `tap` such that the data transformation performed on the input data at runtime matches the one shown in [ref_plot.png](./exercise_5/exercise_5a/ref_plot.png). Don't forget to add the `tap` to the runtime `fill()` operation. Before running the example modify line 83 to `USE_REF_VEC = False`. Run `python3 exercise_5a.py` to verify your answer.

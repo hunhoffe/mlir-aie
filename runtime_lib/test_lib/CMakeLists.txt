@@ -1,8 +1,6 @@
-# This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
+# Copyright (C) 2023-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
-# (c) Copyright 2023 Advanced Micro Devices, Inc.
 
 cmake_minimum_required(VERSION 3.30)
 project("test lib for ${AIE_RUNTIME_TARGET}")
@@ -16,19 +14,11 @@ function(add_runtime_pic_flag target_name)
   endif()
 endfunction()
 
-if (${AIE_RUNTIME_TARGET} STREQUAL "x86_64-hsa")
-  message("Building x86_64-hsa runtime")
-  add_definitions(-DHSA_RUNTIME)
-endif()
-
 find_package(XRT QUIET)
 
 set(BUILD_TEST_LIBRARY ON)
 set(BUILD_TEST_UTILS_LIBRARY ON)
 set(STAGE_TEST_UTILS_PAYLOAD ON)
-if ("${AIE_RUNTIME_TARGET}" STREQUAL "x86_64-hsa")
-  set(BUILD_TEST_UTILS_LIBRARY OFF)
-endif()
 if (WIN32)
   set(BUILD_TEST_LIBRARY OFF)
 endif()
@@ -39,7 +29,6 @@ if (BUILD_TEST_LIBRARY)
   set(TEST_LIB_PUBLIC_HEADERS
       test_library.h
       target.h
-      hsa_ext_air.h
       cxxopts.hpp
   )
   set_target_properties(test_lib PROPERTIES PUBLIC_HEADER "${TEST_LIB_PUBLIC_HEADERS}")
@@ -48,24 +37,12 @@ if (BUILD_TEST_LIBRARY)
   target_include_directories(test_lib PRIVATE
       ${LibXAIE_INC_DIR}
   )
-
-  # If we are compiling the x86_64 runtime targetting HSA we need to link against HSA
-  if (${AIE_RUNTIME_TARGET} STREQUAL "x86_64-hsa")
-    message("Linking against hsa-runtime64")
-    find_package(hsa-runtime64 REQUIRED)
-    target_link_libraries(test_lib
-      hsa-runtime64::hsa-runtime64
-    )
-    include_directories(
-      ${hsa-runtime64_DIR}/../../../include
-    )
-  endif()
 endif()
 
 # test_utils library
 if (BUILD_TEST_UTILS_LIBRARY)
   add_library(test_utils STATIC test_utils.cpp)
-  set_target_properties(test_utils PROPERTIES PUBLIC_HEADER "test_utils.h;xrt_test_wrapper.h;cxxopts.hpp")
+  set_target_properties(test_utils PROPERTIES PUBLIC_HEADER "test_utils.h;xrt_test_wrapper.h;hrx_test_wrapper.h;cxxopts.hpp;parameter_scratchpad.h")
   add_runtime_pic_flag(test_utils)
 
   # XRT headers on Windows pull in boost/any.hpp which is not typically
@@ -83,10 +60,10 @@ endif()
 # copy the headers used by the enabled runtime helpers into build area
 set(headers cxxopts.hpp)
 if (BUILD_TEST_LIBRARY)
-  list(APPEND headers target.h test_library.h memory_allocator.h hsa_ext_air.h)
+  list(APPEND headers target.h test_library.h memory_allocator.h)
 endif()
 if (STAGE_TEST_UTILS_PAYLOAD)
-  list(APPEND headers test_utils.h xrt_test_wrapper.h)
+  list(APPEND headers test_utils.h xrt_test_wrapper.h hrx_test_wrapper.h parameter_scratchpad.h)
 endif()
 foreach(basefile ${headers})
     set(dest ${CMAKE_CURRENT_BINARY_DIR}/../include/${basefile})
@@ -115,7 +92,7 @@ foreach(basefile ${files})
 endforeach()
 
 if (BUILD_TEST_LIBRARY)
-  install(TARGETS test_lib 
+  install(TARGETS test_lib
       ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIE_RUNTIME_TARGET}/test_lib/lib
       PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIE_RUNTIME_TARGET}/test_lib/include
   )
@@ -127,7 +104,7 @@ if (BUILD_TEST_UTILS_LIBRARY)
       PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIE_RUNTIME_TARGET}/test_lib/include
   )
 elseif (STAGE_TEST_UTILS_PAYLOAD)
-  install(FILES test_utils.h xrt_test_wrapper.h cxxopts.hpp
+  install(FILES test_utils.h xrt_test_wrapper.h hrx_test_wrapper.h cxxopts.hpp parameter_scratchpad.h
       DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIE_RUNTIME_TARGET}/test_lib/include
   )
 endif()
@@ -162,27 +139,6 @@ if (NOT WIN32)
 endif()
 
 message("LibXAIE_INC_DIR is at ${LibXAIE_INC_DIR} for ${AIE_RUNTIME_TARGET}")
-
-# HSA memory allocator library
-if (${AIE_RUNTIME_TARGET} STREQUAL "x86_64-hsa")
-  find_package(hsa-runtime64 REQUIRED)
-  add_library(memory_allocator_hsa STATIC memory_allocator_hsa.cpp)
-  set_target_properties(memory_allocator_hsa PROPERTIES PUBLIC_HEADER "memory_allocator.h")
-  add_runtime_pic_flag(memory_allocator_hsa)
-  target_compile_definitions(memory_allocator_hsa PRIVATE)
-  target_include_directories(memory_allocator_hsa PRIVATE ${LibXAIE_INC_DIR})
-  target_link_libraries(memory_allocator_hsa
-    hsa-runtime64::hsa-runtime64
-  )
-  include_directories(
-    ${hsa-runtime64_DIR}/../../../include
-  )
- 
-  install(TARGETS memory_allocator_hsa
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIE_RUNTIME_TARGET}/test_lib/lib
-      PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIE_RUNTIME_TARGET}/test_lib/include
-  )
-endif()
 
 # simulation memory allocator library
 if (NOT WIN32)

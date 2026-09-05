@@ -1,10 +1,7 @@
 //===- cpp_link_with_deprecation.mlir --------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,9 +12,13 @@
 // RUN: aie-opt --aie-assign-core-link-files %s | FileCheck %s --check-prefix=MIGRATED
 
 // Verify the pass migrated the deprecated core-level attr into link_files and
-// removed link_with from the core.
+// removed link_with from the core.  It must never reach link_merge_files: only
+// a func.func declaration can carry link_with_mode, so the deprecated
+// core-level attribute has no way to request merging.
+// MIGRATED-NOT: link_merge_files
 // MIGRATED:     link_files = ["legacy.o"]
 // MIGRATED-NOT: link_with = "legacy.o"
+// MIGRATED-NOT: link_merge_files
 
 module {
   aie.device(npu1_1col) {
@@ -28,7 +29,7 @@ module {
 
     // expected-warning@+1 {{link_with on aie.core is deprecated; attach link_with to the func.func declaration instead}}
     %core_0_2 = aie.core(%tile_0_2) {
-      %buf = aie.objectfifo.acquire @of(Consume, 1) : !aie.objectfifosubview<memref<16xi32>>
+      %buf_obj0 = aie.objectfifo.acquire @of(Consume, 1) : memref<16xi32>
       aie.objectfifo.release @of(Consume, 1)
       aie.end
     } {link_with = "legacy.o"}

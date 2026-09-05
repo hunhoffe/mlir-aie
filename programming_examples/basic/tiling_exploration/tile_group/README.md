@@ -1,11 +1,8 @@
 <!---//===- README.md -----------------------------------------*- Markdown -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2024, Advanced Micro Devices, Inc.
-// 
 //===----------------------------------------------------------------------===//-->
 
 # Tiling Exploration
@@ -14,9 +11,7 @@ This IRON design flow example, called "Tiling Exploration: Tile Group", demonstr
 
 ## Source Files Overview
 
-1. `tile_group.py`: A Python script that defines the AIE array structural design using MLIR-AIE operations and the `TensorTiler2D` to specify `TensorAccessPattern`s (*taps*) of data to be transferred out of the design. The file generates MLIR that is then compiled using `aiecc` to produce design binaries (ie. XCLBIN and inst.bin for the NPU in Ryzen™ AI). 
-
-1. `test.py`: This Python code is responsible for loading the compiled XCLBIN file, configuring the AIE module, providing input data, and executing the AIE design on the NPU. After executing, the script verifies the results against expected output.
+1. `tile_group.py`: An `@iron.jit`-decorated design that uses `TensorTiler2D` to specify `TensorAccessPattern`s (*taps*) of data to be transferred out of the design.  When invoked standalone, `@iron.jit` JIT-compiles to an xclbin/insts pair, runs on the NPU, and verifies the output against the expected tile-group pattern.
 
 ## Design Overview
 
@@ -25,21 +20,21 @@ This design has no inputs; it produces a single output tensor. The single core u
 <p align="center">
   <img
     src="tile_group.png">
-    <h3 align="center"> Visualization of a Tile Group Data Movement 
- </h3> 
+    <h3 align="center"> Visualization of a Tile Group Data Movement
+ </h3>
 </p>
 
 ## Usage
 
-Modify tensor and tile dimensions in the `Makefile`.
+Run the self-verifying JIT path directly; tensor and tile dimensions are command-line options:
 
-To compile and run the design for NPU:
-```bash
-make clean
-make run_py
+```shell
+python3 tile_group.py --dev npu
+python3 tile_group.py --dev npu2 --tensor-height 8 --tensor-width 8 --tile-height 2 --tile-width 2
 ```
 
-To generate a data visualization (like that above), run:
-```bash
+The Makefile remains available for producing an explicit XCLBIN/instruction pair. To generate a data visualization like the one above:
+
+```shell
 make generate_access_map
 ```

@@ -1,16 +1,16 @@
 //===- fallback_routine_simple.mlir ----------------------------*- MLIR -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
-// check that 'aiecc.py -v' prints pass diagnotics
+// check that 'aiecc -v' prints pass diagnostics
 
-// RUN: %python aiecc.py --no-compile -v %s 2>&1 | FileCheck %s
+// The front-end (place/allocate) only runs if some artifact roots it; request
+// input_with_addresses so the buffer-allocation diagnostics below are emitted
+// without invoking any core compiler.
+// RUN: %aiecc -v --skip-objectFifo-verify --get-input-with-addresses %s 2>&1 | FileCheck %s
 
 // CHECK: warning: Failed to allocate buffer: "a" with size: 16384 bytes.
 // CHECK: warning: Not all requested buffers fit in the available memory.

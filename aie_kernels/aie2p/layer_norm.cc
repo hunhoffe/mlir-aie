@@ -1,10 +1,7 @@
 //===- layernorm.cc -------------------------------------------*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Copyright (C) 2025-2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <type_traits>
 
 template <typename T, int N>
 void layer_norm(const T *restrict input, T *restrict output, int32_t cols) {
@@ -22,10 +20,16 @@ void layer_norm(const T *restrict input, T *restrict output, int32_t cols) {
 
   ::aie::vector<T, N> gamma_v = ::aie::broadcast<T, N>(gamma);
   ::aie::vector<T, N> beta_v = ::aie::broadcast<T, N>(beta);
-  ::aie::vector<T, N> sum_acc = ::aie::zeros<T, N>();
-  ::aie::vector<float, N> sum_sq_acc = ::aie::zeros<float, N>();
 
   int vector_chunks = cols / N;
+
+  // Reduce the row sum in an f32 accumulator, not a bf16 vector: a bf16 running
+  // sum drops low-order bits as the reduction length grows (embedding_dim is
+  // typically thousands), so the mean -- and every quantity derived from it --
+  // is already lossy before the variance is computed. The sum of squares is
+  // already reduced in f32.
+  ::aie::accum<accfloat, N> sum_acc = ::aie::zeros<accfloat, N>();
+  ::aie::vector<float, N> sum_sq_acc = ::aie::zeros<float, N>();
   for (int i = 0; i < vector_chunks; i++) {
     ::aie::vector<T, N> reg_a = ::aie::load_v<N>(input + i * N);
     sum_acc = ::aie::add(sum_acc, reg_a);
@@ -33,16 +37,13 @@ void layer_norm(const T *restrict input, T *restrict output, int32_t cols) {
     sum_sq_acc = ::aie::add(sum_sq_acc, sq_acc);
   }
 
-  float sum_of_vals = ::aie::reduce_add(sum_acc);
-  float sum_of_sq_vals = ::aie::reduce_add(sum_sq_acc);
-
-  float mean = sum_of_vals / float(cols);
-  float mean_sq = mean * mean;
-  float variance = (sum_of_sq_vals / float(cols)) - mean_sq;
+  float mean =
+      ::aie::reduce_add(sum_acc.template to_vector<float>()) / float(cols);
+  float variance = ::aie::reduce_add(sum_sq_acc) / float(cols) - mean * mean;
   float inv_std = aie::invsqrt(variance + epsilon);
 
-  ::aie::vector<T, N> mean_v = ::aie::broadcast<T, N>(mean);
-  ::aie::vector<T, N> inv_std_v = ::aie::broadcast<T, N>(inv_std);
+  ::aie::vector<T, N> mean_v = ::aie::broadcast<T, N>((T)mean);
+  ::aie::vector<T, N> inv_std_v = ::aie::broadcast<T, N>((T)inv_std);
 
   for (int i = 0; i < vector_chunks; i++) {
     ::aie::vector<T, N> reg_a = ::aie::load_v<N>(input + i * N);
@@ -55,59 +56,104 @@ void layer_norm(const T *restrict input, T *restrict output, int32_t cols) {
   event1();
 }
 
-template <typename T, int N>
-void layer_norm_welford(const T *restrict input, T *restrict output,
-                        int32_t rows, int32_t cols) {
+// f32 per-row LayerNorm, optionally with a per-column affine and a narrowing
+// output cast. The bf16 layer_norm above centers with a single
+// E[x^2] - mean^2 reduction, which the bf16 input contract makes safe: a bf16
+// value near a large mean has an ulp wider than the std, so that regime is
+// unrepresentable. On f32 input the mean can be large relative to the std and
+// E[x^2] - mean^2 catastrophically cancels, so this one takes the two-pass
+// centered variance instead: center first, then square.
+template <typename TIn, typename TOut, int N, bool kAffine>
+static inline void layer_norm_f32_impl(const TIn *restrict input,
+                                       TOut *restrict output,
+                                       const TIn *restrict gamma,
+                                       const TIn *restrict beta, int32_t cols) {
+  static_assert(kAffine || std::is_same_v<TOut, TIn>,
+                "the non-affine instantiation writes TIn straight through, so "
+                "TOut must equal TIn");
   event0();
   constexpr float epsilon = 1e-5f;
-  const float gamma = 1.0f;
-  const float beta = 0.0f;
-  ::aie::vector<T, N> reg_a, delta, delta2, mean_v, m2_v, variance_v, just_div,
-      just_prod;
+  int chunks = cols / N;
 
-  ::aie::vector<T, N> beta_v = ::aie::broadcast<T, N>(beta);
-  ::aie::vector<T, N> gamma_v = ::aie::broadcast<T, N>(gamma);
-  ::aie::vector<T, N> epsilon_v = ::aie::broadcast<T, N>(epsilon);
-  // Welford's algorithm for mean and variance, vectorized over columns
-  float inv_count = 0.0f;
-  mean_v = ::aie::zeros<T, N>();
-  m2_v = ::aie::zeros<T, N>();
-  for (int c = 0; c < cols; c += N) {
-    for (int r = 0; r < rows; r++) {
-      reg_a = ::aie::load_v<N>(input + r * cols + c);
-      delta = ::aie::sub(reg_a, mean_v);
-      inv_count = 1.0f / (r + 1);
-      just_div = ::aie::mul(delta, inv_count);
-      mean_v = ::aie::add(mean_v, just_div);
-      delta2 = ::aie::sub(reg_a, mean_v);
-      just_prod = ::aie::mul(delta, delta2);
-      m2_v = ::aie::add(m2_v, just_prod);
+  // Pass 1: mean = sum(x) / cols.
+  ::aie::vector<TIn, N> sum_v = ::aie::zeros<TIn, N>();
+  for (int i = 0; i < chunks; i++) {
+    sum_v = ::aie::add(sum_v, ::aie::load_v<N>(input + i * N));
+  }
+  float mean = ::aie::reduce_add(sum_v) / float(cols);
+  ::aie::vector<TIn, N> mean_v = ::aie::broadcast<TIn, N>((TIn)mean);
+
+  // Pass 2: variance = sum((x - mean)^2) / cols (centered two-pass).
+  ::aie::vector<TIn, N> var_v = ::aie::zeros<TIn, N>();
+  for (int i = 0; i < chunks; i++) {
+    ::aie::vector<TIn, N> diff_v =
+        ::aie::sub(::aie::load_v<N>(input + i * N), mean_v);
+    ::aie::vector<TIn, N> sq = ::aie::mul(diff_v, diff_v);
+    var_v = ::aie::add(var_v, sq);
+  }
+  float variance = ::aie::reduce_add(var_v) / float(cols);
+  float inv_std = aie::invsqrt(variance + epsilon);
+  ::aie::vector<TIn, N> inv_std_v = ::aie::broadcast<TIn, N>((TIn)inv_std);
+
+  // The two instantiations diverge only in where gamma/beta come from and
+  // whether the write narrows.
+  if constexpr (kAffine) {
+    // conv_even makes the narrowing write agree bit-for-bit with a host
+    // f32 -> bf16 pack. The mode is one sticky register shared by every
+    // kernel on this core, so it is handed back before returning.
+    ::aie::rounding_mode saved_rounding =
+        ::aie::swap_rounding(::aie::rounding_mode::conv_even);
+    for (int i = 0; i < chunks; i++) {
+      ::aie::vector<TIn, N> diff_v =
+          ::aie::sub(::aie::load_v<N>(input + i * N), mean_v);
+      ::aie::vector<TIn, N> norm_v = ::aie::mul(diff_v, inv_std_v);
+      ::aie::vector<TIn, N> gamma_v = ::aie::load_v<N>(gamma + i * N);
+      ::aie::vector<TIn, N> beta_v = ::aie::load_v<N>(beta + i * N);
+      ::aie::vector<TIn, N> scaled_v = ::aie::mul(norm_v, gamma_v);
+      ::aie::vector<TIn, N> out_v = ::aie::add(scaled_v, beta_v);
+      ::aie::accum<accfloat, N> a;
+      a.from_vector(out_v);
+      ::aie::store_v(output + i * N, a.template to_vector<TOut>());
+    }
+    ::aie::set_rounding(saved_rounding);
+  } else {
+    // gamma = 1, beta = 0, TOut == TIn
+    ::aie::vector<TIn, N> gamma_v = ::aie::broadcast<TIn, N>((TIn)1.0f);
+    ::aie::vector<TIn, N> beta_v = ::aie::broadcast<TIn, N>((TIn)0.0f);
+    for (int i = 0; i < chunks; i++) {
+      ::aie::vector<TIn, N> diff_v =
+          ::aie::sub(::aie::load_v<N>(input + i * N), mean_v);
+      ::aie::vector<TIn, N> norm_v = ::aie::mul(diff_v, inv_std_v);
+      ::aie::vector<TIn, N> scaled_v = ::aie::mul(norm_v, gamma_v);
+      ::aie::vector<TIn, N> out_v = ::aie::add(scaled_v, beta_v);
+      ::aie::store_v(output + i * N, out_v);
     }
   }
 
-  variance_v = ::aie::mul(m2_v, inv_count);
-  ::aie::vector<T, N> var_eps_v = ::aie::add(variance_v, epsilon_v);
-  ::aie::vector<T, N> inv_std_v = ::aie::invsqrt(var_eps_v);
-  for (int r = 0; r < rows; r++) {
-    for (int c = 0; c < cols; c += N) {
-      ::aie::vector<T, N> v0 = ::aie::load_v<N>(input + r * cols + c);
-      ::aie::vector<T, N> diff_v = ::aie::sub(v0, mean_v);
-      ::aie::vector<T, N> norm_v = ::aie::mul(diff_v, inv_std_v);
-      ::aie::vector<T, N> scaled_v = ::aie::mul(norm_v, gamma_v);
-      ::aie::vector<T, N> out_v = ::aie::add(scaled_v, beta_v);
-      ::aie::store_v(output + r * cols + c, out_v);
-    }
-  }
   event1();
 }
 
 extern "C" {
 void layer_norm(bfloat16 *input, bfloat16 *output, int32_t cols) {
-  layer_norm<bfloat16, 16>(input, output, cols);
+  // N=32 bf16 = 512 bits = one AIE2P vector register.  conv_even rounding
+  // matches the reference math more closely than the default floor mode for
+  // the normalize pass.
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
+  layer_norm<bfloat16, 32>(input, output, cols);
 }
 
-void layer_norm_welford(float *input, float *output, int32_t rows,
-                        int32_t cols) {
-  layer_norm_welford<float, 16>(input, output, rows, cols);
+void layer_norm_f32(float *input, float *output, int32_t cols) {
+  layer_norm_f32_impl<float, float, 16, false>(input, output, nullptr, nullptr,
+                                               cols);
+}
+
+// LayerNorm + per-column affine + f32 -> bfloat16 cast in one dispatch. `gb`
+// packs gamma then beta into one `[2 * cols]` buffer so that the kernel takes
+// two DMA inputs, the AIE2p compute-tile limit; see `norm_affine` in
+// programming_examples/ml/norm/norm.py for the matching packing.
+void layer_norm_affine_cast(float *input, float *gb, bfloat16 *output,
+                            int32_t cols) {
+  layer_norm_f32_impl<float, bfloat16, 16, true>(input, output, gb, gb + cols,
+                                                 cols);
 }
 }

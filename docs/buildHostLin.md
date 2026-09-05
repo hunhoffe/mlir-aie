@@ -1,6 +1,10 @@
+<!-- Copyright (C) 2025 Advanced Micro Devices, Inc. -->
+<!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # Linux Setup and Build Instructions
 
-These instructions will guide you through everything required for building and executing a program on the Ryzen™ AI NPU, starting from a fresh bare-bones **Ubuntu 22.04 LTS** install. Ubuntu 22.04 LTS, Ubuntu 24.04 LTS and Ubuntu 24.10 are supported by this toolchain.
+These instructions will guide you through everything required for building and executing a program on the Ryzen™ AI NPU, starting from a fresh bare-bones **Ubuntu 24.04 LTS** install. Ubuntu 22.04 LTS, Ubuntu 24.04 LTS and Ubuntu 24.10 are supported by this toolchain.
+
+> On a **non-Ubuntu distro** (Arch, Void, Fedora-from-source, …) or a kernel that already ships the **in-tree `amdxdna` driver** (Linux ≥ 6.14), see [Building on a non-Ubuntu distro](buildHostLinNonUbuntu.md), which covers building only the XRT userspace SHIM and installing dependencies without `apt`.
 
 ## Initial Setup
 
@@ -123,7 +127,7 @@ You will...
       sudo apt install libpython3.8-dev
       ```
 
-### Update Linux for Ubuntu 22.04 and 24.04
+### Update Linux for Ubuntu 22.04 and 24.04 { #update-linux }
 
 > The reason we need to update the kernel is that the XDNA driver requires IOMMU SVA support. This step is required for Ubuntu 22.04 LTS.
 > If you are using Ubuntu 24.04 you can install a prebuilt kernel from the [Ubuntu Mainline Kernel PPA](https://kernel.ubuntu.com/mainline/v6.11/).
@@ -193,7 +197,7 @@ You will...
     sudo shutdown --reboot 0
     ```
 
-### Install the XDNA™ Driver
+### Install the XDNA™ Driver { #install-the-xdna-driver }
 
 1. Install a more recent CMake, which is needed for building XRT.
 
@@ -321,7 +325,7 @@ You will...
 
 1. Choose *one* of the two options (A or B) below for installing MLIR-AIE.
 
-### Option A - Quick Setup for Ryzen™ AI Application Development
+### Option A - Quick Setup for Ryzen™ AI Application Development { #option-a---quick-setup-for-ryzen-ai-application-development }
 
    > NOTE: Installing the mlir-aie tools from wheels via the quick setup path supports AIE-ML (AIE2) and AIE2P, it does NOT support Versal™ devices with AIE.
 
@@ -329,19 +333,20 @@ You will...
    ```bash
    git clone https://github.com/Xilinx/mlir-aie.git
    cd mlir-aie
-   ````
+   ```
 
-1. Source `utils/quick_setup.sh` to setup the prerequisites and
-   install the mlir-aie compiler tools from whls.
+1. Source `utils/env_install.sh` to create the `ironenv` virtual environment and
+   install the mlir-aie compiler tools from wheels, then source
+   `utils/env_setup.sh` to configure your shell.
 
 1. Jump ahead to [Build Device AIE Part](#build-device-aie-part) step 2 below.
 
-### Option B - Build mlir-aie Tools from Source for Development
+### Option B - Build mlir-aie Tools from Source for Development { #option-b---build-mlir-aie-tools-from-source-for-development }
 
 1. Clone [https://github.com/Xilinx/mlir-aie.git](https://github.com/Xilinx/mlir-aie.git) best under /home/username for speed (yourPathToBuildMLIR-AIE), with submodules:
    ```bash
    git clone --recurse-submodules https://github.com/Xilinx/mlir-aie.git
-   ````
+   ```
 
 1. Follow regular getting started instructions [Building on x86](https://xilinx.github.io/mlir-aie/Building.html) from step 2. Please disregard any instructions referencing alternative LibXAIE versions or sysroots.
 
@@ -434,4 +439,4 @@ The `v++` compiler for the NPU device code requires a valid Vitis license. If yo
 
 -----
 
-<p align="center">Copyright&copy; 2019-2024 AMD</p>
+<p align="center">Copyright&copy; 2019-2021 Xilinx, Inc.<br>Copyright&copy; 2022-2026 Advanced Micro Devices, Inc.</p>

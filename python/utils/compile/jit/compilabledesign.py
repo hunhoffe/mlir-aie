@@ -1,0 +1,1058 @@
+# compilabledesign.py -*- Python -*-
+#
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+"""CompilableDesign: bundles an MLIR generator with its compile-time configuration.
+
+Pairs an MLIR generator function (or ``.mlir`` file path) with explicit
+compile-time parameters and produces an ``xclbin`` + ``insts.bin`` artifact
+pair via ``compile()``.
+
+Hashing is split into two halves so callers can distinguish "recipe changed"
+from "rebuild needed":
+
+* ``recipe_hash``   — generator identity + compile_kwargs + aiecc/compile flags
+* ``artifact_hash`` — source / object content + tool mtimes + target device
+
+``hash(design)`` composes both into a 24-hex cache key; no MLIR generation
+needed for a cache lookup.
+
+Generation is memoized per active IRON device via :attr:`CompilableDesign._generated`.
+Caching the *text* — not the Module — is what makes this safe across MLIR
+Contexts: every consumer call re-parses into a fresh ``mlir_mod_ctx()`` and gets
+a Module bound to its own Context. The active device is part of the generation
+key because kernel factories and ``Program(...)`` creation can specialize on the
+current target.
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Callable, Mapping
+
+from aie.extras.context import mlir_mod_ctx  # pyright: ignore[reportMissingImports]
+from aie.ir import (  # pyright: ignore[reportMissingImports]
+    Module as _Module,  # pyright: ignore[reportAttributeAccessIssue]
+)
+from aie.ir import (  # pyright: ignore[reportMissingImports]
+    StringAttr,  # pyright: ignore[reportAttributeAccessIssue]
+)
+from aie.utils.compile import (
+    NPU_CACHE_HOME,
+    compile_external_kernel,
+    compile_mlir_module,
+)
+from aie.utils.compile.cache.utils import file_lock
+from aie.utils.compile.utils import _cleanup_failed_compilation
+
+from . import _manifest
+from ._dma_size_parser import parse_dma_sizes
+from ._hash import (
+    _compute_artifact_hash,
+    _compute_hash,
+    _compute_recipe_hash,
+    _device_identity_key,
+)
+from ._introspect import (
+    _introspect_generator,
+    _is_compile_param,
+    _is_tensor_param,
+)
+from ._serialization import _decode_kwarg, _encode_kwarg, _TensorPlaceholder
+from .context import compile_context
+
+# A waiter on this lock is waiting out someone else's *compile*, not just an
+# acquisition, so the bound has to exceed a full build rather than a handshake.
+# file_lock's own 60s default is well under the AIE compiles this guards -- CI
+# budgets individual tests 600-1200s for exactly that reason.
+_COMPILE_LOCK_TIMEOUT_SECONDS = 1800
+
+logger = logging.getLogger(__name__)
+
+
+def config_param_names(cls) -> frozenset[str]:
+    """Names of ``cls.__init__``'s configuration parameters.
+
+    Everything on the constructor except the generator itself and its
+    ``compile_kwargs`` (the ``CompileTime[T]`` values).  This is the single
+    source of truth for:
+
+    * ``specialize()``'s split of overrides into config vs. ``CompileTime[T]``
+      kwargs, and
+    * ``@iron.jit``'s detection of config keys (``jit._JIT_CONFIG_KEYS``).
+
+    Deriving it from the signature means a newly added config parameter is
+    honored by ``specialize`` and the decorator automatically, instead of being
+    silently dropped by a hand-maintained list.
+    """
+    return frozenset(
+        name
+        for name in inspect.signature(cls).parameters
+        if name not in ("mlir_generator", "compile_kwargs")
+    )
+
+
+class CompilableDesign:
+    """Bundles an MLIR generator with compile-time parameters.
+
+    Args:
+        mlir_generator: A callable that accepts ``CompileTime[T]`` kwargs and
+            either returns an MLIR module (e.g., built inside an
+            ``mlir_mod_ctx()`` block) or returns ``None`` after building the
+            module into the active MLIR context (e.g., via
+            ``Program(...).resolve_program()``),
+            OR a ``pathlib.Path`` to a pre-written ``.mlir`` file.
+        use_cache: When ``True`` (default), a file-system cache keyed by the
+            bytecode+kwargs hash is consulted before recompiling.
+        compile_kwargs: Values for the ``CompileTime[T]``-annotated parameters.
+            Validated against the generator signature via ``inspect.Signature.bind``.
+        compile_flags: Extra flags forwarded to the Peano C++ compiler.
+        source_files: Paths to C++ kernel source files.  Their content is
+            included in the cache key so that edits correctly invalidate the cache.
+        include_paths: Extra ``-I`` paths forwarded to the C++ compiler.
+        aiecc_flags: Extra flags forwarded to ``aiecc``.
+        object_files: Pre-compiled ``.o`` files to link with.
+        full_elf: When ``True``, :meth:`compile` emits a single self-contained
+            "full" ELF (PDIs + TXN control code) instead of an
+            ``xclbin`` + ``insts.bin`` pair.  The ELF is loaded standalone by
+            ``XRTHostRuntime`` via ``pyxrt.hw_context(dev, pyxrt.elf(path))``.
+    """
+
+    def __init__(
+        self,
+        mlir_generator: Callable | Path,
+        *,
+        use_cache: bool = True,
+        compile_kwargs: dict[str, Any] | None = None,
+        compile_flags: list[str] | None = None,
+        source_files: list[str | Path] | None = None,
+        include_paths: list[str | Path] | None = None,
+        aiecc_flags: list[str] | None = None,
+        object_files: list[str | Path] | None = None,
+        full_elf: bool = False,
+    ):
+        self.mlir_generator = mlir_generator
+        self.use_cache = use_cache
+        self.full_elf = full_elf
+        # Freeze all inputs so callers can't mutate config after construction
+        # (which would silently invalidate the cache hash). MappingProxyType +
+        # tuples are read-only views; equality with plain dict/list still works.
+        self.compile_kwargs: Mapping[str, Any] = MappingProxyType(
+            dict(compile_kwargs or {})
+        )
+        self.compile_flags: tuple[str, ...] = tuple(compile_flags or ())
+        self.source_files: tuple[Path, ...] = tuple(
+            Path(sf) for sf in (source_files or ())
+        )
+        self.include_paths: tuple[Path, ...] = tuple(
+            Path(p) for p in (include_paths or ())
+        )
+        self.aiecc_flags: tuple[str, ...] = tuple(aiecc_flags or ())
+        self.object_files: tuple[Path, ...] = tuple(
+            Path(of) for of in (object_files or ())
+        )
+
+        # Cached artifact paths (set after compile()).
+        self._xclbin_path: Path | None = None
+        self._inst_path: Path | None = None
+        # Full-ELF artifacts (set after compile() when full_elf is active).
+        self._elf_path: Path | None = None
+        self._full_elf_kernel_name: str | None = None
+        self._kernel_dir: Path | None = None
+        self._expected_tensor_sizes: list[int] | None = None
+        self._generated_cache: dict[tuple, tuple[str, list]] = {}
+
+        # Introspect generator signature to split param categories.  Cache
+        # hints+sig on self so split_runtime_args / _generate_mlir reuse the
+        # same memoised intro instead of re-running typing.get_type_hints
+        # and inspect.signature on every call.
+        if callable(mlir_generator):
+            self._hints, self._sig, (cp, tp, sp) = _introspect_generator(mlir_generator)
+            self.compile_params = list(cp)
+            self.tensor_params = list(tp)
+            self.scalar_params = list(sp)
+        else:
+            self._hints = {}
+            self._sig = None
+            self.compile_params = []
+            self.tensor_params = []
+            self.scalar_params = []
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def _config(self) -> dict[str, Any]:
+        """Return the current values of every configuration parameter, keyed by name.
+
+        Read back from the stored attributes (which share the constructor
+        parameter names), so a new config parameter is carried by ``specialize``
+        automatically.  List-typed configs are copied to keep the new design
+        independent of this one.
+        """
+        config: dict[str, Any] = {}
+        for name in config_param_names(type(self)):
+            value = getattr(self, name)
+            config[name] = list(value) if isinstance(value, tuple) else value
+        return config
+
+    def specialize(self, **overrides) -> "CompilableDesign":
+        """Return a new ``CompilableDesign`` with overrides applied.
+
+        Overrides are split by name: those matching a configuration parameter
+        (``use_cache``, ``aiecc_flags``, ``full_elf``, …) replace that config;
+        all others are treated as ``CompileTime[T]`` values and merged onto
+        ``self.compile_kwargs`` (call-time values winning).  Every other config
+        is preserved from ``self``.
+
+        This makes config as retargetable as ``CompileTime[T]`` kwargs — e.g.
+        ``design.specialize(full_elf=True)`` re-aims an existing design at the
+        full-ELF path, symmetric with ``@iron.jit(full_elf=True)``.
+        """
+        config = self._config()
+        config_keys = config_param_names(type(self))
+        compile_kwargs = dict(self.compile_kwargs)
+        for name, value in overrides.items():
+            if name in config_keys:
+                config[name] = value
+            else:
+                compile_kwargs[name] = value
+        return CompilableDesign(
+            self.mlir_generator,
+            compile_kwargs=compile_kwargs,
+            **config,
+        )
+
+    def compile(
+        self,
+        xclbin_path: Path | str | None = None,
+        inst_path: Path | str | None = None,
+        elf_path: Path | str | None = None,
+        full_elf_path: Path | str | None = None,
+        pdi_path: Path | str | None = None,
+    ) -> tuple[Path, Path | None]:
+        """Compile the generator to ``(xclbin_path, inst_path)``.
+
+        When both ``xclbin_path`` and ``inst_path`` are given, artifacts are
+        written directly to those paths; the parent directory is used as
+        ``work_dir`` for intermediate files (``.o``, lowered ``.mlir``).  The
+        on-disk cache is bypassed in this mode — the caller is presumed to
+        manage their own dependency tracking (e.g. via a Makefile).
+
+        When both are ``None`` (the default), behavior is unchanged: artifacts
+        land in ``~/.npu/cache/<hash>/`` and the cache is consulted first.
+
+        Mixed (only one of ``xclbin_path`` / ``inst_path`` given) raises
+        ``ValueError``.
+
+        ``elf_path`` is optional and orthogonal: when set, aiecc also wraps
+        the NPU instructions into an ELF (via ``aiebu-asm``) at that path,
+        suitable for C++ testbenches that load through ``xrt::elf`` +
+        ``xrt::module``.  Requires ``xclbin_path`` / ``inst_path`` to be set
+        too — the cache path doesn't track ELF artifacts.
+
+        Full-ELF mode is selected either by ``full_elf=True`` on the design or
+        by passing ``full_elf_path`` here.  In this mode a single
+        self-contained ELF (PDIs + TXN control code) is produced instead of an
+        xclbin + insts pair, and ``compile()`` returns ``(elf_path, None)``.
+        With ``full_elf_path`` set the ELF is written there directly (cache
+        bypassed); otherwise it lands in the JIT cache as ``<hash>/design.elf``.
+
+        ``pdi_path`` is likewise optional: when set, aiecc writes the
+        Programmable Device Image (config data packed by ``bootgen``) to that
+        path.  Like ``elf_path`` it requires explicit ``xclbin_path`` /
+        ``inst_path``.  In default cache mode aiecc still emits a ``main.pdi``
+        into the cache directory — use :meth:`get_pdi_path` to locate it.
+        """
+        from aie.iron.kernel import ExternalFunction
+
+        full_elf = self.full_elf or full_elf_path is not None
+        if full_elf:
+            return self._compile_full_elf(ExternalFunction, full_elf_path)
+
+        if (xclbin_path is None) != (inst_path is None):
+            raise ValueError(
+                "compile(): xclbin_path and inst_path must be set together "
+                "(both paths to write artifacts directly, or both None to use "
+                f"the JIT cache).  Got xclbin_path={xclbin_path!r}, "
+                f"inst_path={inst_path!r}."
+            )
+        explicit_paths = xclbin_path is not None
+        cache_hash = None
+
+        if elf_path is not None and not explicit_paths:
+            raise ValueError(
+                "compile(): elf_path requires explicit xclbin_path + inst_path "
+                "(the JIT cache does not track ELF artifacts)."
+            )
+
+        if pdi_path is not None and not explicit_paths:
+            raise ValueError(
+                "compile(): pdi_path requires explicit xclbin_path + inst_path "
+                "(the JIT cache does not track caller-named PDI artifacts; use "
+                "get_pdi_path() to locate the cache-mode main.pdi)."
+            )
+
+        if not isinstance(self.mlir_generator, Path):
+            self._bind_generation_device()
+
+        # The DDR-patch fold ABI feeds both the cache key (via _compute_cache_hash)
+        # and the aiecc invocation below. Both read it from the single resolver
+        # _resolve_fold_ddr_addr_offset() -> the backend's FOLDS_DDR_ADDR_OFFSET
+        # class attribute, so they can never disagree.
+        fold_ddr_addr_offset = self._resolve_fold_ddr_addr_offset()
+
+        if explicit_paths:
+            assert xclbin_path is not None and inst_path is not None
+            # Absolutize so compile_external_kernel's `cwd=kernel_dir` doesn't
+            # turn relative paths into "build/build/foo.cc" etc.
+            xclbin_path = Path(xclbin_path).resolve()
+            inst_path = Path(inst_path).resolve()
+            if elf_path is not None:
+                elf_path = Path(elf_path).resolve()
+            if pdi_path is not None:
+                pdi_path = Path(pdi_path).resolve()
+            # Per-xclbin scratch dir (mirrors aiecc's default <input>.prj
+            # naming) so two siblings sharing one build/ don't clobber each
+            # other's input_with_addresses.mlir / .o files.
+            kernel_dir = xclbin_path.parent / f"{xclbin_path.stem}.prj"
+            lock_file_path = kernel_dir / ".lock"
+        else:
+            cache_hash = self._compute_cache_hash()
+            kernel_dir = NPU_CACHE_HOME / cache_hash
+            lock_file_path = kernel_dir / ".lock"
+            xclbin_path = kernel_dir / "final.xclbin"
+            inst_path = kernel_dir / "insts.bin"
+
+        with file_lock(lock_file_path, timeout_seconds=_COMPILE_LOCK_TIMEOUT_SECONDS):
+            os.makedirs(kernel_dir, exist_ok=True)
+
+            xclbin_exists = xclbin_path.exists()
+            inst_exists = inst_path.exists()
+
+            if not explicit_paths and self.use_cache and xclbin_exists and inst_exists:
+                if not _manifest.is_valid(kernel_dir):
+                    # A recorded input moved.  The directory holds nested caches
+                    # of its own -- compile_external_kernel skips any .o that is
+                    # already present -- so a stale entry has to be cleared, not
+                    # merely rebuilt over.
+                    logger.debug(
+                        "Inputs changed for '%s'; discarding cache entry",
+                        self.generator_name,
+                    )
+                    _cleanup_failed_compilation(kernel_dir)
+                    xclbin_exists = inst_exists = False
+
+            if not explicit_paths and self.use_cache and xclbin_exists and inst_exists:
+                logger.debug(
+                    "Cache hit for '%s' (hash=%s)", self.generator_name, cache_hash
+                )
+                self._xclbin_path = xclbin_path
+                self._inst_path = inst_path
+                self._kernel_dir = kernel_dir
+                # The active artifact may have changed since the previous
+                # compile(), so refresh its validation metadata on every hit.
+                self._expected_tensor_sizes = parse_dma_sizes(kernel_dir)
+                return xclbin_path, inst_path
+
+            if explicit_paths:
+                logger.debug(
+                    "Compiling '%s' to %s (explicit paths, cache bypassed)",
+                    self.generator_name,
+                    xclbin_path,
+                )
+            else:
+                logger.debug(
+                    "Cache miss for '%s' (hash=%s); compiling...",
+                    self.generator_name,
+                    cache_hash,
+                )
+
+            try:
+                mlir_module = self._generate_mlir(ExternalFunction)
+
+                from aie.utils import get_current_device
+                from aie.utils.compile import resolve_target_arch
+
+                device = get_current_device(probe_runtime=False)
+                target_arch = resolve_target_arch(device)
+
+                external_kernels = list(ExternalFunction._instances)
+                ExternalFunction._instances.clear()
+
+                use_chess = self._resolve_use_chess(external_kernels)
+
+                for func in external_kernels:
+                    if not func._compiled:
+                        compile_external_kernel(func, kernel_dir, target_arch)
+
+                compile_mlir_module(
+                    mlir_module=mlir_module,
+                    insts_path=inst_path,
+                    xclbin_path=xclbin_path,
+                    elf_path=elf_path,
+                    pdi_path=pdi_path,
+                    work_dir=kernel_dir,
+                    use_chess=use_chess,
+                    options=list(self.aiecc_flags) if self.aiecc_flags else None,
+                    fold_ddr_addr_offset=fold_ddr_addr_offset,
+                )
+
+                # aiecc may exit 0 even when xclbin generation fails silently
+                # (missing xclbinutil/bootgen); verify outputs exist.
+                expected_outputs = [xclbin_path, inst_path]
+                if elf_path is not None:
+                    expected_outputs.append(Path(elf_path))
+                if pdi_path is not None:
+                    expected_outputs.append(Path(pdi_path))
+                missing = [p for p in expected_outputs if not p.exists()]
+                if missing:
+                    raise RuntimeError(
+                        "[aiecc] Compilation appeared to succeed (exit code 0) "
+                        "but expected output file(s) were not created: "
+                        + ", ".join(str(p) for p in missing)
+                    )
+
+                # Build succeeded: record what it consumed, so the next lookup
+                # can check the real inputs instead of guessing at them.
+                _manifest.record(
+                    kernel_dir,
+                    external_kernels,
+                    self.source_files,
+                    used_chess=use_chess,
+                )
+            except Exception:
+                _cleanup_failed_compilation(kernel_dir)
+                raise
+
+        self._xclbin_path = xclbin_path
+        self._inst_path = inst_path
+        self._kernel_dir = kernel_dir
+        # Parse expected tensor sizes for runtime validation.
+        self._expected_tensor_sizes = parse_dma_sizes(kernel_dir)
+        return xclbin_path, inst_path
+
+    def _compile_full_elf(
+        self,
+        ExternalFunction,
+        full_elf_path: Path | str | None,
+    ) -> tuple[Path, None]:
+        """Compile to a single self-contained full ELF (PDIs + TXN control code).
+
+        With ``full_elf_path`` the ELF is written there and the cache is
+        bypassed; otherwise it lands in ``<NPU_CACHE_HOME>/<hash>/design.elf``.
+        Sets :attr:`_elf_path` and :attr:`_full_elf_kernel_name` and returns
+        ``(elf_path, None)`` (there is no separate insts artifact).
+        """
+        if not isinstance(self.mlir_generator, Path):
+            self._bind_generation_device()
+
+        explicit_path = full_elf_path is not None
+        cache_hash = None
+        if explicit_path:
+            assert full_elf_path is not None
+            elf_path = Path(full_elf_path).resolve()
+            kernel_dir = elf_path.parent / f"{elf_path.stem}.prj"
+        else:
+            cache_hash = self._compute_cache_hash()
+            kernel_dir = NPU_CACHE_HOME / cache_hash
+            elf_path = kernel_dir / "design.elf"
+        lock_file_path = kernel_dir / ".lock"
+
+        with file_lock(lock_file_path, timeout_seconds=_COMPILE_LOCK_TIMEOUT_SECONDS):
+            os.makedirs(kernel_dir, exist_ok=True)
+
+            if (
+                not explicit_path
+                and self.use_cache
+                and elf_path.exists()
+                and not _manifest.is_valid(kernel_dir)
+            ):
+                logger.debug(
+                    "Inputs changed for '%s'; discarding full-ELF cache entry",
+                    self.generator_name,
+                )
+                _cleanup_failed_compilation(kernel_dir)
+
+            if not explicit_path and self.use_cache and elf_path.exists():
+                logger.debug(
+                    "Full-ELF cache hit for '%s' (hash=%s)",
+                    self.generator_name,
+                    cache_hash,
+                )
+                self._elf_path = elf_path
+                self._kernel_dir = kernel_dir
+                self._full_elf_kernel_name = self._parse_full_elf_kernel_name(
+                    ExternalFunction
+                )
+                self._expected_tensor_sizes = parse_dma_sizes(kernel_dir)
+                return elf_path, None
+
+            try:
+                mlir_module = self._generate_mlir(ExternalFunction, full_elf=True)
+
+                from aie.utils import get_current_device
+                from aie.utils.compile import resolve_target_arch
+
+                device = get_current_device(probe_runtime=False)
+                target_arch = resolve_target_arch(device)
+
+                external_kernels = list(ExternalFunction._instances)
+                ExternalFunction._instances.clear()
+
+                use_chess = self._resolve_use_chess(external_kernels)
+                for func in external_kernels:
+                    if not func._compiled:
+                        compile_external_kernel(func, kernel_dir, target_arch)
+
+                compile_mlir_module(
+                    mlir_module=mlir_module,
+                    full_elf_path=elf_path,
+                    work_dir=kernel_dir,
+                    use_chess=use_chess,
+                    options=list(self.aiecc_flags) if self.aiecc_flags else None,
+                )
+
+                if not elf_path.exists():
+                    raise RuntimeError(
+                        "[aiecc] Full-ELF compilation appeared to succeed (exit "
+                        "code 0) but the expected output file was not created: "
+                        f"{elf_path}"
+                    )
+
+                _manifest.record(
+                    kernel_dir,
+                    external_kernels,
+                    self.source_files,
+                    used_chess=use_chess,
+                )
+            except Exception:
+                _cleanup_failed_compilation(kernel_dir)
+                raise
+
+        self._elf_path = elf_path
+        self._kernel_dir = kernel_dir
+        self._full_elf_kernel_name = self._parse_full_elf_kernel_name(ExternalFunction)
+        self._expected_tensor_sizes = parse_dma_sizes(kernel_dir)
+        return elf_path, None
+
+    def _resolve_use_chess(self, external_kernels: list) -> bool:
+        """Return whether to drive aiecc with the Chess front-end.
+
+        All ``ExternalFunction`` kernels in one design must agree on the
+        toolchain -- aiecc invokes a single front-end per compile.
+        """
+        chess_uses = {getattr(f, "_use_chess", False) for f in external_kernels}
+        if len(chess_uses) > 1:
+            chess_funcs = [f._name for f in external_kernels if f._use_chess]
+            peano_funcs = [f._name for f in external_kernels if not f._use_chess]
+            raise RuntimeError(
+                "Mixed peano + chess ExternalFunctions in one "
+                f"@iron.jit design ({self.generator_name!r}): "
+                f"chess={chess_funcs}, peano={peano_funcs}.  aiecc can only "
+                "invoke one front-end per compile; pick one toolchain "
+                "consistently across all kernels.* helper calls in this design."
+            )
+        return chess_uses == {True}
+
+    def _parse_full_elf_kernel_name(self, ExternalFunction) -> str:
+        """Return the ``"<device>:<sequence>"`` XRT kernel name for the full ELF.
+
+        The full-ELF runtime addresses the kernel by the device symbol name and
+        runtime-sequence symbol name (e.g. ``main:sequence``), so walk the
+        generated module for the first ``aie.device`` and its first
+        ``aie.runtime_sequence``.
+        """
+        module = self._generate_mlir(ExternalFunction)
+        for op in module.body.operations:
+            if op.operation.name != "aie.device":
+                continue
+            device_sym = StringAttr(op.operation.attributes["sym_name"]).value
+            for inner in op.regions[0].blocks[0].operations:
+                if inner.operation.name == "aie.runtime_sequence":
+                    seq_sym = StringAttr(inner.operation.attributes["sym_name"]).value
+                    return f"{device_sym}:{seq_sym}"
+        raise RuntimeError(
+            f"Could not find an aie.device + aie.runtime_sequence in "
+            f"'{self.generator_name}' to derive the full-ELF kernel name."
+        )
+
+    def get_artifacts(self) -> tuple[Path, Path] | None:
+        """Return cached artifact paths without recompiling, or ``None``."""
+        if self._xclbin_path is None or self._inst_path is None:
+            return None
+        return self._xclbin_path, self._inst_path
+
+    def get_pdi_paths(self) -> list[Path]:
+        """Return every cache-directory PDI aiecc emitted, sorted by name.
+
+        In default cache mode aiecc names each PDI after its ``aie.device``
+        symbol in the compiled MLIR (``<device>.pdi``) and writes it into the
+        work dir alongside the xclbin.  A single-device design yields one PDI;
+        a multi-device design yields one per ``aie.device``.
+
+        This is *not* a "PDI for the most recent compile" accessor: a
+        ``compile(pdi_path=...)`` call writes the PDI to that caller-supplied
+        path (outside ``kernel_dir``), so use the path you passed rather than
+        this method.  Returns ``[]`` if no compile has happened yet or no PDI
+        is present.
+        """
+        if self._kernel_dir is None:
+            return []
+        return sorted(self._kernel_dir.glob("*.pdi"))
+
+    def get_pdi_path(self, device_name: str | None = None) -> Path | None:
+        """Return one cache-directory PDI, or ``None`` if none is present.
+
+        Convenience wrapper over :meth:`get_pdi_paths` for the common
+        single-device case.  aiecc names each PDI after its ``aie.device``
+        symbol (``<device>.pdi``); IRON's ``@iron.jit`` path uses ``main`` so
+        it lands as ``main.pdi``, but a raw ``.mlir`` ``Path`` generator can
+        use any name, so this finds the PDI regardless of the device name.
+
+        Args:
+            device_name: For a multi-device design, the ``aie.device`` symbol
+                whose PDI you want (i.e. ``<device_name>.pdi``).  Leave as
+                ``None`` for a single-device design.
+
+        Returns:
+            The matching PDI, the sole PDI when there's exactly one, or
+            ``None`` when there is no PDI (or the named one is absent).  When
+            several PDIs exist and ``device_name`` is not given, returns the
+            first by name and leaves the rest to :meth:`get_pdi_paths`.
+        """
+        pdis = self.get_pdi_paths()
+        if not pdis:
+            return None
+        if device_name is not None:
+            target = self._kernel_dir / f"{device_name}.pdi"  # type: ignore[operator]
+            return target if target in pdis else None
+        return pdis[0]
+
+    def split_runtime_args(
+        self, runtime_args: tuple, runtime_kwargs: dict[str, Any]
+    ) -> tuple[list, dict[str, Any]]:
+        """Split ``runtime_args``/``runtime_kwargs`` into tensor list and scalar dict.
+
+        Uses the ``In``/``Out``/``InOut`` annotation order from the generator
+        signature.  Positional ``runtime_args`` are consumed left-to-right to
+        fill tensor params (in signature order), then scalar params.
+
+        ``Kernel`` and ``ExternalFunction`` instances are compile-time-only
+        objects resolved at link time; they are silently filtered out and
+        never forwarded to the NPU kernel as runtime arguments.
+
+        Returns:
+            ``(tensor_args, scalar_kwargs)``
+        """
+        from aie.iron.kernel import Kernel
+
+        if not callable(self.mlir_generator):
+            # Static .mlir file: pass everything through as tensors,
+            # but still filter compile-time-only kernel objects.
+            filtered = [a for a in runtime_args if not isinstance(a, Kernel)]
+            return filtered, runtime_kwargs
+
+        tensor_args = []
+        scalar_kwargs = dict(runtime_kwargs)
+
+        # Reuse the cached intro from __init__ — same generator, same hints/sig.
+        hints = self._hints
+        sig = self._sig
+        assert sig is not None
+        params = [
+            (name, p)
+            for name, p in sig.parameters.items()
+            if name not in self.compile_kwargs
+        ]
+
+        # Walk the non-compile parameters in order, consuming positional args.
+        # Kernel/ExternalFunction instances are compile-time only; skip them
+        # in the positional stream so they never land in tensor_args or
+        # scalar_kwargs.
+        def _next_non_kernel(it):
+            while True:
+                val = next(it)
+                if not isinstance(val, Kernel):
+                    return val
+
+        pos_iter = iter(runtime_args)
+        for name, param in params:
+            ann = hints.get(name, param.annotation)
+            if _is_tensor_param(ann):
+                # Try positional first, then kwargs.
+                if name in scalar_kwargs:
+                    tensor_args.append(scalar_kwargs.pop(name))
+                else:
+                    try:
+                        tensor_args.append(_next_non_kernel(pos_iter))
+                    except StopIteration:
+                        pass
+            else:
+                # Scalar param: leave in scalar_kwargs (already there from kwargs)
+                # or consume from positional.
+                if name not in scalar_kwargs:
+                    try:
+                        val = _next_non_kernel(pos_iter)
+                        scalar_kwargs[name] = val
+                    except StopIteration:
+                        pass
+
+        return tensor_args, scalar_kwargs
+
+    def generate_mlir(self):
+        """Generate and return the MLIR module without compiling to xclbin.
+
+        Useful for inspecting generated MLIR, debugging, or offline analysis.
+        Binds an available runtime-detected device before generation so
+        target-sensitive builders and the generation cache see the same device.
+
+        Returns:
+            The generated ``mlir.ir.Module``.
+        """
+        from aie.iron.kernel import ExternalFunction
+
+        return self._generate_mlir(ExternalFunction, full_elf=self.full_elf)
+
+    def validate_tensor_args(self, tensor_args: list) -> None:
+        """Validate that *tensor_args* element counts match the compiled kernel.
+
+        Compares each tensor's element count against the per-host-arg
+        addressable footprint extracted from the compiled
+        ``aiex.runtime_sequence``.  ``parse_dma_sizes`` returns
+        ``max(offset + len)`` so multi-column fan-outs, repeated transfers
+        (matmul B reloaded each tile_row), and InOut buffers (for_each
+        fill+drain on the same arg) all give the host-tensor size directly.
+
+        Args with no associated DMA (entry == 0) are skipped — those are
+        runtime params not directly transferred by the design.
+
+        No-op when expected sizes are unavailable (e.g. offline compilation
+        or when ``input_with_addresses.mlir`` was not produced).
+        """
+        if not self._expected_tensor_sizes:
+            return
+        import numpy as np
+
+        for i, (tensor, expected) in enumerate(
+            zip(tensor_args, self._expected_tensor_sizes)
+        ):
+            if expected == 0:
+                continue
+            try:
+                actual = int(np.size(tensor))
+            except (TypeError, ValueError, AttributeError):
+                # Non-array-like tensor argument (e.g. a scalar passed by mistake);
+                # skip rather than raise so the kernel call surfaces the real
+                # type error.
+                continue
+            if actual != expected:
+                param_name = (
+                    self.tensor_params[i]
+                    if i < len(self.tensor_params)
+                    else f"arg[{i}]"
+                )
+                raise RuntimeError(
+                    f"Tensor argument {param_name!r} has {actual} elements but "
+                    f"the kernel was compiled for {expected} elements.\n"
+                    f"CompileTime[T] parameters used at compile time: "
+                    f"{self.compile_kwargs!r}"
+                )
+
+    def to_json(self) -> str:
+        """Serialise the non-callable parts of this design to JSON.
+
+        The generator callable itself cannot be serialised; callers must
+        supply it back to ``from_json``.
+
+        Note:
+            The on-the-wire format is internal to ``CompilableDesign``;
+            ``compile_kwargs`` are encoded as ``[type, value]`` pairs (not a
+            dict).  Do not treat the output as a stable public schema.
+        """
+        data = {
+            "generator_name": self.generator_name,
+            "use_cache": self.use_cache,
+            "compile_kwargs": {
+                k: _encode_kwarg(v) for k, v in self.compile_kwargs.items()
+            },
+            "compile_flags": self.compile_flags,
+            "source_files": [sf.as_posix() for sf in self.source_files],
+            "include_paths": [p.as_posix() for p in self.include_paths],
+            "aiecc_flags": self.aiecc_flags,
+            "object_files": [of.as_posix() for of in self.object_files],
+            "cache_hash": self._compute_cache_hash(),
+        }
+        return json.dumps(data)
+
+    @classmethod
+    def from_json(
+        cls, json_str: str, generator: Callable | None = None
+    ) -> CompilableDesign:
+        """Deserialise a ``CompilableDesign`` from JSON.
+
+        Args:
+            json_str: JSON string produced by ``to_json()``.
+            generator: The original callable (required unless ``mlir_generator``
+                is a ``.mlir`` file path encoded in the JSON).
+
+        Note:
+            ``compile_kwargs`` values for the types ``int``, ``float``,
+            ``str``, and ``bool`` are round-tripped exactly.  Values of other
+            types are stored as strings and decoded as strings.
+        """
+        data = json.loads(json_str)
+        if generator is None:
+            raise ValueError(
+                "generator must be supplied to CompilableDesign.from_json() "
+                "because callables cannot be serialised."
+            )
+        return cls(
+            mlir_generator=generator,
+            use_cache=data.get("use_cache", True),
+            compile_kwargs={
+                k: _decode_kwarg(v) for k, v in data.get("compile_kwargs", {}).items()
+            },
+            compile_flags=data.get("compile_flags", []),
+            source_files=data.get("source_files", []),
+            include_paths=data.get("include_paths", []),
+            aiecc_flags=data.get("aiecc_flags", []),
+            object_files=data.get("object_files", []),
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def generator_name(self) -> str:
+        """Human-readable name for the generator (function name or .mlir path)."""
+        if isinstance(self.mlir_generator, Path):
+            return str(self.mlir_generator)
+        return getattr(self.mlir_generator, "__name__", repr(self.mlir_generator))
+
+    @property
+    def recipe_hash(self) -> str:
+        """Hash of the design recipe: generator + CompileTime[T] kwargs + flags.
+
+        Identifies the target-independent design recipe. Device-specialized
+        MLIR also depends on the bound device.
+        """
+        return _compute_recipe_hash(
+            self.mlir_generator,
+            self.compile_kwargs,
+            self.aiecc_flags,
+            self.compile_flags,
+            self.full_elf,
+            self.include_paths,
+        )
+
+    @staticmethod
+    def _resolve_fold_ddr_addr_offset() -> bool:
+        """Active backend's DDR-patch fold ABI.
+
+        See :func:`aie.utils.npu_runtime_folds_ddr_addr_offset`. Kept in one
+        place, and resolved from the backend's ``FOLDS_DDR_ADDR_OFFSET`` class
+        attribute, so the cache key and the aiecc invocation always agree on
+        whether ``insts.bin`` is folded.
+        """
+        from aie.utils import npu_runtime_folds_ddr_addr_offset
+
+        return npu_runtime_folds_ddr_addr_offset()
+
+    @property
+    def artifact_hash(self) -> str:
+        """Hash of the build environment: source/object content + tool mtimes + device.
+
+        Changes whenever a kernel ``.cc``, an ``.o``, Peano, aiecc, or the
+        target device changes; identifies the *with what* of compilation.
+        """
+        return _compute_artifact_hash(
+            self.mlir_generator,
+            self.source_files,
+            self.object_files,
+            self._resolve_fold_ddr_addr_offset(),
+        )
+
+    def _compute_cache_hash(self) -> str:
+        return _compute_hash(
+            self.mlir_generator,
+            self.compile_kwargs,
+            self.source_files,
+            self.object_files,
+            self.aiecc_flags,
+            self.compile_flags,
+            self.full_elf,
+            self._resolve_fold_ddr_addr_offset(),
+            self.include_paths,
+        )
+
+    def _bind_generation_device(self):
+        """Bind an available runtime device before target-sensitive work."""
+        if isinstance(self.mlir_generator, Path):
+            return None
+
+        try:
+            from aie.utils import ensure_current_device
+
+            return ensure_current_device()
+        except (ImportError, RuntimeError, AttributeError, ValueError, TypeError):
+            return None
+
+    def _generation_cache_key(self, *, full_elf: bool = False) -> tuple:
+        """Return the identity that affects cached MLIR generation.
+
+        Static ``.mlir`` files key on their path. Python generators key on the
+        explicitly bound device and the full-ELF flag (full-ELF generates
+        ``npu.load_pdi``; the standard path does not).
+        """
+        if isinstance(self.mlir_generator, Path):
+            return ("path", str(self.mlir_generator))
+
+        try:
+            from aie.utils import get_current_device
+
+            device = get_current_device(probe_runtime=False)
+        except (ImportError, RuntimeError, AttributeError, ValueError, TypeError):
+            device = None
+
+        return ("device", full_elf) + _device_identity_key(device)
+
+    def _generated_for(self, *, full_elf: bool) -> tuple[str, list]:
+        """Return cached ``(mlir_text, external_kernels)`` for the given mode."""
+        self._bind_generation_device()
+        key = self._generation_cache_key(full_elf=full_elf)
+        generated = self._generated_cache.get(key)
+        if generated is None:
+            generated = self._generate_uncached(full_elf=full_elf)
+            self._generated_cache[key] = generated
+        return generated
+
+    @property
+    def _generated(self) -> tuple[str, list]:
+        """Return cached ``(mlir_text, external_kernels)`` for the active device."""
+        return self._generated_for(full_elf=self.full_elf)
+
+    def _generate_uncached(self, *, full_elf: bool = False) -> tuple[str, list]:
+        """Run the generator and collect generated MLIR text and external kernels."""
+        from aie.iron.kernel import ExternalFunction
+
+        if isinstance(self.mlir_generator, Path):
+            # Static .mlir file: text already on disk; no kernels to collect.
+            return self.mlir_generator.read_text(), []
+
+        hints = self._hints
+
+        # Guard 2-A: compile_kwargs must not contain tensor param names.
+        tensor_names = set(self.tensor_params)
+        confused_tensor_keys = set(self.compile_kwargs.keys()) & tensor_names
+        if confused_tensor_keys:
+            raise TypeError(
+                f"CompilableDesign for {self.generator_name!r}: "
+                f"compile_kwargs contains name(s) annotated as runtime tensors "
+                f"(In/Out/InOut), not CompileTime[T] parameters: {confused_tensor_keys}.\n"
+                f"  Tensor params must be supplied at call time, not compile time.\n"
+                f"  CompileTime[T] params are: {self.compile_params}."
+            )
+
+        # Guard 2-B: compile_kwargs must not contain entirely unknown keys.
+        known_params = (
+            set(self.compile_params) | set(self.tensor_params) | set(self.scalar_params)
+        )
+        unknown_keys = set(self.compile_kwargs.keys()) - known_params
+        if unknown_keys:
+            raise TypeError(
+                f"CompilableDesign for {self.generator_name!r}: "
+                f"compile_kwargs contains key(s) not in the generator signature: "
+                f"{unknown_keys}.\n"
+                f"  Valid CompileTime[T] params are: {self.compile_params}."
+            )
+
+        sig = self._sig
+        assert sig is not None
+        compile_only_params = {
+            name: p
+            for name, p in sig.parameters.items()
+            if _is_compile_param(hints.get(name, p.annotation))
+        }
+        compile_only_sig = inspect.Signature(
+            parameters=list(compile_only_params.values())
+        )
+        try:
+            compile_only_sig.bind(**self.compile_kwargs)
+        except TypeError as exc:
+            raise TypeError(
+                f"CompilableDesign for '{self.generator_name}': "
+                f"compile_kwargs do not match CompileTime[T] parameters — {exc}"
+            ) from exc
+
+        # Kernel factories cache ExternalFunction instances. Those instances
+        # retain MLIR operations after resolution, so every fresh generation
+        # must begin with a context-local factory cache.
+        from aie.iron.kernels._common import _EXTERN_CACHE
+
+        ExternalFunction._instances.clear()
+        _EXTERN_CACHE.clear()
+
+        _tensor_placeholders = {
+            name: _TensorPlaceholder(name) for name in self.tensor_params
+        }
+        _gen_call_kwargs = {**_tensor_placeholders, **self.compile_kwargs}
+
+        # Re-register any ExternalFunction instances passed as CompileTime[T] params
+        # so the generator's kernel-call paths see them already-registered.
+        for _v in _gen_call_kwargs.values():
+            if isinstance(_v, ExternalFunction):
+                ExternalFunction._instances.add(_v)
+
+        with compile_context(**self.compile_kwargs, _iron_full_elf=full_elf):
+            with mlir_mod_ctx() as ctx:  # pyright: ignore[reportGeneralTypeIssues]
+                result = self.mlir_generator(**_gen_call_kwargs)
+                module = ctx.module if result is None else result
+                if not module.operation.verify():
+                    raise RuntimeError(
+                        f"MLIR verification failed for '{self.generator_name}'"
+                    )
+                mlir_text = str(module)
+
+        external_kernels = list(ExternalFunction._instances)
+        ExternalFunction._instances.clear()
+        return mlir_text, external_kernels
+
+    def _generate_mlir(self, ExternalFunction, *, full_elf: bool = False):
+        """Return an MLIR ``Module`` bound to a fresh Context.
+
+        Thin wrapper over :meth:`_generated_for`: parse the cached MLIR text
+        into a new ``mlir_mod_ctx()`` and re-register the cached
+        ``ExternalFunction`` instances so ``compile()`` can collect them.
+        """
+        mlir_text, external_kernels = self._generated_for(full_elf=full_elf)
+        ExternalFunction._instances.update(external_kernels)
+        with mlir_mod_ctx():  # pyright: ignore[reportGeneralTypeIssues]
+            return _Module.parse(mlir_text)
+
+    def __hash__(self) -> int:
+        # The cache hash includes the active target device. Do not use a
+        # CompilableDesign as a stable key while retargeting devices.
+        # Fold the 96-bit cache hash down to a signed 64-bit Python hash.
+        h = int(self._compute_cache_hash(), 16)
+        # Wrap to the range [-(2^63), 2^63-1] by taking modulo and adjusting.
+        bits = sys.hash_info.width  # typically 64
+        mask = (1 << bits) - 1
+        h = h & mask
+        if h >= (1 << (bits - 1)):
+            h -= 1 << bits
+        return h if h != -1 else -2  # -1 is reserved by CPython
+
+    def __repr__(self) -> str:
+        return (
+            f"CompilableDesign(generator={self.generator_name!r}, "
+            f"compile_kwargs={self.compile_kwargs!r})"
+        )
