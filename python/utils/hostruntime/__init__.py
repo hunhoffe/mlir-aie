@@ -12,6 +12,7 @@ from ml_dtypes import bfloat16
 
 from .tensor_class import NpuTensor
 from .tensor_class import Tensor as Tensor  # re-export of the old name
+from .torch_interop import torch_to_numpy as torch_to_numpy
 
 if TYPE_CHECKING:
     from aie.iron.device import Device

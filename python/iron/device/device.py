@@ -10,6 +10,7 @@ from ... import ir  # pyright: ignore[reportMissingImports, reportAttributeAcces
 from ...dialects._aie_enum_gen import (  # pyright: ignore[reportMissingImports]
     AIEArch,
     AIETileType,
+    WireBundle,
 )
 from ...dialects.aie import (
     AIEDevice,  # pyright: ignore[reportAttributeAccessIssue]
@@ -47,6 +48,43 @@ class Device(Resolvable):
     def arch(self) -> AIEArch:
         """AIE architecture of the device (AIE1, AIE2, or AIE2p)."""
         return AIEArch(self._tm.get_target_arch())
+
+    @property
+    def shim_cols(self) -> list[int]:
+        """Columns whose row-0 tile can move data between host memory and the array.
+
+        Not every column has one: on some parts row 0 holds a PL or NoC tile
+        with no DMA, so the shim columns are a subset of ``range(self.cols)``
+        and must be discovered rather than assumed.
+        """
+        return [c for c in range(self.cols) if self._tm.is_shim_noc_or_pl_tile(c, 0)]
+
+    def num_shim_dma_channels(self, *, output: bool = True) -> int:
+        """Total shim DMA channels on the device, summed over its shim tiles.
+
+        This is the hardware ceiling on how many DMA transfers between host
+        memory and the array can be in flight at once, so it is the bound a
+        design's column and channel counts have to fit inside. Sizing code that
+        hardcodes a per-device number instead goes wrong on the next part; this
+        reads the number out of the target model.
+
+        Args:
+            output: When True (the default), count source channels — the ones
+                that drive data out of the shim into the array. When False,
+                count the destination channels that drain data back to host
+                memory. The two directions are counted separately because a
+                tile's budget in one direction says nothing about the other.
+
+        Returns:
+            int: The number of channels available in the requested direction.
+        """
+        bundle = WireBundle.DMA
+        query = (
+            self._tm.get_num_source_shim_mux_connections
+            if output
+            else self._tm.get_num_dest_shim_mux_connections
+        )
+        return sum(query(col, 0, bundle) for col in self.shim_cols)
 
     def _validate_coordinates(self, col, row):
         """Raise ValueError if coordinates are outside the device grid."""

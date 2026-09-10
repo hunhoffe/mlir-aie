@@ -28,6 +28,7 @@ from .coherence import _detect_coherence_granule as _detect_coherence_granule
 from .coherence import _read_sysfs_line_size as _read_sysfs_line_size
 from .torch_interop import _array_to_torch as _array_to_torch
 from .torch_interop import _ml_dtype_to_torch_map as _ml_dtype_to_torch_map
+from .torch_interop import torch_to_numpy as _torch_to_numpy
 
 
 def _as_shape(shape):
@@ -734,24 +735,11 @@ class NpuTensor(ABC):
         Raises:
             ImportError: If torch is not installed.
         """
-        import torch  # pyright: ignore[reportMissingImports]
-        from ml_dtypes import bfloat16
-
-        # Detach (to drop grad) and ensure on CPU
-        t = torch_tensor.detach()
-        if t.device.type != "cpu":
-            t = t.cpu()
-        # Ensure contiguous for safe view operations
-        if not t.is_contiguous():
-            t = t.contiguous()
-
-        if t.dtype == torch.bfloat16:
-            # View the same memory as int16, then as NumPy bfloat16
-            # This avoids numeric conversion and extra passes over memory.
-            u16_np = t.view(torch.uint16).numpy()  # shares memory
-            np_array = u16_np.view(bfloat16)  # reinterpret
-        else:
-            np_array = t.numpy()
+        # Detaching, moving to the host, making contiguous, and reinterpreting
+        # the dtypes torch cannot hand numpy directly all live in
+        # torch_to_numpy, so this path and every other reader of a torch tensor
+        # agree on what those steps are.
+        np_array = _torch_to_numpy(torch_tensor)
 
         return cls(
             np_array,
