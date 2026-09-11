@@ -8,7 +8,8 @@
 Submodules:
 - `eltwise` — passthrough, scale, add, mul, relu
 - `datamovement` — axpy, convert_copy, expand, transpose
-- `core` — set_rounding (the core's rounding-mode register, for kernels whose contract names one)
+- `core` — set_rounding, set_saturation (the core's mode registers, for kernels whose contract
+  names one), read_core_state (the probe the dirty-state sweep reads them back with)
 - `reduce` — reduce_add, reduce_min, reduce_max, compute_max
 - `vision` — rgba2hue, threshold, bitwise_or, bitwise_and, gray2rgba, rgba2gray, filter2d, add_weighted
 - `activation` — softmax, gelu, silu, swiglu, bf16_exp, exp2f_vec, tanh, sigmoid, leaky_relu
@@ -24,11 +25,14 @@ Most factories attach a [`KernelContract`][iron.kernels.KernelContract] as
 """
 
 from ._common import (
+    BOOT_ROUNDING,
+    BOOT_SATURATION,
     NONFINITE,
     OVERFLOW,
     ROLES,
     ROUNDING,
     ROUNDING_MODES,
+    SATURATION_MODES,
     SUBNORMALS,
     KernelContract,
 )
@@ -89,7 +93,7 @@ from .conv import (
     dwconv1d,
     dwconv1d_ref,
 )
-from .core import set_rounding
+from .core import read_core_state, set_rounding, set_saturation
 from .datamovement import (
     axpy,
     axpy_ref,
@@ -178,8 +182,13 @@ __all__ = [
     "SUBNORMALS",
     "ROUNDING",
     "ROUNDING_MODES",
+    "SATURATION_MODES",
+    "BOOT_ROUNDING",
+    "BOOT_SATURATION",
     "ROLES",
     "set_rounding",
+    "set_saturation",
+    "read_core_state",
     "passthrough",
     "scale",
     "add",

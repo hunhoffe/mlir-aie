@@ -363,19 +363,36 @@ does with them; matmul operands never carry NaN. A kernel that declares
 `overflow="saturate"` or `"wrap"` is judged that way and gets full-range
 data.
 
-### Rounding mode
+### Rounding and saturation mode
 
 The core narrows accumulators (an `srs` shift, a bf16 store) in whatever
-mode its rounding-mode register holds, and a fresh core boots in `floor`.
-The contract's `rounding_mode` says what the kernel needs: `sets_own`
-when the source calls `aie::set_rounding` itself (the conv kernels,
-`layer_norm`, `mha`, the aie2p `mm`), an `aie::rounding_mode` name when
-the kernel relies on the design to have set it (the bf16 kernels that
-store from an fp32 accumulator name `conv_even`, the mode numpy's
-reference rounds in), or `unspecified`. A design that uses such a kernel
-calls `kernels.set_rounding(mode)` once before it; the harness does the
-same, so the tests and benchmarks run each kernel in the mode its
-contract was written for.
+mode its rounding-mode register holds, and clamps or wraps as its
+saturation register says; a fresh core boots in `floor` with saturation
+off. Both registers are sticky per core, so whatever one kernel leaves,
+the next kernel on that core inherits. The contract's `rounding_mode` and
+`saturation_mode` say what the kernel needs: `sets_own` when the source
+sets the register itself (the conv kernels set both, `layer_norm`, `mha`
+and the aie2p `mm` set rounding, `filter2d` and `add_weighted` set
+saturation), a mode name when the kernel relies on the design to have set
+it (the bf16 kernels that store from an fp32 accumulator name `conv_even`,
+the mode numpy's reference rounds in), or `unspecified` when the result
+does not depend on the register at all. A design that uses a kernel naming
+a mode calls `kernels.set_rounding(mode)` / `kernels.set_saturation(mode)`
+once before it; the harness does the same. `leaves_rounding` and
+`leaves_saturation` say what the kernel hands to the next one: `preserves`
+(never written, or restored as the aie2p `mm` does with `swap_rounding`)
+or the mode it leaves set (`conv2dk1` leaves `positive_inf` and
+`saturate`).
+
+`unspecified` is a claim, not a shrug. The dirty-state sweep
+(`test_kernels_e2e.py -m core_state`, nightly on both NPUs) runs one case
+per kernel with every rounding and saturation mode already set on the
+core, and requires bit-identical output unless the contract names the mode
+the harness should set first; a probe (`kernels.read_core_state`) reads
+the registers before and after the kernel and checks the `leaves_*`
+claims. A kernel whose output moves with the pre-set state has to declare
+what it needs, so a fused pipeline cannot degrade while the single-kernel
+tests stay green.
 
 ### What the benchmark records
 
@@ -427,7 +444,8 @@ they compute, and `design()` refuses them with that reason:
 Five `bn_*` cascade halves have no contract at all: a PUT kernel has no
 output argument, so a contract would describe half a computation.
 `test_contract_coverage_is_explicit` pins that list, as it does
-`set_rounding`, which has no data arguments.
+`set_rounding`, `set_saturation` and `read_core_state`, the core-state
+kernels with no data inputs.
 
 ## Related reading
 

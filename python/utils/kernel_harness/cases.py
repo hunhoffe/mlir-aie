@@ -280,6 +280,34 @@ def inputs_for(case: Case, data_case: str, rng) -> list[np.ndarray]:
     return inputs
 
 
+def kernel_build_key(fn) -> tuple:
+    """Return what identifies a compiled kernel: symbol, source and flags, not tile size.
+
+    Two cases of one factory at different shapes compile the same C++ with
+    the same flags into differently-typed bindings; anything that is a
+    property of the compiled code (its use of the core's mode registers) is
+    checked once per key.
+    """
+    source = fn.source_file or fn.source_string
+    return (fn.name, str(source), tuple(fn.compile_flags))
+
+
+def distinct_kernels(cases: list[Case]) -> list[Case]:
+    """One case per compiled kernel (see :func:`kernel_build_key`): the smallest.
+
+    The dirty-state sweep runs every kernel under every core state, so it
+    picks the case with the fewest kernel calls for each build, in table
+    order among equals.
+    """
+    best: dict[tuple, Case] = {}
+    for case in cases:
+        key = kernel_build_key(case.fn())
+        cur = best.get(key)
+        if cur is None or case.kernel_calls() < cur.kernel_calls():
+            best[key] = case
+    return list(best.values())
+
+
 def load_cases(path: str) -> list[Case]:
     """Import ``CASES`` from a Python file, for the command-line drivers."""
     import importlib.util
@@ -299,6 +327,8 @@ __all__ = [
     "MATRIX_DATA",
     "data_policy",
     "device_for",
+    "distinct_kernels",
     "inputs_for",
+    "kernel_build_key",
     "load_cases",
 ]

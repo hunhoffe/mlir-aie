@@ -212,6 +212,8 @@ def test_every_case_names_an_exported_factory():
 # so its semantics are the pair's, which is a design rather than a kernel.
 WITHOUT_CONTRACT = {
     "set_rounding",  # sets the core's rounding mode; no data arguments
+    "set_saturation",  # sets the core's saturation mode; no data arguments
+    "read_core_state",  # copies both registers out; its reference is the core
     "bn_conv2dk1_partial_put_i8",
     "bn_conv2dk1_partial_get_relu_i8",
     "bn_conv2dk3_dw_out_split",

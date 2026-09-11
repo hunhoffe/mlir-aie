@@ -4,9 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 
-# RUN: %run_on_npu1_xrt% %pytest -m "not extensive" %s
-# RUN: %run_on_npu2_xrt% %pytest -m "not extensive" %s
-# RUN: %run_on_npu2_hrx% %pytest -m "not extensive" %s
+# RUN: %run_on_npu1_xrt% %pytest -m "not extensive and not core_state" %s
+# RUN: %run_on_npu2_xrt% %pytest -m "not extensive and not core_state" %s
+# RUN: %run_on_npu2_hrx% %pytest -m "not extensive and not core_state" %s
 # REQUIRES: xrt_python_bindings || hrx_python_bindings
 
 """Device tests for the IRON kernel library, driven by ``kernel_cases.CASES``.
@@ -18,7 +18,7 @@ under the tolerance its kernel declares. It catches what types cannot -- a
 wrong exported symbol, a wrong compile flag, a DMA-alignment bug, a
 reference that disagrees with the C++.
 
-Two tiers share one table (``kernel_cases.py``):
+Three tiers share one table (``kernel_cases.py``):
 
 * ``test_kernel`` runs the ``smoke`` cases on random data: one representative
   shape per kernel, on every pull request.
@@ -26,6 +26,14 @@ Two tiers share one table (``kernel_cases.py``):
   lines above) runs every case under every edge-data case its contract
   admits, for ``--seeds`` random seeds. The nightly benchmark workflow runs
   it as the correctness gate before anything is timed.
+* ``test_kernel_core_state`` (marker ``core_state``, also deselected above)
+  is the dirty-state sweep: one case per compiled kernel, run with the core's
+  rounding and saturation registers preset to every mode as if a previous
+  kernel had left them there. The output must be bit-identical to the run
+  from the boot state unless the contract names the mode the harness should
+  set first, and a probe checks that the kernel ran in the state its
+  contract names and left what its ``leaves_*`` claims say. The nightly
+  core-state workflow runs it on both NPUs.
 
 Cases whose kernels exist only for one NPU generation carry
 ``supported_devices`` (see ``conftest.py``), so they skip elsewhere.
@@ -36,9 +44,16 @@ import numpy as np
 import pytest
 from aie.iron import In, ObjectFifo, Out, Program, Runtime, Worker, kernels
 from aie.iron.controlflow import range_
+from aie.iron.kernels import (
+    BOOT_ROUNDING,
+    BOOT_SATURATION,
+    ROUNDING_MODES,
+    SATURATION_MODES,
+)
 from aie.iron.kernels._common import _detect_arch
 from aie.utils import kernel_harness as kh
-from aie.utils.kernel_harness.cases import inputs_for
+from aie.utils.kernel_harness import CoreState
+from aie.utils.kernel_harness.cases import distinct_kernels, inputs_for
 from kernel_cases import CASES
 from ml_dtypes import bfloat16
 
@@ -97,6 +112,104 @@ def test_kernel_extensive(case, data_case, seed):
 def test_case_names_are_unique():
     names = [c.name for c in CASES]
     assert len(names) == len(set(names)), "two cases share a series name"
+
+
+# ---------------------------------------------------------------------------
+# Dirty-state sweep: what a kernel does when the core is not freshly booted.
+#
+# Both mode registers are sticky per core. A one-Worker design always starts
+# from the boot state, so a kernel that silently depends on the register
+# passes every test above and still degrades a fused pipeline where another
+# kernel ran first. Each compiled kernel is run once from the boot state
+# (the baseline, also judged against its reference) and once per other mode
+# preset on the core before the contract's own setters run.
+# ---------------------------------------------------------------------------
+
+CLEAN_STATE = CoreState(BOOT_ROUNDING, BOOT_SATURATION)
+DIRTY_STATES = [
+    CoreState(r, BOOT_SATURATION) for r in ROUNDING_MODES[2:] if r != BOOT_ROUNDING
+] + [CoreState(BOOT_ROUNDING, s) for s in SATURATION_MODES[2:] if s != BOOT_SATURATION]
+
+_clean_runs: dict[str, np.ndarray] = {}
+
+
+def _run_in_state(case, preset: CoreState):
+    """Build, run and probe ``case`` with the core preset to ``preset``."""
+    fn = case.fn()
+    inputs = inputs_for(case, "random", np.random.default_rng(1000))
+    design = kh.design(
+        getattr(kernels, case.factory),
+        **case.harness_opts(),
+        params=kh.param_values(fn, inputs),
+        core_state=preset,
+        **case.kwargs,
+    )
+    ref = kh.expected(fn, inputs, scalars=case.scalars)
+    out_n = kh.output_size(fn, calls=case.calls, shape=case.shape)
+    out_dt = kh.output_dtype(fn, ref.dtype)
+    got, reading = kh.run_probed(design, inputs, out_n, out_dt, poison=True, fn=fn)
+    state = kh.judge_state(fn, reading, preset)
+    assert state, f"{case.name} [{preset}]: {state.detail}"
+    return fn, got, ref
+
+
+def _clean_output(case) -> np.ndarray:
+    """Return the baseline output from the boot state, judged against the reference once."""
+    if case.name not in _clean_runs:
+        fn, got, ref = _run_in_state(case, CLEAN_STATE)
+        verdict = kh.judge(fn, got, ref, calls=case.calls)
+        assert verdict, f"{case.name} [{CLEAN_STATE}]: {verdict.detail}"
+        _clean_runs[case.name] = got
+    return _clean_runs[case.name]
+
+
+def _state_id(preset: CoreState) -> str:
+    return f"r={preset.rounding}/s={preset.saturation}"
+
+
+@pytest.mark.core_state
+@pytest.mark.parametrize("case", [_param(c) for c in distinct_kernels(CASES)])
+@pytest.mark.parametrize("preset", DIRTY_STATES, ids=_state_id)
+def test_kernel_core_state(case, preset):
+    """Bit-identical output under every preset, and the probe agrees with the contract."""
+    clean = _clean_output(case)
+    fn, got, _ = _run_in_state(case, preset)
+    verdict = kh.judge_dirty(fn, clean, got, preset)
+    assert verdict, f"{case.name} [{_state_id(preset)}]: {verdict.detail}"
+
+
+@pytest.mark.core_state
+def test_core_boot_state():
+    """A fresh core holds the boot state the contracts assume (floor, saturation off).
+
+    Everything above presets the registers explicitly, so this is the one run
+    that measures what the design finds without touching them. If it fails,
+    the boot-state assumption in ``aie.iron.kernels`` (``BOOT_ROUNDING``,
+    ``BOOT_SATURATION``) is wrong for this device, firmware or driver, and
+    the trusted-base notes need an entry.
+    """
+    case = next(
+        c for c in CASES if c.factory == "passthrough" and c.calls == 4 and not c.kwargs
+    )
+    fn = case.fn()
+    inputs = inputs_for(case, "random", np.random.default_rng(1000))
+    design = kh.design(
+        getattr(kernels, case.factory),
+        **case.harness_opts(),
+        params=kh.param_values(fn, inputs),
+        core_state=CoreState(None, None),
+        **case.kwargs,
+    )
+    ref = kh.expected(fn, inputs, scalars=case.scalars)
+    out_n = kh.output_size(fn, calls=case.calls, shape=case.shape)
+    _, reading = kh.run_probed(
+        design, inputs, out_n, kh.output_dtype(fn, ref.dtype), poison=True, fn=fn
+    )
+    assert reading.marker_ok, "the probe never wrote its tile"
+    assert (
+        reading.before == CLEAN_STATE
+    ), f"a fresh core holds {reading.before}, not the assumed {CLEAN_STATE}"
+    assert reading.after == reading.before, "passthrough must not touch the registers"
 
 
 # ---------------------------------------------------------------------------

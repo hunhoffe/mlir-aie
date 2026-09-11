@@ -38,6 +38,8 @@ on:
       - test/python/npu/kernel_cases.py     # the case table the compile sweep walks
       - test/python/test_remarks.py
       - test/python/test_kernel_bench.py
+      - test/python/test_kernel_contracts.py
+      - test/python/test_kernel_core_state.py
       - .github/workflows/staticKernelChecks.yml
 
 defaults:
@@ -105,11 +107,11 @@ jobs:
             --out static.json --out-pm static-pm.json --meta static-meta.json 2>&1 | tee static.log
       - name: Host-only tests
         # The remark parser (with one real Peano build), the benchmark driver's
-        # gating with the hardware steps injected, and every contract against
-        # its factory.
+        # gating with the hardware steps injected, every contract against its
+        # factory, and the dirty-state harness mode's design and judges.
         run: |
           python -m pytest test/python/test_remarks.py test/python/test_kernel_bench.py \
-            test/python/test_kernel_contracts.py -q
+            test/python/test_kernel_contracts.py test/python/test_kernel_core_state.py -q
       - name: Compile every distinct design through CDO
         # The same aiecc pipeline the device runs, minus xclbin packaging
         # (needs XRT). Catches tile sets that overflow core memory and DMA

@@ -55,6 +55,7 @@ def _row_kernel(
     ops,
     *,
     rounding_mode: str,
+    leaves_rounding: str = "preserves",
 ) -> ExternalFunction:
     _aie2p_only(name, source)
     _cols(name, cols)
@@ -72,6 +73,7 @@ def _row_kernel(
             acc_dtype=np.float32,
             reduction=cols,
             rounding_mode=rounding_mode,
+            leaves_rounding=leaves_rounding,
         ),
     )
 
@@ -113,6 +115,7 @@ def layer_norm(cols: int = 4096) -> ExternalFunction:
         _NORM_BF16,
         6 * cols,
         rounding_mode="sets_own",
+        leaves_rounding="conv_even",  # the bf16 entry point sets it and returns
     )
 
 

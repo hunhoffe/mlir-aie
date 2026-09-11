@@ -52,3 +52,8 @@ def pytest_configure(config):
         "supported_devices(*devices): the NPU generations a test's kernels exist "
         'for ("npu1", "npu2"); skipped elsewhere (see test/python/npu/conftest.py)',
     )
+    config.addinivalue_line(
+        "markers",
+        "core_state: the dirty-state sweep (one case per kernel x every rounding "
+        'and saturation mode preset on the core); deselect with -m "not core_state"',
+    )
