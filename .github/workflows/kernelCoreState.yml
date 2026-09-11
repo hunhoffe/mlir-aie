@@ -1,0 +1,112 @@
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Kernel Core-State Sweep on Ryzen AI
+
+# Nightly: run every library kernel with the core's rounding and saturation
+# registers preset to every mode, as a previous kernel on the core would leave
+# them (test_kernels_e2e.py -m core_state). A kernel must produce bit-identical
+# output whatever the preset unless its contract names the mode the harness
+# sets first, and a probe checks the state it ran in and left behind against
+# the contract. A red run is a contract bug: the kernel depends on core state
+# it does not declare. Never gates PRs; it runs on demand for a branch that
+# changes a kernel or a contract.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: '0 3 * * *'          # before the 06:00 benchmark
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'pytest -k expression on case names (e.g. conv2dk1)'
+        required: false
+        default: ''
+      core_states:
+        description: 'trimmed (ceil, conv_even, saturate) or full (every mode)'
+        required: false
+        default: 'trimmed'
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  sweep:
+    name: Core state (${{ matrix.runner_type }})
+    runs-on: [self-hosted, bench, "${{ matrix.runner_type }}"]
+    timeout-minutes: 180
+    # Same group as the benchmark: never two jobs on one NPU, never cancelled.
+    concurrency:
+      group: kernel-bench-${{ matrix.runner_type }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner_type: aie2-4col
+            expected_npu: npu1
+          - runner_type: aie2p-8col
+            expected_npu: npu2
+    env:
+      AIE_EXPECTED_NPU: ${{ matrix.expected_npu }}
+      NPU_CACHE_HOME: ${{ github.workspace }}/state-cache-${{ github.run_id }}
+      PIP_CACHE_DIR: ${{ github.workspace }}/.pip-cache-state-${{ github.run_id }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: "true"
+
+      - name: Setup virtual environment / prerequisites
+        run: source ./utils/env_install.sh aie-venv --dev --extras
+
+      - name: Build from source
+        run: |
+          sudo prlimit -lunlimited --pid $$
+          [ -f /opt/xilinx/xrt/setup.sh ] && source /opt/xilinx/xrt/setup.sh
+          source aie-venv/bin/activate
+          export EXTRA_CMAKE_ARGS="-DPython3_EXECUTABLE=$(which python) \
+            -DXRT_ROOT=/opt/xilinx/xrt -DAIE_ENABLE_PYTHON_PASSES=OFF \
+            -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON"
+          ./utils/build-mlir-aie-from-wheels.sh "" build mlir_aie
+
+      - name: NPU preflight
+        run: |
+          [ -f /opt/xilinx/xrt/setup.sh ] && source /opt/xilinx/xrt/setup.sh
+          xrt-smi examine
+
+      - name: Run the core-state sweep
+        run: |
+          [ -f /opt/xilinx/xrt/setup.sh ] && source /opt/xilinx/xrt/setup.sh
+          source aie-venv/bin/activate
+          export XRT_CONTEXT_CACHE_SIZE=2
+          rm -rf "$NPU_CACHE_HOME" && mkdir -p "$NPU_CACHE_HOME"
+          ONLY="${{ github.event.inputs.only }}"
+          STATES="${{ github.event.inputs.core_states || 'trimmed' }}"
+          # One case per compiled kernel under the presets that discriminate
+          # (or every mode on demand), plus the boot-state litmus test. Each
+          # preset is its own JIT build, hence the long timeout.
+          python -m pytest test/python/npu/test_kernels_e2e.py -m core_state -v \
+            --core-states "$STATES" --junitxml=core_state.xml \
+            ${ONLY:+-k "$ONLY"} 2>&1 | tee core_state.log
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: kernel-core-state-${{ matrix.expected_npu }}-${{ github.run_id }}
+          path: |
+            core_state.log
+            core_state.xml
+          if-no-files-found: ignore
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf "$NPU_CACHE_HOME" "$PIP_CACHE_DIR"

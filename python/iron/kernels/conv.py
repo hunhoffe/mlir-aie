@@ -646,6 +646,11 @@ def conv2dk1(
         compile_flags=flags,
         contract=KernelContract(
             rounding_mode="sets_own",
+            saturation_mode="sets_own",
+            # Every conv source sets both registers on entry and never restores
+            # them; the other conv factories below declare the same way.
+            leaves_rounding="positive_inf",
+            leaves_saturation="saturate",
             roles=("in", "param", "out", "scalar", "scalar", "scalar", "scalar"),
             reference=conv2dk1_ref,
             acc_dtype=np.int32,
@@ -708,6 +713,9 @@ def conv2dk3(
         compile_flags=flags,
         contract=KernelContract(
             rounding_mode="sets_own",
+            saturation_mode="sets_own",
+            leaves_rounding="positive_inf",
+            leaves_saturation="saturate",
             roles=("in", "in", "in", "param", "out", *(("scalar",) * 8)),
             reference=conv2dk3_ref,
             acc_dtype=np.int32,
@@ -769,6 +777,9 @@ def conv2dk1_skip(
         compile_flags=flags,
         contract=KernelContract(
             rounding_mode="sets_own",
+            saturation_mode="sets_own",
+            leaves_rounding="positive_inf",
+            leaves_saturation="saturate",
             roles=("in", "in", "param", "out", "in", *(("scalar",) * 5)),
             reference=conv2dk1_skip_ref,
             acc_dtype=np.int32,
@@ -812,6 +823,9 @@ def conv2dk1_i8(
         compile_flags=["-DINT8_ACT"],
         contract=KernelContract(
             rounding_mode="sets_own",
+            saturation_mode="sets_own",
+            leaves_rounding="symmetric_inf",
+            leaves_saturation="saturate",
             roles=("in", "param", "out", "scalar", "scalar", "scalar", "scalar"),
             reference=conv2dk1_i8_ref,
             acc_dtype=np.int32,
@@ -860,6 +874,9 @@ def conv2dk14(
         [in_ty, wt_ty, out_ty, *_i32s(5)],
         contract=KernelContract(
             rounding_mode="sets_own",
+            saturation_mode="sets_own",
+            leaves_rounding="symmetric_inf",
+            leaves_saturation="saturate",
             roles=("in", "param", "out", *(("scalar",) * 5)),
             reference=conv2dk14_ref,
             acc_dtype=np.int32,
@@ -927,6 +944,9 @@ def conv2dk1_skip_init(
         compile_flags=flags,
         contract=KernelContract(
             rounding_mode="sets_own",
+            saturation_mode="sets_own",
+            leaves_rounding="positive_inf",
+            leaves_saturation="saturate",
             roles=("in", "in", "param", "out", "in", *(("scalar",) * 7)),
             reference=conv2dk1_skip_init_ref,
             acc_dtype=np.int32,

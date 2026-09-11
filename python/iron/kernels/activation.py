@@ -56,6 +56,7 @@ def _unary_lut_contract(
     count: bool,
     tolerance: Tolerance = _LUT_TOLERANCE,
     rounding_mode: str = "conv_even",
+    leaves_rounding: str = "preserves",
 ) -> KernelContract:
     """Contract for a one-in/one-out LUT kernel, with or without a trailing count.
 
@@ -69,6 +70,7 @@ def _unary_lut_contract(
         tolerance=tolerance,
         acc_dtype=bfloat16,  # bf16 vector math around the LUT
         rounding_mode=rounding_mode,
+        leaves_rounding=leaves_rounding,
     )
 
 
@@ -176,8 +178,10 @@ def softmax(tile_size: int = 1024) -> ExternalFunction:
             lambda x: softmax_ref(x, tile_size=tile_size),
             count=True,
             tolerance=_softmax_tolerance(tile_size),
-            # aie2p/softmax.cc sets conv_even itself; the aie2 LUT path does not.
+            # aie2p/softmax.cc sets conv_even itself (and leaves it set); the
+            # aie2 LUT path does not touch the register.
             rounding_mode="sets_own" if _detect_arch() == "aie2p" else "conv_even",
+            leaves_rounding="conv_even" if _detect_arch() == "aie2p" else "preserves",
         ),
     )
 

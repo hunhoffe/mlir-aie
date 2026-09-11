@@ -468,6 +468,7 @@ def _mv_bf16(dim_m, dim_k, vectorized, use_chess, vec_size) -> ExternalFunction:
         use_chess=use_chess,
         contract=KernelContract(
             rounding_mode="sets_own",
+            leaves_rounding="conv_even",  # set_rounding(conv_even) on entry, never restored
             roles=("scalar", "scalar", "in", "in", "out"),
             reference=mv_bf16_ref,
             acc_dtype=np.float32,  # accfloat, reduced to bf16 on store
@@ -699,6 +700,7 @@ def mha(dim_m: int = 64, dim_k: int = 64, dim_n: int = 64) -> ExternalFunction:
         compile_flags=flags,
         contract=KernelContract(
             rounding_mode="sets_own",
+            leaves_rounding="conv_even",  # every entry point sets conv_even, none restores
             roles=("in", "in", "inout", "param"),
             acc_dtype=np.float32,
             reduction=dim_k,

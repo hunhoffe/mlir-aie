@@ -211,6 +211,8 @@ def filter2d(line_width: int = 1920, use_chess: bool = False) -> ExternalFunctio
             acc_dtype=np.int32,
             reduction=9,
             overflow="saturate",  # set_sat before the shift
+            saturation_mode="sets_own",
+            leaves_saturation="saturate",  # set_sat() on entry, never cleared
             rounding="nearest",  # (x + 2**(s-1)) >> s, as the reference does
             # The one-LSB slack these pixel kernels used to share was
             # absorbing a wrong carry across the 32-pixel boundary here (see
@@ -259,6 +261,8 @@ def add_weighted(
             acc_dtype=np.int32,
             reduction=2,
             overflow="saturate",  # set_saturation(saturate)
+            saturation_mode="sets_own",
+            leaves_saturation="saturate",  # set on entry, never restored
             rounding="unspecified",
             tolerance=Tolerance.exact(
                 note="measured bit-exact against the reference over every data case"

@@ -34,8 +34,8 @@ ROUNDING = ("floor", "nearest", "nearest_even", "unspecified")
 # The core's rounding-mode register a kernel needs when it narrows an
 # accumulator: an ``aie::rounding_mode`` name the design must set before the
 # first call (the harness does), "sets_own" when the source sets it itself,
-# or "unspecified" when the kernel takes whatever mode the core is in (a fresh
-# core boots in floor) and its tolerance covers the difference.
+# or "unspecified" when the kernel's result does not depend on the register
+# at all (the dirty-state sweep checks that; see test_kernels_e2e).
 ROUNDING_MODES = (
     "unspecified",
     "sets_own",
@@ -48,6 +48,17 @@ ROUNDING_MODES = (
     "conv_even",
     "conv_odd",
 )
+# The core's saturation-mode register, the same way: an ``aie::saturation_mode``
+# name ("none", "saturate", "symmetric") the design must set first, "sets_own"
+# when the source sets it (``set_saturation``, the ``set_sat()`` intrinsic), or
+# "unspecified" when the result does not depend on it.
+SATURATION_MODES = ("unspecified", "sets_own", "none", "saturate", "symmetric")
+# What a kernel leaves in each register when it returns: "preserves" (it never
+# writes the register, or restores what it found) or the mode it leaves set.
+# Both registers are sticky per core, so the next kernel on that core inherits
+# whatever this one leaves; the probe in the dirty-state sweep reads them back.
+BOOT_ROUNDING = "floor"  # what a fresh core holds; the sweep measures it too
+BOOT_SATURATION = "none"
 # What a float kernel does with NaN / inf inputs: "propagate" (the IEEE
 # result numpy computes) or "unspecified" (out of contract; not sampled).
 NONFINITE = ("propagate", "unspecified")
@@ -122,8 +133,26 @@ class KernelContract:
             accumulator and is judged against numpy's round-to-nearest-even):
             the kernel reads the register, so a design sets that mode before
             the first call (``kernels.set_rounding(mode)``) and the harness
-            does the same. ``"unspecified"``: the kernel narrows in whatever
-            mode it finds and its tolerance covers the difference.
+            does the same. ``"unspecified"``: the kernel's result does not
+            depend on the register. That is a claim, not a shrug: the
+            dirty-state sweep runs the kernel under every mode and requires
+            bit-identical output, so a kernel that narrows must name the
+            mode it needs or set its own.
+        saturation_mode: The core saturation-mode register the kernel needs,
+            one of :data:`SATURATION_MODES`, with the same three meanings:
+            ``"sets_own"`` (the source calls ``aie::set_saturation`` or the
+            ``set_sat()`` intrinsic), an ``aie::saturation_mode`` name the
+            design sets first (``kernels.set_saturation(mode)``), or
+            ``"unspecified"`` when the result does not depend on it. A fresh
+            core boots in ``"none"``; an ``srs`` under ``"saturate"`` clamps
+            where it would otherwise wrap.
+        leaves_rounding: What the kernel leaves in the rounding register:
+            ``"preserves"`` (never writes it, or restores what it found, as
+            ``aie::swap_rounding`` + ``set_rounding(saved)`` does) or the
+            ``aie::rounding_mode`` name it leaves set. The next kernel on the
+            core inherits it; the dirty-state probe reads it back.
+        leaves_saturation: The same for the saturation register:
+            ``"preserves"`` or an ``aie::saturation_mode`` name.
         nonfinite: What NaN and inf inputs produce: ``"propagate"`` (the
             IEEE result numpy computes, so the registry feeds them) or
             ``"unspecified"`` (out of contract; never sampled).
@@ -147,6 +176,9 @@ class KernelContract:
     overflow: str = "undefined"
     rounding: str = "unspecified"
     rounding_mode: str = "unspecified"
+    saturation_mode: str = "unspecified"
+    leaves_rounding: str = "preserves"
+    leaves_saturation: str = "preserves"
     nonfinite: str = "unspecified"
     subnormals: str = "unspecified"
     # Why the generic harness cannot build a single-Worker design for this
@@ -175,6 +207,34 @@ class KernelContract:
             raise ValueError(
                 f"rounding_mode must be one of {ROUNDING_MODES}, got {self.rounding_mode!r}"
             )
+        if self.saturation_mode not in SATURATION_MODES:
+            raise ValueError(
+                f"saturation_mode must be one of {SATURATION_MODES}, "
+                f"got {self.saturation_mode!r}"
+            )
+        if self.leaves_rounding not in ("preserves", *ROUNDING_MODES[2:]):
+            raise ValueError(
+                "leaves_rounding must be 'preserves' or an aie::rounding_mode "
+                f"name, got {self.leaves_rounding!r}"
+            )
+        if self.leaves_saturation not in ("preserves", *SATURATION_MODES[2:]):
+            raise ValueError(
+                "leaves_saturation must be 'preserves' or an aie::saturation_mode "
+                f"name, got {self.leaves_saturation!r}"
+            )
+        # A kernel that sets a register itself leaves it set or restores it;
+        # a kernel that never writes one cannot leave it in a named mode.
+        if self.rounding_mode != "sets_own" and self.leaves_rounding != "preserves":
+            raise ValueError(
+                f"leaves_rounding={self.leaves_rounding!r} needs rounding_mode="
+                f"'sets_own' (only a source that writes the register can leave a mode)"
+            )
+        if self.saturation_mode != "sets_own" and self.leaves_saturation != "preserves":
+            raise ValueError(
+                f"leaves_saturation={self.leaves_saturation!r} needs "
+                "saturation_mode='sets_own' (only a source that writes the "
+                "register can leave a mode)"
+            )
         if self.reduction is not None and self.reduction < 1:
             raise ValueError(f"reduction must be >= 1, got {self.reduction}")
         if self.nonfinite not in NONFINITE:
@@ -200,6 +260,13 @@ class KernelContract:
         if self.rounding_mode in ("unspecified", "sets_own"):
             return None
         return self.rounding_mode
+
+    @property
+    def needs_saturation_mode(self) -> str | None:
+        """The ``aie::saturation_mode`` a design must set before calling the kernel, or ``None``."""
+        if self.saturation_mode in ("unspecified", "sets_own"):
+            return None
+        return self.saturation_mode
 
     @property
     def accumulates(self) -> bool:

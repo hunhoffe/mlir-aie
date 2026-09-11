@@ -24,6 +24,15 @@ are exposed separately (``design``, ``sample_inputs``, ``upload``, ``run``,
 ``expected``, ``judge``, ``cycles_per_call``) for benchmarks and for users
 bringing up a new kernel.
 
+``design(..., core_state=CoreState(rounding, saturation))`` builds the
+dirty-state variant: the core's mode registers are preset as if a previous
+kernel had left them, the contract's own setters follow, and a probe reads
+both registers before the first call and after the last. ``run_probed``,
+``judge_state`` and ``judge_dirty`` then check that the kernel ran in the
+state its contract names, left what it says it leaves, and produced
+bit-identical output whatever the preset was (``test_kernels_e2e.py -m
+core_state``).
+
 Design generators are module-level functions with fixed arity, and everything
 that varies -- the factory, its kwargs, the call count, runtime scalars, the
 values of ``param`` arguments (baked into core Buffers) -- arrives through
@@ -57,6 +66,10 @@ from aie.utils import bfp
 from aie.utils.trace import TraceConfig
 from aie.utils.trace.utils import get_cycles_summary
 from aie.utils.verify import Tolerance, Verdict, compare
+
+# The core-state probe's tile: [rounding code, saturation code, marker, 0].
+_STATE_WORDS = 4
+_STATE_MARKER = 0x50524F42  # "PROB", as read_core_state.cc writes it
 
 # --------------------------------------------------------------------------
 # Contract helpers
@@ -247,20 +260,68 @@ def _encode_params(fn, params) -> tuple:
     return tuple(out)
 
 
-def _rounding_setter(c):
-    """Return the ``set_rounding`` kernel a contract's ``rounding_mode`` asks for, or ``None``.
+@dataclass(frozen=True)
+class CoreState:
+    """The core's two mode registers, by ``aie::`` enumerator name.
 
-    A fresh Worker boots in floor; a kernel that names the mode it narrows in
-    is run in that mode, as a design following its contract would run it.
+    ``None`` for a register means "whatever it holds": a design that presets
+    nothing leaves the boot state (``kernels.BOOT_ROUNDING`` /
+    ``kernels.BOOT_SATURATION``) or, on a reused core, whatever ran before.
+    """
+
+    rounding: str | None = None
+    saturation: str | None = None
+
+    def key(self) -> tuple:
+        """Return the printable ``CompileTime`` value the JIT keys the design on."""
+        return (self.rounding, self.saturation)
+
+
+def _state_setters(c, preset: tuple = (None, None)) -> list:
+    """Return the kernels that put the core in the state ``fn`` runs in, in call order.
+
+    ``preset`` (``CoreState.key()``) is state the design sets *first*, as if a
+    previous kernel on the core had left it: the dirty-state sweep names every
+    mode here. The contract's own ``rounding_mode`` / ``saturation_mode``
+    setters follow, so a kernel that names the mode it needs gets it whatever
+    the preset was, exactly as a design following its contract would run it.
+    A fresh Worker boots in floor with saturation off; with no preset and a
+    contract naming nothing, no setter is bound.
     """
     from aie.iron import kernels
 
-    mode = c.needs_rounding_mode
-    return kernels.set_rounding(mode) if mode else None
+    rounding, saturation = preset
+    setters = []
+    if rounding is not None and rounding != c.needs_rounding_mode:
+        setters.append(kernels.set_rounding(rounding))
+    if saturation is not None and saturation != c.needs_saturation_mode:
+        setters.append(kernels.set_saturation(saturation))
+    if c.needs_rounding_mode:
+        setters.append(kernels.set_rounding(c.needs_rounding_mode))
+    if c.needs_saturation_mode:
+        setters.append(kernels.set_saturation(c.needs_saturation_mode))
+    return setters
 
 
-def _opt(x) -> list:
-    return [x] if x is not None else []
+def _probe_kernels(probe: bool) -> list:
+    from aie.iron import kernels
+
+    return [kernels.read_core_state()] if probe else []
+
+
+_STATE_TY = np.ndarray[(_STATE_WORDS,), np.dtype[np.int32]]
+
+
+def _state_fifo(probe: bool):
+    """Return the fifo that carries the two probe readings (before, after) to the host."""
+    return ObjectFifo(_STATE_TY, name="state", depth=2) if probe else None
+
+
+def _read_state(f_state, probe_kernel):
+    """Emit one probe reading into the state fifo (inside a core body)."""
+    st = f_state.acquire(1)
+    probe_kernel(st)
+    f_state.release(1)
 
 
 def _build_stream(
@@ -273,6 +334,8 @@ def _build_stream(
     scalars,
     params,
     trace_config,
+    preset=(None, None),
+    state_out=None,
 ):
     fn = factory(**factory_kwargs)
     c = _contract(fn)
@@ -320,7 +383,10 @@ def _build_stream(
         for k, (i, (dt_name, shape, vals)) in enumerate(zip(param_roles, params))
     ]
     count = _elems(arg_types[in_roles[0]])
-    setter = _rounding_setter(c)
+    setters = _state_setters(c, preset)
+    probe = state_out is not None
+    fifo_state = _state_fifo(probe)
+    probes = _probe_kernels(probe)
 
     def core(*args):
         f_in = args[:n_fifos_in]
@@ -329,8 +395,14 @@ def _build_stream(
             zip(param_roles, args[n_fifos_in + 1 : n_fifos_in + 1 + len(param_bufs)])
         )
         kernel = args[n_fifos_in + 1 + len(param_bufs)]
-        if setter is not None:
-            args[-1]()
+        rest = list(args[n_fifos_in + 2 + len(param_bufs) :])
+        # Preset state first, then the contract's own setters, then a probe
+        # reading of what the kernel actually runs in.
+        for set_mode in rest[: len(setters)]:
+            set_mode()
+        if probe:
+            f_state, probe_kernel = rest[len(setters)], rest[len(setters) + 1]
+            _read_state(f_state, probe_kernel)
         for _ in range_(calls) if calls > 1 else range(1):
             elems = {}
             for k, g in enumerate(groups):
@@ -357,12 +429,16 @@ def _build_stream(
             for k, g in enumerate(groups):
                 f_in[k].release(len(g))
             f_out.release(1)
+        if probe:
+            _read_state(f_state, probe_kernel)  # what the kernel left behind
 
     worker = Worker(
         core,
         [f.cons() for f in fifos_in]
         + [fifo_out.prod(), *param_bufs, fn]
-        + _opt(setter),
+        + setters
+        + ([fifo_state.prod()] if probe else [])
+        + probes,
         stack_size=_STREAM_STACK,
         trace=1 if trace_config else 0,
     )
@@ -373,16 +449,28 @@ def _build_stream(
 
     host_tys = [host_ty(g[0], calls * len(g)) for g in groups]
     host_tys += [host_ty(out_pos, calls)]
+    if probe:
+        host_tys += [np.ndarray[(2 * _STATE_WORDS,), np.dtype[np.int32]]]
+    n_host = len(host_tys)
 
     def sequence(*args):
         n = n_fifos_in
         host_in, host_out = args[:n], args[n]
-        h_in, h_out = args[n + 1 : 2 * n + 1], args[2 * n + 1]
+        handles = args[n_host:]
+        h_in, h_out = handles[:n], handles[n]
         for h, t in zip(h_in, host_in):
             h.fill(t)
         h_out.drain(host_out, wait=True)
+        if probe:
+            handles[n + 1].drain(args[n + 1], wait=True)
 
-    rt = Runtime(sequence, host_tys + [f.prod() for f in fifos_in] + [fifo_out.cons()])
+    rt = Runtime(
+        sequence,
+        host_tys
+        + [f.prod() for f in fifos_in]
+        + [fifo_out.cons()]
+        + ([fifo_state.cons()] if probe else []),
+    )
     prog = Program(iron.get_current_device(), rt, workers=[worker])
     if trace_config:
         prog.enable_trace(trace_config.trace_size, workers=[worker])
@@ -464,7 +552,95 @@ def _stream3(
     )
 
 
+@iron.jit
+def _stream1_probed(
+    x0: In,
+    out: Out,
+    state: Out,
+    *,
+    factory: CompileTime[Callable],
+    factory_kwargs: CompileTime[dict],
+    calls: CompileTime[int],
+    scalars: CompileTime[tuple] = (),
+    params: CompileTime[tuple] = (),
+    preset: CompileTime[tuple] = (None, None),
+    trace_config: CompileTime[TraceConfig | None] = None,
+):
+    return _build_stream(
+        [x0],
+        out,
+        factory=factory,
+        factory_kwargs=factory_kwargs,
+        calls=calls,
+        scalars=scalars,
+        params=params,
+        trace_config=trace_config,
+        preset=preset,
+        state_out=state,
+    )
+
+
+@iron.jit
+def _stream2_probed(
+    x0: In,
+    x1: In,
+    out: Out,
+    state: Out,
+    *,
+    factory: CompileTime[Callable],
+    factory_kwargs: CompileTime[dict],
+    calls: CompileTime[int],
+    scalars: CompileTime[tuple] = (),
+    params: CompileTime[tuple] = (),
+    preset: CompileTime[tuple] = (None, None),
+    trace_config: CompileTime[TraceConfig | None] = None,
+):
+    return _build_stream(
+        [x0, x1],
+        out,
+        factory=factory,
+        factory_kwargs=factory_kwargs,
+        calls=calls,
+        scalars=scalars,
+        params=params,
+        trace_config=trace_config,
+        preset=preset,
+        state_out=state,
+    )
+
+
+@iron.jit
+def _stream3_probed(
+    x0: In,
+    x1: In,
+    x2: In,
+    out: Out,
+    state: Out,
+    *,
+    factory: CompileTime[Callable],
+    factory_kwargs: CompileTime[dict],
+    calls: CompileTime[int],
+    scalars: CompileTime[tuple] = (),
+    params: CompileTime[tuple] = (),
+    preset: CompileTime[tuple] = (None, None),
+    trace_config: CompileTime[TraceConfig | None] = None,
+):
+    return _build_stream(
+        [x0, x1, x2],
+        out,
+        factory=factory,
+        factory_kwargs=factory_kwargs,
+        calls=calls,
+        scalars=scalars,
+        params=params,
+        trace_config=trace_config,
+        preset=preset,
+        state_out=state,
+    )
+
+
 _STREAM = {1: _stream1, 2: _stream2, 3: _stream3}
+_STREAM_PROBED = {1: _stream1_probed, 2: _stream2_probed, 3: _stream3_probed}
 
 
 # --------------------------------------------------------------------------
@@ -475,18 +651,8 @@ _MM_STACK = 0xD00  # as programming_examples/basic/matrix_multiplication
 _BFP_MM_STACK = 0xF00  # as programming_examples/ml/block_datatypes (mixed)
 
 
-@iron.jit
-def _matmul(
-    A: In,
-    B: In,
-    C: Out,
-    *,
-    factory: CompileTime[Callable],
-    factory_kwargs: CompileTime[dict],
-    M: CompileTime[int],
-    K: CompileTime[int],
-    N: CompileTime[int],
-    trace_config: CompileTime[TraceConfig | None] = None,
+def _build_matmul(
+    A, B, C, *, factory, factory_kwargs, M, K, N, trace_config, preset, state_out
 ):
     """Single-core C = A @ B over (M/m) x (N/n) output tiles, K/k products each.
 
@@ -536,11 +702,17 @@ def _matmul(
     mem_c = ObjectFifo(c_ty, name="memC", depth=depth)
     out_c = mem_c.cons().forward(name="outC", dims_to_stream=dims["C"])
 
-    setter = _rounding_setter(_contract(mm))
+    setters = _state_setters(_contract(mm), preset)
+    probe = state_out is not None
+    fifo_state = _state_fifo(probe)
+    probes = _probe_kernels(probe)
 
-    def core(of_a, of_b, of_c, zero_k, mm_k, *set_mode):
-        if set_mode:
-            set_mode[0]()
+    def core(of_a, of_b, of_c, zero_k, mm_k, *rest):
+        for set_mode in rest[: len(setters)]:
+            set_mode()
+        if probe:
+            f_state, probe_kernel = rest[len(setters)], rest[len(setters) + 1]
+            _read_state(f_state, probe_kernel)
         for _ in range_(tiles) if tiles > 1 else range(1):
             c = of_c.acquire(1)
             zero_k(c)
@@ -551,10 +723,15 @@ def _matmul(
                 of_a.release(1)
                 of_b.release(1)
             of_c.release(1)
+        if probe:
+            _read_state(f_state, probe_kernel)
 
     worker = Worker(
         core,
-        [mem_a.cons(), mem_b.cons(), mem_c.prod(), zero, mm] + _opt(setter),
+        [mem_a.cons(), mem_b.cons(), mem_c.prod(), zero, mm]
+        + setters
+        + ([fifo_state.prod()] if probe else [])
+        + probes,
         stack_size=stack,
         trace=1 if trace_config else 0,
     )
@@ -598,7 +775,11 @@ def _matmul(
             (M, N // vc), (m, n // vc), (c_rows, N_div_n), prune_step=False
         )
 
-    def sequence(A_h, B_h, C_h, in_a_h, in_b_h, out_c_h):
+    def sequence(A_h, B_h, C_h, *rest):
+        if probe:
+            S_h, in_a_h, in_b_h, out_c_h, state_h = rest
+        else:
+            in_a_h, in_b_h, out_c_h = rest
         tgs: list = []
         c_index = 0
         for tile_row_block in range(iron.ceildiv(M_div_m, rows_per_block)):
@@ -619,8 +800,17 @@ def _matmul(
                     del tgs[-2]
         tgs[-1].finish()
         del tgs[-1]
+        if probe:
+            state_h.drain(S_h, wait=True)
 
-    rt = Runtime(sequence, [A_ty, B_ty, C_ty, in_a.prod(), in_b.prod(), out_c.cons()])
+    S_ty = np.ndarray[(2 * _STATE_WORDS,), np.dtype[np.int32]]
+    rt = Runtime(
+        sequence,
+        [A_ty, B_ty, C_ty]
+        + ([S_ty] if probe else [])
+        + [in_a.prod(), in_b.prod(), out_c.cons()]
+        + ([fifo_state.cons()] if probe else []),
+    )
     prog = Program(iron.get_current_device(), rt, workers=[worker])
     if trace_config:
         prog.enable_trace(trace_config.trace_size, workers=[worker])
@@ -628,7 +818,7 @@ def _matmul(
 
 
 @iron.jit
-def _matvec(
+def _matmul(
     A: In,
     B: In,
     C: Out,
@@ -637,7 +827,58 @@ def _matvec(
     factory_kwargs: CompileTime[dict],
     M: CompileTime[int],
     K: CompileTime[int],
+    N: CompileTime[int],
     trace_config: CompileTime[TraceConfig | None] = None,
+):
+    """See :func:`_build_matmul`."""
+    return _build_matmul(
+        A,
+        B,
+        C,
+        factory=factory,
+        factory_kwargs=factory_kwargs,
+        M=M,
+        K=K,
+        N=N,
+        trace_config=trace_config,
+        preset=(None, None),
+        state_out=None,
+    )
+
+
+@iron.jit
+def _matmul_probed(
+    A: In,
+    B: In,
+    C: Out,
+    state: Out,
+    *,
+    factory: CompileTime[Callable],
+    factory_kwargs: CompileTime[dict],
+    M: CompileTime[int],
+    K: CompileTime[int],
+    N: CompileTime[int],
+    preset: CompileTime[tuple] = (None, None),
+    trace_config: CompileTime[TraceConfig | None] = None,
+):
+    """:func:`_build_matmul` with the registers preset and read back into ``state``."""
+    return _build_matmul(
+        A,
+        B,
+        C,
+        factory=factory,
+        factory_kwargs=factory_kwargs,
+        M=M,
+        K=K,
+        N=N,
+        trace_config=trace_config,
+        preset=preset,
+        state_out=state,
+    )
+
+
+def _build_matvec(
+    A, B, C, *, factory, factory_kwargs, M, K, trace_config, preset, state_out
 ):
     """Single-core c = A @ b, one m-row block of c per Worker iteration.
 
@@ -658,11 +899,17 @@ def _matvec(
     in_b = ObjectFifo(np.ndarray[(k,), np.dtype[dt_in]], name="inB")
     out_c = ObjectFifo(np.ndarray[(m,), np.dtype[dt_out]], name="outC")
 
-    setter = _rounding_setter(_contract(mv))
+    setters = _state_setters(_contract(mv), preset)
+    probe = state_out is not None
+    fifo_state = _state_fifo(probe)
+    probes = _probe_kernels(probe)
 
-    def core(of_a, of_b, of_c, zero_k, mv_k, *set_mode):
-        if set_mode:
-            set_mode[0]()
+    def core(of_a, of_b, of_c, zero_k, mv_k, *rest):
+        for set_mode in rest[: len(setters)]:
+            set_mode()
+        if probe:
+            f_state, probe_kernel = rest[len(setters)], rest[len(setters) + 1]
+            _read_state(f_state, probe_kernel)
         c = of_c.acquire(1)
         zero_k(c)
         for _ in range_(K_div_k) if K_div_k > 1 else range(1):
@@ -672,10 +919,15 @@ def _matvec(
             of_a.release(1)
             of_b.release(1)
         of_c.release(1)
+        if probe:
+            _read_state(f_state, probe_kernel)
 
     worker = Worker(
         core,
-        [core_a.cons(), in_b.cons(), out_c.prod(), zero, mv] + _opt(setter),
+        [core_a.cons(), in_b.cons(), out_c.prod(), zero, mv]
+        + setters
+        + ([fifo_state.prod()] if probe else [])
+        + probes,
         trace=1 if trace_config else 0,
     )
 
@@ -690,16 +942,85 @@ def _matvec(
         (1, K), pattern_repeat=M_div_m, prune_step=False
     )[0]
 
-    def sequence(A_h, B_h, C_h, in_b_h, mem_a_h, out_c_h):
+    def sequence(A_h, B_h, C_h, *rest):
+        if probe:
+            S_h, in_b_h, mem_a_h, out_c_h, state_h = rest
+        else:
+            in_b_h, mem_a_h, out_c_h = rest
         in_b_h.fill(B_h, b_tap)
         mem_a_h.fill(A_h, a_tap)
         out_c_h.drain(C_h, c_tap, wait=True)
+        if probe:
+            state_h.drain(S_h, wait=True)
 
-    rt = Runtime(sequence, [A_ty, B_ty, C_ty, in_b.prod(), mem_a.prod(), out_c.cons()])
+    S_ty = np.ndarray[(2 * _STATE_WORDS,), np.dtype[np.int32]]
+    rt = Runtime(
+        sequence,
+        [A_ty, B_ty, C_ty]
+        + ([S_ty] if probe else [])
+        + [in_b.prod(), mem_a.prod(), out_c.cons()]
+        + ([fifo_state.cons()] if probe else []),
+    )
     prog = Program(iron.get_current_device(), rt, workers=[worker])
     if trace_config:
         prog.enable_trace(trace_config.trace_size, workers=[worker])
     return prog.resolve_program()
+
+
+@iron.jit
+def _matvec(
+    A: In,
+    B: In,
+    C: Out,
+    *,
+    factory: CompileTime[Callable],
+    factory_kwargs: CompileTime[dict],
+    M: CompileTime[int],
+    K: CompileTime[int],
+    trace_config: CompileTime[TraceConfig | None] = None,
+):
+    """See :func:`_build_matvec`."""
+    return _build_matvec(
+        A,
+        B,
+        C,
+        factory=factory,
+        factory_kwargs=factory_kwargs,
+        M=M,
+        K=K,
+        trace_config=trace_config,
+        preset=(None, None),
+        state_out=None,
+    )
+
+
+@iron.jit
+def _matvec_probed(
+    A: In,
+    B: In,
+    C: Out,
+    state: Out,
+    *,
+    factory: CompileTime[Callable],
+    factory_kwargs: CompileTime[dict],
+    M: CompileTime[int],
+    K: CompileTime[int],
+    preset: CompileTime[tuple] = (None, None),
+    trace_config: CompileTime[TraceConfig | None] = None,
+):
+    """:func:`_build_matvec` with the registers preset and read back into ``state``."""
+    return _build_matvec(
+        A,
+        B,
+        C,
+        factory=factory,
+        factory_kwargs=factory_kwargs,
+        M=M,
+        K=K,
+        trace_config=trace_config,
+        preset=preset,
+        state_out=state,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -715,6 +1036,7 @@ def design(
     shape: tuple | None = None,
     params: list[np.ndarray] | None = None,
     aiecc_flags: list[str] | None = None,
+    core_state: CoreState | None = None,
     **factory_kwargs,
 ):
     """Return a compiled-on-first-call design wrapping ``factory(**factory_kwargs)``.
@@ -730,6 +1052,14 @@ def design(
 
     The returned ``CallableDesign`` is called with the host tensors the
     design streams -- see ``host_layout`` -- then the output.
+
+    ``core_state`` builds the dirty-state variant: the Worker first sets the
+    rounding and saturation registers to the :class:`CoreState` given (as if
+    a previous kernel on the core had left them so; ``None`` for a register
+    leaves it alone), then applies the contract's own setters, and reads both
+    registers back with ``kernels.read_core_state`` before the first call and
+    after the last. The design then takes one more output tensor of
+    ``2 * 4`` int32 (see :func:`run_probed` / :func:`decode_core_state`).
     """
     fn = factory(**factory_kwargs)
     c = _contract(fn)  # a clear error before any generator is specialised
@@ -738,6 +1068,10 @@ def design(
             f"{fn.name}: the generic harness cannot build this kernel: {c.unsupported}"
         )
     kw: dict[str, Any] = dict(factory=factory, factory_kwargs=factory_kwargs)
+    if core_state is not None:
+        _check_state(core_state)
+        kw["preset"] = core_state.key()
+    probed = core_state is not None
     flags = list(aiecc_flags or ())
     if is_matmul(fn):
         M, K, N = _matrix_shape(fn, shape, 3)
@@ -746,19 +1080,37 @@ def design(
             flags.append("--dynamic-objFifos")
         if flags:
             kw["aiecc_flags"] = flags
-        return _matmul.specialize(M=M, K=K, N=N, **kw)
+        gen = _matmul_probed if probed else _matmul
+        return gen.specialize(M=M, K=K, N=N, **kw)
     if flags:
         kw["aiecc_flags"] = flags
     if is_matvec(fn):
         M, K = _matrix_shape(fn, shape, 2)
-        return _matvec.specialize(M=M, K=K, **kw)
+        gen = _matvec_probed if probed else _matvec
+        return gen.specialize(M=M, K=K, **kw)
     groups, _, _ = _fifo_plan(fn)  # raises when the types need a third channel
-    return _STREAM[len(groups)].specialize(
+    family = _STREAM_PROBED if probed else _STREAM
+    return family[len(groups)].specialize(
         calls=calls,
         scalars=tuple(scalars),
         params=_encode_params(fn, params or ()),
         **kw,
     )
+
+
+def _check_state(state: CoreState) -> None:
+    from aie.iron.kernels import ROUNDING_MODES, SATURATION_MODES
+
+    if state.rounding is not None and state.rounding not in ROUNDING_MODES[2:]:
+        raise ValueError(
+            f"CoreState.rounding must be an aie::rounding_mode name or None, "
+            f"got {state.rounding!r}"
+        )
+    if state.saturation is not None and state.saturation not in SATURATION_MODES[2:]:
+        raise ValueError(
+            f"CoreState.saturation must be an aie::saturation_mode name or None, "
+            f"got {state.saturation!r}"
+        )
 
 
 # Fallback magnitudes for integer inputs of a kernel that declares no
@@ -952,6 +1304,206 @@ def run(
     ins, out = upload(inputs, out_size, out_dtype, fn=fn, poison=poison)
     design_(*ins, out, **call_kwargs)
     return out.numpy().copy()
+
+
+def run_probed(
+    design_,
+    inputs: list[np.ndarray],
+    out_size: int,
+    out_dtype,
+    *,
+    fn,
+    poison: bool = False,
+    **call_kwargs,
+) -> tuple[np.ndarray, "CoreStateReading"]:
+    """:func:`run` for a design built with ``core_state``: also returns the probe readings.
+
+    The state tensor is poisoned like the output, so a probe that never ran
+    decodes to an unknown mode rather than to the boot state.
+    """
+    ins, out = upload(inputs, out_size, out_dtype, fn=fn, poison=poison)
+    fill = 0x55 if poison else 0x00
+    state = iron.tensor(
+        np.full(2 * _STATE_WORDS * 4, fill, dtype=np.uint8).view(np.int32),
+        dtype=np.int32,
+        device="npu",
+    )
+    design_(*ins, out, state, **call_kwargs)
+    return out.numpy().copy(), decode_core_state(state.numpy().copy())
+
+
+@dataclass(frozen=True)
+class CoreStateReading:
+    """What the probe saw before the first kernel call and after the last."""
+
+    before: CoreState
+    after: CoreState
+    marker_ok: bool
+
+    @property
+    def ok(self) -> bool:
+        return self.marker_ok and all(
+            v is not None
+            for st in (self.before, self.after)
+            for v in (st.rounding, st.saturation)
+        )
+
+
+def _decode_one(words) -> tuple[CoreState, bool]:
+    from aie.iron.kernels import ROUNDING_MODES, SATURATION_MODES
+
+    r, sat, marker = int(words[0]), int(words[1]), int(words[2])
+    rounding = ROUNDING_MODES[2:][r] if 0 <= r < len(ROUNDING_MODES) - 2 else None
+    saturation = (
+        SATURATION_MODES[2:][sat] if 0 <= sat < len(SATURATION_MODES) - 2 else None
+    )
+    return CoreState(rounding, saturation), marker == _STATE_MARKER
+
+
+def decode_core_state(words) -> CoreStateReading:
+    """Turn the ``2 * 4`` int32 the probe fifo delivers into named modes.
+
+    The codes are positions in ``ROUNDING_MODES[2:]`` / ``SATURATION_MODES[2:]``
+    (read_core_state.cc mirrors those tables); anything else, including a
+    poisoned word the probe never overwrote, decodes to ``None``.
+    """
+    w = np.asarray(words, dtype=np.int32).reshape(2, _STATE_WORDS)
+    before, ok0 = _decode_one(w[0])
+    after, ok1 = _decode_one(w[1])
+    return CoreStateReading(before, after, ok0 and ok1)
+
+
+def expected_state(fn, preset: CoreState) -> tuple[CoreState, CoreState]:
+    """Return what the probe should read ``(before, after)`` for ``fn`` under ``preset``.
+
+    Before the first call the registers hold the contract's named modes where
+    it names one, else the preset, else the boot state. After the last call a
+    register holds the mode the contract says the kernel leaves, or the same
+    value as before when it ``preserves``.
+    """
+    from aie.iron.kernels import BOOT_ROUNDING, BOOT_SATURATION
+
+    c = _contract(fn)
+    before = CoreState(
+        c.needs_rounding_mode or preset.rounding or BOOT_ROUNDING,
+        c.needs_saturation_mode or preset.saturation or BOOT_SATURATION,
+    )
+    after = CoreState(
+        before.rounding if c.leaves_rounding == "preserves" else c.leaves_rounding,
+        (
+            before.saturation
+            if c.leaves_saturation == "preserves"
+            else c.leaves_saturation
+        ),
+    )
+    return before, after
+
+
+def judge_state(fn, reading: CoreStateReading, preset: CoreState) -> Verdict:
+    """Check a probe reading against :func:`expected_state`.
+
+    A wrong ``before`` means the preset or the contract's setter did not take
+    effect, so the run proved nothing; a wrong ``after`` means the kernel
+    leaves a register in a state its contract does not declare (``leaves_*``),
+    which the next kernel on that core would inherit.
+    """
+    c = _contract(fn)
+    want_before, want_after = expected_state(fn, preset)
+    problems = []
+    if not reading.marker_ok:
+        problems.append("the probe never wrote its tile (marker missing)")
+    if reading.before != want_before:
+        problems.append(
+            f"before the first call the core held {reading.before}, expected "
+            f"{want_before} (preset {preset}; contract rounding_mode="
+            f"{c.rounding_mode!r}, saturation_mode={c.saturation_mode!r})"
+        )
+    if reading.after != want_after:
+        problems.append(
+            f"after the last call the core held {reading.after}, expected "
+            f"{want_after} (contract leaves_rounding={c.leaves_rounding!r}, "
+            f"leaves_saturation={c.leaves_saturation!r}); declare what the "
+            "kernel leaves, or restore the register with aie::swap_rounding / "
+            "aie::swap_saturation before returning"
+        )
+    return Verdict(
+        ok=not problems,
+        n_checked=4,
+        n_mismatch=len(problems),
+        max_abs_err=0.0,
+        max_ulp_err=None,
+        first_bad_index=None,
+        detail=f"{fn.name}: " + "; ".join(problems) if problems else "core state ok",
+    )
+
+
+def judge_dirty(fn, clean: np.ndarray, dirty: np.ndarray, preset: CoreState) -> Verdict:
+    """Require ``dirty`` (run under ``preset``) to be bit-identical to ``clean``.
+
+    A kernel's output may depend on the core's mode registers only through
+    what its contract declares: a named ``rounding_mode`` / ``saturation_mode``
+    (which the design sets, so the preset cannot reach the kernel) or
+    ``sets_own``. Any difference is therefore a contract bug, whatever the
+    tolerance says: ``unspecified`` claims independence, and ``sets_own``
+    claims the source sets the register itself. NaNs compare by bit pattern.
+    """
+    c = _contract(fn)
+    a = np.ascontiguousarray(clean).view(np.uint8).ravel()
+    b = np.ascontiguousarray(dirty).view(np.uint8).ravel()
+    if a.shape != b.shape:
+        raise ValueError(f"{fn.name}: outputs differ in size, {a.size} vs {b.size}")
+    bad = np.flatnonzero(a != b)
+    if bad.size == 0:
+        return Verdict(True, a.size, 0, 0.0, None, None, "bit-identical")
+    itemsize = np.dtype(clean.dtype).itemsize
+    n_elems = len(np.unique(bad // itemsize))
+    how = []
+    if preset.rounding is not None:
+        how.append(
+            "rounding_mode="
+            + (
+                f"{c.rounding_mode!r} (the source must set the register itself; it "
+                "does not, or not on every path)"
+                if c.rounding_mode == "sets_own"
+                else (
+                    f"{c.rounding_mode!r} (the harness sets that mode after the "
+                    "preset, so the difference comes from elsewhere)"
+                    if c.needs_rounding_mode
+                    else "'unspecified' (name the aie::rounding_mode the kernel "
+                    "needs, or set it in the source and declare 'sets_own')"
+                )
+            )
+        )
+    if preset.saturation is not None:
+        how.append(
+            "saturation_mode="
+            + (
+                f"{c.saturation_mode!r} (the source must set the register itself; "
+                "it does not, or not on every path)"
+                if c.saturation_mode == "sets_own"
+                else (
+                    f"{c.saturation_mode!r} (the harness sets that mode after the "
+                    "preset, so the difference comes from elsewhere)"
+                    if c.needs_saturation_mode
+                    else "'unspecified' (name the aie::saturation_mode the kernel "
+                    "needs, or set it in the source and declare 'sets_own')"
+                )
+            )
+        )
+    return Verdict(
+        ok=False,
+        n_checked=a.size // itemsize,
+        n_mismatch=n_elems,
+        max_abs_err=float("nan"),
+        max_ulp_err=None,
+        first_bad_index=int(bad[0] // itemsize),
+        detail=(
+            f"{fn.name}: output depends on the core state a previous kernel left: "
+            f"{n_elems} of {a.size // itemsize} elements differ with the core preset "
+            f"to {preset} (first at {int(bad[0] // itemsize)}); its contract declares "
+            + ", ".join(how)
+        ),
+    )
 
 
 def check(
@@ -1160,10 +1712,17 @@ def cycles_per_call(
 
 
 __all__ = [
+    "CoreState",
+    "CoreStateReading",
     "check",
     "cycles_per_call",
+    "decode_core_state",
     "design",
     "expected",
+    "expected_state",
+    "judge_dirty",
+    "judge_state",
+    "run_probed",
     "host_layout",
     "input_limit",
     "is_matmul",

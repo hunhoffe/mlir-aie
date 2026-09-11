@@ -39,6 +39,13 @@ def pytest_addoption(parser):
         default=1,
         help="random seeds per case in the extensive kernel sweep",
     )
+    parser.addoption(
+        "--core-states",
+        choices=("trimmed", "full"),
+        default="trimmed",
+        help="presets the core-state sweep runs: the three that discriminate, "
+        "or every rounding and saturation mode",
+    )
 
 
 def _device_generation() -> str | None:
