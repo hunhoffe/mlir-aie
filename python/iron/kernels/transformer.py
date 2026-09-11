@@ -135,7 +135,9 @@ def layer_norm_f32(cols: int = 4096) -> ExternalFunction:
         layer_norm_f32_ref,
         _NORM_F32,
         6 * cols,
-        rounding_mode="sets_own",
+        # f32 in and out: the entry point instantiates the impl with
+        # kAffine=false, the branch that never touches the register.
+        rounding_mode="unspecified",
     )
 
 

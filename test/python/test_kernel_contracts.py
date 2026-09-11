@@ -1217,7 +1217,6 @@ SETS_OWN = {
         "dwconv1d",
         "convert_copy",
         "layer_norm",
-        "layer_norm_f32",
         "layer_norm_affine_cast",
         "softmax",
         "mm",
@@ -1260,8 +1259,9 @@ def test_rounding_mode_declarations_follow_the_sources(arch):
             )
             assert narrows, f"{name}: declares {c.rounding_mode} but narrows nothing"
     # every build of a factory whose source calls set_rounding declares it
-    # (mv.cc guards its call behind the bf16 variant, so it is pinned by build)
-    assert {n.split("/")[0] for n in declared} >= called - {"mv"}
+    # (mv.cc guards its call behind the bf16 variant, so it is pinned by build;
+    # layer_norm.cc's f32 entry point instantiates the branch that never does)
+    assert {n.split("/")[0] for n in declared} >= called - {"mv", "layer_norm_f32"}
     assert declared == SETS_OWN[arch] | {
         n for n in declared if n.split("/")[0] in SETS_OWN[arch]
     }

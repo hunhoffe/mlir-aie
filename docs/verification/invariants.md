@@ -32,6 +32,7 @@ Each line is a plausible one-line regression and the test that catches it.
 | M4 | The preset is dropped when the contract names a mode | `test_design_presets_then_sets_then_probes_then_runs` (`set_rounding_ceil` still first) |
 | M5 | Only the rounding register is preset; saturation is ignored | `test_design_presets_then_sets_then_probes_then_runs`, `test_judge_dirty_names_the_fix_per_claim` |
 | M6 | The sweep runs the smoke cases, missing `mm` variants, or runs one build twice | `test_distinct_kernels_cover_every_build_once_with_the_smallest_case` |
+| M6b | The trimmed preset list loses a register (no saturation preset, or no rounding preset other than the boot state) | `test_trimmed_presets_touch_both_registers` |
 | M7 | The probe's `before` reading is not judged (a setter that does nothing passes) | `test_judge_state_reports_a_preset_or_setter_that_did_not_take` |
 | M8 | The probe runs before the setters | `test_design_presets_then_sets_then_probes_then_runs` (probe is call 4) |
 | M9 | The state tile is not poisoned, so a probe that never runs reads as the boot state | `test_decode_core_state` (poison decodes to `None`, marker missing), `test_judge_state_reports_a_probe_that_never_ran` |

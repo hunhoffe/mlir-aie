@@ -24,6 +24,10 @@ on:
         description: 'pytest -k expression on case names (e.g. conv2dk1)'
         required: false
         default: ''
+      core_states:
+        description: 'trimmed (ceil, conv_even, saturate) or full (every mode)'
+        required: false
+        default: 'trimmed'
 
 defaults:
   run:
@@ -84,11 +88,13 @@ jobs:
           export XRT_CONTEXT_CACHE_SIZE=2
           rm -rf "$NPU_CACHE_HOME" && mkdir -p "$NPU_CACHE_HOME"
           ONLY="${{ github.event.inputs.only }}"
-          # One case per compiled kernel, every rounding and saturation mode
-          # preset on the core, plus the boot-state litmus test. Each preset
-          # is its own JIT build, hence the long timeout.
+          STATES="${{ github.event.inputs.core_states || 'trimmed' }}"
+          # One case per compiled kernel under the presets that discriminate
+          # (or every mode on demand), plus the boot-state litmus test. Each
+          # preset is its own JIT build, hence the long timeout.
           python -m pytest test/python/npu/test_kernels_e2e.py -m core_state -v \
-            --junitxml=core_state.xml ${ONLY:+-k "$ONLY"} 2>&1 | tee core_state.log
+            --core-states "$STATES" --junitxml=core_state.xml \
+            ${ONLY:+-k "$ONLY"} 2>&1 | tee core_state.log
 
       - name: Upload results
         if: always()

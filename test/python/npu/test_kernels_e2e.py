@@ -33,7 +33,8 @@ Three tiers share one table (``kernel_cases.py``):
   from the boot state unless the contract names the mode the harness should
   set first, and a probe checks that the kernel ran in the state its
   contract names and left what its ``leaves_*`` claims say. The nightly
-  core-state workflow runs it on both NPUs.
+  core-state workflow runs it on both NPUs with the three presets that
+  discriminate (``--core-states trimmed``); ``full`` sweeps every mode.
 
 Cases whose kernels exist only for one NPU generation carry
 ``supported_devices`` (see ``conftest.py``), so they skip elsewhere.
@@ -87,6 +88,9 @@ def test_kernel(case):
 
 
 def pytest_generate_tests(metafunc):
+    if "preset" in metafunc.fixturenames:
+        states = DIRTY_STATES[metafunc.config.getoption("--core-states")]
+        metafunc.parametrize("preset", states, ids=_state_id)
     if {"case", "data_case", "seed"} <= set(metafunc.fixturenames):
         seeds = metafunc.config.getoption("--seeds")
         params = [
@@ -126,9 +130,26 @@ def test_case_names_are_unique():
 # ---------------------------------------------------------------------------
 
 CLEAN_STATE = CoreState(BOOT_ROUNDING, BOOT_SATURATION)
-DIRTY_STATES = [
-    CoreState(r, BOOT_SATURATION) for r in ROUNDING_MODES[2:] if r != BOOT_ROUNDING
-] + [CoreState(BOOT_ROUNDING, s) for s in SATURATION_MODES[2:] if s != BOOT_SATURATION]
+# Every preset is its own JIT build, so the nightly runs the presets that
+# discriminate: a kernel that reads the rounding register produces different
+# results under floor, ceil and conv_even for almost any data, and one that
+# reads the saturation register under saturate. ``--core-states full`` sweeps
+# every mode of both registers.
+DIRTY_STATES = {
+    "trimmed": [
+        CoreState("ceil", BOOT_SATURATION),
+        CoreState("conv_even", BOOT_SATURATION),
+        CoreState(BOOT_ROUNDING, "saturate"),
+    ],
+    "full": [
+        CoreState(r, BOOT_SATURATION) for r in ROUNDING_MODES[2:] if r != BOOT_ROUNDING
+    ]
+    + [
+        CoreState(BOOT_ROUNDING, s)
+        for s in SATURATION_MODES[2:]
+        if s != BOOT_SATURATION
+    ],
+}
 
 _clean_runs: dict[str, np.ndarray] = {}
 
@@ -169,7 +190,6 @@ def _state_id(preset: CoreState) -> str:
 
 @pytest.mark.core_state
 @pytest.mark.parametrize("case", [_param(c) for c in distinct_kernels(CASES)])
-@pytest.mark.parametrize("preset", DIRTY_STATES, ids=_state_id)
 def test_kernel_core_state(case, preset):
     """Bit-identical output under every preset, and the probe agrees with the contract."""
     clean = _clean_output(case)

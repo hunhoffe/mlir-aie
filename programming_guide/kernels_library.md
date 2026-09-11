@@ -386,8 +386,9 @@ or the mode it leaves set (`conv2dk1` leaves `positive_inf` and
 
 `unspecified` is a claim, not a shrug. The dirty-state sweep
 (`test_kernels_e2e.py -m core_state`, nightly on both NPUs) runs one case
-per kernel with every rounding and saturation mode already set on the
-core, and requires bit-identical output unless the contract names the mode
+per kernel with the core already set to `ceil`, to `conv_even`, and to
+`saturate` (`--core-states full` sweeps every mode of both registers),
+and requires bit-identical output unless the contract names the mode
 the harness should set first; a probe (`kernels.read_core_state`) reads
 the registers before and after the kernel and checks the `leaves_*`
 claims. A kernel whose output moves with the pre-set state has to declare

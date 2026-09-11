@@ -499,6 +499,37 @@ def _cases():
     return list(mod.CASES)
 
 
+def _e2e_module():
+    import importlib.util
+
+    path = REPO / "test" / "python" / "npu" / "test_kernels_e2e.py"
+    spec = importlib.util.spec_from_file_location("test_kernels_e2e", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    import sys
+
+    sys.path.insert(0, str(path.parent))  # for `from kernel_cases import CASES`
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.pop(0)
+    return mod
+
+
+def test_trimmed_presets_touch_both_registers():
+    """The nightly's presets still exercise both registers; ``full`` is every mode."""
+    mod = _e2e_module()
+    trimmed, full = mod.DIRTY_STATES["trimmed"], mod.DIRTY_STATES["full"]
+    assert mod.CLEAN_STATE == CoreState(BOOT_ROUNDING, BOOT_SATURATION)
+    assert mod.CLEAN_STATE not in trimmed and mod.CLEAN_STATE not in full
+    assert {s.rounding for s in trimmed} >= {"ceil", "conv_even"}
+    assert "saturate" in {s.saturation for s in trimmed}
+    assert set(trimmed) <= set(full)
+    assert {s.rounding for s in full} == set(ROUNDING)
+    assert {s.saturation for s in full} == set(SATURATION)
+    assert len(full) == len(ROUNDING) - 1 + len(SATURATION) - 1
+
+
 def test_distinct_kernels_cover_every_build_once_with_the_smallest_case():
     cases = _cases()
     chosen = distinct_kernels(cases)
