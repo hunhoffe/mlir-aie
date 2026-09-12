@@ -574,6 +574,84 @@ LogicalResult ObjectFifoCreateOp::verify() {
   // The transport attribute's own verifier has already checked that `ends` and
   // `port` are present and in range, so what is left is how a stream sits
   // against the rest of the fifo.
+  // A cascade is a rendezvous register between two neighbouring cores, not a
+  // queue: there are no buffers, no locks, no DMA and no stream switch behind
+  // it, so most of what a fifo can ask for has nowhere to land.
+  if (getTransportMode() == ObjectFifoTransportMode::Cascade) {
+    if (getConsumerTiles().size() != 1)
+      return emitError("a cascade transport is point to point, so it takes "
+                       "exactly one consumer tile");
+
+    if (isa<ArrayAttr>(getElemNumber()) || size() != 1)
+      return emitError("a cascade transport holds no objects of its own, so "
+                       "its depth is 1");
+
+    TileLike consTile = getTileLikeFromValue(getConsumerTiles()[0]);
+    for (TileLike end : {producerTile, consTile}) {
+      if (!end)
+        continue;
+      if (end.isShimTile() || end.isMemTile())
+        return emitError("a cascade transport runs between compute tiles, and "
+                         "shim and mem tiles have no cascade interface");
+    }
+
+    // The cascade runs between neighbours. Unplaced tiles have no coordinates
+    // to check yet, and aie.cascade_flow checks again once they do.
+    std::optional<int> prodCol = producerTile.tryGetCol();
+    std::optional<int> prodRow = producerTile.tryGetRow();
+    std::optional<int> consCol = consTile ? consTile.tryGetCol() : std::nullopt;
+    std::optional<int> consRow = consTile ? consTile.tryGetRow() : std::nullopt;
+    if (prodCol && prodRow && consCol && consRow) {
+      const auto &target = getTargetModel(getOperation());
+      if (!target.isSouth(*prodCol, *prodRow, *consCol, *consRow) &&
+          !target.isWest(*prodCol, *prodRow, *consCol, *consRow) &&
+          !target.isNorth(*prodCol, *prodRow, *consCol, *consRow) &&
+          !target.isEast(*prodCol, *prodRow, *consCol, *consRow))
+        return emitError("a cascade transport runs between neighbouring "
+                         "tiles, and these are not adjacent");
+    }
+
+    // The hardware moves one accumulator-width value, so the fifo carries
+    // exactly one of them and the core reads or writes it whole.
+    auto memref = llvm::cast<AIEObjectFifoType>(getElemType()).getElementType();
+    uint32_t cascadeBits =
+        getTargetModel(getOperation()).getAccumulatorCascadeSize();
+    if (memref.getNumElements() != 1)
+      return emitError("a cascade transport carries one value, so its element "
+                       "type holds one element, but got ")
+             << memref;
+    DataLayout dataLayout = DataLayout::closest(getOperation());
+    if (dataLayout.getTypeSizeInBits(memref.getElementType()) != cascadeBits)
+      return emitError("a cascade transport carries one ")
+             << cascadeBits << "-bit value on this target, but "
+             << memref.getElementType() << " does not match";
+
+    // Everything below describes a buffer, a descriptor chain or a route.
+    struct {
+      bool set;
+      llvm::StringRef name;
+    } unavailable[] = {
+        {getRepeatCount().has_value(), "repeat_count"},
+        {getIterCount().has_value(), "iter_count"},
+        {getInitValues().has_value(), "init_values"},
+        {!getDimensionsToStream().empty(), "dimensionsToStream"},
+        {getPadDimensions().has_value(), "padDimensions"},
+        {getDisableSynchronization(), "disable_synchronization"},
+        {getProdDmaChannel().has_value(), "prod_dma_channel"},
+        {getConsDmaChannels().has_value(), "cons_dma_channels"},
+        {getConsumerElemType().has_value(), "consumerElemType"},
+    };
+    for (auto &field : unavailable) {
+      if (field.set)
+        return emitError("`") << field.name
+                              << "` has nothing to act on in a cascade "
+                                 "transport";
+    }
+    if (!getDimensionsFromStreamPerConsumer()[0].empty())
+      return emitError("`dimensionsFromStreamPerConsumer` has nothing to act "
+                       "on in a cascade transport");
+  }
+
   if (usesStream()) {
     if (getConsumerTiles().size() > 1)
       return emitError("a stream transport can only be used in 1-to-1 object "

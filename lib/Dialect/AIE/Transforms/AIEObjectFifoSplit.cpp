@@ -8,6 +8,7 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
@@ -320,6 +321,97 @@ struct AIEObjectFifoSplitPass
   }
 
   /// Point a core's accesses at the endpoint it works through.
+  /// A cascade fifo owns no memory: the two cores hand one accumulator-width
+  /// value straight to each other. So the producer's store to the object it
+  /// acquired is the value going onto the wire, and the consumer's load is the
+  /// value coming off it. Both ends are found through the acquire's result
+  /// rather than by scanning the block, so several acquire and release pairs
+  /// in one block each rewrite against their own object.
+  LogicalResult lowerCascade(ObjectFifoCreateOp fifo) {
+    builder.setInsertionPoint(fifo);
+    CascadeFlowOp::create(builder, fifo.getLoc(), fifo.getProducerTile(),
+                          fifo.getConsumerTiles()[0]);
+
+    SmallVector<Operation *> dead;
+    auto rewriteEnd = [&](Value tile, ObjectFifoPort port) -> LogicalResult {
+      for (auto coreOp : device.getOps<CoreOp>()) {
+        if (coreOp.getTile() != tile) {
+          continue;
+        }
+        WalkResult walked = coreOp.walk([&](Operation *op) -> WalkResult {
+          if (auto rel = dyn_cast<ObjectFifoReleaseOp>(op)) {
+            if (rel.getObjectFifo() == fifo && rel.getPort() == port) {
+              dead.push_back(rel);
+            }
+            return WalkResult::advance();
+          }
+          auto acq = dyn_cast<ObjectFifoAcquireOp>(op);
+          if (!acq || acq.getObjectFifo() != fifo || acq.getPort() != port) {
+            return WalkResult::advance();
+          }
+
+          Value object = acq.getObjects()[0];
+          Operation *access = nullptr;
+          for (Operation *user : object.getUsers()) {
+            bool isAccess = port == ObjectFifoPort::Produce
+                                ? isa<memref::StoreOp>(user)
+                                : isa<memref::LoadOp>(user);
+            if (!isAccess) {
+              user->emitOpError("a cascade object is written once and read "
+                                "once, so this use has no cascade equivalent");
+              return WalkResult::interrupt();
+            }
+            if (access) {
+              user->emitOpError("a cascade carries one value, so its object is "
+                                "accessed once between acquire and release");
+              return WalkResult::interrupt();
+            }
+            access = user;
+          }
+          if (!access) {
+            acq.emitOpError(port == ObjectFifoPort::Produce
+                                ? "nothing is stored into this cascade object, "
+                                  "so there is no value to put on the wire"
+                                : "nothing is loaded from this cascade object, "
+                                  "so the value taken off the wire is unused");
+            return WalkResult::interrupt();
+          }
+
+          builder.setInsertionPoint(access);
+          if (port == ObjectFifoPort::Produce) {
+            auto store = cast<memref::StoreOp>(access);
+            PutCascadeOp::create(builder, store.getLoc(),
+                                 store.getValueToStore());
+          } else {
+            auto load = cast<memref::LoadOp>(access);
+            auto get = GetCascadeOp::create(builder, load.getLoc(),
+                                            load.getResult().getType());
+            load.getResult().replaceAllUsesWith(get.getCascadeValue());
+          }
+          dead.push_back(access);
+          dead.push_back(acq);
+          return WalkResult::advance();
+        });
+        if (walked.wasInterrupted()) {
+          return failure();
+        }
+      }
+      return success();
+    };
+
+    if (failed(rewriteEnd(fifo.getProducerTile(), ObjectFifoPort::Produce)) ||
+        failed(
+            rewriteEnd(fifo.getConsumerTiles()[0], ObjectFifoPort::Consume))) {
+      return failure();
+    }
+    // In push order: each object's access goes before the acquire that
+    // produced it, so the acquire has no uses left by the time it is erased.
+    for (Operation *op : dead) {
+      op->erase();
+    }
+    return success();
+  }
+
   void retargetCoreAccesses(ObjectFifoCreateOp fifo, ObjectFifoPort port,
                             Value tile, StringRef endpointName) {
     auto name = FlatSymbolRefAttr::get(builder.getContext(), endpointName);
@@ -582,6 +674,13 @@ void AIEObjectFifoSplitPass::runOnOperation() {
     auto consElemType = cast<MemRefType>(
         cast<AIEObjectFifoType>(fifo.getConsumerElemTypeOrDefault())
             .getElementType());
+
+    if (fifo.getTransportMode() == ObjectFifoTransportMode::Cascade) {
+      if (failed(lowerCascade(fifo))) {
+        return signalPassFailure();
+      }
+      continue;
+    }
 
     auto sharedModule = AIETargetModel::SharedMemory::None;
     bool shared = !requiresDMAs(fifo, sharedModule);
