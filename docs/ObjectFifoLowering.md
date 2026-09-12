@@ -185,8 +185,10 @@ aie.route from @d1 to [@d2] {packet = #aie.packet_info<>}
 aie.route from @d1 to [@d2] {packet = #aie.packet_info<pkt_id = 7>}
 ```
 
-At the frontend this is chosen per fifo, with `packet` and `packet_id` on
-`aie.objectfifo`, or `ObjectFifo(..., packet=True, packet_id=7)` in IRON.
+At the frontend this is chosen per fifo through its transport,
+`transport = #aie.transport<dma, packet = #aie.packet_info<pkt_id = 7>>` on
+`aie.objectfifo` or `ObjectFifo(..., transport=Transport.dma(packet=Packet(id=7)))`
+in IRON. The same header rides on the route unchanged.
 
 ## Examples
 
@@ -411,7 +413,6 @@ Endpoints:
 Flows and core accesses:
 
 - a flow has at least one destination, and its source and destinations are endpoints
-- `packet_id` requires a packet flow
 - `acquire` and `release` sit inside a core, and `acquire` takes at least one object of the pool's element type
 
 ### By `--aie-objectfifo-verify`

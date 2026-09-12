@@ -625,6 +625,27 @@ class external_buffer(MemRefValue):
 # Create an aie objectFifo between specified tiles, with given depth and memref datatype.
 # depth examples: 2, [2,2,7]
 @dataclass(frozen=True)
+class Packet:
+    """A packet-switched stream connection's header, ``#aie.packet_info``.
+
+    ``Packet()`` asks for packet switching and lets allocation pick the 5-bit
+    id; ``Packet(id=3)`` pins it, for designs that route on the id. The same
+    header ends up on the route, the endpoints and the buffer descriptors.
+    """
+
+    id: int | None = None
+    type: int = 0
+
+    def __str__(self) -> str:
+        fields = []
+        if self.type:
+            fields.append(f"pkt_type = {self.type}")
+        if self.id is not None:
+            fields.append(f"pkt_id = {self.id}")
+        return f"#aie.packet_info<{', '.join(fields)}>"
+
+
+@dataclass(frozen=True)
 class Transport:
     """Which hardware path carries an ObjectFifo's objects.
 
@@ -632,26 +653,30 @@ class Transport:
     the constructors below rather than by hand::
 
         Transport.dma()
+        Transport.dma(packet=Packet(id=3))
         Transport.stream(ends="both", port=1)
     """
 
     mode: str
     ends: str | None = None
     port: int | None = None
+    packet: Packet | None = None
 
     #: Leave the choice to the lowering, which uses shared memory when both
-    #: ends reach one memory module and nothing else forces DMAs.
+    #: ends reach one memory module and nothing else forces DMAs. A packet
+    #: header only matters if the DMAs end up carrying the fifo.
     @staticmethod
-    def auto() -> "Transport":
-        return Transport("auto")
+    def auto(packet: Packet | None = None) -> "Transport":
+        return Transport("auto", packet=packet)
 
     @staticmethod
     def shared_mem() -> "Transport":
         return Transport("shared_mem")
 
     @staticmethod
-    def dma() -> "Transport":
-        return Transport("dma")
+    def dma(packet: Packet | None = None) -> "Transport":
+        """The DMAs, packet-switched when given a `Packet`."""
+        return Transport("dma", packet=packet)
 
     @staticmethod
     def cascade() -> "Transport":
@@ -667,9 +692,12 @@ class Transport:
         return Transport("stream", ends, port)
 
     def __str__(self) -> str:
+        fields = [self.mode]
         if self.mode == "stream":
-            return f"#aie.transport<stream, ends = {self.ends}, port = {self.port}>"
-        return f"#aie.transport<{self.mode}>"
+            fields += [f"ends = {self.ends}", f"port = {self.port}"]
+        if self.packet is not None:
+            fields.append(f"packet = {self.packet}")
+        return f"#aie.transport<{', '.join(fields)}>"
 
     def to_attr(self) -> Attribute:
         return Attribute.parse(str(self))
@@ -707,8 +735,6 @@ class object_fifo(ObjectFifoCreateOp):
         disable_synchronization=None,
         iter_count=None,
         consumer_datatype=None,
-        packet=None,
-        packet_id=None,
     ):
         self.datatype = try_convert_np_type_to_mlir_type(datatype)
         self.consumer_datatype = (
@@ -748,8 +774,6 @@ class object_fifo(ObjectFifoCreateOp):
             disable_synchronization=disable_synchronization,
             initValues=initValues,
             iter_count=iter_count,
-            packet=packet,
-            packet_id=packet_id,
             transport=(
                 Transport.coerce(transport).to_attr() if transport is not None else None
             ),

@@ -466,7 +466,15 @@ LogicalResult HasValidDMAChannels<ConcreteType>::verifyTrait(Operation *op) {
 
 LogicalResult ObjectFifoTransportAttr::verify(
     function_ref<InFlightDiagnostic()> emitError, ObjectFifoTransportMode mode,
-    std::optional<ObjectFifoStreamEnds> ends, std::optional<uint32_t> port) {
+    std::optional<ObjectFifoStreamEnds> ends, std::optional<uint32_t> port,
+    PacketInfoAttr packet) {
+  // A packet header rides a stream-switch connection the DMAs drive, so only
+  // the paths that may use the DMAs can honour one.
+  if (packet && mode != ObjectFifoTransportMode::Auto &&
+      mode != ObjectFifoTransportMode::DMA)
+    return emitError() << "`packet` belongs to a dma or auto transport, not "
+                       << stringifyObjectFifoTransportMode(mode);
+
   // Stream ports are the only thing either field describes, so naming one for
   // any other path says something the mode cannot honour.
   if (mode != ObjectFifoTransportMode::Stream) {
@@ -498,13 +506,15 @@ LogicalResult ObjectFifoCreateOp::verify() {
   // MLIR carries an attribute it does not know about rather than rejecting it,
   // so IR written against the switches these replaced would keep parsing and
   // quietly take the default path instead. Name them to fail that loudly.
-  for (llvm::StringRef gone : {"via_DMA", "aie_stream", "aie_stream_port"}) {
+  for (llvm::StringRef gone :
+       {"via_DMA", "aie_stream", "aie_stream_port", "packet", "packet_id"}) {
     if ((*this)->hasAttr(gone)) {
       return emitOpError("`")
              << gone
              << "` has been replaced by `transport`, for example "
-                "transport = #aie.transport<dma> or "
-                "#aie.transport<stream, ends = both, port = 0>";
+                "transport = #aie.transport<dma>, "
+                "#aie.transport<stream, ends = both, port = 0> or "
+                "#aie.transport<dma, packet = #aie.packet_info<pkt_id = 3>>";
     }
   }
 
@@ -519,10 +529,6 @@ LogicalResult ObjectFifoCreateOp::verify() {
     return emitOpError(
         "cannot pin a DMA channel on an objectfifo that also uses a stream "
         "transport (stream ports bypass DMA channels)");
-  }
-
-  if (getPacketId() && !getPacket()) {
-    return emitOpError("packet_id is only meaningful on a packet objectfifo");
   }
 
   // Helper to get tile interface from Value

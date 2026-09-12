@@ -2248,11 +2248,7 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
       OptionalAttr<BDPadLayoutArrayAttr>:$padDimensions,
       // Lowered onto the memtile MM2S channel; see aie.dma_start's pad_value.
       DefaultValuedOptionalAttr<AIEI32Attr, "0">:$padValue,
-      OptionalAttr<AIEI32Attr>:$iter_count,
-      // packet selects packet-switched routing. packet_id pins the header;
-      // allocation chooses an unused id when it is absent.
-      UnitAttr:$packet,
-      OptionalAttr<ConfinedAttr<AIEI8Attr, [IntMinValue<0>]>>:$packet_id);
+      OptionalAttr<AIEI32Attr>:$iter_count);
 
   let assemblyFormat = [{
     $sym_name
@@ -2320,6 +2316,14 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
         return false;
       return *t.getEnds() == ObjectFifoStreamEnds::Consumer ||
              *t.getEnds() == ObjectFifoStreamEnds::Both;
+    }
+
+    /// The packet header this fifo asks its route to carry, or null for a
+    /// circuit-switched connection.
+    PacketInfoAttr packetHeader() {
+      if (ObjectFifoTransportAttr t = getTransportAttr())
+        return t.getPacket();
+      return nullptr;
     }
 
     /// The stream port index, when this fifo uses a stream transport.

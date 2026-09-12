@@ -356,9 +356,17 @@ def ObjectFifoTransportAttr
     `ends` and `port` describe a `stream` fifo's stream ports and belong to no
     other mode.
 
+    `packet` asks for the DMA path's stream connection to be packet-switched,
+    sharing the stream with other packet flows rather than reserving a circuit.
+    It is the same `#aie.packet_info` header the route and, after allocation,
+    the endpoints and buffer descriptors carry: `#aie.packet_info<>` lets
+    allocation pick the id, `#aie.packet_info<pkt_id = 3>` pins it. It belongs
+    to `auto` and `dma`; on `auto` it only matters when the DMAs are used.
+
     Example:
     ```
       transport = #aie.transport<dma>
+      transport = #aie.transport<dma, packet = #aie.packet_info<pkt_id = 3>>
       transport = #aie.transport<stream, ends = both, port = 1>
     ```
   }];
@@ -366,11 +374,11 @@ def ObjectFifoTransportAttr
   let parameters = (ins
     EnumParameter<ObjectFifoTransportMode>:$mode,
     OptionalParameter<"std::optional<::xilinx::AIE::ObjectFifoStreamEnds>">:$ends,
-    OptionalParameter<"std::optional<uint32_t>">:$port
+    OptionalParameter<"std::optional<uint32_t>">:$port,
+    OptionalParameter<"PacketInfoAttr">:$packet
   );
 
-  let assemblyFormat =
-      "`<` $mode (`,` `ends` `=` $ends^)? (`,` `port` `=` $port^)? `>`";
+  let assemblyFormat = "`<` $mode (`,` struct($ends, $port, $packet)^)? `>`";
 
   let genVerifyDecl = 1;
 

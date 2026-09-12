@@ -53,3 +53,50 @@ module {
     aie.objectfifo @of (%tile11, {%tile13}, 2 : i32) {transport = #aie.transport<stream, ends = producer, port = 0>} : !aie.objectfifo<memref<16xi32>>
  }
 }
+
+// -----
+
+// A packet header rides the DMA path's stream connection, so no other path
+// can honour one.
+module {
+ aie.device(xcve2302) {
+    %tile12 = aie.tile(1, 2)
+    %tile13 = aie.tile(1, 3)
+    // expected-error@+1 {{`packet` belongs to a dma or auto transport, not stream}}
+    aie.objectfifo @of (%tile12, {%tile13}, 2 : i32) {transport = #aie.transport<stream, ends = both, port = 0, packet = #aie.packet_info<>>} : !aie.objectfifo<memref<16xi32>>
+ }
+}
+
+// -----
+
+module {
+ aie.device(xcve2302) {
+    %tile12 = aie.tile(1, 2)
+    %tile13 = aie.tile(1, 3)
+    // expected-error@+1 {{`packet` belongs to a dma or auto transport, not shared_mem}}
+    aie.objectfifo @of (%tile12, {%tile13}, 2 : i32) {transport = #aie.transport<shared_mem, packet = #aie.packet_info<pkt_id = 1>>} : !aie.objectfifo<memref<16xi32>>
+ }
+}
+
+// -----
+
+// The fifo's own packet pair moved into the transport attribute.
+module {
+ aie.device(xcve2302) {
+    %tile12 = aie.tile(1, 2)
+    %tile13 = aie.tile(1, 3)
+    // expected-error@+1 {{`packet` has been replaced by `transport`}}
+    aie.objectfifo @of (%tile12, {%tile13}, 2 : i32) {packet} : !aie.objectfifo<memref<16xi32>>
+ }
+}
+
+// -----
+
+module {
+ aie.device(xcve2302) {
+    %tile12 = aie.tile(1, 2)
+    %tile13 = aie.tile(1, 3)
+    // expected-error@+1 {{`packet_id` has been replaced by `transport`}}
+    aie.objectfifo @of (%tile12, {%tile13}, 2 : i32) {packet_id = 3 : i8} : !aie.objectfifo<memref<16xi32>>
+ }
+}

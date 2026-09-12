@@ -87,8 +87,6 @@ class ObjectFifo(Resolvable):
         transport: Transport | str | None = None,
         init_values: list[np.ndarray] | None = None,
         consumer_obj_type: type[np.ndarray] | None = None,
-        packet: bool = False,
-        packet_id: int | None = None,
     ):
         """Construct an ObjectFifo.
 
@@ -132,9 +130,12 @@ class ObjectFifo(Resolvable):
                 objects. ``Transport.dma()`` forces the DMAs even when producer and consumer
                 share memory, ``Transport.stream(ends, port)`` wires the ends straight to
                 stream ports, and ``Transport.cascade()`` uses the cascade between adjacent
-                tiles. None leaves the choice to the lowering, which is the same as
-                ``Transport.auto()``. Lowers to the ``transport`` attribute on the underlying
-                ``aie.objectfifo`` op. Defaults to None.
+                tiles. ``Transport.dma(packet=Packet())`` routes the fifo as an
+                ``aie.packet_flow`` sharing the stream with other packet flows, and
+                ``Packet(id=7)`` pins the 5-bit header for designs that route on it. None
+                leaves the choice to the lowering, which is the same as ``Transport.auto()``.
+                Lowers to the ``transport`` attribute on the underlying ``aie.objectfifo`` op.
+                Defaults to None.
             init_values (list[np.ndarray] | None, optional): Per-buffer static initial values
                 for the producer endpoint. One ndarray per producer-side buffer; the producer
                 tile must be able to hold static data at design startup (e.g. a MemTile).
@@ -145,14 +146,6 @@ class ObjectFifo(Resolvable):
                 transfers and the consumer receives consumer_obj_type-sized transfers.
                 Producer element count must be an integer multiple of consumer element count.
                 Defaults to None.
-            packet (bool, optional): Route this ObjectFifo as an ``aie.packet_flow``, sharing
-                the stream with other packet flows instead of reserving a circuit for it.
-                Decided per fifo, so a design may mix packet- and circuit-switched fifos.
-                Defaults to False.
-            packet_id (int | None, optional): Pin the 5-bit header the source stamps, for
-                designs that route on the id (e.g. a MemTile dispatching to one of several
-                cores). Requires ``packet``; when absent, allocation picks an id no other
-                flow is using. Defaults to None.
 
         Raises:
             ValueError: If ``depth`` is provided and is less than 1.
@@ -186,8 +179,6 @@ class ObjectFifo(Resolvable):
         self._transport: Transport | None = Transport.coerce(transport)
         self._init_values: list[np.ndarray] | None = init_values
         self._consumer_obj_type: type[np.ndarray] | None = consumer_obj_type
-        self._packet: bool = packet
-        self._packet_id: int | None = packet_id
 
     @property
     def depth(self) -> int | None:
@@ -470,8 +461,6 @@ class ObjectFifo(Resolvable):
                 transport=self._transport,
                 initValues=self._init_values,
                 consumer_datatype=consumer_datatype,
-                packet=self._packet or None,
-                packet_id=self._packet_id,
             )
             self._op = op
 
