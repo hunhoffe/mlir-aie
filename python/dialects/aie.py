@@ -624,6 +624,71 @@ class external_buffer(MemRefValue):
 
 # Create an aie objectFifo between specified tiles, with given depth and memref datatype.
 # depth examples: 2, [2,2,7]
+@dataclass(frozen=True)
+class Transport:
+    """Which hardware path carries an ObjectFifo's objects.
+
+    Lowers to the ``transport`` attribute on ``aie.objectfifo``. Build one with
+    the constructors below rather than by hand::
+
+        Transport.dma()
+        Transport.stream(ends="both", port=1)
+    """
+
+    mode: str
+    ends: str | None = None
+    port: int | None = None
+
+    #: Leave the choice to the lowering, which uses shared memory when both
+    #: ends reach one memory module and nothing else forces DMAs.
+    @staticmethod
+    def auto() -> "Transport":
+        return Transport("auto")
+
+    @staticmethod
+    def shared_mem() -> "Transport":
+        return Transport("shared_mem")
+
+    @staticmethod
+    def dma() -> "Transport":
+        return Transport("dma")
+
+    @staticmethod
+    def cascade() -> "Transport":
+        return Transport("cascade")
+
+    @staticmethod
+    def stream(ends: str = "both", port: int = 0) -> "Transport":
+        """A stream-port connection. `ends` is producer, consumer or both."""
+        if ends not in ("producer", "consumer", "both"):
+            raise ValueError(f"stream ends is producer, consumer or both, got {ends!r}")
+        if port not in (0, 1):
+            raise ValueError(f"stream port is 0 or 1, got {port!r}")
+        return Transport("stream", ends, port)
+
+    def __str__(self) -> str:
+        if self.mode == "stream":
+            return f"#aie.transport<stream, ends = {self.ends}, port = {self.port}>"
+        return f"#aie.transport<{self.mode}>"
+
+    def to_attr(self) -> Attribute:
+        return Attribute.parse(str(self))
+
+    @staticmethod
+    def coerce(value) -> "Transport | None":
+        """Accept a Transport, a bare mode name, or None."""
+        if value is None or isinstance(value, Transport):
+            return value
+        if isinstance(value, str):
+            if value == "stream":
+                raise ValueError(
+                    "a stream transport needs ends and port: "
+                    'Transport.stream(ends="both", port=0)'
+                )
+            return Transport(value)
+        raise TypeError(f"expected a Transport or a mode name, got {value!r}")
+
+
 class object_fifo(ObjectFifoCreateOp):
     def __init__(
         self,
@@ -635,7 +700,7 @@ class object_fifo(ObjectFifoCreateOp):
         dimensionsToStream=None,
         dimensionsFromStreamPerConsumer=None,
         initValues=None,
-        via_DMA=None,
+        transport=None,
         plio=None,
         padDimensions=None,
         padValue=None,
@@ -677,7 +742,6 @@ class object_fifo(ObjectFifoCreateOp):
             elemType=of_Ty,
             dimensionsToStream=dimensionsToStream,
             dimensionsFromStreamPerConsumer=dimensionsFromStreamPerConsumer,
-            via_DMA=via_DMA,
             plio=plio,
             padDimensions=padDimensions,
             padValue=padValue,
@@ -686,6 +750,9 @@ class object_fifo(ObjectFifoCreateOp):
             iter_count=iter_count,
             packet=packet,
             packet_id=packet_id,
+            transport=(
+                Transport.coerce(transport).to_attr() if transport is not None else None
+            ),
         )
         if consumerElemType is not None:
             self.attributes["consumerElemType"] = consumerElemType
@@ -715,11 +782,8 @@ class object_fifo(ObjectFifoCreateOp):
         int_num = IntegerAttr.get(T.i32(), num)
         self.attributes["repeat_count"] = int_num
 
-    def set_aie_stream(self, stream_end, stream_port):
-        int_stream_end = IntegerAttr.get(T.i32(), stream_end)
-        int_stream_port = IntegerAttr.get(T.i32(), stream_port)
-        self.attributes["aie_stream"] = int_stream_end
-        self.attributes["aie_stream_port"] = int_stream_port
+    def set_transport(self, transport):
+        self.attributes["transport"] = Transport.coerce(transport).to_attr()
 
     def set_prod_dma_channel(self, channel):
         self.attributes["prod_dma_channel"] = IntegerAttr.get(T.i32(), channel)

@@ -21,6 +21,6 @@ module @full_stream_AIE2 {
     %tile13 = aie.tile(1, 3)
     %tile33 = aie.tile(3, 3)
 
-    aie.objectfifo @of_full_stream (%tile12, {%tile33}, 2 : i32) {aie_stream = 2 : i32, aie_stream_port = 1 : i32} : !aie.objectfifo<memref<16xi32>>
+    aie.objectfifo @of_full_stream (%tile12, {%tile33}, 2 : i32) {transport = #aie.transport<stream, ends = both, port = 1>} : !aie.objectfifo<memref<16xi32>>
  }
 }

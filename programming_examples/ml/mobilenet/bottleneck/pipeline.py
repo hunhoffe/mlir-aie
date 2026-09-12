@@ -16,7 +16,7 @@ import numpy as np
 from aie.extras.dialects.memref import (  # pyright: ignore[reportMissingImports]
     view as memref_view,
 )
-from aie.iron import Buffer, ObjectFifo, Worker, kernels
+from aie.iron import Buffer, ObjectFifo, Transport, Worker, kernels
 from aie.iron.algorithms import row_at_a_time, row_at_a_time_with_skip, sliding_3row
 from aie.iron.controlflow import range_
 from aie.iron.device import Tile
@@ -205,7 +205,7 @@ def build_bn12_2tile(blk, act_in, sf, *, data_dir, tiles=None):
         output_channels=out_c,
     )
 
-    bn12_of_12 = ObjectFifo(bn12_l1_ty, depth=4, via_DMA=True)
+    bn12_of_12 = ObjectFifo(bn12_l1_ty, depth=4, transport=Transport.dma())
     bn12_dw_tmp_of = ObjectFifo(bn12_dw_ty, depth=1)  # self-loop on the L23 tile
     act_bn12_out = ObjectFifo(bn12_out_ty, depth=2)
 

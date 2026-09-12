@@ -81,8 +81,8 @@ bool delegateReachesBothEnds(ObjectFifoCreateOp op, TileOp delegate) {
 /// asks the DMA to reshape the data on the way.
 bool requiresDMAs(ObjectFifoCreateOp createOp,
                   AIETargetModel::SharedMemory &shared) {
-  if (createOp.getVia_DMA() || createOp.getRepeatCount() ||
-      createOp.getAieStream() || createOp.getConsumerElemType()) {
+  if (createOp.forcesDMA() || createOp.getRepeatCount() ||
+      createOp.usesStream() || createOp.getConsumerElemType()) {
     return true;
   }
 
@@ -390,12 +390,13 @@ struct AIEObjectFifoSplitPass
   LogicalResult verifyStreamPortAccesses() {
     auto check = [&](Operation *op, ObjectFifoCreateOp fifo,
                      std::optional<ObjectFifoPort> port, StringRef verb) {
-      if (!fifo || !port || !fifo.getAieStream()) {
+      if (!fifo || !port || !fifo.usesStream()) {
         return success();
       }
-      int streamEnd = *fifo.getAieStream();
-      int end = *port == ObjectFifoPort::Produce ? 0 : 1;
-      if (streamEnd != 2 && streamEnd != end) {
+      bool onStreamPort = *port == ObjectFifoPort::Produce
+                              ? fifo.streamsFromProducer()
+                              : fifo.streamsToConsumer();
+      if (!onStreamPort) {
         return success();
       }
       return LogicalResult(op->emitOpError("cannot ")
@@ -636,14 +637,14 @@ void AIEObjectFifoSplitPass::runOnOperation() {
     Value prodTile = fifo.getProducerTile();
     // A fifo end wired straight to a Core stream port has no objects of its
     // own: whatever the core writes goes out on the port.
-    int streamEnd = fifo.getAieStream().value_or(-1);
+    std::optional<uint32_t> streamPort = fifo.streamPort();
     std::optional<int> prodStreamPort;
     std::optional<int> consStreamPort;
-    if (streamEnd == 0 || streamEnd == 2) {
-      prodStreamPort = fifo.getAieStreamPort();
+    if (fifo.streamsFromProducer() && streamPort) {
+      prodStreamPort = static_cast<int>(*streamPort);
     }
-    if (streamEnd == 1 || streamEnd == 2) {
-      consStreamPort = fifo.getAieStreamPort();
+    if (fifo.streamsToConsumer() && streamPort) {
+      consStreamPort = static_cast<int>(*streamPort);
     }
 
     bool prodIsShim = cast<TileOp>(prodTile.getDefiningOp()).isShimTile();

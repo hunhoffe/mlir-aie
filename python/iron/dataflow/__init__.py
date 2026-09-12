@@ -24,11 +24,13 @@ from .objectfifo import (
     ObjectFifoLink,
     PadDims,
     StreamDims,
+    Transport,
 )
 from .tile_dma import Acquire, Bd, BdIteration, DmaChannel, Release, TileDma
 
 __all__ = [
     "ObjectFifo",
+    "Transport",
     "ObjectFifoHandle",
     "ObjectFifoLink",
     "ObjectFifoEndpoint",
