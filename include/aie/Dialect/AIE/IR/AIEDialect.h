@@ -261,6 +261,13 @@ bool isContiguousBDTransfer(llvm::ArrayRef<BDDimLayoutAttr> dims);
 mlir::LogicalResult
 verifyDMABDOutOfOrderId(DMABDOp bd, bool packetEnabledByContext = false);
 
+// Below allocation a packet header is only useful once its id is assigned.
+// `what` names the attribute in the diagnostic. Callable from the AIEX
+// dialect, whose runtime ops carry the same header.
+mlir::LogicalResult verifyAssignedPacket(mlir::Operation *op,
+                                         PacketInfoAttr packet,
+                                         llvm::StringRef what = "packet");
+
 // Validate an out-of-order S2MM channel and its receive BDs.
 mlir::LogicalResult
 verifyOutOfOrderChannel(mlir::Operation *op, DMAChannelDir dir, bool outOfOrder,
