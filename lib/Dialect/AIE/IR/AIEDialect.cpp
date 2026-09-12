@@ -461,6 +461,36 @@ LogicalResult HasValidDMAChannels<ConcreteType>::verifyTrait(Operation *op) {
 }
 
 //===----------------------------------------------------------------------===//
+// ObjectFifoTransportAttr
+//===----------------------------------------------------------------------===//
+
+LogicalResult ObjectFifoTransportAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, ObjectFifoTransportMode mode,
+    std::optional<ObjectFifoStreamEnds> ends, std::optional<uint32_t> port) {
+  // Stream ports are the only thing either field describes, so naming one for
+  // any other path says something the mode cannot honour.
+  if (mode != ObjectFifoTransportMode::Stream) {
+    if (ends)
+      return emitError() << "`ends` belongs to a stream transport, not "
+                         << stringifyObjectFifoTransportMode(mode);
+    if (port)
+      return emitError() << "`port` belongs to a stream transport, not "
+                         << stringifyObjectFifoTransportMode(mode);
+    return success();
+  }
+
+  // The assembly format writes `port` only after `ends`, so a stream states
+  // both or neither, and stating neither leaves the ports unplaced.
+  if (!ends)
+    return emitError() << "a stream transport needs `ends`";
+  if (!port)
+    return emitError() << "a stream transport needs a `port`";
+  if (*port > 1)
+    return emitError() << "stream `port` is 0 or 1, got " << *port;
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // ObjectFifoCreateOp
 //===----------------------------------------------------------------------===//
 

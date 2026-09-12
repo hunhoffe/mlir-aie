@@ -318,6 +318,73 @@ def ObjectFifoRole
 }
 
 //===----------------------------------------------------------------------===//
+// ObjectFifo transport
+//===----------------------------------------------------------------------===//
+
+def ObjectFifoTransportMode
+    : I32EnumAttr<"ObjectFifoTransportMode",
+                  "The hardware path an objectFifo's objects travel over",
+                  [I32EnumAttrCase<"Auto", 0, "auto">,
+                   I32EnumAttrCase<"SharedMem", 1, "shared_mem">,
+                   I32EnumAttrCase<"DMA", 2, "dma">,
+                   I32EnumAttrCase<"Stream", 3, "stream">,
+                   I32EnumAttrCase<"Cascade", 4, "cascade">]> {
+  let cppNamespace = "xilinx::AIE";
+}
+
+def ObjectFifoStreamEnds
+    : I32EnumAttr<"ObjectFifoStreamEnds",
+                  "Which ends of a stream objectFifo drive a stream port",
+                  [I32EnumAttrCase<"Producer", 0, "producer">,
+                   I32EnumAttrCase<"Consumer", 1, "consumer">,
+                   I32EnumAttrCase<"Both", 2, "both">]> {
+  let cppNamespace = "xilinx::AIE";
+}
+
+def ObjectFifoTransportAttr
+    : AttrDef<AIE_Dialect, "ObjectFifoTransport", []> {
+  let mnemonic = "transport";
+  let summary = "Which hardware path carries an objectFifo's objects";
+  let description = [{
+    One attribute in place of the separate switches that used to each name a
+    path: `via_DMA`, `aie_stream` with `aie_stream_port`, and the shared memory
+    the lowering picked when none of them was set.
+
+    `auto` leaves the choice to `--aie-objectfifo-split`, which uses shared
+    memory when both ends reach one memory module and nothing about the fifo
+    forces DMAs. The other modes name a path and fail if it cannot be had.
+    `ends` and `port` describe a `stream` fifo's stream ports and belong to no
+    other mode.
+
+    Example:
+    ```
+      transport = #aie.transport<dma>
+      transport = #aie.transport<stream, ends = both, port = 1>
+    ```
+  }];
+
+  let parameters = (ins
+    EnumParameter<ObjectFifoTransportMode>:$mode,
+    OptionalParameter<"std::optional<::xilinx::AIE::ObjectFifoStreamEnds>">:$ends,
+    OptionalParameter<"std::optional<uint32_t>">:$port
+  );
+
+  let assemblyFormat =
+      "`<` $mode (`,` `ends` `=` $ends^)? (`,` `port` `=` $port^)? `>`";
+
+  let genVerifyDecl = 1;
+
+  let extraClassDeclaration = [{
+    bool isAuto() const {
+      return getMode() == ObjectFifoTransportMode::Auto;
+    }
+    bool isStream() const {
+      return getMode() == ObjectFifoTransportMode::Stream;
+    }
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Generated AIE event enumerations
 //===----------------------------------------------------------------------===//
 
