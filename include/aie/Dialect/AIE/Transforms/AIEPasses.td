@@ -444,27 +444,48 @@ def AIEObjectFifoVerify : Pass<"aie-objectfifo-verify", "DeviceOp"> {
   let dependentDialects = ["xilinx::AIE::AIEDialect"];
 }
 
-def AIEObjectFifoAllocate : Pass<"aie-objectfifo-allocate", "DeviceOp"> {
-  let summary = "Give pools and endpoints their buffers, locks and channels";
+def AIEAssignPacketIds : Pass<"aie-assign-packet-ids", "DeviceOp"> {
+  let summary = "Give every packet-switched route a packet id";
   let description = [{
-    Fill in the resources a pool and endpoint design leaves open: the buffers
-    holding a pool's objects, the locks guarding each segment, and the DMA
-    channel each endpoint drives. `aie.route` becomes `aie.flow`, and
-    a shim endpoint gains the `aie.shim_dma_allocation` the runtime resolves.
+    Fill in the `pkt_id` of every `aie.route` whose packet header leaves it
+    open, taking the lowest id nothing on the device holds yet: another
+    `aie.packet_flow`, a route or objectfifo that pinned one, or a trace
+    packet. A pinned id is kept, and checked against the target's header
+    field. Routes are taken in device order, so the assignment is a function
+    of the design alone.
 
-    Whatever is already written down is kept, so hand-placed buffers,
-    hand-written locks and pinned channels all survive; each is filled in only
-    where it is absent.
+    `--aie-objectfifo-allocate` lowers the routes afterwards and expects every
+    packet header to be assigned by then.
   }];
 
-  let constructor = "xilinx::AIE::createAIEObjectFifoAllocatePass()";
+  let constructor = "xilinx::AIE::createAIEAssignPacketIdsPass()";
   let dependentDialects = ["xilinx::AIE::AIEDialect"];
 
   let options =
       [Option<"clPacketSwObjectFifos", "packet-sw-objFifos", "bool",
               /*default=*/"false",
-              "Flag to enable aie.packetflow lowering from objectfifos.">,
+              "Make every route packet-switched, whether or not it asked.">,
   ];
+}
+
+def AIEObjectFifoAllocate : Pass<"aie-objectfifo-allocate", "DeviceOp"> {
+  let summary = "Give pools and endpoints their buffers, locks and channels";
+  let description = [{
+    Fill in the resources a pool and endpoint design leaves open: the buffers
+    holding a pool's objects, the locks guarding each segment, and the DMA
+    channel each endpoint drives. `aie.route` becomes `aie.flow`, or
+    `aie.packet_flow` when it carries a packet header, and a shim endpoint
+    gains the `aie.shim_dma_allocation` the runtime resolves.
+
+    Whatever is already written down is kept, so hand-placed buffers,
+    hand-written locks and pinned channels all survive; each is filled in only
+    where it is absent. Packet ids are not filled in here: a packet header
+    reaching this pass has to be assigned, which `--aie-assign-packet-ids`
+    does.
+  }];
+
+  let constructor = "xilinx::AIE::createAIEObjectFifoAllocatePass()";
+  let dependentDialects = ["xilinx::AIE::AIEDialect"];
 }
 
 def AIEObjectFifoLowerDMAs : Pass<"aie-objectfifo-lower-dmas", "DeviceOp"> {
