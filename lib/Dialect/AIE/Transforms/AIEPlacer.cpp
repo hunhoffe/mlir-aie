@@ -77,6 +77,36 @@ Placer::CollectedOps Placer::collectOperations(DeviceOp device) {
         .Case<FlowOp>([&](auto f) { ops.flows.push_back(f); })
         .Case<PacketFlowOp>([&](auto pf) { ops.pktFlows.push_back(pf); });
   });
+
+  // Routes name their ends by symbol; what the placer needs is the tiles.
+  auto endOf = [&](StringRef name) -> std::optional<RouteEnd> {
+    auto endpoint =
+        dyn_cast_or_null<RouteEndpoint>(SymbolTable::lookupNearestSymbolFrom(
+            device, StringAttr::get(device.getContext(), name)));
+    if (!endpoint)
+      return std::nullopt;
+    return RouteEnd{endpoint.getTile(),
+                    endpoint.getRouteBundle() == WireBundle::DMA};
+  };
+  for (auto route : device.getOps<RouteOp>()) {
+    RouteEnds ends;
+    for (StringRef name : route.getSourceNames())
+      if (auto end = endOf(name))
+        ends.sources.push_back(*end);
+    for (StringRef name : route.getDestinationNames())
+      if (auto end = endOf(name))
+        ends.destinations.push_back(*end);
+    ops.routes.push_back(ends);
+  }
+
+  mlir::DataLayout dataLayout(device->getParentOfType<ModuleOp>());
+  for (auto pool : device.getOps<ObjectFifoPoolOp>()) {
+    auto elemType = cast<MemRefType>(pool.getElemType());
+    int64_t bytes = elemType.getNumElements() *
+                    dataLayout.getTypeSizeInBits(elemType.getElementType()) / 8;
+    ops.pools.push_back(
+        {pool.getTile(), bytes * pool.getDepth(), pool.getDepth()});
+  }
   return ops;
 }
 
@@ -179,6 +209,7 @@ LogicalResult SequentialPlacer::place(DeviceOp device) {
   auto channelRequirements =
       buildChannelRequirements(objectFifos, objectFifoLinks);
   addChannelRequirementsFromFlows(flows, pktFlows, channelRequirements);
+  addChannelRequirementsFromRoutes(collected.routes, channelRequirements);
 
   auto cascadeAdjacency = buildCascadeAdjacency(cascadeFlows);
 
@@ -391,13 +422,13 @@ LogicalResult SequentialPlacer::place(DeviceOp device) {
   // Phase 4: place every still-unplaced non-core (mem/shim) LTO at the
   // centroid column of its placed core peers.
   return placeNonCoreLogicalTiles(logicalTiles, objectFifos, flows, pktFlows,
-                                  channelRequirements);
+                                  collected.routes, channelRequirements);
 }
 
 LogicalResult SequentialPlacer::placeNonCoreLogicalTiles(
     ArrayRef<LogicalTileOp> logicalTiles,
     ArrayRef<ObjectFifoCreateOp> objectFifos, ArrayRef<FlowOp> flows,
-    ArrayRef<PacketFlowOp> pktFlows,
+    ArrayRef<PacketFlowOp> pktFlows, ArrayRef<RouteEnds> routes,
     const llvm::DenseMap<Operation *, std::pair<int, int>>
         &channelRequirements) {
   // Sort the unplaced non-core LTOs by descending channel demand so the
@@ -422,7 +453,8 @@ LogicalResult SequentialPlacer::placeNonCoreLogicalTiles(
     return demand(a) > demand(b);
   });
 
-  FlowMembership flowIndex = buildFlowMembership(flows, pktFlows, objectFifos);
+  FlowMembership flowIndex =
+      buildFlowMembership(flows, pktFlows, objectFifos, routes);
 
   for (auto logicalTile : nonCoreOrdered) {
     if (failed(placeNonCoreTileByCentroid(logicalTile, flowIndex,
@@ -1080,9 +1112,29 @@ void SequentialPlacer::addChannelRequirementsFromFlows(
   }
 }
 
+void SequentialPlacer::addChannelRequirementsFromRoutes(
+    ArrayRef<RouteEnds> routes,
+    llvm::DenseMap<Operation *, std::pair<int, int>> &channelRequirements) {
+  auto charge = [&](const RouteEnd &end, bool output) {
+    Operation *tileOp = end.tile.getDefiningOp();
+    if (!end.dma || !isa_and_nonnull<LogicalTileOp>(tileOp))
+      return;
+    if (output)
+      channelRequirements[tileOp].second++;
+    else
+      channelRequirements[tileOp].first++;
+  };
+  for (const RouteEnds &route : routes) {
+    for (const RouteEnd &source : route.sources)
+      charge(source, /*output=*/true);
+    for (const RouteEnd &dest : route.destinations)
+      charge(dest, /*output=*/false);
+  }
+}
+
 SequentialPlacer::FlowMembership SequentialPlacer::buildFlowMembership(
     ArrayRef<FlowOp> flows, ArrayRef<PacketFlowOp> pktFlows,
-    ArrayRef<ObjectFifoCreateOp> objectFifos) {
+    ArrayRef<ObjectFifoCreateOp> objectFifos, ArrayRef<RouteEnds> routes) {
   // packet_flow connectivity is sources x destinations -- destinations
   // are never each other's peers. Same asymmetry for objectfifo
   // producer/consumers.
@@ -1121,6 +1173,19 @@ SequentialPlacer::FlowMembership SequentialPlacer::buildFlowMembership(
     addEntry(prod, consVec);
     for (Value c : consVec)
       addEntry(c, {prod});
+  }
+  // A route's sources and destinations are each other's peers, sources times
+  // destinations, like a packet flow's.
+  for (const RouteEnds &route : routes) {
+    SmallVector<Value> srcs, dsts;
+    for (const RouteEnd &end : route.sources)
+      srcs.push_back(end.tile);
+    for (const RouteEnd &end : route.destinations)
+      dsts.push_back(end.tile);
+    for (Value s : srcs)
+      addEntry(s, dsts);
+    for (Value d : dsts)
+      addEntry(d, srcs);
   }
   return idx;
 }
