@@ -98,6 +98,27 @@ public:
     }
   };
 
+  // One end of an `aie.route`, by the tile it sits on. `dma` is false for a
+  // core's stream port, which spends no DMA channel.
+  struct RouteEnd {
+    mlir::Value tile;
+    bool dma;
+  };
+  // An `aie.route` by its ends: the tiles it connects and the channels it
+  // spends, with nothing left to guess about how it moves data.
+  struct RouteEnds {
+    llvm::SmallVector<RouteEnd> sources;
+    llvm::SmallVector<RouteEnd> destinations;
+  };
+  // An `aie.objectfifo.pool` by the tile holding its objects and what they
+  // take: the bytes of every object, and the descriptors a chain over it
+  // needs on a mem tile.
+  struct PoolUse {
+    mlir::Value tile;
+    int64_t bytes;
+    int depth;
+  };
+
   // IR operations collected from a DeviceOp for placement.
   struct CollectedOps {
     llvm::SmallVector<LogicalTileOp> logicalTiles;
@@ -106,6 +127,8 @@ public:
     llvm::SmallVector<CascadeFlowOp> cascadeFlows;
     llvm::SmallVector<FlowOp> flows;
     llvm::SmallVector<PacketFlowOp> pktFlows;
+    llvm::SmallVector<RouteEnds> routes;
+    llvm::SmallVector<PoolUse> pools;
   };
 
   // Collect all placement-relevant operations from the device.
@@ -389,6 +412,7 @@ private:
       llvm::ArrayRef<LogicalTileOp> logicalTiles,
       llvm::ArrayRef<ObjectFifoCreateOp> objectFifos,
       llvm::ArrayRef<FlowOp> flows, llvm::ArrayRef<PacketFlowOp> pktFlows,
+      llvm::ArrayRef<RouteEnds> routes,
       const llvm::DenseMap<mlir::Operation *, std::pair<int, int>>
           &channelRequirements);
 
@@ -403,7 +427,8 @@ private:
   FlowMembership
   buildFlowMembership(llvm::ArrayRef<FlowOp> flows,
                       llvm::ArrayRef<PacketFlowOp> pktFlows,
-                      llvm::ArrayRef<ObjectFifoCreateOp> objectFifos);
+                      llvm::ArrayRef<ObjectFifoCreateOp> objectFifos,
+                      llvm::ArrayRef<RouteEnds> routes);
 
   // Pick the column that minimizes total routing cost across the LTO's
   // flows. See AIEPlacer.cpp for the per-flow cost formulas and tiebreak.
@@ -451,6 +476,13 @@ private:
 
   void addChannelRequirementsFromFlows(
       llvm::ArrayRef<FlowOp> flows, llvm::ArrayRef<PacketFlowOp> pktFlows,
+      llvm::DenseMap<mlir::Operation *, std::pair<int, int>>
+          &channelRequirements);
+
+  // A route spends one channel per DMA end: an output on each source's tile,
+  // an input on each destination's.
+  void addChannelRequirementsFromRoutes(
+      llvm::ArrayRef<RouteEnds> routes,
       llvm::DenseMap<mlir::Operation *, std::pair<int, int>>
           &channelRequirements);
 };
@@ -619,6 +651,17 @@ private:
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<size_t>> tileToNetIndices;
   llvm::SmallVector<FifoBufferInfo> fifoBuffers;
 
+  // A route's DMA end on a logical tile: one channel, in or out, that moves
+  // with the tile.
+  struct RouteEndInfo {
+    mlir::Operation *tile;
+    bool output;
+  };
+  llvm::SmallVector<RouteEndInfo> routeEnds;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<size_t>> tileToRouteEnds;
+  // Descriptors the pools on each logical tile need, for the mem-tile budget.
+  llvm::DenseMap<mlir::Operation *, int> poolBDs;
+
   // Placement state
   llvm::DenseMap<mlir::Operation *, TileID> currentPlacement;
   llvm::DenseMap<TileID, mlir::Operation *> physToLogical;
@@ -661,6 +704,7 @@ private:
   // Cost and resource methods
   void initResourceTracking();
   void addFifoContribution(size_t fifoIdx, int sign);
+  void addRouteEndContribution(size_t endIdx, int sign);
   int updateResourcePenalty(
       const llvm::SmallVector<std::pair<mlir::Operation *, TileID>>
           &oldPlacements);
@@ -689,6 +733,8 @@ private:
   // Utility methods
   void buildNetModel(llvm::SmallVector<ObjectFifoCreateOp> &objectFifos,
                      llvm::SmallVector<ObjectFifoLinkOp> &objectFifoLinks);
+  void buildRouteModel(llvm::ArrayRef<RouteEnds> routes,
+                       llvm::ArrayRef<PoolUse> pools);
   void buildFifoBufferInfo(DeviceOp device,
                            llvm::ArrayRef<ObjectFifoCreateOp> objectFifos,
                            llvm::ArrayRef<ObjectFifoLinkOp> objectFifoLinks);
