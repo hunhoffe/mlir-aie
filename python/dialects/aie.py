@@ -624,6 +624,99 @@ class external_buffer(MemRefValue):
 
 # Create an aie objectFifo between specified tiles, with given depth and memref datatype.
 # depth examples: 2, [2,2,7]
+@dataclass(frozen=True)
+class Packet:
+    """A packet-switched stream connection's header, ``#aie.packet_info``.
+
+    ``Packet()`` asks for packet switching and lets allocation pick the 5-bit
+    id; ``Packet(id=3)`` pins it, for designs that route on the id. The same
+    header ends up on the route, the endpoints and the buffer descriptors.
+    """
+
+    id: int | None = None
+    type: int = 0
+
+    def __str__(self) -> str:
+        fields = []
+        if self.type:
+            fields.append(f"pkt_type = {self.type}")
+        if self.id is not None:
+            fields.append(f"pkt_id = {self.id}")
+        return f"#aie.packet_info<{', '.join(fields)}>"
+
+
+@dataclass(frozen=True)
+class Transport:
+    """Which hardware path carries an ObjectFifo's objects.
+
+    Lowers to the ``transport`` attribute on ``aie.objectfifo``. Build one with
+    the constructors below rather than by hand::
+
+        Transport.dma()
+        Transport.dma(packet=Packet(id=3))
+        Transport.stream(ends="both", port=1)
+    """
+
+    mode: str
+    ends: str | None = None
+    port: int | None = None
+    packet: Packet | None = None
+
+    #: Leave the choice to the lowering, which uses shared memory when both
+    #: ends reach one memory module and nothing else forces DMAs. A packet
+    #: header only matters if the DMAs end up carrying the fifo.
+    @staticmethod
+    def auto(packet: Packet | None = None) -> "Transport":
+        return Transport("auto", packet=packet)
+
+    @staticmethod
+    def shared_mem() -> "Transport":
+        return Transport("shared_mem")
+
+    @staticmethod
+    def dma(packet: Packet | None = None) -> "Transport":
+        """The DMAs, packet-switched when given a `Packet`."""
+        return Transport("dma", packet=packet)
+
+    @staticmethod
+    def cascade() -> "Transport":
+        return Transport("cascade")
+
+    @staticmethod
+    def stream(ends: str = "both", port: int = 0) -> "Transport":
+        """A stream-port connection. `ends` is producer, consumer or both."""
+        if ends not in ("producer", "consumer", "both"):
+            raise ValueError(f"stream ends is producer, consumer or both, got {ends!r}")
+        if port not in (0, 1):
+            raise ValueError(f"stream port is 0 or 1, got {port!r}")
+        return Transport("stream", ends, port)
+
+    def __str__(self) -> str:
+        fields = [self.mode]
+        if self.mode == "stream":
+            fields += [f"ends = {self.ends}", f"port = {self.port}"]
+        if self.packet is not None:
+            fields.append(f"packet = {self.packet}")
+        return f"#aie.transport<{', '.join(fields)}>"
+
+    def to_attr(self) -> Attribute:
+        return Attribute.parse(str(self))
+
+    @staticmethod
+    def coerce(value) -> "Transport | None":
+        """Accept a Transport, a bare mode name, or None."""
+        if value is None or isinstance(value, Transport):
+            return value
+        if isinstance(value, str):
+            if value == "stream":
+                raise ValueError(
+                    "a stream transport needs ends and port: "
+                    'Transport.stream(ends="both", port=0)'
+                )
+            return Transport(value)
+        raise TypeError(f"expected a Transport or a mode name, got {value!r}")
+
+
 class object_fifo(ObjectFifoCreateOp):
     def __init__(
         self,
@@ -635,15 +728,13 @@ class object_fifo(ObjectFifoCreateOp):
         dimensionsToStream=None,
         dimensionsFromStreamPerConsumer=None,
         initValues=None,
-        via_DMA=None,
+        transport=None,
         plio=None,
         padDimensions=None,
         padValue=None,
         disable_synchronization=None,
         iter_count=None,
         consumer_datatype=None,
-        packet=None,
-        packet_id=None,
     ):
         self.datatype = try_convert_np_type_to_mlir_type(datatype)
         self.consumer_datatype = (
@@ -677,15 +768,15 @@ class object_fifo(ObjectFifoCreateOp):
             elemType=of_Ty,
             dimensionsToStream=dimensionsToStream,
             dimensionsFromStreamPerConsumer=dimensionsFromStreamPerConsumer,
-            via_DMA=via_DMA,
             plio=plio,
             padDimensions=padDimensions,
             padValue=padValue,
             disable_synchronization=disable_synchronization,
             initValues=initValues,
             iter_count=iter_count,
-            packet=packet,
-            packet_id=packet_id,
+            transport=(
+                Transport.coerce(transport).to_attr() if transport is not None else None
+            ),
         )
         if consumerElemType is not None:
             self.attributes["consumerElemType"] = consumerElemType
@@ -715,11 +806,8 @@ class object_fifo(ObjectFifoCreateOp):
         int_num = IntegerAttr.get(T.i32(), num)
         self.attributes["repeat_count"] = int_num
 
-    def set_aie_stream(self, stream_end, stream_port):
-        int_stream_end = IntegerAttr.get(T.i32(), stream_end)
-        int_stream_port = IntegerAttr.get(T.i32(), stream_port)
-        self.attributes["aie_stream"] = int_stream_end
-        self.attributes["aie_stream_port"] = int_stream_port
+    def set_transport(self, transport):
+        self.attributes["transport"] = Transport.coerce(transport).to_attr()
 
     def set_prod_dma_channel(self, channel):
         self.attributes["prod_dma_channel"] = IntegerAttr.get(T.i32(), channel)

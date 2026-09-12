@@ -72,12 +72,14 @@ from .dataflow import (
     DmaChannel,
     Flow,
     ObjectFifo,
+    Packet,
     PacketDest,
     PacketFlow,
     PadDims,
     Release,
     StreamDims,
     TileDma,
+    Transport,
 )
 from .dtype import dtype_to_str, str_to_dtype
 from .kernel import ExternalFunction, Kernel
@@ -101,6 +103,8 @@ __all__ = [
     "Task",
     "sync_parameters",
     "ObjectFifo",
+    "Packet",
+    "Transport",
     "PadDims",
     "StreamDims",
     # Lower-level explicit-routing primitives

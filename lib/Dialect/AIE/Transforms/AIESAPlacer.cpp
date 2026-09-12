@@ -1280,7 +1280,7 @@ void SAPlacer::buildFifoBufferInfo(DeviceOp device,
         if (out.name() == ofOp.getSymName())
           isLinked = true;
     }
-    fb.forcesDMA = ofOp.getVia_DMA() || ofOp.getRepeatCount().has_value() ||
+    fb.forcesDMA = ofOp.forcesDMA() || ofOp.getRepeatCount().has_value() ||
                    ofOp.getConsumerElemType().has_value() ||
                    !ofOp.getDimensionsToStream().empty() || isLinked;
     // For linked output fifos, producer buffers share memory with

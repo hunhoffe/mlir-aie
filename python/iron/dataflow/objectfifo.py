@@ -18,7 +18,7 @@ from ...dialects._aie_enum_gen import (  # pyright: ignore[reportMissingImports]
 from ...dialects._aie_ops_gen import (  # pyright: ignore[reportMissingImports]
     ObjectFifoCreateOp,
 )
-from ...dialects.aie import object_fifo, object_fifo_link
+from ...dialects.aie import Transport, object_fifo, object_fifo_link
 from ...helpers.util import (
     NpuDType,
     np_ndarray_type_get_dtype,
@@ -84,12 +84,9 @@ class ObjectFifo(Resolvable):
         disable_synchronization: bool = False,
         repeat_count: int | None = None,
         delegate_tile: Tile | None = None,
-        via_DMA: bool = False,
+        transport: Transport | str | None = None,
         init_values: list[np.ndarray] | None = None,
         consumer_obj_type: type[np.ndarray] | None = None,
-        aie_stream: tuple[int, int] | None = None,
-        packet: bool = False,
-        packet_id: int | None = None,
     ):
         """Construct an ObjectFifo.
 
@@ -129,10 +126,16 @@ class ObjectFifo(Resolvable):
                 location, not a producer- or consumer-side concept; the underlying op verifier
                 rejects this if either endpoint cannot share memory with the delegate.
                 Defaults to None.
-            via_DMA (bool, optional): When True, force the ObjectFifo to route through DMA
-                even when producer and consumer share memory (where a lock-only path would
-                otherwise be used). Lowers to the ``via_DMA`` attribute on the underlying
-                ``aie.objectfifo`` op. Defaults to False.
+            transport (Transport | str | None, optional): Which hardware path carries the
+                objects. ``Transport.dma()`` forces the DMAs even when producer and consumer
+                share memory, ``Transport.stream(ends, port)`` wires the ends straight to
+                stream ports, and ``Transport.cascade()`` uses the cascade between adjacent
+                tiles. ``Transport.dma(packet=Packet())`` routes the fifo as an
+                ``aie.packet_flow`` sharing the stream with other packet flows, and
+                ``Packet(id=7)`` pins the 5-bit header for designs that route on it. None
+                leaves the choice to the lowering, which is the same as ``Transport.auto()``.
+                Lowers to the ``transport`` attribute on the underlying ``aie.objectfifo`` op.
+                Defaults to None.
             init_values (list[np.ndarray] | None, optional): Per-buffer static initial values
                 for the producer endpoint. One ndarray per producer-side buffer; the producer
                 tile must be able to hold static data at design startup (e.g. a MemTile).
@@ -143,19 +146,6 @@ class ObjectFifo(Resolvable):
                 transfers and the consumer receives consumer_obj_type-sized transfers.
                 Producer element count must be an integer multiple of consumer element count.
                 Defaults to None.
-            aie_stream (tuple[int, int] | None, optional): Mark the fifo as a direct
-                AIE-stream connection by stamping the ``aie_stream`` / ``aie_stream_port``
-                attributes ``(end, port)`` on the underlying ``aie.objectfifo`` op. Use with
-                kernels that emit on the wire via ``put_ms()`` instead of going through an L1
-                buffer. Defaults to None.
-            packet (bool, optional): Route this ObjectFifo as an ``aie.packet_flow``, sharing
-                the stream with other packet flows instead of reserving a circuit for it.
-                Decided per fifo, so a design may mix packet- and circuit-switched fifos.
-                Defaults to False.
-            packet_id (int | None, optional): Pin the 5-bit header the source stamps, for
-                designs that route on the id (e.g. a MemTile dispatching to one of several
-                cores). Requires ``packet``; when absent, allocation picks an id no other
-                flow is using. Defaults to None.
 
         Raises:
             ValueError: If ``depth`` is provided and is less than 1.
@@ -186,12 +176,9 @@ class ObjectFifo(Resolvable):
         # Must be resolved before resolve() runs — Program.resolve() picks this up via
         # ObjectFifo._delegate_tile when collecting tiles to assign MLIR ops to.
         self._delegate_tile: Tile | None = delegate_tile
-        self._via_DMA: bool = via_DMA
+        self._transport: Transport | None = Transport.coerce(transport)
         self._init_values: list[np.ndarray] | None = init_values
         self._consumer_obj_type: type[np.ndarray] | None = consumer_obj_type
-        self._aie_stream: tuple[int, int] | None = aie_stream
-        self._packet: bool = packet
-        self._packet_id: int | None = packet_id
 
     @property
     def depth(self) -> int | None:
@@ -471,19 +458,14 @@ class ObjectFifo(Resolvable):
                 ),
                 iter_count=self._iter_count,
                 disable_synchronization=self._disable_synchronization or None,
-                via_DMA=self._via_DMA or None,
+                transport=self._transport,
                 initValues=self._init_values,
                 consumer_datatype=consumer_datatype,
-                packet=self._packet or None,
-                packet_id=self._packet_id,
             )
             self._op = op
 
             if self._repeat_count is not None:
                 op.set_repeat_count(self._repeat_count)
-
-            if self._aie_stream is not None:
-                op.set_aie_stream(*self._aie_stream)
 
             # Pin DMA channels requested on the handles. The producer channel
             # and one channel per consumer (-1 = auto-assign that consumer) are

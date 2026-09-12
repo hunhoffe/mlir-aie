@@ -2227,21 +2227,16 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
       OptionalAttr<TypeAttrOf<AIE_ObjectFifoType>>:$consumerElemType,
       BDDimLayoutArrayAttr:$dimensionsToStream,
       BDDimLayoutArrayArrayAttr:$dimensionsFromStreamPerConsumer,
-      DefaultValuedAttr<BoolAttr, "false">:$via_DMA,
+      // Which hardware path carries the objects. Absent means auto: the
+      // lowering uses shared memory when both ends reach one memory module and
+      // nothing else about the fifo forces DMAs.
+      OptionalAttr<ObjectFifoTransportAttr>:$transport,
       DefaultValuedAttr<BoolAttr, "false">:$plio,
       // disable_synchronization==true will skip lock generation for
       // objectfifo synchronous accesses
       DefaultValuedAttr<BoolAttr, "false">:$disable_synchronization,
       // repeat_count==1 means "do it once"
       OptionalAttr<ConfinedAttr<AIEI32Attr, [IntMinValue<1>]>>:$repeat_count,
-      // aie_stream==0 means enable aie stream port on producer tile
-      // aie_stream==1 means enable aie stream port on consumer tile
-      // aie_stream==2 means enable aie stream ports on producer and consumer
-      // tiles
-      OptionalAttr<ConfinedAttr<AIEI32Attr, [IntMinValue<0>,
-                                             IntMaxValue<2>]>>:$aie_stream,
-      OptionalAttr<ConfinedAttr<AIEI32Attr, [IntMinValue<0>,
-                                             IntMaxValue<1>]>>:$aie_stream_port,
       // Pin the DMA channel for an endpoint instead of first-free assignment.
       // prod_dma_channel pins the producer endpoint's channel;
       // cons_dma_channels holds one entry per consumer (-1 = auto-assign that
@@ -2253,11 +2248,7 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
       OptionalAttr<BDPadLayoutArrayAttr>:$padDimensions,
       // Lowered onto the memtile MM2S channel; see aie.dma_start's pad_value.
       DefaultValuedOptionalAttr<AIEI32Attr, "0">:$padValue,
-      OptionalAttr<AIEI32Attr>:$iter_count,
-      // packet selects packet-switched routing. packet_id pins the header;
-      // allocation chooses an unused id when it is absent.
-      UnitAttr:$packet,
-      OptionalAttr<ConfinedAttr<AIEI8Attr, [IntMinValue<0>]>>:$packet_id);
+      OptionalAttr<AIEI32Attr>:$iter_count);
 
   let assemblyFormat = [{
     $sym_name
@@ -2293,6 +2284,54 @@ def AIE_ObjectFifoCreateOp: AIE_Op<"objectfifo", [HasParent<"DeviceOp">, Symbol]
     }
 
     AIE::BDDimLayoutArrayAttr getDimensionsFromStream(mlir::Value consumerTile);
+
+    /// The path this fifo asks for. An absent `transport` attribute is auto.
+    ObjectFifoTransportMode getTransportMode() {
+      if (ObjectFifoTransportAttr t = getTransportAttr())
+        return t.getMode();
+      return ObjectFifoTransportMode::Auto;
+    }
+
+    bool usesStream() {
+      return getTransportMode() == ObjectFifoTransportMode::Stream;
+    }
+
+    bool forcesDMA() {
+      return getTransportMode() == ObjectFifoTransportMode::DMA;
+    }
+
+    /// Which end of a stream fifo drives a stream port. Both are false when
+    /// the fifo does not use a stream transport.
+    bool streamsFromProducer() {
+      ObjectFifoTransportAttr t = getTransportAttr();
+      if (!t || !t.getEnds())
+        return false;
+      return *t.getEnds() == ObjectFifoStreamEnds::Producer ||
+             *t.getEnds() == ObjectFifoStreamEnds::Both;
+    }
+
+    bool streamsToConsumer() {
+      ObjectFifoTransportAttr t = getTransportAttr();
+      if (!t || !t.getEnds())
+        return false;
+      return *t.getEnds() == ObjectFifoStreamEnds::Consumer ||
+             *t.getEnds() == ObjectFifoStreamEnds::Both;
+    }
+
+    /// The packet header this fifo asks its route to carry, or null for a
+    /// circuit-switched connection.
+    PacketInfoAttr packetHeader() {
+      if (ObjectFifoTransportAttr t = getTransportAttr())
+        return t.getPacket();
+      return nullptr;
+    }
+
+    /// The stream port index, when this fifo uses a stream transport.
+    std::optional<uint32_t> streamPort() {
+      if (ObjectFifoTransportAttr t = getTransportAttr())
+        return t.getPort();
+      return std::nullopt;
+    }
 
     /// Returns the consumer element type if set, otherwise the producer type.
     mlir::Type getConsumerElemTypeOrDefault() {
