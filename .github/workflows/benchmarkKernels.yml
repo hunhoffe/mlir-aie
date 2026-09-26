@@ -191,7 +191,7 @@ jobs:
       - name: Compare against baseline (PR)
         # Needs a nightly baseline in the cache; the first runs have none.
         if: ${{ !cancelled() && github.event_name == 'pull_request' && hashFiles('bench.json') != '' && hashFiles('baseline/benchmark-data.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba  # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc  # v1.22.2
         with:
           name: aie_kernels (${{ matrix.expected_npu }}, ${{ steps.pmode.outputs.pmode }})
           tool: customSmallerIsBetter

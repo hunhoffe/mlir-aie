@@ -73,7 +73,7 @@ jobs:
       # github.sha with the token; the token is used for nothing else here.
       - name: Record npu1 results
         if: hashFiles(format('results/npu1/{0}', env.RESULT_FILE)) != ''
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba  # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc  # v1.22.2
         with:
           name: ${{ inputs.static && 'static (aie2)' || format('aie_kernels (npu1, {0})', steps.pmode.outputs.npu1) }}
           tool: customSmallerIsBetter
@@ -91,7 +91,7 @@ jobs:
           max-items-in-chart: 400
       - name: Record npu2 results
         if: hashFiles(format('results/npu2/{0}', env.RESULT_FILE)) != ''
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba  # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc  # v1.22.2
         with:
           name: ${{ inputs.static && 'static (aie2p)' || format('aie_kernels (npu2, {0})', steps.pmode.outputs.npu2) }}
           tool: customSmallerIsBetter
@@ -109,7 +109,7 @@ jobs:
           max-items-in-chart: 400
       - name: Record npu1 program memory
         if: inputs.static && hashFiles('results/npu1/static-pm.json') != ''
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba  # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc  # v1.22.2
         with:
           name: static pm (aie2)
           tool: customSmallerIsBetter
@@ -128,7 +128,7 @@ jobs:
           max-items-in-chart: 400
       - name: Record npu2 program memory
         if: inputs.static && hashFiles('results/npu2/static-pm.json') != ''
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba  # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc  # v1.22.2
         with:
           name: static pm (aie2p)
           tool: customSmallerIsBetter
