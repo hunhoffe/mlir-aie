@@ -11,7 +11,7 @@ from ...dialects._aiex_ops_gen import (  # pyright: ignore[reportMissingImports]
 )
 from ...dialects.aiex import shim_dma_single_bd_task
 from ...helpers.taplib import Layout, TensorAccessPattern
-from .data import RuntimeData
+from .data import RuntimeData, View
 from .dmataskhandle import Task
 from .task import RuntimeTask
 from .taskgroup import TaskGroup
@@ -178,6 +178,15 @@ def emit_shim_transfer(
     active = active_sequence()
     rt = active._runtime
 
+    explicit = any(v is not None for v in (sizes, strides, offset, transfer_len))
+    if isinstance(rt_data, View):
+        # A View is the buffer and its walk in one: fill(A.reshape(...)[i]).
+        if tap is not None or explicit:
+            raise ValueError(
+                "A View already carries its access pattern; pass the View alone, "
+                "or the RuntimeData with tap=/sizes=..."
+            )
+        rt_data, tap = rt_data.data, rt_data.layout
     if not isinstance(rt_data, RuntimeData):
         raise ValueError(f"Expected a RuntimeData source/dest, got {rt_data}")
     if rt_data not in rt._rt_data:
@@ -185,11 +194,16 @@ def emit_shim_transfer(
             f"{rt_data} is not a RuntimeData object declared by sequence()"
         )
 
-    explicit = any(v is not None for v in (sizes, strides, offset, transfer_len))
     if tap is not None and explicit:
         raise ValueError(
             "Pass either tap or sizes/strides/offset/transfer_len, not both."
         )
+    if isinstance(tap, View):
+        # The old spelling fill(A, A[...]) keeps working; the view must be of
+        # the buffer being transferred.
+        if tap.data is not rt_data:
+            raise ValueError("tap= is a View of a different buffer than the transfer's")
+        tap = tap.layout
     if isinstance(tap, Layout):
         # A Layout is a view; its shim form is the 4-dim TensorAccessPattern.
         tap = tap.tap()

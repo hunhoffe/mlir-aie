@@ -59,6 +59,37 @@ Workers are passed to `Program(workers=...)`.
     options:
       show_root_heading: false
 
+### Views of runtime data
+
+The tensors a sequence body receives are `RuntimeData` handles. NumPy
+indexing, `reshape`, `transpose`/`T`, `broadcast_to` and the `taplib` tiling
+operations on a handle return a `View`: a `Layout` bound to that buffer.
+`fill()`/`drain()` take a `View` as their single buffer argument and read the
+access pattern from it, so a GEMM row step is written on the tensors
+themselves:
+
+```python
+def sequence(A, B, C, a_prod, b_prod, c_cons):
+    A4 = A.reshape(M // m, m, K // k, k).transpose(0, 2, 1, 3)   # tile rows, tile by tile
+    B4 = B.reshape(K // k, k, N // n, n).transpose(2, 0, 1, 3)   # tile columns, top to bottom
+    C4 = C.reshape(M // m, m, N // n, n).transpose(0, 2, 1, 3)
+    for i in range_(n_rows):                                     # static or dispatch-time
+        tg = TaskGroup()
+        a_prod.fill(A4[i].broadcast_to((N // n, *A4[i].shape)), group=tg)
+        b_prod.fill(B4, group=tg)
+        c_cons.drain(C4[i], group=tg, wait=True)
+        tg.finish()
+```
+
+A `range_` induction variable as the index makes the offset dispatch-time
+arithmetic. The explicit form `fill(A, tap=layout)` is unchanged, and a `View`
+of the same buffer is accepted as `tap=`.
+
+::: iron.runtime.data
+    options:
+      show_root_heading: false
+      members: [RuntimeData, View, BoundGrid]
+
 ### Buffer
 
 Use a `Buffer` for local scratch storage shared by sequential kernel calls

@@ -57,6 +57,16 @@ def _c_strides(dims: Sequence[IntLike]) -> list[IntLike]:
     return strides
 
 
+def _is_minus_one(value: Any) -> bool:
+    """Whether ``value`` is the concrete ``-1`` NumPy's ``reshape`` infers."""
+    return not is_sym(value) and isinstance(value, (int, np.integer)) and value == -1
+
+
+def _concrete_one(value: Any) -> bool:
+    """Whether ``value`` is the concrete integer 1."""
+    return not is_sym(value) and value == 1
+
+
 def _check_perm(axes: Sequence[int], rank: int, what: str) -> tuple[int, ...]:
     axes = tuple(int(a) for a in axes)
     if sorted(axes) != list(range(rank)):
@@ -149,6 +159,16 @@ class Layout:
     @property
     def rank(self) -> int:
         return len(self._sizes)
+
+    @property
+    def shape(self) -> tuple[IntLike, ...]:
+        """``sizes`` as a tuple, the NumPy spelling."""
+        return tuple(self._sizes)
+
+    @property
+    def ndim(self) -> int:
+        """``rank``, the NumPy spelling."""
+        return self.rank
 
     @property
     def numel(self) -> IntLike:
@@ -273,6 +293,264 @@ class Layout:
         count = sint(count)
         require(count >= 1, f"repeat count must be >= 1, got {show(count)}")
         return self._with(sizes=[count] + self._sizes, strides=[0] + self._strides)
+
+    # ------------------------------------------------------------ NumPy names
+
+    def reshape(self, *shape: Any) -> Layout:
+        """Regroup the dimensions into ``shape`` without changing the walk (NumPy ``reshape``).
+
+        Consecutive dimensions are merged where they are contiguous and split
+        where ``shape`` asks for more of them, so this is any sequence of
+        :meth:`split` and :meth:`merge` steps at once. One entry may be ``-1``
+        and is inferred. Like NumPy on a strided view, a reshape that would
+        need a copy is an error: for a view of ``(M, K)`` tiled ``(m, k)``,
+        ``reshape(M // m, m, K // k, k)`` is exactly ``tile((m, k))`` laid out
+        as four dimensions, and ``reshape(M // m, m, K // k, k)[i, :, j, :]``
+        is tile ``(i, j)``. Follow it with :meth:`transpose` to change the
+        order the pieces are walked in.
+
+        Staged values: every concrete dimension is matched as above (a staged
+        stride only stops the dimension from being merged with a neighbour);
+        at most one dimension may have a staged size, and the entries of
+        ``shape`` it maps to may be staged, with the product checked by a
+        guard, exactly as :meth:`split` (``-1`` is the remaining factor:
+        ``Layout.full((256,)).reshape(n, -1)`` splits a static buffer into a
+        dispatch-time number of chunks). Because
+        which entries a staged dimension maps to cannot be settled from a
+        product, ``-1`` always stands for (a part of) the staged dimension;
+        write the concrete dimensions out: ``reshape(-1, m, K)``, not
+        ``reshape(M // m, m, -1)``.
+
+        Raises:
+            ValueError: If the sizes do not multiply to this view's, if more
+                than one entry is ``-1``, or if the walk is not contiguous
+                where ``shape`` merges dimensions.
+            TypeError: If more than one dimension is staged.
+        """
+        if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
+            shape = tuple(shape[0])
+        if not shape:
+            raise ValueError("reshape needs at least one dimension")
+        new: list[Any] = [x if _is_minus_one(x) else sint(x) for x in shape]
+        if sum(1 for x in new if _is_minus_one(x)) > 1:
+            raise ValueError("can only specify one unknown dimension (-1)")
+        # Sizes decide how dimensions regroup, so a staged size is structural;
+        # a staged stride only means the dimension is never merged with a
+        # neighbour (the contiguity test would be a runtime question).
+        staged_old = [i for i, n in enumerate(self._sizes) if is_sym(n)]
+        if not staged_old and not sym_any(new):
+            return self._reshape_concrete(new)
+        if len(staged_old) > 1:
+            raise TypeError(
+                "reshape() can regroup at most one staged dimension; "
+                f"dimensions {staged_old} of {show(self._sizes)} are staged"
+            )
+        return self._reshape_staged(new, staged_old[0] if staged_old else None)
+
+    def _reshape_concrete(self, new: list[int]) -> Layout:
+        """NumPy/PyTorch ``view`` stride inference on concrete sizes.
+
+        Strides may be staged: a chunk never spans a staged stride, and the
+        new strides are arithmetic on the chunk's base stride.
+        """
+        old_sizes, old_strides = self._sizes, self._strides
+        numel = int(np.prod(old_sizes)) if old_sizes else 1
+        if any(_is_minus_one(x) for x in new):
+            known = int(np.prod([x for x in new if not _is_minus_one(x)] or [1]))
+            if known == 0 or numel % known:
+                raise ValueError(
+                    f"cannot reshape a view of {numel} elements into {tuple(new)}"
+                )
+            new = [numel // known if _is_minus_one(x) else x for x in new]
+        for x in new:
+            if x < 1:
+                raise ValueError(f"reshape sizes must be >= 1, got {tuple(new)}")
+        if int(np.prod(new)) != numel:
+            raise ValueError(
+                f"cannot reshape a view of size {tuple(old_sizes)} into {tuple(new)}"
+            )
+        new_strides = [0] * len(new)
+        view_d = len(new) - 1
+        chunk_base = old_strides[-1]
+        tensor_numel = 1
+        view_numel = 1
+        for tensor_d in range(len(old_sizes) - 1, -1, -1):
+            tensor_numel *= old_sizes[tensor_d]
+            # A chunk of old dimensions ends where the next-outer one does not
+            # continue the walk (a size-1 dimension never breaks a chunk).
+            if tensor_d == 0 or (
+                old_sizes[tensor_d - 1] != 1
+                and (
+                    sym_any([old_strides[tensor_d - 1], chunk_base])
+                    or old_strides[tensor_d - 1] != tensor_numel * chunk_base
+                )
+            ):
+                while view_d >= 0 and (view_numel < tensor_numel or new[view_d] == 1):
+                    new_strides[view_d] = view_numel * chunk_base
+                    view_numel *= new[view_d]
+                    view_d -= 1
+                if view_numel != tensor_numel:
+                    raise ValueError(
+                        f"cannot reshape sizes {show(old_sizes)} strides "
+                        f"{show(old_strides)} into {show(new)} without a copy: "
+                        "the walk is not contiguous where the shape merges dimensions"
+                    )
+                if tensor_d > 0:
+                    chunk_base = old_strides[tensor_d - 1]
+                    tensor_numel = 1
+                    view_numel = 1
+        assert view_d == -1, "every new dimension is assigned a stride"
+        return self._with(sizes=new, strides=new_strides)
+
+    def _reshape_staged(self, new: list[Any], staged: int | None) -> Layout:
+        """Concrete dims match from both ends; the staged dim takes what is between."""
+        sizes, strides = self._sizes, self._strides
+        if staged is None:
+            # Concrete view, staged entries in the shape: nothing to match
+            # against the arithmetic, so treat the whole view as one run.
+            if self.rank > 1:
+                # Coalesce first so a single run stands for the whole walk.
+                flat = self.coalesce()
+                if flat.rank != 1:
+                    raise TypeError(
+                        "reshape() with staged entries needs a contiguous view "
+                        f"(sizes {show(sizes)} strides {show(strides)} coalesce "
+                        f"to rank {flat.rank})"
+                    )
+                return flat._reshape_staged(new, None)
+            run_n, run_s = sizes[0], strides[0]
+            run_new = new
+            prefix: list[Any] = []
+            suffix: list[Any] = []
+        else:
+            left, right = staged, staged + 1
+            run_n, run_s = sizes[staged], strides[staged]
+            # Concrete dimensions left of the staged one take new entries from
+            # the left until their product is met; the right ones likewise
+            # from the right. What remains is the staged dimension's run.
+            l_numel = int(np.prod(sizes[:left])) if left else 1
+            r_numel = int(np.prod(sizes[right:])) if right < self.rank else 1
+            lo = 0
+            acc = 1
+            while left and lo < len(new) and (acc < l_numel or _concrete_one(new[lo])):
+                if is_sym(new[lo]) or _is_minus_one(new[lo]):
+                    break
+                acc *= new[lo]
+                lo += 1
+            if left and acc != l_numel:
+                raise ValueError(
+                    f"cannot reshape sizes {show(sizes)} into {show(new)}: the "
+                    f"concrete dimensions {show(sizes[:left])} do not match a "
+                    "prefix of the new shape"
+                )
+            hi = len(new)
+            acc = 1
+            while (
+                right < self.rank
+                and hi > lo
+                and (acc < r_numel or _concrete_one(new[hi - 1]))
+            ):
+                if is_sym(new[hi - 1]) or _is_minus_one(new[hi - 1]):
+                    break
+                acc *= new[hi - 1]
+                hi -= 1
+            if right < self.rank and acc != r_numel:
+                raise ValueError(
+                    f"cannot reshape sizes {show(sizes)} into {show(new)}: the "
+                    f"concrete dimensions {show(sizes[right:])} do not match a "
+                    "suffix of the new shape"
+                )
+            prefix = new[:lo]
+            suffix = new[hi:]
+            run_new = new[lo:hi]
+        if not run_new:
+            raise ValueError(
+                f"cannot reshape sizes {show(sizes)} into {show(new)}: no entry "
+                "is left for the staged dimension (merging a staged dimension "
+                "with its neighbours is not supported)"
+            )
+        # The run's entries multiply to the staged size: a guard checks it,
+        # and a -1 is what is left after the others (concrete or staged).
+        inferred = [i for i, x in enumerate(run_new) if _is_minus_one(x)]
+        known = sprod([x for x in run_new if not _is_minus_one(x)] or [1])
+        run_sizes = list(run_new)
+        if inferred:
+            require(
+                run_n % known == 0,
+                f"dimension of size {show(run_n)} is not divisible by {show(known)} "
+                f"for reshape to {show(new)}",
+            )
+            run_sizes[inferred[0]] = run_n // known
+        else:
+            require(
+                known == run_n,
+                f"reshape to {show(new)} does not multiply to the dimension "
+                f"of size {show(run_n)}",
+            )
+        run_strides = [s * run_s for s in _c_strides(run_sizes)]
+        out_sizes = list(run_sizes)
+        out_strides = list(run_strides)
+        if prefix:
+            lhs = Layout(
+                self._tensor_dims, 0, sizes[:left], strides[:left]
+            )._reshape_concrete(list(prefix))
+            out_sizes = lhs._sizes + out_sizes
+            out_strides = lhs._strides + out_strides
+        if suffix:
+            rhs = Layout(
+                self._tensor_dims, 0, sizes[right:], strides[right:]
+            )._reshape_concrete(list(suffix))
+            out_sizes = out_sizes + rhs._sizes
+            out_strides = out_strides + rhs._strides
+        return self._with(sizes=out_sizes, strides=out_strides)
+
+    def transpose(self, *axes: Any) -> Layout:
+        """Reorder dimensions (NumPy ``transpose``): :meth:`permute` with NumPy's calling forms.
+
+        ``transpose()`` reverses the dimensions; ``transpose(0, 2, 1, 3)`` and
+        ``transpose((0, 2, 1, 3))`` are both accepted. The walk order follows
+        the new dimension order, so after ``reshape(M // m, m, K // k, k)``,
+        ``transpose(0, 2, 1, 3)`` walks tile by tile.
+        """
+        if len(axes) == 1 and isinstance(axes[0], (list, tuple)):
+            axes = tuple(axes[0])
+        if not axes:
+            axes = tuple(range(self.rank - 1, -1, -1))
+        return self.permute(axes)
+
+    @property
+    def T(self) -> Layout:  # noqa: N802  (NumPy name)
+        """``transpose()``: the dimensions reversed."""
+        return self.transpose()
+
+    def broadcast_to(self, shape: Sequence[IntLike]) -> Layout:
+        """Walk the view again along new or size-1 dimensions (NumPy ``broadcast_to``).
+
+        ``shape`` is right-aligned with the view's sizes. A new leading
+        dimension, or an existing dimension of size 1, is walked with stride
+        0, so the same elements are revisited; every other entry must equal
+        the view's size (a guard, for staged values). ``repeat(n)`` is
+        ``broadcast_to((n, *shape))``.
+        """
+        shape = [sint(x) for x in shape]
+        if len(shape) < self.rank:
+            raise ValueError(
+                f"cannot broadcast a view of shape {show(self._sizes)} to "
+                f"{show(shape)}: fewer dimensions"
+            )
+        lead = len(shape) - self.rank
+        strides: list[IntLike] = [0] * lead
+        for n_new, n_old, s in zip(shape[lead:], self._sizes, self._strides):
+            if _concrete_one(n_old) and not _concrete_one(n_new):
+                strides.append(0)
+            else:
+                require(
+                    n_new == n_old,
+                    f"cannot broadcast a view of shape {show(self._sizes)} to "
+                    f"{show(shape)}: a dimension that is not 1 must match",
+                )
+                strides.append(s)
+        return self._with(sizes=shape, strides=strides)
 
     def slice(self, key: Any) -> Layout:
         """Restrict the view with NumPy basic indexing.

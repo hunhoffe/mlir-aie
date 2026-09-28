@@ -24,15 +24,45 @@ view is a composition of a few pure operations on the view's integers:
 | Gather several tiles into one step | `grid.group(repeats, steps=, col_major=, partial=)` |
 | Change the order tiles are visited | `grid.order("col")` |
 | Transpose the walk inside each tile | `grid.permute_tile((1, 0))` |
-| Transpose or permute a whole view | `.permute((1, 0))` |
+| Transpose or permute a whole view | `.permute((1, 0))`, `.transpose(...)`, `.T` |
 | Restrict a view with NumPy indexing | `layout[2:6, ::2]` (`.slice()`) |
-| Walk the same data again | `.repeat(n)` (a stride-0 outermost dimension) |
+| Regroup dimensions without moving data | `.reshape(...)` (NumPy `reshape`; `.split()`/`.merge()` one at a time) |
+| Walk the same data again | `.repeat(n)`, `.broadcast_to(shape)` (stride-0 dimensions) |
 | Read a tile-blocked buffer back in row-major order | `grid.inverse()` |
 | Fewest dimensions for the same walk | `.coalesce()` |
 
 Because every operation is arithmetic on sizes and strides, the same code runs
 on Python ints at generation time and on staged runtime values inside a
 dynamic runtime sequence (see the `symbolic` helpers below).
+
+### NumPy spellings
+
+`reshape`, `transpose`/`T`, `broadcast_to` and indexing follow NumPy, and
+together they say everything a DMA descriptor can (except padding, which is
+`.pad()`): indexing picks *which* elements, `reshape` regroups dimensions,
+`transpose` sets the *order* they are walked in, `broadcast_to` revisits
+them. The `TileGrid` operations are sugar over these. For a `(M, K)` tensor
+in `(m, k)` tiles:
+
+```python
+A = Layout.full((M, K))
+four = A.reshape(M // m, m, K // k, k)          # (rows of tiles, m, cols of tiles, k)
+four[i, :, j, :]                                # == A.tile((m, k)).at(i, j)
+four.transpose(0, 2, 1, 3)[i]                   # == A.tile((m, k)).group((1, K // k))[i]
+four.transpose(2, 0, 1, 3)[j]                   # == the j-th column of tiles, top to bottom
+four.transpose(0, 2, 1, 3)[i].broadcast_to((r, K // k, m, k))   # == ...[i].repeat(r)
+```
+
+A slice alone never changes the walk order: `four[i]` walks tile row `i`
+row by row across the whole row, not tile by tile; the `transpose` is what
+makes it tile by tile. Like NumPy on a strided view, `reshape` refuses to
+merge dimensions that are not adjacent in memory (it would need a copy), so
+`A.T.reshape(-1)` is an error while `A[:, ::2].reshape(-1)` is fine.
+
+Inside a `Runtime` sequence the same spellings apply to the runtime tensors
+themselves and stay bound to them: `A.reshape(...).transpose(...)[i]` is a
+`View` that `fill()`/`drain()` take as their one buffer argument (see
+[IRON Runtime](iron.md#views-of-runtime-data)).
 
 A `Layout` converts to the two forms the rest of IRON consumes:
 

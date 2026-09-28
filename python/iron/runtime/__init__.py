@@ -5,9 +5,17 @@
 #
 """Runtime: host-side data movement and worker execution orchestration."""
 
-from .data import RuntimeData
+from .data import BoundGrid, RuntimeData, View
 from .dmataskhandle import Task
 from .runtime import Runtime, sync_parameters
 from .taskgroup import TaskGroup
 
-__all__ = ["Runtime", "RuntimeData", "Task", "TaskGroup", "sync_parameters"]
+__all__ = [
+    "BoundGrid",
+    "Runtime",
+    "RuntimeData",
+    "Task",
+    "TaskGroup",
+    "View",
+    "sync_parameters",
+]

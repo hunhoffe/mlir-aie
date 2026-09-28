@@ -87,7 +87,15 @@ from .dtype import dtype_to_str, str_to_dtype
 from .kernel import ExternalFunction, Kernel, KernelObject, ObjectFile
 from .lock import Lock
 from .program import Program
-from .runtime import Runtime, RuntimeData, Task, TaskGroup, sync_parameters
+from .runtime import (
+    BoundGrid,
+    Runtime,
+    RuntimeData,
+    Task,
+    TaskGroup,
+    View,
+    sync_parameters,
+)
 from .scratchpad_parameter import ScratchpadParameter
 from .worker import Worker, WorkerRuntimeBarrier
 
@@ -104,6 +112,8 @@ __all__ = [
     "Runtime",
     "TaskGroup",
     "RuntimeData",
+    "View",
+    "BoundGrid",
     "Task",
     "sync_parameters",
     "ObjectFifo",

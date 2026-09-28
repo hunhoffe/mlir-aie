@@ -1,6 +1,9 @@
 # Slice notation in taplib and mlir-aie: options
 
-Status: exploration, no decision taken. Branch `claude/taplib-slice-notation`.
+Status: options A and B are implemented on branch
+`claude/taplib-slice-notation` (`Layout.reshape`/`transpose`/`T`/
+`broadcast_to`; `RuntimeData` views that `fill()`/`drain()` take directly).
+C, D and E remain open.
 
 This note asks how far NumPy-style slice notation can be pushed as the
 primary way to describe DMA data movement, both in the IRON Python API and in
