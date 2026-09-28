@@ -575,7 +575,7 @@ static LogicalResult configureBdInBlock(const AIE::AIETargetModel &targetModel,
 
   if (auto packetInfo = bdOp.getPacket()) {
     packetType = packetInfo->getPktType();
-    packetID = packetInfo->getPktId();
+    packetID = packetInfo->assignedId();
   }
 
   if (packetID) {

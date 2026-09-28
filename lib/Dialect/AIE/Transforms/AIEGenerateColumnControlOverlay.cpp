@@ -537,7 +537,7 @@ struct AIEGenerateColumnControlOverlayPass
       if (tOp->hasAttr("controller_id"))
         ctrlPktFlowID =
             (int)tOp->getAttrOfType<AIE::PacketInfoAttr>("controller_id")
-                .getPktId();
+                .assignedId();
       else
         ctrlPktFlowID = tileIDMap[{tOp.colIndex(), tOp.rowIndex()}];
       // Check shim channel availability

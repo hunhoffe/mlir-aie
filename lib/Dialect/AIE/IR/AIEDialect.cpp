@@ -937,6 +937,9 @@ LogicalResult ObjectFifoDmaEndpointOp::verify() {
   if (failed(verifyEndpoint(*this, pool, getSegments()))) {
     return failure();
   }
+  if (failed(verifyAssignedPacket(*this, getPacketAttr()))) {
+    return failure();
+  }
 
   std::optional<ArrayAttr> segmentNames = getSegments();
   size_t selectedCount = segmentNames ? segmentNames->size() : 1;
@@ -1025,6 +1028,9 @@ LogicalResult RouteEndpointOp::verify() {
   if (!tile) {
     return emitOpError("tile operand is not an aie.tile or aie.logical_tile");
   }
+  if (failed(verifyAssignedPacket(*this, getPacketAttr()))) {
+    return failure();
+  }
   // getRouteDirection() reads this end's direction off the flow naming it, so a
   // second mention would leave it ambiguous, including both ends of one flow.
   StringRef name = getSymName();
@@ -1063,10 +1069,6 @@ LogicalResult RouteEndpointOp::verify() {
 LogicalResult RouteOp::verify() {
   if (getDestinations().empty()) {
     return emitOpError("expects at least one destination");
-  }
-
-  if (getPacketId() && !getPacket()) {
-    return emitOpError("packet_id is only meaningful on a packet flow");
   }
 
   auto device = (*this)->getParentOfType<DeviceOp>();
@@ -2198,6 +2200,10 @@ TileOp TileElement::getTileOp() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult LogicalTileOp::verify() {
+  if (failed(verifyAssignedPacket(
+          *this, (*this)->getAttrOfType<PacketInfoAttr>("controller_id"),
+          "controller_id")))
+    return failure();
   const auto &targetModel = getTargetModel(*this);
   int columns = targetModel.columns();
   int rows = targetModel.rows();
@@ -2406,6 +2412,10 @@ void LogicalTileOp::print(OpAsmPrinter &printer) {
 //===----------------------------------------------------------------------===//
 
 LogicalResult TileOp::verify() {
+  if (failed(verifyAssignedPacket(
+          *this, (*this)->getAttrOfType<PacketInfoAttr>("controller_id"),
+          "controller_id")))
+    return failure();
   const auto &targetModel = getTargetModel(*this);
   int columns = targetModel.columns();
   int rows = targetModel.rows();
@@ -2999,6 +3009,17 @@ static bool isBdPacketEnabled(DMABDOp bd) {
   if (Block *blk = bd->getBlock())
     return !blk->getOps<DMABDPACKETOp>().empty();
   return false;
+}
+
+LogicalResult xilinx::AIE::verifyAssignedPacket(Operation *op,
+                                                PacketInfoAttr packet,
+                                                StringRef what) {
+  if (packet && !packet.isAssigned())
+    return op->emitOpError()
+           << what
+           << " has no pkt_id; allocation assigns one, so a header at "
+              "this level must carry it";
+  return success();
 }
 
 LogicalResult
@@ -3615,9 +3636,11 @@ LogicalResult DMABDOp::verify() {
     }
   }
   if (auto packetInfo = getPacket()) {
+    if (failed(verifyAssignedPacket(*this, *packetInfo)))
+      return failure();
     if (packetInfo->getPktType() > 7)
       return emitOpError("Packet type field can only hold 3 bits.");
-    if (packetInfo->getPktId() >
+    if (packetInfo->assignedId() >
         getTargetModel(getOperation()).getMaxPacketId())
       return emitOpError("Packet ID field can only hold 5 bits.");
   }
@@ -4405,7 +4428,7 @@ LogicalResult ShimDMAAllocationOp::verify() {
     return emitOpError("tile must be a shim tile");
   }
 
-  return success();
+  return verifyAssignedPacket(*this, getPacketAttr());
 }
 
 TileOp ShimDMAAllocationOp::getTileOp() {
