@@ -472,6 +472,11 @@ mode.
 The [Nightly Kernel Checks dashboard](https://xilinx.github.io/mlir-aie/kernel-checks/)
 shows run health, per-kernel correctness and timing, and metric histories,
 with warnings for truncated traces and toolchain, runtime or host changes.
+Besides the night's moves it lists drift: series whose last three runs or
+more are all past their threshold against the series' median over the
+previous 30 days. A suite index per NPU and metric (the geometric mean of
+each run's values relative to the series' 90-day medians, over the series
+present in at least 80% of those runs) tracks the suite as a whole.
 The dashboard and Peano-PR report share `utils/kernel_checks/thresholds.json`:
 2% for cycles and kernel object size; for `npu_us`, 10% and more than three
 times the larger MAD. Reports are informational, not PR gates.
