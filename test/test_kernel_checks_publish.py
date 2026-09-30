@@ -561,3 +561,133 @@ def test_every_file_carries_the_schema_and_a_newer_one_is_refused(publish, tmp_p
     )
     with pytest.raises(publish.NewerSchema):
         publish.rebuild(out)
+
+
+def test_release_runs_are_kept_for_good_and_filed_under_their_tag(publish, tmp_path):
+    now = datetime.datetime(2026, 9, 29, tzinfo=datetime.timezone.utc)
+    # Far more nightlies than MAX_RUNS, and a release measured long before them.
+    records = [
+        {"id": str(i), "date": publish.iso(now - datetime.timedelta(days=i))}
+        for i in range(0, 3000)
+    ]
+    release = {
+        "id": "rel",
+        "tag": "v1.0.0",
+        "date": publish.iso(now - datetime.timedelta(days=4000)),
+    }
+    kept = publish.prune(records + [release], now)
+    assert kept[0] is release
+    assert len(kept) == publish.MAX_RUNS + 1
+    # A release within the window does not push a nightly out of the cap.
+    recent = {"id": "rel2", "tag": "v2.0.0", "date": records[1]["date"]}
+    kept = publish.prune(records + [recent], now)
+    assert len(kept) == publish.MAX_RUNS + 1
+    assert {r["id"] for r in kept} >= {"0", "1", "rel2"}
+
+
+def test_rebuild_writes_and_prunes_release_records(publish, tmp_path):
+    out = tmp_path / "npu1"
+    (out / "runs").mkdir(parents=True)
+    now = datetime.datetime(2026, 9, 29, tzinfo=datetime.timezone.utc)
+
+    def record(id, days, tag=None):
+        r = {
+            "target": "npu1",
+            "id": id,
+            "url": "",
+            "commit": {},
+            "date": publish.iso(now - datetime.timedelta(days=days)),
+            "pmode": "turbo",
+            "provenance": {},
+            "sane": True,
+            "published": True,
+            "n_rows": 1,
+            "failed": [],
+            "truncated": [],
+            "rows": {"add/1/bf16": {"cycles": {"value": days, "unit": "cycles"}}},
+        }
+        if tag:
+            r["tag"] = tag
+        (out / "runs" / f"{id}.json").write_text(json.dumps(r))
+
+    record("n0", 0)
+    record("n1", 1)
+    record("r1", 700, "v1.0.0")
+    publish.rebuild(out, now)
+    assert sorted(p.stem for p in (out / "runs").glob("*.json")) == ["n0", "n1", "r1"]
+    filed = json.loads((out / "releases/v1.0.0.json").read_text())
+    assert filed["id"] == "r1" and filed["rows"]
+    index = json.loads((out / "runs.json").read_text())
+    assert [r["id"] for r in index["runs"]] == ["r1", "n1", "n0"]
+    assert index["runs"][0]["tag"] == "v1.0.0"
+    # The release is a point in the history like any other run.
+    cycles = json.loads((out / "history/cycles.json").read_text())
+    assert cycles["series"]["add/1/bf16"]["values"] == [700, 1, 0]
+    # A release record that is gone takes its filed copy with it.
+    (out / "runs/r1.json").unlink()
+    publish.rebuild(out, now)
+    assert not (out / "releases/v1.0.0.json").exists()
+
+
+def test_perf_records_the_tag_it_is_given_or_the_one_actions_runs_on(tmp_path):
+    out = tmp_path / "npu1"
+    results = results_dir(tmp_path)
+    common = [
+        "perf",
+        "--target",
+        "npu1",
+        "--results",
+        results,
+        "--out",
+        out,
+        "--run-url",
+        "",
+    ]
+    run_cli(
+        [
+            *common,
+            "--run-id",
+            "1",
+            "--date",
+            "2026-09-01T00:00:00+00:00",
+            "--tag",
+            "v1.2.3",
+        ]
+    )
+    assert json.loads((out / "latest.json").read_text())["tag"] == "v1.2.3"
+    assert (out / "releases/v1.2.3.json").exists()
+    env = {**os.environ, "GITHUB_SHA": "d53582d3e0f9"}
+    subprocess.run(
+        [
+            sys.executable,
+            SCRIPT,
+            *map(
+                str, [*common, "--run-id", "2", "--date", "2026-09-02T00:00:00+00:00"]
+            ),
+        ],
+        check=True,
+        env={**env, "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v2.0.0"},
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            SCRIPT,
+            *map(
+                str, [*common, "--run-id", "3", "--date", "2026-09-03T00:00:00+00:00"]
+            ),
+        ],
+        check=True,
+        env={**env, "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main"},
+        capture_output=True,
+    )
+    runs = json.loads((out / "runs.json").read_text())["runs"]
+    assert [(r["id"], r.get("tag")) for r in runs] == [
+        ("1", "v1.2.3"),
+        ("2", "v2.0.0"),
+        ("3", None),
+    ]
+    assert sorted(p.name for p in (out / "releases").glob("*.json")) == [
+        "v1.2.3.json",
+        "v2.0.0.json",
+    ]

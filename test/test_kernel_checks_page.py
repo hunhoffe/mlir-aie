@@ -757,3 +757,159 @@ const h2 = $('cards').children[0].children[0];
 assert.equal(h2.text, 'npu1 · aie2 · Phoenix');
 assert.equal(h2.children[2].title, 'reported as RyzenAI-npu1');
 """)
+
+
+DAILY = """
+const DAY = 24 * 3600 * 1000;
+// One case measured on consecutive days; `values` per run, `range` per value.
+const daily = (name, unit, values, range) => fromRecords({ npu1: values.map((v, i) =>
+  rec(String(i + 1), (i + 1) * DAY, 'turbo', { [name]: [unit, v, range ? range(v) : undefined] })) });
+const points = db => db.series[0].byMode.get('turbo');
+const ten = Array(10).fill(100);
+"""
+
+
+def test_drift_needs_a_window_and_persists_past_one_outlier(page):
+    page(DAILY + """
+assert.equal(median([3, 1, 2]), 2);
+assert.equal(median([1, 4, 2, 3]), 2.5);
+// Ten days at 100, then three at 103: the last three all past 2% of the median.
+let d = driftOf(points(daily('relu/1/bf16/cycles', 'cycles', [...ten, 103, 103, 103])), 'cycles');
+assert.deepEqual(d, { baseline: 100, latest: 103, change: 0.03, cls: 'worse', runs: 3, flagged: true });
+d = driftOf(points(daily('relu/1/bf16/kernel_object_bytes', 'bytes', [...ten, 97, 97, 97])), 'kernel_object_bytes');
+assert.deepEqual([d.cls, d.runs, d.flagged], ['better', 3, true]);
+// A spike on the last night alone is one run, not drift.
+d = driftOf(points(daily('relu/1/bf16/cycles', 'cycles', [...ten, 100, 100, 103])), 'cycles');
+assert.deepEqual([d.cls, d.runs, d.flagged], ['worse', 1, false]);
+// Back at the baseline: no verdict, whatever came before.
+d = driftOf(points(daily('relu/1/bf16/cycles', 'cycles', [...ten, 103, 103, 100])), 'cycles');
+assert.deepEqual([d.change, d.cls, d.runs, d.flagged], [0, '', 0, false]);
+// Under 1% is within the threshold however long it lasts.
+assert.equal(driftOf(points(daily('relu/1/bf16/cycles', 'cycles', [...ten, 101, 101, 101])), 'cycles').flagged, false);
+// Four points before the trailing three are too few; five are enough.
+assert.equal(driftOf(points(daily('relu/1/bf16/cycles', 'cycles', [100, 100, 100, 100, 103, 103, 103])), 'cycles'), null);
+assert.equal(driftOf(points(daily('relu/1/bf16/cycles', 'cycles', [100, 100, 100, 100, 100, 103, 103, 103])), 'cycles').flagged, true);
+assert.equal(driftOf([], 'cycles'), null);
+// Only the 30 days before the latest count: six old runs, four recent, then the three.
+const at = (day, v) => rec(String(day), day * DAY, 'turbo', { 'relu/1/bf16/cycles': ['cycles', v] });
+const old = [1, 2, 3, 4, 5, 6].map(day => at(day, 100));
+const fresh = [48, 49, 50, 51].map(day => at(day, 100)), tail = [58, 59, 60].map(day => at(day, 103));
+assert.equal(driftOf(points(fromRecords({ npu1: [...old, ...fresh, ...tail] })), 'cycles'), null);
+assert.equal(driftOf(points(fromRecords({ npu1: [...old, at(47, 100), ...fresh, ...tail] })), 'cycles').flagged, true);
+""")
+
+
+def test_npu_us_drift_must_clear_its_own_noise(page):
+    page(DAILY + """
+// 15% over the median, but within three times a 10 us MAD: noise, not drift.
+const noisy = driftOf(points(daily('relu/1/bf16/npu_us', 'us', [...ten, 115, 115, 115], () => '± 10.0; min 1 max 2 n=50')), 'npu_us');
+assert.deepEqual([noisy.change, noisy.cls, noisy.runs, noisy.flagged], [0.15, '', 0, false]);
+const steady = driftOf(points(daily('relu/1/bf16/npu_us', 'us', [...ten, 115, 115, 115], () => '± 1.0; min 1 max 2 n=50')), 'npu_us');
+assert.deepEqual([steady.cls, steady.runs, steady.flagged], ['worse', 3, true]);
+// Without a MAD, the percentage alone.
+assert.equal(driftOf(points(daily('relu/1/bf16/npu_us', 'us', [...ten, 115, 115, 115])), 'npu_us').flagged, true);
+// Each trailing run clears its own MAD: a noisy night in the middle breaks the streak.
+const mixed = daily('relu/1/bf16/npu_us', 'us', [...ten, 115, 115, 115], v => v === 115 ? '± 1.0; min 1 max 2 n=50' : '');
+mixed.series[0].byMode.get('turbo')[11].row.range = '± 10.0; min 1 max 2 n=50';
+assert.deepEqual([driftOf(points(mixed), 'npu_us').runs, driftOf(points(mixed), 'npu_us').flagged], [1, false]);
+""")
+
+
+def test_suite_index_is_a_geometric_mean_over_the_series_usually_present(page):
+    page(DAILY + """
+db = fromRecords({ npu1: [
+  rec('1', 1 * DAY, 'turbo', { 'a/1/bf16/cycles': ['cycles', 100], 'b/1/bf16/cycles': ['cycles', 50] }),
+  rec('2', 2 * DAY, 'turbo', { 'a/1/bf16/cycles': ['cycles', 100], 'b/1/bf16/cycles': ['cycles', 50], 'c/1/bf16/cycles': ['cycles', 7] }),
+  rec('3', 3 * DAY, 'turbo', { 'a/1/bf16/cycles': ['cycles', 110], 'b/1/bf16/cycles': ['cycles', 55],
+                               'a/1/bf16/kernel_object_bytes': ['bytes', 4096] }),
+  rec('4', 4 * DAY, 'performance', { 'a/1/bf16/cycles': ['cycles', 1] }),
+]});
+// c/ is in one run of three: out. Medians 100 and 50, so the last run is 1.1 in both.
+const idx = suiteIndex(db, 'npu1', 'cycles', 'turbo');
+assert.equal(idx.series, 2);
+assert.deepEqual(idx.runs.map(r => [r.id, r.date]), [['npu1|1', DAY], ['npu1|2', 2 * DAY], ['npu1|3', 3 * DAY]]);
+const near = (x, y) => Math.abs(x - y) < 1e-9;
+assert.ok(near(idx.runs[0].value, 1) && near(idx.runs[1].value, 1) && near(idx.runs[2].value, 1.1));
+assert.ok(near(idx.latest, 1.1) && near(idx.median30, 1));
+// Within a day of the latest: two runs, medians 105 and 52.5.
+const short = suiteIndex(db, 'npu1', 'cycles', 'turbo', 1);
+assert.equal(short.runs.length, 2);
+assert.ok(near(short.latest / short.runs[0].value, 1.1));
+// One run of a metric, another mode with one run, an NPU without runs: nothing.
+assert.equal(suiteIndex(db, 'npu1', 'kernel_object_bytes', 'turbo'), null);
+assert.equal(suiteIndex(db, 'npu1', 'cycles', 'performance'), null);
+assert.equal(suiteIndex(db, 'npu2', 'cycles', 'turbo'), null);
+assert.equal(suiteIndex(daily('a/1/bf16/cycles', 'cycles', [100]), 'npu1', 'cycles', 'turbo'), null);
+// A geometric mean: 2x and 0.5x of the medians cancel.
+const pair = fromRecords({ npu1: [
+  rec('1', 1 * DAY, 'turbo', { 'a/1/bf16/cycles': ['cycles', 100], 'b/1/bf16/cycles': ['cycles', 100] }),
+  rec('2', 2 * DAY, 'turbo', { 'a/1/bf16/cycles': ['cycles', 100], 'b/1/bf16/cycles': ['cycles', 100] }),
+  rec('3', 3 * DAY, 'turbo', { 'a/1/bf16/cycles': ['cycles', 200], 'b/1/bf16/cycles': ['cycles', 50] }),
+]});
+assert.ok(suiteIndex(pair, 'npu1', 'cycles', 'turbo').runs.every(r => near(r.value, 1)));
+""")
+
+
+TRENDS = """
+const DAY = 24 * 3600 * 1000;
+// Thirteen nightlies: relu drifts up 3% over the last three, gelu holds, lone ran once.
+const night = (i, relu) => rec(String(i), i * DAY, 'turbo', {
+  'relu/1/bf16/cycles': ['cycles', relu], 'gelu/1/bf16/cycles': ['cycles', 200],
+  ...(i === 5 ? { 'lone/1/bf16/cycles': ['cycles', 9] } : {}),
+});
+const nights = n => Array.from({ length: n }, (_, i) => night(i + 1, i < 10 ? 100 : 103));
+db = fromRecords({ npu1: nights(13) });
+"""
+
+
+def test_dashboard_lists_drift_and_the_suite_index(page):
+    page(TRENDS + """
+const cards = renderDashboard(['npu1', 'npu2'], db, new Map(), new Map(), 14 * DAY);
+assert.equal($('regressions').children.length, 0);
+renderTrends(['npu1', 'npu2'], db, cards);
+const rows = $('drift').children;
+assert.deepEqual(rows.map(r => r.children.map(c => c.text)),
+                 [['npu1', 'relu/1/bf16 chart', 'cycles', '100 cycles', '103 cycles', '+3.0%', '3']]);
+assert.equal(rows[0].children[1].children[0].href, '#view=kernel&kernel=relu');
+assert.equal(rows[0].children[1].children[3].href, '#view=charts&npu=npu1&metric=cycles&kernel=relu%2F1%2Fbf16');
+assert.equal(rows[0].children[5].className, 'worse');
+assert.equal($('drift-about').textContent,
+             '1 series has drifted past its threshold against its 30-day median for 3 or more runs.');
+// The card: sqrt(1.03) over relu and gelu; lone is in one run of thirteen.
+const counts = $('cards').children[0].children.find(c => c.className === 'counts');
+assert.equal(counts.children[counts.children.length - 1].text,
+             'Suite index (cycles): 1.01 (+1.5%) · 30-day median 1.00 · 2 series');
+assert.equal(counts.children[counts.children.length - 1].children[1].className, '');
+// One chart per NPU and gated metric with data, with the run's commit in its tooltip.
+const boxes = $('index-charts').children;
+assert.equal(boxes.length, 1);
+assert.equal(boxes[0].children[0].text, 'npu1 · suite index · cycles +1.5%');
+assert.equal(chart.data.datasets[0].data.length, 13);
+assert.ok(Math.abs(chart.data.datasets[0].data[12] - Math.sqrt(1.03)) < 1e-9);
+assert.equal(chart.options.plugins.tooltip.callbacks.afterTitle([{ dataIndex: 12 }]), 'abcdef1 same revision');
+assert.equal(chart.options.plugins.tooltip.callbacks.label({ raw: chart.data.datasets[0].data[12] }), 'npu1 cycles: 1.015');
+assert.deepEqual(chart.options.plugins.markers.at, []);
+chart.options.onClick(null, [{ index: 12 }]);
+assert.deepEqual(opened, [commit.url, '_blank', 'noopener']);
+""")
+
+
+def test_drift_says_when_the_history_is_too_short_or_not_the_latest_run(page):
+    page(TRENDS + """
+db = fromRecords({ npu1: nights(7) });
+renderTrends(['npu1'], db, renderDashboard(['npu1'], db, new Map(), new Map(), 8 * DAY));
+assert.equal($('drift').children.length, 0);
+assert.equal($('drift-about').textContent,
+             'No drift against the 30-day window. npu1 has fewer than 5 runs in the window, too few to judge yet.');
+assert.ok($('cards').children[0].text.includes('Suite index (cycles): 1.00 (0.0%) · 30-day median 1.00 · 2 series'));
+""")
+    page(TRENDS + """
+// The latest run published nothing: last night's series are not its drift.
+const unsane = { runs: [{ id: '14', date: new Date(14 * DAY).toISOString(), pmode: 'turbo', published: false, sane: false,
+                          failed: [], truncated: [], provenance: {} }] };
+renderTrends(['npu1'], db, renderDashboard(['npu1'], db, new Map(), new Map([['npu1', unsane]]), 14 * DAY));
+assert.equal($('drift').children.length, 0);
+assert.equal($('index-charts').children.length, 0);
+assert.ok(!$('cards').text.includes('Suite index'));
+assert.equal($('drift-about').textContent, 'No drift against the 30-day window.');
+""")

@@ -1,0 +1,82 @@
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Nightly dashboard status
+
+# Record, once a day, what every scheduled workflow did last night: its
+# newest runs and their jobs (conclusion, duration, queue wait, runner), the
+# commits since its last green run, and the age of the Peano and LLVM pins
+# with the state of their bump PRs (utils/dashboard/collect.py). The result
+# lands under gh-pages:dashboard/status/ beside the dashboard page, which
+# reads nothing else. Tracked workflows are discovered from
+# .github/workflows/ (any file with a schedule), so a new nightly appears on
+# the dashboard without editing this one.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  schedule:
+    # After the 00:00 test nightlies, the 04:00 wheels and the 06:00 kernel
+    # checks have had time to finish, so the day's column is complete.
+    - cron: '23 9 * * *'
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write        # push to gh-pages
+      actions: read          # the runs and jobs
+      pull-requests: read    # the bump PRs
+      checks: read           # their check runs
+    # The same lock every gh-pages writer takes; queue rather than replace.
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # The collector appends to the history already on the branch, so the
+      # branch is checked out first (as a worktree, keeping this checkout's
+      # utils/ in place) and the collector writes straight into it.
+      - name: Add the publication branch as a worktree
+        run: |
+          git fetch origin gh-pages --depth=1
+          git worktree add --detach gh-pages-wt FETCH_HEAD
+          mkdir -p gh-pages-wt/dashboard/status
+
+      - name: Collect last night's status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 utils/dashboard/collect.py --repo "$GITHUB_REPOSITORY" \
+            --server "$GITHUB_SERVER_URL" --commit "$GITHUB_SHA" \
+            --workflows .github/workflows --out gh-pages-wt/dashboard/status
+
+      - name: Publish
+        run: |
+          cp utils/dashboard/index.html gh-pages-wt/dashboard/index.html
+          git -C gh-pages-wt add -A dashboard
+          git -C gh-pages-wt diff --cached --quiet || git -C gh-pages-wt \
+            -c user.name="github-actions[bot]" \
+            -c user.email="github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Dashboard status for $(date -u +%F)"
+          git -C gh-pages-wt push origin HEAD:gh-pages
+
+      - name: Upload the collected files
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dashboard-status-${{ github.run_id }}
+          path: gh-pages-wt/dashboard/status
+          if-no-files-found: ignore
+
+      - name: Remove the worktree
+        if: always()
+        run: git worktree remove --force gh-pages-wt
+
+      - name: Squash gh-pages history
+        uses: ./.github/actions/squash-gh-pages

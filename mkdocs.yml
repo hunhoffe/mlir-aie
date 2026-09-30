@@ -253,6 +253,7 @@ nav:
       - Implicit MLIR Context: programming_guide/implicit_mlir_context.md
       - Kernel Library: programming_guide/kernels_library.md
       - Nightly Kernel Checks: https://xilinx.github.io/mlir-aie/kernel-checks/
+      - Maintainer Dashboard: https://xilinx.github.io/mlir-aie/dashboard/
   - Agentic Programming:
     - Introduction: skills/agentic_programming.md
     - Agent Skills Overview: skills/README.md

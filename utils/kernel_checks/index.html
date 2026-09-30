@@ -18,7 +18,8 @@
                            (utils/kernel_checks/catalogue.py)
 
   Four views, all in the URL hash so a link reproduces one: the dashboard
-  (the latest run per NPU and what moved), the kernels table, one kernel's
+  (the latest run per NPU, what moved since the previous one, what drifted
+  over the last 30 days and a suite index per NPU), the kernels table, one kernel's
   detail, and the charts (one per NPU, case and metric, a line per power
   mode). No build step: the page is one file plus Chart.js from a CDN.
   test/test_kernel_checks_page.py runs the functions below under node with a
@@ -111,6 +112,10 @@
     .chart h3 a:hover { text-decoration: underline; }
     .chart .delta { font-weight: 400; color: var(--muted); }
     .chart .canvas { position: relative; height: 220px; }
+    /* The suite index charts are a glance, not a reading. */
+    #index-charts { margin-top: 16px; }
+    #index-charts .chart { min-height: 0; }
+    #index-charts .chart .canvas { height: 150px; }
     .empty { padding: 20px 0; color: var(--muted); }
     details.key { font-size: 13px; margin: 8px 0; }
     details.key summary { cursor: pointer; color: var(--link); }
@@ -159,6 +164,12 @@
           An <code>npu_us</code> change must also exceed three times the larger median absolute deviation of the two runs, so a noisy case does not flag its own jitter.</li>
         <li>Dashboard: the latest run per NPU, its provenance, what it checked, and the series that moved past their threshold
           since the previous nightly in the same power mode. Warnings name anything that makes the night's numbers less comparable.</li>
+        <li>Drift: the latest value against the median of the same series over the 30 days before its last three runs (at least
+          five runs, else no verdict), colored by the same thresholds. A series is listed only when its last three runs or more are
+          all past the threshold against that median, so one outlier is not drift and a slow slide over weeks is.</li>
+        <li>Suite index: per NPU and metric, the geometric mean over the series present in at least 80% of the last 90 days' runs
+          of each run's value relative to that series' 90-day median. 1.00 is the typical suite; below 1 is faster or smaller.
+          The card compares the latest run's index with its 30-day median, at the metric's threshold; the small charts trace it by run.</li>
         <li>Kernels: one row per kernel factory, and per NPU the builds it offers and how its cases fared in the latest nightly:
           <span class="fail">failing</span> cases failed the correctness sweep and are not timed,
           <span class="fail">timing failed</span> cases passed it but failed in the timing run (their series has a gap),
@@ -177,6 +188,7 @@
 
     <section id="dashboard">
       <div id="cards" class="cards"></div>
+      <div id="index-charts" class="charts"></div>
       <h2>Regressions since the previous nightly</h2>
       <p class="dim" id="regressions-about"></p>
       <div class="scroll"><table><thead><tr><th>NPU</th><th>Case</th><th>Metric</th><th>Previous</th><th>Latest</th><th>Change</th></tr></thead>
@@ -184,6 +196,10 @@
       <details id="improvements-box"><summary id="improvements-summary">Improvements</summary>
         <div class="scroll"><table><thead><tr><th>NPU</th><th>Case</th><th>Metric</th><th>Previous</th><th>Latest</th><th>Change</th></tr></thead>
           <tbody id="improvements"></tbody></table></div></details>
+      <h2>Drift against the 30-day window</h2>
+      <p class="dim" id="drift-about"></p>
+      <div class="scroll"><table><thead><tr><th>NPU</th><th>Case</th><th>Metric</th><th>30-day median</th><th>Latest</th><th>Change</th><th>Runs</th></tr></thead>
+        <tbody id="drift"></tbody></table></div>
     </section>
 
     <section id="kernels" hidden>
@@ -256,6 +272,15 @@
     const GATED = Object.keys(THRESHOLDS).filter(m => THRESHOLDS[m].gated);
     // Provenance fields whose change between runs is marked on the charts.
     const MARKED = ['peano', 'host', 'runtime', 'xrt', 'xdna'];
+    const DAY_MS = 24 * 3600 * 1000;
+    // Drift: the latest value against the median of the DRIFT_DAYS before
+    // the trailing PERSIST runs (at least MIN_WINDOW of them), flagged once
+    // PERSIST consecutive runs are past the threshold: one outlier is not
+    // drift, a slow slide is.
+    const DRIFT_DAYS = 30, PERSIST = 3, MIN_WINDOW = 5;
+    // Suite index: over the series present in PRESENCE of the last
+    // INDEX_DAYS' runs, so a case added last week does not move it.
+    const PRESENCE = 0.8, INDEX_DAYS = 90;
 
     // ------------------------------------------------------------------
     // Data
@@ -415,11 +440,104 @@
         if (cls === 'worse') regressed.push(item);
         else if (cls === 'better') improved.push(item);
       }
-      // Gated metrics first, then by change relative to the threshold.
-      const rank = x => (GATED.includes(x.series.metric) ? 0 : 1) - Math.abs(x.change) / threshold(x.series.metric) / 1000;
-      regressed.sort((x, y) => rank(x) - rank(y) || x.series.key.localeCompare(y.series.key));
-      improved.sort((x, y) => rank(x) - rank(y) || x.series.key.localeCompare(y.series.key));
+      sortMoves(regressed, x => x.change);
+      sortMoves(improved, x => x.change);
       return { last, regressed, improved };
+    }
+
+    // Gated metrics first, then by change relative to the threshold, so a
+    // 4% move in cycles outranks a 6% one in npu_us.
+    function sortMoves(items, changeOf) {
+      const rank = x => (GATED.includes(x.series.metric) ? 0 : 1) - Math.abs(changeOf(x)) / threshold(x.series.metric) / 1000;
+      return items.sort((x, y) => rank(x) - rank(y) || x.series.key.localeCompare(y.series.key));
+    }
+
+    function median(values) {
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = sorted.length >> 1;
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+
+    // One series' drift in one power mode, from its points by date: the
+    // latest against the median of those in [latest - DRIFT_DAYS, latest)
+    // before the trailing PERSIST, or null under MIN_WINDOW of them.
+    // `runs` counts the trailing points with the latest's (non-empty)
+    // verdict against that baseline; `flagged` needs PERSIST of them. An
+    // npu_us point must also clear its own MAD, as verdict() asks.
+    function driftOf(points, metric) {
+      const latest = points[points.length - 1];
+      if (!latest) return null;
+      const before = points.slice(0, -PERSIST).filter(p => p.date >= latest.date - DRIFT_DAYS * DAY_MS && p.date < latest.date);
+      if (before.length < MIN_WINDOW) return null;
+      const baseline = median(before.map(p => p.row.value));
+      if (!baseline) return null;
+      const factor = THRESHOLDS[metric] && THRESHOLDS[metric].mad;
+      const classOf = p => {
+        const cls = changeClass((p.row.value - baseline) / baseline, metric);
+        const mad = cls && factor ? madOf(p.row) : null;
+        return mad !== null && Math.abs(p.row.value - baseline) <= factor * mad ? '' : cls;
+      };
+      const cls = classOf(latest);
+      let runs = 0;
+      if (cls) for (let i = points.length - 1; i >= 0 && classOf(points[i]) === cls; i--) runs++;
+      return { baseline, latest: latest.row.value, change: (latest.row.value - baseline) / baseline, cls, runs, flagged: runs >= PERSIST };
+    }
+
+    // The series of one NPU that drifted, in the latest nightly's mode and
+    // ending with its point: {regressed, improved} of {series, drift}.
+    function driftSeries(db, npu) {
+      const { last } = latestCases(db, npu);
+      const regressed = [], improved = [];
+      if (!last) return { last, regressed, improved };
+      for (const s of db.series) {
+        if (s.npu !== npu || (THRESHOLDS[s.metric] && THRESHOLDS[s.metric].derived)) continue;
+        const pts = s.byMode.get(last.mode);
+        if (!pts || pts[pts.length - 1].id !== last.id) continue;
+        const drift = driftOf(pts, s.metric);
+        if (drift && drift.flagged) (drift.cls === 'worse' ? regressed : improved).push({ series: s, drift });
+      }
+      sortMoves(regressed, x => x.drift.change);
+      sortMoves(improved, x => x.drift.change);
+      return { last, regressed, improved };
+    }
+
+    // How many runs of the latest nightly's mode a drift window on that NPU
+    // holds: under MIN_WINDOW, no series can be judged yet.
+    function windowRuns(db, last) {
+      const runs = db.order.filter(o => o.npu === last.npu && o.mode === last.mode);
+      return runs.slice(0, -PERSIST).filter(o => o.date >= last.date - DRIFT_DAYS * DAY_MS).length;
+    }
+
+    // One NPU's suite index for `metric` in `mode`: per run of the last
+    // `days`, the geometric mean over the series present in PRESENCE of
+    // those runs of the run's value relative to the series' median over
+    // them. 1 is the typical suite; below 1 is faster or smaller. Null
+    // under two runs or without a qualifying series.
+    function suiteIndex(db, npu, metric, mode, days = INDEX_DAYS) {
+      const all = db.order.filter(o => o.npu === npu && o.mode === mode);
+      if (!all.length) return null;
+      const end = all[all.length - 1].date;
+      const runs = all.filter(o => o.date >= end - days * DAY_MS);
+      if (runs.length < 2) return null;
+      const logs = new Map(runs.map(o => [o.id, []]));
+      let series = 0;
+      for (const s of db.series) {
+        if (s.npu !== npu || s.metric !== metric) continue;
+        const pts = (s.byMode.get(mode) || []).filter(p => logs.has(p.id) && p.row.value > 0);
+        if (!pts.length || pts.length < PRESENCE * runs.length) continue;
+        const typical = median(pts.map(p => p.row.value));
+        for (const p of pts) logs.get(p.id).push(Math.log(p.row.value / typical));
+        series++;
+      }
+      if (!series) return null;
+      const out = runs.filter(o => logs.get(o.id).length).map(o => {
+        const l = logs.get(o.id);
+        return { id: o.id, date: o.date, value: Math.exp(l.reduce((a, b) => a + b, 0) / l.length) };
+      });
+      if (out.length < 2) return null;
+      const latest = out[out.length - 1];
+      const median30 = median(out.filter(r => r.date >= latest.date - DRIFT_DAYS * DAY_MS).map(r => r.value));
+      return { runs: out, series, latest: latest.value, median30 };
     }
 
     // Colored only past the metric's threshold: a 3% move is a regression
@@ -618,8 +736,14 @@
           link(hashFor({ view: 'charts', npu, metric: 'all', kernel: '', sort: 'worse' }), 'charts, worst first')));
       }
       card.append(counts);
+      // The suite index joins the counts once the histories are in.
+      card.counts = counts;
       return card;
     }
+
+    // Whether the series' latest point is this run's: it published numbers,
+    // or only the series say a run happened.
+    const isLatest = (run, last) => !run.recorded || (run.published && last && String(last.run) === String(run.id));
 
     function movedRow(npu, x) {
       const s = x.series;
@@ -633,17 +757,20 @@
         el('td', { className: x.cls }, formatChange(x.change)));
     }
 
+    // Returns per NPU its run and the card's counts list, for renderTrends.
     function renderDashboard(npus, db, catalogues, runsIndexes, now) {
       const cards = $('cards');
       const regressions = $('regressions'), improvements = $('improvements');
+      const drawn = new Map();
       let nRegressed = 0, nImproved = 0;
       for (const npu of npus) {
         const catalogue = catalogues.get(npu) || null;
         const run = latestRun(npu, runsIndexes.get(npu) || null, db, catalogue);
         const published = db ? movedSeries(db, npu) : null;
-        const moved = published && (!run.recorded ||
-          (run.published && published.last && String(published.last.run) === String(run.id))) ? published : null;
-        cards.append(runCard(npu, run, catalogue, moved, now));
+        const moved = published && isLatest(run, published.last) ? published : null;
+        const card = runCard(npu, run, catalogue, moved, now);
+        cards.append(card);
+        drawn.set(npu, { run, counts: card.counts });
         if (!moved) continue;
         for (const x of moved.regressed) regressions.append(movedRow(npu, x));
         for (const x of moved.improved) improvements.append(movedRow(npu, x));
@@ -655,6 +782,63 @@
         : 'No comparable changes to report for the latest run.';
       $('improvements-summary').textContent = `Improvements (${nImproved})`;
       $('improvements-box').hidden = nImproved === 0;
+      return drawn;
+    }
+
+    function driftRow(npu, x) {
+      const s = x.series, d = x.drift;
+      return el('tr', {},
+        el('td', {}, npu),
+        el('td', {}, link(kernelLink(s.factory), s.factory), el('span', { className: 'dim' }, s.kase.slice(s.factory.length)),
+          ' ', link(chartsLink(npu, s.kase, s.metric), 'chart', { className: 'dim' })),
+        el('td', {}, s.metric),
+        el('td', {}, formatValue(d.baseline, s.unit)),
+        el('td', {}, formatValue(d.latest, s.unit)),
+        el('td', { className: d.cls }, formatChange(d.change)),
+        el('td', {}, String(d.runs)));
+    }
+
+    // The card's line for one suite index: the latest run against the
+    // 30-day median, at the metric's threshold.
+    function indexLine(metric, idx) {
+      const change = (idx.latest - idx.median30) / idx.median30;
+      return el('li', {}, `Suite index (${metric}): ${idx.latest.toFixed(2)}`, changeSpan(change, changeClass(change, metric)),
+        ` · 30-day median ${idx.median30.toFixed(2)} · ${plural(idx.series, 'series')}`);
+    }
+
+    // The dashboard's trends, from the full histories `hist` rather than the
+    // two run records the tables above read: the drift table, and per NPU
+    // card its suite index lines and their charts. `cards` is what
+    // renderDashboard returned.
+    function renderTrends(npus, hist, cards) {
+      const body = $('drift'), grid = $('index-charts');
+      const short = [];
+      let n = 0;
+      indexSpecs = [];
+      for (const npu of npus) {
+        const c = cards.get(npu);
+        const drifted = driftSeries(hist, npu);
+        if (!c || !drifted.last || !isLatest(c.run, drifted.last)) continue;
+        for (const x of drifted.regressed.concat(drifted.improved)) body.append(driftRow(npu, x));
+        n += drifted.regressed.length + drifted.improved.length;
+        if (windowRuns(hist, drifted.last) < MIN_WINDOW) short.push(npu);
+        for (const metric of GATED) {
+          const idx = suiteIndex(hist, npu, metric, drifted.last.mode);
+          if (!idx) continue;
+          if (c.counts) c.counts.append(indexLine(metric, idx));
+          const change = (idx.latest - idx.median30) / idx.median30;
+          const title = el('h3', {}, `${npu} · suite index · ${metric} `,
+            el('span', { className: `delta ${changeClass(change, metric)}`, textContent: formatChange(change) }));
+          const canvas = el('canvas');
+          grid.append(el('div', { className: 'chart' }, title, el('div', { className: 'canvas' }, canvas)));
+          indexSpecs.push({ canvas, hist, idx, label: `${npu} ${metric}` });
+        }
+      }
+      $('drift-about').textContent = (n
+        ? `${plural(n, 'series')} ${n === 1 ? 'has' : 'have'} drifted past ${n === 1 ? 'its' : 'their'} threshold against ${n === 1 ? 'its' : 'their'} ${DRIFT_DAYS}-day median for ${PERSIST} or more runs.`
+        : `No drift against the ${DRIFT_DAYS}-day window.`) +
+        (short.length ? ` ${short.join(' and ')} ${short.length === 1 ? 'has' : 'have'} fewer than ${MIN_WINDOW} runs in the window, too few to judge yet.` : '');
+      drawIndexCharts();
     }
 
     // ------------------------------------------------------------------
@@ -893,6 +1077,9 @@
     // db: what the charts on screen draw from (history files); recent: the
     // latest and the previous run per NPU (run records), for the tables.
     let db, recent, modeColor, observer, charts = [];
+    // The dashboard's suite index charts: what to draw, and what is drawn,
+    // apart from the charts view's so neither view's destroys the other's.
+    let indexSpecs = [], indexCharts = [];
     let applyHash = () => {};
     let loadedCatalogues = [], metricList = ALL_METRICS, updated = '';
     const historyCache = new Map();
@@ -1029,8 +1216,56 @@
       }));
     }
 
-    // Chart boxes for `shown`, drawn as they scroll into view: a full sweep
-    // is thousands.
+    // One suite index as a line by run, around 1, with the run's commit and
+    // provenance in the tooltip and its changes marked like the other charts.
+    function drawIndex(target, hist, idx, label) {
+      const byId = new Map(hist.order.map(o => [o.id, o]));
+      const order = idx.runs.map(r => byId.get(r.id));
+      const labels = order.map(c => new Date(c.date).toISOString().slice(5, 10));
+      const color = cssVar('--series-1', '#0969da');
+      const fg = cssVar('--muted', '#57606a'), grid = cssVar('--grid', 'rgba(0,0,0,0.08)');
+      return new Chart(target, {
+        type: 'line',
+        data: { labels, datasets: [{ label, data: idx.runs.map(r => r.value), fill: false, tension: 0,
+                                     borderColor: color, backgroundColor: color, pointRadius: 2, borderWidth: 1.5 }] },
+        options: {
+          animation: false,
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            x: { ticks: { color: fg, maxRotation: 0, autoSkip: true }, grid: { color: grid } },
+            y: { suggestedMin: 0.95, suggestedMax: 1.05, title: { display: true, text: `index (1 = ${INDEX_DAYS}-day typical)`, color: fg }, ticks: { color: fg }, grid: { color: grid } },
+          },
+          plugins: {
+            legend: { display: false },
+            markers: { at: markersFor(order), color: cssVar('--accent', '#e8710a') },
+            tooltip: {
+              callbacks: {
+                title: items => items.length ? formatDate(order[items[0].dataIndex].date) : '',
+                afterTitle: items => {
+                  const c = order[items[0].dataIndex];
+                  return `${c.commit.id.slice(0, 7)} ${c.commit.message.split('\n')[0]}`;
+                },
+                label: item => `${label}: ${Number(item.raw).toFixed(3)}`,
+              },
+            },
+          },
+          onClick: (_e, active) => {
+            if (active.length) window.open(order[active[0].index].commit.url, '_blank', 'noopener');
+          },
+        },
+        plugins: [MARKERS],
+      });
+    }
+
+    // Drawn (again) from indexSpecs: the theme's colors are read at draw time.
+    function drawIndexCharts() {
+      if (typeof Chart !== 'function') return;
+      indexCharts.forEach(c => c.destroy());
+      indexCharts = indexSpecs.map(s => drawIndex(s.canvas, s.hist, s.idx, s.label));
+    }
+
     // The series in `shown` by factory, in the order of each factory's first
     // series, so a sort by change puts the factory with the largest first.
     function groupByFactory(shown) {
@@ -1236,6 +1471,7 @@
       applyTheme(readTheme());
       $('theme').addEventListener('click', () => {
         applyTheme(isDark() ? 'light' : 'dark');
+        drawIndexCharts();
         if (currentView() === 'charts' && recent) render();
         if (currentView() === 'kernel') showKernel(readHash().kernel || '');
       });
@@ -1259,7 +1495,11 @@
       const data = published.length ? recent : null;
       loadedCatalogues = catalogues;
       const npus = NPUS.filter(n => catalogues.some(c => c.npu === n) || indexes.get(n));
-      renderDashboard(npus.length ? npus : NPUS, data, new Map(catalogues.map(c => [c.npu, c])), indexes, Date.now());
+      const shown = npus.length ? npus : NPUS;
+      const cards = renderDashboard(shown, data, new Map(catalogues.map(c => [c.npu, c])), indexes, Date.now());
+      // The trends read every run's history, so they follow the rest.
+      if (data) loadHistories(shown, GATED.concat(['npu_us'])).then(hist => renderTrends(shown, hist, cards));
+      else $('drift-about').textContent = 'No history has been published yet.';
       renderKernels(catalogues, data);
       const found = [...new Set(recent.series.map(s => s.metric))];
       metricList = found.length

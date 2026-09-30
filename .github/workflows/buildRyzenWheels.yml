@@ -831,3 +831,55 @@ jobs:
           replacesArtifacts: false
           omitBodyDuringUpdate: true
           makeLatest: false
+
+  record-sizes:
+    name: Record wheel sizes
+    # Wheel size creeps one PR at a time, each too small to notice; the
+    # maintainer dashboard charts every nightly's wheels (gh-pages:
+    # dashboard/metrics/wheels/) so the trend is visible. Nightly only: PR
+    # builds must not write gh-pages.
+    if: github.event_name == 'schedule'
+    needs: [build-repo, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # The lock every gh-pages writer takes (publishKernelResults.yml, docs).
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # No merge-multiple: each artifact keeps its own directory, whose name
+      # carries the RTTI setting that the wheel filename does not.
+      - name: Download wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: mlir_aie*
+          path: wheels
+
+      - name: Measure wheels
+        run: python3 utils/dashboard/wheel_sizes.py wheels --out wheel-rows.json
+
+      # A worktree, not a branch switch, so publish.py can still read this
+      # commit's message from the main checkout.
+      - name: Record on the publication branch
+        run: |
+          set -euo pipefail
+          git fetch origin gh-pages --depth=1
+          git worktree add gh-pages-wt FETCH_HEAD
+          python3 utils/dashboard/publish.py record --target wheels --rows wheel-rows.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --out gh-pages-wt/dashboard/metrics/wheels
+          git -C gh-pages-wt add -A dashboard/metrics/wheels
+          git -C gh-pages-wt diff --cached --quiet || git -C gh-pages-wt \
+            -c user.name=github-actions[bot] \
+            -c user.email=github-actions[bot]@users.noreply.github.com \
+            commit -q -m "Record wheel sizes for ${GITHUB_SHA:0:10}"
+          git -C gh-pages-wt push origin HEAD:gh-pages
+          git worktree remove --force gh-pages-wt
+
+      - name: Squash gh-pages history
+        uses: ./.github/actions/squash-gh-pages
