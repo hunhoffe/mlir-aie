@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- Copyright (C) 2026 Advanced Micro Devices, Inc. -->
+<!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
+<!--
+  The maintainer dashboard, installed as dashboard/index.html on the
+  publication branch by nightlyDashboard.yml. One page, no build step, Chart.js
+  from a CDN, in the style of kernel-checks/index.html. It reads, relative to
+  itself:
+
+    status/latest.json          every scheduled workflow's last night, its jobs,
+                                runners, queue waits, the commits since it was
+                                last green, and the dependency pins
+                                (utils/dashboard/collect.py, daily)
+    status/history.json         one entry per collection: each workflow's
+                                conclusion and duration, for the trends
+    metrics/<target>/           coverage and wheel sizes in the kernel checks'
+                                record format (utils/dashboard/publish.py):
+                                runs.json, latest.json, history/<metric>.json
+    ../kernel-checks/<npu>/     the kernel checks' run index and latest run,
+                                summarized here and linked for the detail
+
+  Every number links to the run it came from, and every section says when
+  its data was last written: a stale dashboard that looks healthy is worse
+  than none. test/test_dashboard_page.py runs the functions below under node
+  with a minimal DOM, so they use only append, textContent, className, title,
+  href and the like on elements.
+-->
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>MLIR-AIE Maintainer Dashboard</title>
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #24292f; --muted: #57606a; --border: #d0d7de; --panel: #f6f8fa;
+      --link: #1565d8; --accent: #e8710a; --good: #1a7f37; --bad: #cf222e; --dim: #8c959f;
+      --warn-bg: #fff8c5; --warn-fg: #7d4e00; --warn-border: #d4a72c;
+      --bar: #27282b; --bar-fg: #ffffff; --grid: rgba(0, 0, 0, 0.08);
+      --ok-bg: #dafbe1; --fail-bg: #ffebe9; --skip-bg: #eaeef2; --run-bg: #ddf4ff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #1b1b1d; --fg: rgba(255, 255, 255, 0.87); --muted: rgba(255, 255, 255, 0.6); --border: rgba(255, 255, 255, 0.14);
+        --panel: #242528; --link: #5b9bff; --accent: #ff9d42; --good: #3fb950; --bad: #f85149; --dim: rgba(255, 255, 255, 0.4);
+        --warn-bg: #3a2e08; --warn-fg: #ffd479; --warn-border: #7d5c0b; --grid: rgba(255, 255, 255, 0.1);
+        --ok-bg: #12351f; --fail-bg: #4a1a17; --skip-bg: #2d2f33; --run-bg: #0f2c46;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #1b1b1d; --fg: rgba(255, 255, 255, 0.87); --muted: rgba(255, 255, 255, 0.6); --border: rgba(255, 255, 255, 0.14);
+      --panel: #242528; --link: #5b9bff; --accent: #ff9d42; --good: #3fb950; --bad: #f85149; --dim: rgba(255, 255, 255, 0.4);
+      --warn-bg: #3a2e08; --warn-fg: #ffd479; --warn-border: #7d5c0b; --grid: rgba(255, 255, 255, 0.1);
+      --ok-bg: #12351f; --fail-bg: #4a1a17; --skip-bg: #2d2f33; --run-bg: #0f2c46;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; color: var(--fg); background: var(--bg); font-size: 14px; line-height: 1.45; }
+    a { color: var(--link); }
+    [hidden] { display: none !important; }
+    h1, h2, h3 { font-weight: 600; margin: 0; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+    .bar { background: var(--bar); color: var(--bar-fg); padding: 0 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-height: 48px; }
+    .bar h1 { font-size: 17px; margin-right: 8px; }
+    .bar nav { display: flex; flex-wrap: wrap; gap: 2px; }
+    .bar nav a { color: var(--bar-fg); text-decoration: none; padding: 12px 10px; opacity: 0.8; }
+    .bar nav a:hover { opacity: 1; }
+    .bar .links { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    .bar .links a { color: var(--bar-fg); opacity: 0.85; }
+    .bar button { font: inherit; color: var(--bar-fg); background: transparent; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+    main { padding: 0 16px 32px; max-width: 1600px; margin: 0 auto; }
+    #status { font-size: 13px; color: var(--muted); padding: 8px 0; }
+    section { margin-top: 20px; }
+    section > h2 { font-size: 16px; margin: 0 0 4px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+    section > h2 .when { font-weight: 400; font-size: 13px; color: var(--muted); }
+    section > h2 .when.stale { color: var(--bad); }
+    ul.warnings { list-style: none; margin: 0 0 8px; padding: 0; }
+    ul.warnings li { border-left: 4px solid var(--warn-border); background: var(--warn-bg); color: var(--warn-fg); padding: 5px 8px; margin: 4px 0; border-radius: 0 4px 4px 0; font-size: 13px; }
+    ul.warnings li.bad { border-left-color: var(--bad); }
+    ul.warnings li.info { border-left-color: var(--link); background: transparent; color: var(--muted); }
+    .none, .dim { color: var(--dim); }
+    .pass, .better { color: var(--good); }
+    .fail, .worse { color: var(--bad); }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--border); padding: 4px 8px; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: var(--panel); z-index: 1; font-weight: 600; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    .scroll { overflow-x: auto; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; margin-top: 8px; }
+    .card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--panel); }
+    .card h3 { font-size: 15px; margin-bottom: 6px; }
+    .card dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 8px 0 0; font-size: 13px; }
+    .card dt { color: var(--muted); }
+    .card dd { margin: 0; overflow-wrap: anywhere; }
+    .card .big { font-size: 28px; font-weight: 600; line-height: 1.1; }
+    .card .big .delta { font-size: 14px; font-weight: 400; margin-left: 6px; }
+    .badge { display: inline-block; border-radius: 10px; padding: 0 8px; font-size: 12px; font-weight: 600; text-decoration: none; }
+    .badge.success { background: var(--ok-bg); color: var(--good); }
+    .badge.failure, .badge.timed_out, .badge.startup_failure, .badge.action_required { background: var(--fail-bg); color: var(--bad); }
+    .badge.cancelled, .badge.skipped, .badge.neutral, .badge.none { background: var(--skip-bg); color: var(--muted); }
+    .badge.running { background: var(--run-bg); color: var(--link); }
+    .strip { display: inline-flex; gap: 2px; vertical-align: middle; }
+    .strip a { display: inline-block; width: 10px; height: 14px; border-radius: 2px; background: var(--skip-bg); }
+    .strip a.success { background: var(--good); }
+    .strip a.failure, .strip a.timed_out, .strip a.startup_failure { background: var(--bad); }
+    .strip a.cancelled { background: var(--dim); }
+    .spark { width: 110px; height: 22px; display: inline-block; vertical-align: middle; }
+    .spark canvas { width: 110px !important; height: 22px !important; }
+    td .spark { margin-left: 6px; }
+    tr.failing td:first-child { border-left: 3px solid var(--bad); }
+    details.key { font-size: 13px; margin: 8px 0; }
+    details.key summary { cursor: pointer; color: var(--link); }
+    details.key ul { margin: 6px 0; padding-left: 20px; }
+    .empty { padding: 12px 0; color: var(--muted); }
+    @media (max-width: 600px) {
+      .bar { padding: 0 8px; } main { padding: 0 8px 24px; }
+      .wide { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <h1>Maintainer dashboard</h1>
+    <nav aria-label="sections">
+      <a href="#nightlies">Nightlies</a>
+      <a href="#kernels">Kernels</a>
+      <a href="#coverage">Coverage</a>
+      <a href="#sizes">Sizes</a>
+      <a href="#dependencies">Dependencies</a>
+    </nav>
+    <div class="links">
+      <a href="../kernel-checks/">Kernel checks</a>
+      <a id="actions-link" href="https://github.com/Xilinx/mlir-aie/actions">Actions</a>
+      <button id="theme" type="button" aria-label="switch between light and dark theme" title="light / dark">theme</button>
+    </div>
+  </header>
+  <main>
+    <div id="status">Loading&hellip;</div>
+    <ul id="warnings" class="warnings"></ul>
+    <details class="key">
+      <summary>Key</summary>
+      <ul>
+        <li>Nightlies: every workflow with a <code>schedule</code> trigger, its last completed scheduled run (the badge links to it), how long it ran and waited for a runner, the runners it used, the commits between its last green run and this one, and its last 14 runs oldest to newest. Failing workflows sort first.
+          A workflow is <span class="fail">stale</span> when nothing completed in twice its schedule interval (at least 36 hours).</li>
+        <li>Kernels: the latest published nightly per NPU from the kernel checks, summarized; the kernel checks page has the regressions, drift and charts.</li>
+        <li>Coverage: line coverage of the C++ sources from the nightly coverage build, total and per directory, with the change against the value 30 days earlier. Higher is better.</li>
+        <li>Sizes: the mlir_aie wheels the nightly wheel build produced, by platform, RTTI setting and Python, with the change over 30 days. Smaller is better.</li>
+        <li>Dependencies: the pinned Peano and LLVM, how old each pin is, and the open bump pull request when there is one. A bump PR that has been red for weeks is a maintainer problem hiding in a closed tab.</li>
+      </ul>
+    </details>
+
+    <section id="nightlies">
+      <h2>Nightlies <span class="when" id="nightlies-when"></span></h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Workflow</th><th>Last night</th><th class="num">Duration</th><th class="num wide">Queue</th><th class="wide">Runners</th><th>Since green</th><th class="wide">Last 14</th></tr></thead>
+        <tbody id="nightlies-rows"></tbody>
+      </table></div>
+      <div id="nightlies-empty" class="empty" hidden>No status has been collected yet.</div>
+    </section>
+
+    <section id="kernels">
+      <h2>Kernel checks <span class="when" id="kernels-when"></span> <a href="../kernel-checks/" style="font-weight: 400; font-size: 13px">open the kernel checks</a></h2>
+      <div id="kernel-cards" class="cards"></div>
+    </section>
+
+    <section id="coverage">
+      <h2>Test coverage <span class="when" id="coverage-when"></span></h2>
+      <div id="coverage-cards" class="cards"></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Directory</th><th class="num">Lines</th><th class="num">30 days</th><th class="num wide">Functions</th><th class="num wide">Lines counted</th><th class="wide">Trend</th></tr></thead>
+        <tbody id="coverage-rows"></tbody>
+      </table></div>
+      <div id="coverage-empty" class="empty" hidden>No coverage has been published yet.</div>
+    </section>
+
+    <section id="sizes">
+      <h2>Wheel sizes <span class="when" id="sizes-when"></span></h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Wheel</th><th class="num">Size</th><th class="num">30 days</th><th class="num wide">Unpacked</th><th class="num wide">Files</th><th class="wide">Trend</th></tr></thead>
+        <tbody id="sizes-rows"></tbody>
+      </table></div>
+      <div id="sizes-empty" class="empty" hidden>No wheel sizes have been published yet.</div>
+    </section>
+
+    <section id="dependencies">
+      <h2>Dependency pins <span class="when" id="dependencies-when"></span></h2>
+      <div id="dependency-cards" class="cards"></div>
+    </section>
+  </main>
+
+  <!-- The hash is of chart.umd.js in the chart.js 4.4.7 npm package, which the CDN
+       serves byte for byte; a changed file is refused rather than run. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js"
+          integrity="sha384-zYPBGXwO4633CABX/5Spf6emCKUJCfoOkhOMYyxMsatqQZPnDblmmOewfjsIVWCM" crossorigin="anonymous"></script>
+  <script>
+    'use strict';
+    // The newest format of each file this page reads; a newer file is set
+    // aside (and said so) rather than misread.
+    const SCHEMA = 1;
+    const readable = x => x && (x.schema || 1) <= SCHEMA ? x : null;
+    const NPUS = ['npu1', 'npu2'];
+    const HOUR = 3600 * 1000, DAY = 24 * HOUR;
+    // Nothing on this page updates more often than daily; the collection
+    // itself and the kernel checks are stale past this.
+    const STALE_AFTER_MS = 36 * HOUR;
+    const WINDOW_DAYS = 30;
+    // The change past which a 30-day move is colored, per target.
+    const NOTABLE = { coverage: 0.5, wheels: 2 };  // coverage in points, wheels in percent
+    // Coverage directories shown even when the lcov has more: one row per
+    // top-level tree and per second-level directory under the sources.
+    const DEFAULT_REPO = 'https://github.com/Xilinx/mlir-aie';
+
+    // ------------------------------------------------------------------
+    // Data
+    // ------------------------------------------------------------------
+
+    async function fetchJson(url) {
+      try {
+        const res = await fetch(url, { cache: 'no-cache' });
+        return res.ok ? await res.json() : null;
+      } catch (e) { return null; }
+    }
+
+    // Hours between two firings of a cron schedule, from its shape: fixed
+    // hour and day-of-week '*' is daily, '*/N' hours every N, a day-of-week
+    // is weekly; anything else counts as daily. Good enough for staleness.
+    function intervalHours(crons) {
+      const hours = (crons || []).map(c => {
+        const f = String(c).trim().split(/\s+/);
+        if (f.length < 5) return 24;
+        const [, hour, dom, , dow] = f;
+        const step = /^\*\/(\d+)$/.exec(hour);
+        if (step) return Number(step[1]);
+        if (hour === '*') return 1;
+        if (dow !== '*' && dow !== '?') return 24 * 7;
+        if (dom !== '*' && dom !== '?') return 24 * 30;
+        return 24;
+      });
+      return hours.length ? Math.min(...hours) : 24;
+    }
+
+    // When the last completed run is older than it should be: twice the
+    // schedule interval, at least STALE_AFTER_MS.
+    function staleAfterMs(crons) {
+      return Math.max(STALE_AFTER_MS, 2 * intervalHours(crons) * HOUR);
+    }
+
+    function isStale(when, now, crons) {
+      return !(when > 0) || now - when > staleAfterMs(crons);
+    }
+
+    // Failing first, then the stale, then by name: what needs a look is at
+    // the top.
+    function sortWorkflows(workflows, now) {
+      const rank = w => {
+        const c = w.latest && w.latest.conclusion;
+        if (w.error) return 1;
+        if (c && c !== 'success' && c !== 'skipped') return 0;
+        if (isStale(w.latest ? Date.parse(w.latest.completed_at) : 0, now, w.schedule)) return 2;
+        return 3;
+      };
+      return [...workflows].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    }
+
+    function runnerNames(jobs) {
+      return [...new Set((jobs || []).map(j => j.runner).filter(Boolean))];
+    }
+
+    // The history file's runs and one series' values as [{date, value, run}]
+    // without gaps, oldest first.
+    function pointsOf(history, series) {
+      const s = history && history.series && history.series[series];
+      if (!s) return [];
+      return s.values.map((value, i) => ({ value, date: Date.parse(history.runs[i].date), run: history.runs[i] }))
+        .filter(p => p.value !== null && p.value !== undefined && Number.isFinite(p.date))
+        .sort((a, b) => a.date - b.date);
+    }
+
+    // The latest point and the newest one at least `days` before it; null
+    // when the history is too short to say.
+    function changeOverDays(points, days) {
+      if (!points.length) return null;
+      const latest = points[points.length - 1];
+      const cutoff = latest.date - days * DAY;
+      const before = [...points].reverse().find(p => p.date <= cutoff);
+      if (!before) return { latest, before: null, delta: null, relative: null };
+      return { latest, before, delta: latest.value - before.value, relative: before.value ? (latest.value - before.value) / before.value : null };
+    }
+
+    // The run index's latest entry that published rows, and the latest of
+    // any kind, for the kernel checks card.
+    function kernelSummary(index) {
+      const runs = (index && index.runs) || [];
+      const last = runs.length ? runs[runs.length - 1] : null;
+      const published = [...runs].reverse().find(r => r.published) || null;
+      return { last, published, runs: runs.length };
+    }
+
+    // ------------------------------------------------------------------
+    // Formatting and DOM helpers
+    // ------------------------------------------------------------------
+
+    const $ = id => document.getElementById(id);
+    const el = (tag, props, ...children) => {
+      const e = document.createElement(tag);
+      if (props) Object.assign(e, props);
+      e.append(...children);
+      return e;
+    };
+    const link = (href, text, props) => el('a', { href, ...(props || {}) }, text);
+    const plural = (n, word) => `${n} ${word}${n === 1 || word.endsWith('s') ? '' : 's'}`;
+
+    function formatDate(ms) {
+      if (!Number.isFinite(ms)) return '?';
+      return new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+    }
+
+    function ago(ms, now) {
+      if (!Number.isFinite(ms)) return 'never';
+      const h = Math.round((now - ms) / HOUR);
+      if (h < 1) return 'just now';
+      if (h < 48) return `${h} h ago`;
+      return `${Math.round(h / 24)} days ago`;
+    }
+
+    function formatDuration(s) {
+      if (s === null || s === undefined || !Number.isFinite(s)) return '?';
+      if (s < 90) return `${Math.round(s)} s`;
+      if (s < 5400) return `${(s / 60).toFixed(0)} min`;
+      return `${(s / 3600).toFixed(1)} h`;
+    }
+
+    function formatBytes(b) {
+      if (!Number.isFinite(b)) return '?';
+      if (b >= 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MiB`;
+      if (b >= 1024) return `${(b / 1024).toFixed(0)} KiB`;
+      return `${b} B`;
+    }
+
+    function signed(n, digits, suffix) {
+      return `${n > 0 ? '+' : ''}${n.toFixed(digits)}${suffix}`;
+    }
+
+    // A 30-day change cell: coverage moves in points, sizes in percent;
+    // colored past the target's notable change, in the target's direction.
+    function changeCell(change, target) {
+      const td = el('td', { className: 'num' });
+      if (!change || change.delta === null) {
+        td.className += ' dim';
+        td.textContent = change && change.latest ? 'no 30-day history' : '—';
+        return td;
+      }
+      const higherIsBetter = target === 'coverage';
+      const shown = target === 'coverage' ? change.delta : 100 * change.relative;
+      const notable = Math.abs(shown) >= NOTABLE[target];
+      const better = higherIsBetter ? shown > 0 : shown < 0;
+      td.textContent = target === 'coverage' ? signed(shown, 1, ' pt') : signed(shown, 1, '%');
+      td.className += notable ? (better ? ' better' : ' worse') : '';
+      td.title = `${formatDate(change.before.date)}: ${change.before.value} → ${formatDate(change.latest.date)}: ${change.latest.value}`;
+      return td;
+    }
+
+    function cssVar(name, fallback) {
+      if (typeof getComputedStyle !== 'function' || !document.documentElement) return fallback;
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+    }
+
+    // A tiny line chart of `points` in a span; the tooltip names the run.
+    const charts = [];
+    function sparkline(points, color) {
+      const holder = el('span', { className: 'spark', title: points.length ? `${points.length} runs, ${formatDate(points[0].date)} to ${formatDate(points[points.length - 1].date)}` : '' });
+      if (points.length < 2 || typeof Chart !== 'function') return holder;
+      const canvas = el('canvas');
+      holder.append(canvas);
+      charts.push(new Chart(canvas, {
+        type: 'line',
+        data: { labels: points.map(p => formatDate(p.date)), datasets: [{ data: points.map(p => p.value), borderColor: color || cssVar('--link', '#1565d8'), borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false }] },
+        options: {
+          animation: false, responsive: false, maintainAspectRatio: false,
+          scales: { x: { display: false }, y: { display: false } },
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          events: [],
+        },
+      }));
+      return holder;
+    }
+
+    function badge(conclusion, href, text) {
+      const cls = `badge ${conclusion || 'none'}`;
+      return href ? link(href, text || conclusion || '?', { className: cls }) : el('span', { className: cls }, text || conclusion || '?');
+    }
+
+    function when(id, ms, now, stale) {
+      const span = $(id);
+      span.textContent = Number.isFinite(ms) ? `updated ${ago(ms, now)} (${formatDate(ms)})` : 'not published yet';
+      span.className = 'when' + (stale ? ' stale' : '');
+    }
+
+    // ------------------------------------------------------------------
+    // Nightlies
+    // ------------------------------------------------------------------
+
+    function workflowRow(w, days, now) {
+      const tr = el('tr');
+      const latest = w.latest || null;
+      const completed = latest ? Date.parse(latest.completed_at) : NaN;
+      const stale = isStale(completed, now, w.schedule);
+      const failing = latest && latest.conclusion && latest.conclusion !== 'success' && latest.conclusion !== 'skipped';
+      if (failing || w.error) tr.className = 'failing';
+
+      const name = el('td', {}, link(w.url, w.name, { title: `${w.file}\n${(w.schedule || []).join('\n')}` }));
+      if (w.event_fallback) name.append(el('span', { className: 'dim', title: 'no scheduled run found; the latest run on main is shown' }, ' (not scheduled recently)'));
+      if (w.error) name.append(el('br'), el('span', { className: 'fail', title: w.error }, 'status unavailable'));
+      tr.append(name);
+
+      const last = el('td');
+      if (latest) {
+        last.append(badge(latest.conclusion, latest.url), ' ', el('span', { className: stale ? 'fail' : 'dim', title: formatDate(completed) }, ago(completed, now)));
+        if (latest.attempt > 1) last.append(el('span', { className: 'dim' }, ` attempt ${latest.attempt}`));
+        const failedJobs = (latest.jobs || []).filter(j => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped');
+        if (failedJobs.length) {
+          const ul = el('div', { className: 'dim' });
+          failedJobs.slice(0, 4).forEach((j, i) => ul.append(...(i ? [', '] : []), link(j.url, j.name, { className: 'fail', title: j.conclusion })));
+          if (failedJobs.length > 4) ul.append(` and ${failedJobs.length - 4} more`);
+          last.append(el('br'), ul);
+        }
+      } else {
+        last.append(el('span', { className: 'none' }, 'no completed run'));
+      }
+      if (w.in_progress) last.append(' ', badge('running', w.in_progress.url, 'running'));
+      if (stale) last.append(el('br'), el('span', { className: 'fail' }, latest ? `stale: nothing since ${formatDate(completed)}` : 'stale: never ran'));
+      tr.append(last);
+
+      const duration = el('td', { className: 'num' }, latest ? formatDuration(latest.duration_s) : '—');
+      const trend = days.map(d => ({ date: Date.parse(d.date), value: (d.workflows[w.file] || {}).duration_s }))
+        .filter(p => Number.isFinite(p.value)).map(p => ({ ...p, value: p.value / 60 })).sort((a, b) => a.date - b.date);
+      if (trend.length > 1) duration.append(sparkline(trend));
+      tr.append(duration);
+
+      tr.append(el('td', { className: 'num wide' }, latest && latest.queue_s !== null && latest.queue_s !== undefined ? formatDuration(latest.queue_s) : '—'));
+
+      const runners = runnerNames(latest && latest.jobs);
+      tr.append(el('td', { className: 'wide', title: runners.join('\n') }, runners.length ? runners.slice(0, 3).join(', ') + (runners.length > 3 ? ` +${runners.length - 3}` : '') : '—'));
+
+      const since = el('td');
+      if (w.since_green) {
+        since.append(link(w.since_green.compare_url, w.since_green.commits === null ? 'commits' : plural(w.since_green.commits, 'commit'),
+          { className: 'fail', title: 'between the last green run and this one' }));
+      } else if (failing && !w.last_success) {
+        since.append(el('span', { className: 'dim' }, 'never green'));
+      } else if (!failing && latest) {
+        since.append(el('span', { className: 'pass' }, 'green'));
+      } else {
+        since.append('—');
+      }
+      tr.append(since);
+
+      const strip = el('span', { className: 'strip' });
+      for (const r of [...(w.recent || [])].reverse()) {
+        strip.append(link(r.url, '', { className: r.conclusion || 'none', title: `${r.conclusion || '?'} ${formatDate(Date.parse(r.completed_at))} ${formatDuration(r.duration_s)}` }));
+      }
+      tr.append(el('td', { className: 'wide' }, strip));
+      return tr;
+    }
+
+    function renderNightlies(status, history, now) {
+      const rows = $('nightlies-rows');
+      const workflows = (status && status.workflows) || [];
+      $('nightlies-empty').hidden = workflows.length > 0;
+      const days = (history && history.days) || [];
+      for (const w of sortWorkflows(workflows, now)) rows.append(workflowRow(w, days, now));
+      const failing = workflows.filter(w => w.latest && w.latest.conclusion && !['success', 'skipped'].includes(w.latest.conclusion));
+      const stale = workflows.filter(w => isStale(w.latest ? Date.parse(w.latest.completed_at) : 0, now, w.schedule));
+      return { failing, stale };
+    }
+
+    // ------------------------------------------------------------------
+    // Kernel checks
+    // ------------------------------------------------------------------
+
+    function kernelCard(npu, index, now) {
+      const card = el('article', { className: 'card' });
+      const newer = Boolean(index) && !readable(index);
+      const { last, published } = kernelSummary(newer ? null : index);
+      card.append(el('h3', {}, npu));
+      if (newer) { card.append(el('p', { className: 'fail' }, 'published by a newer version than this page reads')); return card; }
+      if (!last) { card.append(el('p', { className: 'none' }, 'no results have been published')); return card; }
+      const date = Date.parse(last.date);
+      const stale = now - date > STALE_AFTER_MS;
+      const dl = el('dl');
+      const row = (t, ...v) => dl.append(el('dt', {}, t), el('dd', {}, ...v));
+      row('Last run', last.url ? link(last.url, formatDate(date)) : formatDate(date), ' ', el('span', { className: stale ? 'fail' : 'dim' }, stale ? `(stale, ${ago(date, now)})` : `(${ago(date, now)})`));
+      const commit = last.commit || {};
+      if (commit.id) row('Commit', commit.url ? link(commit.url, commit.id.slice(0, 7)) : commit.id.slice(0, 7), commit.message ? ` ${commit.message}` : '');
+      if (last.tag) row('Release', last.tag);
+      const verdict = el('span');
+      if (last.refused) { verdict.className = 'fail'; verdict.textContent = `refused: ${last.refused}`; }
+      else if (last.sane === false) { verdict.className = 'fail'; verdict.textContent = 'measurement sanity check failed'; }
+      else if (!last.published) { verdict.className = 'fail'; verdict.textContent = 'published no numbers'; }
+      else { verdict.className = 'pass'; verdict.textContent = `${plural(last.n_rows, 'row')} published`; }
+      row('Result', verdict);
+      const cases = last.cases;
+      if (cases) {
+        row('Cases', el('span', { className: 'pass' }, `${cases.passed} passed`), ' · ',
+          el('span', { className: cases.failed ? 'fail' : '' }, `${cases.failed} failing`), ' · ', `${cases.timed} timed`,
+          cases.timing_failed ? [' · ', el('span', { className: 'fail' }, `${cases.timing_failed} timing failed`)] : '');
+      }
+      const failed = last.failed || [];
+      if (failed.length) row('Failed tests', el('span', { className: 'fail', title: failed.join('\n') }, plural(failed.length, 'test')));
+      if (last.pmode && last.pmode !== 'turbo') row('Power mode', el('span', { className: 'fail' }, `${last.pmode} (not comparable)`));
+      if (published && published.id !== last.id) row('Last numbers', published.url ? link(published.url, formatDate(Date.parse(published.date))) : formatDate(Date.parse(published.date)));
+      card.append(dl);
+      card.append(el('p', {}, link(`../kernel-checks/#view=dashboard`, 'regressions and drift'), ' · ',
+        link(`../kernel-checks/#view=charts&npu=${npu}&metric=all&kernel=&sort=worse`, 'charts, worst first')));
+      return card;
+    }
+
+    function renderKernels(indexes, now) {
+      const cards = $('kernel-cards');
+      let newest = NaN;
+      for (const npu of NPUS) {
+        const index = indexes.get(npu) || null;
+        cards.append(kernelCard(npu, index, now));
+        const { last } = kernelSummary(readable(index));
+        if (last) newest = Math.max(newest || 0, Date.parse(last.date));
+      }
+      when('kernels-when', newest, now, Number.isFinite(newest) && now - newest > STALE_AFTER_MS);
+    }
+
+    // ------------------------------------------------------------------
+    // Coverage
+    // ------------------------------------------------------------------
+
+    function coverageRows(lines, functions, counted) {
+      const names = Object.keys((lines && lines.series) || {}).filter(n => n !== 'total').sort();
+      return names.map(name => {
+        const points = pointsOf(lines, name);
+        const latest = points[points.length - 1];
+        const fn = pointsOf(functions, name).pop();
+        const n = pointsOf(counted, name).pop();
+        return { name, points, latest, change: changeOverDays(points, WINDOW_DAYS), functionPct: fn ? fn.value : null, lines: n ? n.value : null };
+      }).filter(r => r.latest);
+    }
+
+    function renderCoverage(lines, functions, counted, now) {
+      const total = pointsOf(lines, 'total');
+      $('coverage-empty').hidden = total.length > 0;
+      if (!total.length) { when('coverage-when', NaN, now, false); return; }
+      const latest = total[total.length - 1];
+      when('coverage-when', latest.date, now, now - latest.date > 3 * DAY);
+      const change = changeOverDays(total, WINDOW_DAYS);
+      const card = el('article', { className: 'card' });
+      card.append(el('h3', {}, 'Line coverage'));
+      const big = el('div', { className: 'big' }, `${latest.value.toFixed(1)}%`);
+      if (change && change.delta !== null) {
+        const notable = Math.abs(change.delta) >= NOTABLE.coverage;
+        big.append(el('span', { className: `delta ${notable ? (change.delta > 0 ? 'better' : 'worse') : 'dim'}`, title: `since ${formatDate(change.before.date)}` }, `${signed(change.delta, 1, ' pt')} in 30 days`));
+      }
+      card.append(big);
+      const dl = el('dl');
+      const row = (t, ...v) => dl.append(el('dt', {}, t), el('dd', {}, ...v));
+      const run = latest.run || {};
+      row('Run', run.url ? link(run.url, formatDate(latest.date)) : formatDate(latest.date));
+      if (run.commit && run.commit.id) row('Commit', run.commit.url ? link(run.commit.url, run.commit.id.slice(0, 7)) : run.commit.id.slice(0, 7));
+      const fnTotal = pointsOf(functions, 'total').pop();
+      if (fnTotal) row('Functions', `${fnTotal.value.toFixed(1)}%`);
+      const counting = pointsOf(counted, 'total').pop();
+      if (counting) row('Lines counted', counting.value.toLocaleString('en-US'));
+      row('Trend', sparkline(total));
+      row('Detail', link('coverage/report/', 'per-file report'), ' · ', link('coverage/summary.json', 'summary'));
+      card.append(dl);
+      $('coverage-cards').append(card);
+      const rows = $('coverage-rows');
+      for (const r of coverageRows(lines, functions, counted)) {
+        const tr = el('tr');
+        // llvm-cov's HTML has one index for every file; the directory is a filter there.
+        tr.append(el('td', {}, link('coverage/report/index.html', r.name, { title: 'the per-file report, when published' })));
+        tr.append(el('td', { className: 'num' }, `${r.latest.value.toFixed(1)}%`));
+        tr.append(changeCell(r.change, 'coverage'));
+        tr.append(el('td', { className: 'num wide' }, r.functionPct === null ? '—' : `${r.functionPct.toFixed(1)}%`));
+        tr.append(el('td', { className: 'num wide' }, r.lines === null ? '—' : r.lines.toLocaleString('en-US')));
+        tr.append(el('td', { className: 'wide' }, sparkline(r.points)));
+        rows.append(tr);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Wheel sizes
+    // ------------------------------------------------------------------
+
+    function sizeRows(bytes, unpacked, files) {
+      const names = Object.keys((bytes && bytes.series) || {}).sort((a, b) => (a === 'all') - (b === 'all') || a.localeCompare(b));
+      return names.map(name => {
+        const points = pointsOf(bytes, name);
+        const latest = points[points.length - 1];
+        const u = pointsOf(unpacked, name).pop(), f = pointsOf(files, name).pop();
+        return { name, points, latest, change: changeOverDays(points, WINDOW_DAYS), unpacked: u ? u.value : null, files: f ? f.value : null };
+      }).filter(r => r.latest);
+    }
+
+    function renderSizes(bytes, unpacked, files, now) {
+      const rows = sizeRows(bytes, unpacked, files);
+      $('sizes-empty').hidden = rows.length > 0;
+      const newest = rows.length ? Math.max(...rows.map(r => r.latest.date)) : NaN;
+      when('sizes-when', newest, now, Number.isFinite(newest) && now - newest > 3 * DAY);
+      const body = $('sizes-rows');
+      for (const r of rows) {
+        const tr = el('tr');
+        const run = r.latest.run || {};
+        tr.append(el('td', {}, run.url ? link(run.url, r.name, { title: 'the wheel build this size is from' }) : r.name));
+        tr.append(el('td', { className: 'num' }, formatBytes(r.latest.value)));
+        tr.append(changeCell(r.change, 'wheels'));
+        tr.append(el('td', { className: 'num wide' }, r.unpacked === null ? '—' : formatBytes(r.unpacked)));
+        tr.append(el('td', { className: 'num wide' }, r.files === null ? '—' : r.files.toLocaleString('en-US')));
+        tr.append(el('td', { className: 'wide' }, sparkline(r.points)));
+        body.append(tr);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Dependencies
+    // ------------------------------------------------------------------
+
+    const PIN_OLD_DAYS = 30;
+
+    function dependencyCard(name, dep, repo) {
+      const card = el('article', { className: 'card' });
+      card.append(el('h3', {}, name));
+      if (!dep) { card.append(el('p', { className: 'none' }, 'not collected')); return card; }
+      const dl = el('dl');
+      const row = (t, ...v) => dl.append(el('dt', {}, t), el('dd', {}, ...v));
+      row('Pinned', el('code', {}, dep.pin || '?'));
+      const old = dep.age_days !== null && dep.age_days !== undefined && dep.age_days > PIN_OLD_DAYS;
+      row('Pin date', dep.date || '?', ' ', el('span', { className: old ? 'worse' : 'dim' }, dep.age_days === null || dep.age_days === undefined ? '' : `(${plural(dep.age_days, 'day')} old)`));
+      const bump = dep.bump || {};
+      if (bump.pr) {
+        const pr = bump.pr;
+        const checks = pr.checks || {};
+        const verdict = checks.failure ? el('span', { className: 'fail' }, `${checks.failure} failing`)
+          : checks.pending ? el('span', { className: 'dim' }, `${checks.pending} pending`)
+          : el('span', { className: 'pass' }, `${checks.success || 0} passing`);
+        row('Bump PR', link(pr.url, `#${pr.number}`), ` ${pr.title || ''} `, el('span', { className: pr.age_days > 7 ? 'worse' : 'dim' }, `(open ${plural(pr.age_days, 'day')}) `), verdict);
+      } else {
+        row('Bump PR', el('span', { className: 'dim' }, 'none open'));
+      }
+      if (bump.last_run) {
+        row('Last bump run', badge(bump.last_run.conclusion, bump.last_run.url), ' ', el('span', { className: 'dim' }, formatDate(Date.parse(bump.last_run.completed_at))));
+      }
+      if (bump.workflow) row('Workflow', link(`${repo}/actions/workflows/${bump.workflow}`, bump.workflow));
+      card.append(dl);
+      return card;
+    }
+
+    function renderDependencies(status, now) {
+      const deps = (status && status.dependencies) || {};
+      const repo = repoUrl(status);
+      const cards = $('dependency-cards');
+      cards.append(dependencyCard('Peano (llvm-aie)', deps.peano, repo), dependencyCard('LLVM / MLIR', deps.llvm, repo));
+      when('dependencies-when', status ? Date.parse(status.date) : NaN, now, status && now - Date.parse(status.date) > STALE_AFTER_MS);
+    }
+
+    function repoUrl(status) {
+      return status && status.repo ? `${status.server || 'https://github.com'}/${status.repo}` : DEFAULT_REPO;
+    }
+
+    // ------------------------------------------------------------------
+    // Theme and start
+    // ------------------------------------------------------------------
+
+    function readTheme() {
+      try { return localStorage.getItem('dashboard-theme') || ''; } catch (e) { return ''; }
+    }
+
+    function isDark() {
+      const set = document.documentElement.getAttribute('data-theme');
+      if (set) return set === 'dark';
+      return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+
+    function applyTheme(theme) {
+      if (theme) document.documentElement.setAttribute('data-theme', theme);
+      else document.documentElement.removeAttribute('data-theme');
+      try { theme ? localStorage.setItem('dashboard-theme', theme) : localStorage.removeItem('dashboard-theme'); } catch (e) { /* private window */ }
+      $('theme').textContent = isDark() ? 'light theme' : 'dark theme';
+    }
+
+    // The page's own warnings: what is stale or failing, at the top.
+    function warningsFor(status, nightlies, now) {
+      const out = [];
+      if (!status) { out.push({ level: 'bad', text: 'no status has been collected yet: nightlyDashboard.yml has not run' }); return out; }
+      const collected = Date.parse(status.date);
+      if (now - collected > STALE_AFTER_MS) out.push({ level: 'bad', text: `the status was collected ${ago(collected, now)}: the collector itself is not running` });
+      if (nightlies.failing.length) out.push({ level: 'warn', text: `${plural(nightlies.failing.length, 'nightly')} failing: ${nightlies.failing.map(w => w.name).join(', ')}` });
+      if (nightlies.stale.length) out.push({ level: 'warn', text: `${plural(nightlies.stale.length, 'nightly')} stale: ${nightlies.stale.map(w => w.name).join(', ')}` });
+      const errors = status.workflows.filter(w => w.error);
+      if (errors.length) out.push({ level: 'info', text: `status unavailable for ${errors.map(w => w.name).join(', ')}` });
+      return out;
+    }
+
+    async function main() {
+      applyTheme(readTheme());
+      $('theme').addEventListener('click', () => applyTheme(isDark() ? 'light' : 'dark'));
+      const now = Date.now();
+      const metric = (target, m) => fetchJson(`metrics/${target}/history/${m}.json`).then(readable);
+      const [status, history, kernelIndexes, linePct, functionPct, lines, bytes, unpacked, files] = await Promise.all([
+        fetchJson('status/latest.json'), fetchJson('status/history.json'),
+        Promise.all(NPUS.map(n => fetchJson(`../kernel-checks/${n}/runs.json`))),
+        metric('coverage', 'line_pct'), metric('coverage', 'function_pct'), metric('coverage', 'lines'),
+        metric('wheels', 'bytes'), metric('wheels', 'uncompressed_bytes'), metric('wheels', 'files'),
+      ]);
+      const newer = Boolean(status) && !readable(status);
+      const okStatus = newer ? null : status;
+      $('actions-link').href = `${repoUrl(okStatus)}/actions`;
+      const nightlies = renderNightlies(okStatus, readable(history), now);
+      when('nightlies-when', okStatus ? Date.parse(okStatus.date) : NaN, now, okStatus && now - Date.parse(okStatus.date) > STALE_AFTER_MS);
+      renderKernels(new Map(NPUS.map((n, i) => [n, kernelIndexes[i]])), now);
+      renderCoverage(linePct, functionPct, lines, now);
+      renderSizes(bytes, unpacked, files, now);
+      renderDependencies(okStatus, now);
+      const warnings = warningsFor(okStatus, nightlies, now);
+      if (newer) warnings.unshift({ level: 'bad', text: 'the status was written by a newer collector than this page reads: reload the page' });
+      for (const w of warnings) $('warnings').append(el('li', { className: w.level, textContent: w.text }));
+      $('status').textContent = okStatus
+        ? `Status collected ${formatDate(Date.parse(okStatus.date))} for ${okStatus.repo || ''} at ${(okStatus.commit || '').slice(0, 7)} · ${plural((okStatus.workflows || []).length, 'scheduled workflow')}`
+        : 'No status has been collected yet.';
+    }
+
+    if (typeof window !== 'undefined' && window.document && typeof window.addEventListener === 'function' && !window.DASHBOARD_TEST) main();
+  </script>
+</body>
+</html>
