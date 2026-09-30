@@ -1,0 +1,236 @@
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Nightly Sanitizers (ASan + UBSan)
+
+# Build mlir-aie with AddressSanitizer and UndefinedBehaviorSanitizer and run
+# the lit suite under them. Covers the C++ passes, the tools (aie-opt,
+# aie-translate, aiecc's compiled parts) and the Python bindings' native code,
+# which lit's Python tests load. Does not cover MLIR itself (the prebuilt
+# distro is not instrumented), hardware paths (no NPU, Vitis or Peano on this
+# runner) or data races: TSan needs every library in the process instrumented,
+# so it waits until the whole stack can be built that way. Never gates PRs.
+# Scheduled, so the maintainer dashboard (utils/dashboard/collect.py) tracks
+# it without registration.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'          # after the 00:00 coverage nightly
+
+env:
+  # Run apt package manager in the CI in non-interactive mode.
+  DEBIAN_FRONTEND: noninteractive
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+
+  asan-ubsan:
+
+    name: ASan + UBSan lit suite
+
+    runs-on: ubuntu-latest
+
+    # Sanitized binaries run 2-4x slower than the coverage build's.
+    timeout-minutes: 240
+
+    steps:
+
+      - name: Free disk space
+        uses: descriptinc/free-disk-space@1b4b157593c6801212a2ed488c205e0a810b4592  # main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: false
+
+      - name: Get the project repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: "true"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Python and other packages
+        run: |
+          pip install --upgrade pip
+          python utils/mlir_aie_wheels/vendor_eudsl.py \
+              --requirements python/requirements.txt \
+              --install-non-eudsl
+          python -m pip install --require-hashes -r python/requirements_dev.lock
+
+      # libclang-rt-dev holds the sanitizer runtimes; Ubuntu's clang package
+      # does not depend on it.
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang lld llvm libelf-dev libclang-rt-dev
+
+      - name: Get MLIR
+        id: mlir-wheels
+        run: |
+
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+
+      # Own key: the sanitizer flags make every object differ from the other
+      # nightlies' anyway.
+      - name: Ccache for C++ compilation
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d  # v1.2.24
+        with:
+          key: ${{ runner.os }}-sanitizers
+          max-size: 1G
+
+      # Compare the compiler by content, not mtime, so the cache hits across
+      # runs on ephemeral runners. Matches .github/actions/setup_ccache.
+      - name: Configure ccache
+        run: |
+          ccache --set-config=compiler_check=content
+          ccache --set-config=sloppiness=locale,time_macros
+
+      # Python is not instrumented, so when it dlopens the sanitized bindings
+      # the ASan runtime must already be in the process: ASan refuses to start
+      # from a late-loaded library. Preloading the runtime the build links
+      # (see the configure step) into every process of the check step does
+      # that; lit forwards LD_PRELOAD and the *_OPTIONS to test processes.
+      # Ubuntu's clang 18 names the file per architecture; newer resource-dir
+      # layouts drop the suffix.
+      - name: Locate the shared ASan runtime
+        id: runtime
+        run: |
+          for name in libclang_rt.asan-x86_64.so libclang_rt.asan.so; do
+            rt=$(clang -print-file-name=$name)
+            if [ -f "$rt" ]; then
+              echo "ASAN_RUNTIME=$rt" >> "$GITHUB_ENV"
+              echo "ASAN_SYMBOLIZER_PATH=$(command -v llvm-symbolizer)" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::no shared ASan runtime next to clang (libclang-rt-dev missing?)"
+          exit 1
+
+      # Only mlir-aie is instrumented; the MLIR distro it links is not. ASan
+      # and UBSan tolerate that (uninstrumented code is merely unchecked),
+      # which is also why TSan is left out. -shared-libsan puts one shared
+      # runtime behind every tool and extension module: clang otherwise links
+      # the runtime statically into executables, and a static-runtime aie-opt
+      # started under the LD_PRELOAD the check step needs aborts with
+      # "incompatible ASan runtimes". The explicit rpath lets the tools start
+      # without that preload (-frtlib-add-rpath is a no-op on Ubuntu's
+      # lib/linux runtime layout).
+      - name: Configure (RelWithDebInfo + ASan + UBSan)
+        id: configure
+        run: |
+
+          : "${ASAN_RUNTIME:?set by the previous step}"
+          rt_dir=$(dirname "$ASAN_RUNTIME")
+          mkdir -p build_release/install
+          cd build_release
+
+          cmake .. \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON \
+            -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
+            -DCMAKE_C_VISIBILITY_PRESET=hidden \
+            -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
+            -DCMAKE_INSTALL_PREFIX=$PWD/install \
+            -DAIE_COMPILER=NONE \
+            -DAIE_LINKER=NONE \
+            -DHOST_COMPILER=NONE \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_ENABLE_RTTI=ON \
+            -DCMAKE_MODULE_PATH=$PWD/../cmake/modulesXilinx \
+            -DMLIR_DIR=$PWD/../mlir/lib/cmake/mlir \
+            -DLLVM_DIR=$PWD/../mlir/lib/cmake/llvm \
+            -DLLVM_USE_LINKER=lld \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
+            \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fsanitize-address-use-after-scope" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fsanitize-address-use-after-scope" \
+            -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld -fsanitize=address,undefined -shared-libsan -Wl,-rpath,$rt_dir" \
+            -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld -fsanitize=address,undefined -shared-libsan -Wl,-rpath,$rt_dir" \
+            -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld -fsanitize=address,undefined -shared-libsan -Wl,-rpath,$rt_dir"
+
+      - name: Build
+        run: ninja -C build_release
+
+      # LD_PRELOAD is scoped to this step on purpose: job-wide it would also
+      # load the runtime into the runner's node-based steps.
+      - name: Run the lit suite under ASan + UBSan
+        id: check
+        env:
+          LD_PRELOAD: ${{ env.ASAN_RUNTIME }}
+          # Leaks stay off for now: LSan under an uninstrumented Python host
+          # and lit's process tree is noisy. Turning them on is the first step
+          # once the suite is clean under everything else here.
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:strict_string_checks=1:check_initialization_order=1:detect_stack_use_after_return=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          # Parsed after check-aie's own "-sv --timeout 600 --filter-out
+          # python-concurrency", and each option replaces its counterpart: a
+          # longer timeout for the slower binaries, and the concurrency filter
+          # repeated here because --filter-out takes one regex.
+          LIT_OPTS: -sv --timeout 900 --filter-out slow_test|python-concurrency
+        run: |
+          status=0
+          ninja -C build_release check-aie 2>&1 | tee sanitizers.log || status=$?
+          exit $status
+
+      # Counts, not the log: the artifact has that. One bad test repeats its
+      # report per RUN line, so the counts overstate distinct bugs; the
+      # failing-test list is the number to read.
+      - name: Summarise sanitizer findings
+        id: summary
+        if: always()
+        run: |
+          log=sanitizers.log
+          if [ ! -s "$log" ]; then
+            echo "No lit log: the build failed before the suite ran." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          asan=$(grep -c 'ERROR: AddressSanitizer' "$log" || true)
+          ubsan=$(grep -c 'runtime error:' "$log" || true)
+          failed=$(grep -c -E '^(FAIL|TIMEOUT): ' "$log" || true)
+          {
+            echo "## ASan + UBSan lit suite"
+            echo
+            echo "| Signal | Count |"
+            echo "|---|---|"
+            echo "| ASan reports (\`ERROR: AddressSanitizer\`) | $asan |"
+            echo "| UBSan reports (\`runtime error:\`) | $ubsan |"
+            echo "| Failed or timed-out lit tests | $failed |"
+            echo
+            if [ "$failed" != 0 ]; then
+              echo "### Failing tests"
+              echo '```'
+              grep -E '^(FAIL|TIMEOUT): ' "$log" | sort -u | head -n 100
+              echo '```'
+              echo
+            fi
+            echo "### Log tail"
+            echo '```'
+            tail -n 40 "$log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the lit log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: sanitizers-${{ github.run_id }}
+          path: sanitizers.log
+          if-no-files-found: ignore
