@@ -126,11 +126,105 @@ jobs:
 
           cat "$GITHUB_WORKSPACE/build_release/report/summary.txt"
 
+      # The lcov becomes the dashboard's series (total and per-directory
+      # line/function/branch coverage), written beside the report so the one
+      # artifact carries everything the publish job needs. The compiler is
+      # noted here, where it is the one that built the instrumented tools.
+      - name: Summarize coverage for the dashboard
+        run: |
+          python3 utils/dashboard/coverage_summary.py build_release/report/coverage.lcov \
+            --root "$GITHUB_WORKSPACE" \
+            --out build_release/report/coverage-rows.json \
+            --summary build_release/report/coverage-summary.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "compiler $(clang --version | head -1) | os $ImageOS" \
+            > build_release/report/provenance.txt
+
       # No PR to comment on here (schedule/workflow_dispatch), so the report
       # is an artifact instead of the PR comment lintAndFormat's PR-triggered
-      # jobs post.
+      # jobs post; on main the publish job below also records the series on
+      # the maintainer dashboard.
       - name: Upload coverage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           path: build_release/report
           name: coverage-report
+
+  publish:
+    name: Record on the dashboard
+    # The dashboard (gh-pages: dashboard/metrics/coverage/) charts every
+    # nightly's series and links the HTML report as the drill-down. Main
+    # only: a dispatched run of a branch must not write gh-pages.
+    needs: code-coverage
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # The lock every gh-pages writer takes (publishKernelResults.yml, docs).
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: coverage-report
+          path: report
+
+      # A worktree, not a branch switch, so publish.py can still read this
+      # commit's message from the main checkout.
+      - name: Record the series on the publication branch
+        run: |
+          set -euo pipefail
+          git fetch origin gh-pages --depth=1
+          git worktree add gh-pages-wt FETCH_HEAD
+          provenance=$(cat report/provenance.txt 2>/dev/null || true)
+          python3 utils/dashboard/publish.py record --target coverage \
+            --rows report/coverage-rows.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --provenance "$provenance" \
+            --out gh-pages-wt/dashboard/metrics/coverage
+
+      # The HTML report is the drill-down behind the series. It is replaced
+      # whole, and skipped (the series still publish) when it outgrows what
+      # a page on the branch should weigh: the whole branch is cloned with
+      # every docs deploy. The lcov and the JSON are not part of it.
+      - name: Publish the drill-down report
+        id: drilldown
+        env:
+          SRC: report
+          DEST: gh-pages-wt/dashboard/coverage
+          MAX_MB: 60
+        run: |
+          set -euo pipefail
+          mkdir -p "$DEST"
+          cp "$SRC/coverage-summary.json" "$DEST/summary.json"
+          size=$(du -sm --exclude=coverage.lcov --exclude='coverage-*.json' \
+            --exclude=provenance.txt "$SRC" | cut -f1)
+          if [ "$size" -gt "$MAX_MB" ]; then
+            echo "::warning::the coverage report is ${size} MB, over the ${MAX_MB} MB the dashboard publishes; the series are recorded without it"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rm -rf "$DEST/report"
+          cp -r "$SRC" "$DEST/report"
+          rm -f "$DEST/report/coverage.lcov" "$DEST"/report/coverage-*.json \
+            "$DEST/report/provenance.txt"
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          git -C gh-pages-wt add -A dashboard/coverage dashboard/metrics/coverage
+          git -C gh-pages-wt diff --cached --quiet || git -C gh-pages-wt \
+            -c user.name=github-actions[bot] \
+            -c user.email=github-actions[bot]@users.noreply.github.com \
+            commit -q -m "Record coverage for ${GITHUB_SHA:0:10}"
+          git -C gh-pages-wt push origin HEAD:gh-pages
+          git worktree remove --force gh-pages-wt
+
+      - name: Squash gh-pages history
+        uses: ./.github/actions/squash-gh-pages
