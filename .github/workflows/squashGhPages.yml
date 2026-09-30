@@ -1,0 +1,31 @@
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Squash gh-pages history
+
+# Every gh-pages writer squashes the branch after its own push
+# (.github/actions/squash-gh-pages). This runs the same step on its own: on
+# demand, for the first squash of a branch that has grown, and weekly, in
+# case a writer is added without it.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 0'
+
+concurrency:
+  group: gh-pages-publish
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  squash:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/squash-gh-pages

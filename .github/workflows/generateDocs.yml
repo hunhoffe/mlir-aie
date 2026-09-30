@@ -44,7 +44,8 @@ jobs:
       - name: Configure Environment
         run: echo "$GITHUB_WORKSPACE/llvm/install/bin" >> $GITHUB_PATH
 
-      # mike needs the full gh-pages branch history to update versions.json
+      # mike commits onto the gh-pages branch, which a shallow checkout of main
+      # would not have; the branch itself is one commit (squashed below).
       - name: Get the project repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -227,8 +228,9 @@ jobs:
 
           # Remove legacy Jekyll/CMake detritus from the gh-pages root. mike
           # owns versioned subdirs (dev/, 1.x.y/, versions.json, index.html);
-          # kernel-checks/ belongs to the kernel workflows and must survive
-          # deployment. Its old home, bench/, is legacy and goes with the rest.
+          # kernel-checks/ belongs to the kernel workflows and dashboard/ to
+          # the maintainer dashboard's, and both must survive deployment. The
+          # kernel results' old home, bench/, is legacy and goes with the rest.
           cd ../gh-pages-wt
           # Keep the versioned dirs (dev/, 1.x.y/) plus the bare "latest"
           # alias mike writes as a symlink (a file literally named "latest",
@@ -239,6 +241,7 @@ jobs:
             | grep -zv '^index\.html$' \
             | grep -zv '^versions\.json$' \
             | grep -zv '^kernel-checks/' \
+            | grep -zv '^dashboard/' \
             | grep -zvE '^(dev|latest)(/|$)' \
             | grep -zvE '^[0-9]+\.' \
             | xargs -0 -r git rm -rf --ignore-unmatch -q
@@ -255,3 +258,9 @@ jobs:
             || git -C ../gh-pages-wt commit -m "docs: add Doxygen output for ${LABEL}"
           git -C ../gh-pages-wt push origin gh-pages
           git worktree remove ../gh-pages-wt
+
+      # Doxygen regenerates thousands of files per deploy; without this the
+      # branch grows by tens of MB a push, and every clone downloads it.
+      - name: Squash gh-pages history
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/squash-gh-pages

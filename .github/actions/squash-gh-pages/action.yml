@@ -1,0 +1,28 @@
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Squash gh-pages history
+description: >-
+  Replace the publication branch's history with one commit of its current
+  tree (utils/dashboard/squash_gh_pages.sh). Every gh-pages writer runs it
+  after its push, inside the gh-pages-publish concurrency group, from a
+  checkout of the repository with `contents: write`.
+
+inputs:
+  remote:
+    description: The remote the branch lives on.
+    default: origin
+  branch:
+    description: The publication branch.
+    default: gh-pages
+
+runs:
+  using: composite
+  steps:
+    - name: Squash the publication branch to one commit
+      shell: bash
+      env:
+        REMOTE: ${{ inputs.remote }}
+        BRANCH: ${{ inputs.branch }}
+      run: |
+        "$GITHUB_WORKSPACE/utils/dashboard/squash_gh_pages.sh" "$REMOTE" "$BRANCH"

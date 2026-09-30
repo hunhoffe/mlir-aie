@@ -14,8 +14,9 @@ self-hosted-runner:
     - ubuntu-vitis   # Vitis toolchain image
 
 # GitHub supports concurrency.queue, but actionlint v1.7.12 does not yet.
-# test/test_kernel_workflows.py checks these queues and their cancellation policy.
+# test/test_kernel_workflows.py and test/test_dashboard_workflows.py check
+# these queues (every gh-pages writer's) and their cancellation policy.
 paths:
-  .github/workflows/{generateDocs,nightlyKernelChecks,publishKernelResults}.yml:
+  .github/workflows/{generateDocs,nightlyKernelChecks,publishKernelResults,nightlyDashboard,squashGhPages,codeCoverage,buildRyzenWheels}.yml:
     ignore:
       - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
