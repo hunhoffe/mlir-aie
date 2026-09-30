@@ -14,6 +14,7 @@ the branch, ``kernel-checks/<npu>/``, holding:
                            report's baseline
     history/<metric>.json  one series per case for that metric, a value per
                            run, for the charts
+    releases/<tag>.json    the record of the run that measured release <tag>
 
 Standard library only: publishKernelResults.yml runs it from a copy beside
 the page, where the package is not installed.
@@ -28,7 +29,9 @@ catalogue. Every publish first migrates a directory that still holds a
 github-action-benchmark ``data.js`` (one record per entry, then the file is
 removed), rebuilds ``runs.json``, ``latest.json`` and the history from the
 run records, and prunes: every run of the last ``KEEP_DAYS`` is kept, older
-ones one per ISO week, ``MAX_RUNS`` at most. ``rebuild --drop-pmode MODE``
+ones one per ISO week, ``MAX_RUNS`` at most. A run of a release tag
+(``perf --tag v1.2.3``, the default when Actions runs on a tag) is kept for
+good, outside that cap, and copied to ``releases/``. ``rebuild --drop-pmode MODE``
 also deletes the records of every run measured in ``MODE``, for retiring a
 power mode nobody should compare against.
 """
@@ -285,17 +288,24 @@ def migrate(out: Path) -> int:
 
 
 def prune(records: list[dict], now: datetime.datetime) -> list[dict]:
-    """Every run of the last ``KEEP_DAYS``; before that the newest of each ISO week."""
+    """Every run of the last ``KEEP_DAYS``; before that the newest of each ISO week.
+
+    A run that measured a release (it has a ``tag``) is kept for good, and
+    does not count against ``MAX_RUNS``.
+    """
     records = sorted(records, key=lambda r: r["date"])
-    recent, weekly = [], {}
+    recent, weekly, tagged = [], {}, []
     for r in records:
+        if r.get("tag"):
+            tagged.append(r)
+            continue
         age = now - parse_date(r["date"])
         if age.days < KEEP_DAYS:
             recent.append(r)
         else:
             weekly[parse_date(r["date"]).isocalendar()[:2]] = r
-    kept = sorted(weekly.values(), key=lambda r: r["date"]) + recent
-    return kept[-MAX_RUNS:]
+    kept = (sorted(weekly.values(), key=lambda r: r["date"]) + recent)[-MAX_RUNS:]
+    return sorted(kept + tagged, key=lambda r: r["date"])
 
 
 def rebuild(
@@ -329,6 +339,18 @@ def rebuild(
             indent=1,
         )
     )
+    # A release's record under its tag, where the page and the release
+    # upload find it without knowing the run id.
+    releases_dir = out / "releases"
+    tagged = {f"{r['tag'].replace('/', '_')}.json": r for r in kept if r.get("tag")}
+    if tagged or releases_dir.exists():
+        releases_dir.mkdir(exist_ok=True)
+        for stale in releases_dir.glob("*.json"):
+            if stale.name not in tagged:
+                stale.unlink()
+        for name, r in tagged.items():
+            (releases_dir / name).write_text(json.dumps(r, indent=1))
+
     published = [r for r in kept if r.get("published") and r.get("rows")]
     latest = out / "latest.json"
     if published:
@@ -417,6 +439,15 @@ def main(argv=None) -> int:
     p.add_argument("--commit-message", default="")
     p.add_argument("--commit-date", default="")
     p.add_argument("--date", default="", help="ISO date of the run (default: now)")
+    p.add_argument(
+        "--tag",
+        default=(
+            os.environ.get("GITHUB_REF_NAME", "")
+            if os.environ.get("GITHUB_REF_TYPE") == "tag"
+            else ""
+        ),
+        help="the release tag this run measured; kept for good (default: the tag Actions runs on)",
+    )
     p = sub.add_parser("migrate", help="turn a data.js into run records, once")
     p.add_argument("--out", required=True, type=Path)
     p = sub.add_parser("rebuild", help="rewrite the derived files from the records")
@@ -439,6 +470,8 @@ def main(argv=None) -> int:
         "date": args.date or iso(now_utc()),
         "commit": commit_info(args.commit, args.commit_message, args.commit_date),
     }
+    if args.tag:
+        run["tag"] = args.tag
     record = publish(args.out, args.results, target=args.target, run=run)
     print(
         f"{args.command} {args.target}: run {record['id']}, {record['n_rows']} rows, "

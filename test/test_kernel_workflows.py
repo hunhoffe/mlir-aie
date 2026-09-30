@@ -212,3 +212,79 @@ def test_report_uses_restored_baseline_and_updates_summary(tmp_path):
     assert "1 regressed" in text
     assert "synthetic/1/i8" in text
     assert "https://github.com/example/synthetic/actions/runs/7" in text
+
+
+def test_release_tags_run_and_publish_like_a_nightly():
+    checks = workflow("nightlyKernelChecks.yml")
+    assert checks["on"]["push"]["tags"] == ["v*"]
+    perf = next(
+        step for step in checks["jobs"]["checks"]["steps"] if step.get("id") == "perf"
+    )
+    for condition in (perf["env"]["REQUIRED_PMODE"], checks["jobs"]["publish"]["if"]):
+        assert (
+            "github.ref == 'refs/heads/main' || github.ref_type == 'tag'" in condition
+        )
+    publisher = workflow("publishKernelResults.yml")["jobs"]["publish"]
+    assert "github.ref_type == 'tag'" in publisher["if"]
+    publish = next(s for s in publisher["steps"] if s.get("name") == "Publish results")
+    assert '${TAG:+--tag "$TAG"}' in publish["run"]
+    attach = next(s for s in publisher["steps"] if s.get("id") == "release")
+    assert attach["if"] == "github.ref_type == 'tag'"
+    # The squash follows the push and the release upload, which read the branch.
+    names = [s.get("name") or s.get("uses") for s in publisher["steps"]]
+    assert (
+        names.index("Push")
+        < names.index("Attach the record to the release")
+        < names.index("Squash gh-pages history")
+    )
+
+
+def attach_step(tmp_path, has_release):
+    """Run the release-upload step against a local gh-pages branch and a stubbed gh."""
+    step = next(
+        s
+        for s in workflow("publishKernelResults.yml")["jobs"]["publish"]["steps"]
+        if s.get("id") == "release"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git, "init", "-q", "-b", "gh-pages"], cwd=repo, check=True)
+    (repo / "kernel-checks/npu1/releases").mkdir(parents=True)
+    (repo / "kernel-checks/npu1/releases/v1.2.3.json").write_text('{"id": "1"}')
+    subprocess.run([*git, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "records"], cwd=repo, check=True)
+    log = tmp_path / "gh.log"
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "gh").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$@" >> "{log}"\n'
+        f'if [ "$2" = view ]; then exit {0 if has_release else 1}; fi\n'
+    )
+    (fake / "gh").chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{fake}:{os.environ['PATH']}", "TAG": "v1.2.3"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout, log.read_text().splitlines() if log.exists() else []
+
+
+def test_release_record_is_attached_only_when_the_release_exists(tmp_path):
+    out, calls = attach_step(tmp_path, has_release=False)
+    assert "::warning::" in out
+    assert calls == ["release view v1.2.3 --json tagName"]
+    out, calls = attach_step(tmp_path / "again", has_release=True)
+    assert "::warning::" not in out
+    # Only npu1 has a filed record; npu2 is skipped, not an error.
+    assert calls == [
+        "release view v1.2.3 --json tagName",
+        "release upload --clobber v1.2.3 kernel-checks-npu1-v1.2.3.json",
+    ]
+    assert (
+        tmp_path / "again/repo/kernel-checks-npu1-v1.2.3.json"
+    ).read_text() == '{"id": "1"}'

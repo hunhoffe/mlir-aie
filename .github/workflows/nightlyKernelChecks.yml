@@ -10,11 +10,12 @@ name: Nightly Kernel Checks on Ryzen AI
 # and of its changes against the last nightly (utils/kernel_checks/pr_report.py)
 # in the job summary; on a Peano PR, the same report is kept as one comment.
 #
-# Runs nightly from main, which publishes and records the baseline, on pull
-# requests that bump the Peano pin, and on demand. Only the nightly and an
-# unfiltered, pinned dispatch on main publish, and only when the device is in
-# the turbo power mode: in any other mode the timing step fails
-# rather than chart numbers taken at another clock.
+# Runs nightly from main, which publishes and records the baseline, on every
+# release tag (v*), whose record is kept for good as the release's numbers, on
+# pull requests that bump the Peano pin, and on demand. Only the nightly, a
+# tag, and an unfiltered, pinned dispatch on main or a tag publish, and only
+# when the device is in the turbo power mode: in any other mode the timing
+# step fails rather than chart numbers taken at another clock.
 #
 # A kernel that fails its checks costs only its own series a point: the
 # rest of the run still publishes, as long as the NPU checks (preflight and
@@ -36,6 +37,9 @@ on:
         default: ''
   schedule:
     - cron: '0 6 * * *'          # after the 00:00 test nightly
+  push:
+    tags:
+      - 'v*'
   pull_request:
     paths:
       - utils/peano-requirements.txt
@@ -186,7 +190,7 @@ jobs:
           # compare, and the preflight above can only ask for the mode. Any
           # other run records whatever mode it finds. The condition is the
           # publish job's.
-          REQUIRED_PMODE: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !inputs.only && !inputs.peano) && env.PERF_PMODE || 'any' }}
+          REQUIRED_PMODE: ${{ (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') && !inputs.only && !inputs.peano) && env.PERF_PMODE || 'any' }}
         run: |
           sudo prlimit -lunlimited --pid $$
           [ -f /opt/xilinx/xrt/setup.sh ] && source /opt/xilinx/xrt/setup.sh
@@ -310,7 +314,7 @@ jobs:
     # Publish whichever NPUs produced results, even if the other leg failed.
     # A filtered or re-pinned dispatch would chart a subset or another
     # compiler into the series, so it never publishes.
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !inputs.only && !inputs.peano }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') && !inputs.only && !inputs.peano }}
     permissions:
       contents: write
     uses: ./.github/workflows/publishKernelResults.yml
