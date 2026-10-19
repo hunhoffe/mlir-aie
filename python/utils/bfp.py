@@ -150,8 +150,8 @@ def quantize(x, *, rounding: str = "floor") -> np.ndarray:
     Which mode applies is a property of who converts, not of where. ``floor``
     is ``decode(encode(x))``: this module's encoder truncates toward negative
     infinity, and a *core* converting in floor mode agrees with it -- the
-    ``q4nx_dequant`` kernel pins floor and its reference matches the device
-    byte for byte. ``conv_even`` models a core converting with
+    ``q4nx_dequant`` kernel's floor default matches the device byte for byte.
+    ``conv_even`` models a core converting with
     round-to-nearest-ties-to-even, which is what ``mm_bfp``'s mixed kernel
     pins so its K reduction does not accumulate a one-sided bias.
 
