@@ -2919,7 +2919,7 @@ def _group_sums(x):
 
 
 def flm_gemma4_q4nx_gemv(
-    *, dim: int, m_tile: int = 32, k_tile: int = 256, group: int = 32
+    *, dim: int = 1536, m_tile: int = 32, k_tile: int = 256, group: int = 32
 ) -> ExternalFunction:
     """AIE2P ``y = w x`` for one bf16 row ``x`` and q4nx weights ``w``, from ``flm_gemma4/q4nx_lm_head.cc``.
 
