@@ -227,6 +227,7 @@ flm_gemma4_prefill_rounds/8x4/int32
 flm_gemma4_prefill_rounds/8x4/int32/head_dim=256
 flm_gemma4_prefill_finalize/16x4/float32_bfloat16/head_dim=256
 flm_gemma4_prefill_finalize/8x4/float32_bfloat16
+flm_gemma4_q4nx_gemv/2560x4/bfloat16_float32/dim=512
 flm_gemma4_q4nx_lm_head/2560x4/bfloat16_float32
 flm_gemma4_q4nx_lm_head_epilogue/32x4/float32_bfloat16
 flm_gemma4_q4nx_lm_head_rms/3072x4/bfloat16

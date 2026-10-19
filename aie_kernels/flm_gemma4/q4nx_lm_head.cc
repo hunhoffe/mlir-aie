@@ -7,6 +7,8 @@
 
 // Final-logits projection against a q4nx-quantized vocabulary: RMS-normalize
 // the token, accumulate one weight block at a time, then apply a tanh softcap.
+// The q4nx_gemv_ entry points replace the first and last steps to give a plain
+// GEMV of one bf16 row.
 // One entry point per step of the caller's streaming loop. The caller owns the
 // synchronization, so none of these locks or double-buffers. Geometry arrives
 // as -D flags; the Q4NX_ prefix avoids R, S and T, which collide with template
@@ -59,6 +61,15 @@ void q4nx_lm_head_rms(bfloat16 *x, bfloat16 *b_group_sums) {
   event1();
 }
 
+/// Once per token, when x is used as is: the per-32-column sums of x.
+void q4nx_gemv_sums(const bfloat16 *x, bfloat16 *b_group_sums) {
+  event0();
+  for (int k = 0; k < K_BLOCKS; k++) {
+    group_sums_32<K_TILE>(b_group_sums + k * (K_TILE / 32), x + k * K_TILE);
+  }
+  event1();
+}
+
 /// Once per output tile, before the k loop.
 void q4nx_lm_head_zero(float *y_acc) {
   event0();
@@ -73,6 +84,13 @@ void q4nx_lm_head_block(const q4nx_block_t *w, const bfloat16 *x, float *y_acc,
   event0();
   q4nx_accumulate<M_TILE, K_TILE>(w, x + k * K_TILE, y_acc,
                                   b_group_sums + k * (K_TILE / 32));
+  event1();
+}
+
+/// Once per output tile, after the k loop: y = y_acc in bf16.
+void q4nx_gemv_store(bfloat16 *y, const float *y_acc) {
+  event0();
+  narrow_to_bf16<M_TILE>(y, y_acc);
   event1();
 }
 

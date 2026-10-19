@@ -962,6 +962,7 @@ CASES: list[Case] = [
     # Gemma 4's FastFlowLM kernels: the entry point each factory returns.
     Case("flm_gemma4_attn_prefill", calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_bf16_proj_core", calls=4, devices=("npu2",), smoke=True),
+    Case("flm_gemma4_q4nx_gemv", dict(dim=512), calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_q4nx_lm_head", calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_q4nx_lm_head_epilogue", calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_q4nx_lm_head_rms", calls=4, devices=("npu2",), smoke=True),

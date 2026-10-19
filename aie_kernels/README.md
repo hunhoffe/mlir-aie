@@ -94,7 +94,7 @@ Kernels extracted from FastFlowLM's Gemma 4 implementation, each one core's kern
 | Name | Coding style | Purpose | Datatypes |
 |-|-|-|-|
 | [prefill.cc](./flm_gemma4/prefill.cc) | AIE API | Flash-attention prefill, head dim 512 (global) or 256 (sliding window), on [flash_attn_prefill.h](./linalg/flash_attn_prefill.h) | `bfloat16` |
-| [q4nx_lm_head.cc](./flm_gemma4/q4nx_lm_head.cc) | AIE API | LM head over q4nx weights: RMS norm, block accumulation, tanh softcap | `uint8_t`, `bfloat16` |
+| [q4nx_lm_head.cc](./flm_gemma4/q4nx_lm_head.cc) | AIE API | LM head and GEMV over q4nx weights: RMS norm, block accumulation, tanh softcap | `uint8_t`, `bfloat16` |
 | [decode_attn_qk.cc](./flm_gemma4/decode_attn_qk.cc) | AIE API | Decode attention scores q·k with a running max, global or sliding window | `bfloat16` |
 | [decode_attn_qk_kvh2.cc](./flm_gemma4/decode_attn_qk_kvh2.cc) | AIE API | As `decode_attn_qk.cc`, global, two KV heads | `bfloat16` |
 | [decode_attn_kv.cc](./flm_gemma4/decode_attn_kv.cc) | AIE API | Decode attention softmax and s·v, global, one KV head | `bfloat16` |
