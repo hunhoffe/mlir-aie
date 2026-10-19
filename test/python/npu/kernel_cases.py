@@ -1098,6 +1098,7 @@ CASES: list[Case] = [
         calls=2,
         devices=("npu2",),
     ),
+    check("q4nx_dequant", dict(rounding="conv_even"), devices=("npu2",), smoke=True),
     # Quantization groups need not divide the GEMM K slice.
     check(
         "q4nx_dequant",

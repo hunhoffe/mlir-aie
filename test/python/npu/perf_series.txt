@@ -462,6 +462,7 @@ prefill_fv/16x16x256x4/bfloat16_float32/head_dim=256
 prefill_fv/8x8x512x4/bfloat16_float32/head_dim=512
 q4nx_dequant/1536x2/uint8/ct_k=16/group=24/k_tile=48/m_tile=48
 q4nx_dequant/5120x4/uint8
+q4nx_dequant/5120x4/uint8/rounding=conv_even
 q4nx_dequant/512x2/uint8/ct_k=16/group=8/k_tile=32/m_tile=16
 reduce_add/1024x1/int32/edge-single
 reduce_add/1024x16/bfloat16

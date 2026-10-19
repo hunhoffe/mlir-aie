@@ -106,19 +106,22 @@ def q4nx_unpack(
     return q, scales, mins
 
 
-def q4nx_dequant_ref(payload, *, m_tile=32, k_tile=256, group=32, ct_k=128, s=8, t=8):
+def q4nx_dequant_ref(
+    payload, *, m_tile=32, k_tile=256, group=32, ct_k=128, s=8, t=8, rounding="floor"
+):
     """Dequantize packed q4nx to the kernel's bfp16ebs8 output bytes.
 
     See ``q4nx_unpack`` for the packed input layout.
 
-    Accumulator results narrow to bf16 with floor rounding before BFP
-    conversion. Output is uint8 with the same leading dimensions, indexed
-    ``[k//ct_k, n//8, (k%ct_k)//8, n%8, 9]``: each nine-byte block is an
-    exponent followed by eight signed mantissas for consecutive k values.
-    Finite dequantized bf16 results are required.
+    Accumulator results narrow to bf16, then to bfp16ebs8, both in the
+    ``rounding`` mode, ``floor`` or ``conv_even``. Output is uint8 with the
+    same leading dimensions, indexed ``[k//ct_k, n//8, (k%ct_k)//8, n%8, 9]``:
+    each nine-byte block is an exponent followed by eight signed mantissas for
+    consecutive k values. Finite dequantized bf16 results are required.
     """
     geometry = _geometry(m_tile, k_tile, group, ct_k, s, t)
     m_tile, k_tile, group, ct_k, s, t = geometry.values()
+    _check_rounding(rounding)
     scales_count = m_tile * k_tile // group
     input_bytes = m_tile * k_tile // 2 + 4 * scales_count
     payload = np.asarray(payload, dtype=np.uint8)
@@ -138,12 +141,18 @@ def q4nx_dequant_ref(payload, *, m_tile=32, k_tile=256, group=32, ct_k=128, s=8,
             np.repeat(scales, group, axis=1).astype(np.float64) * q
             + np.repeat(mins, group, axis=1).astype(np.float64)
         ).astype(np.float32)
-        values = _bf16_floor(values)
+        if rounding == "floor":
+            values = _bf16_floor(values)
+        else:
+            values = values.astype(bfloat16).astype(np.float32)
     if not np.isfinite(values).all():
         raise ValueError("q4nx_dequant_ref: dequantized bf16 values must be finite")
     values = values.reshape(-1, k_tile // ct_k, ct_k // s, s, m_tile // t, t)
     values = values.transpose(0, 1, 4, 2, 5, 3)
-    encoded = bfp.encode(values.reshape(math.prod(lead), -1))
+    values = values.reshape(math.prod(lead), -1)
+    encoded = (
+        bfp.encode(values) if rounding == "floor" else bfp.encode_core_even(values)
+    )
     return encoded.reshape(*lead, m_tile * k_tile * 9 // 8)
 
 
@@ -157,8 +166,15 @@ def _q4nx_sample(rng, calls, *, m_tile, k_tile, group, **_):
     return [np.concatenate([params, packed], axis=1)]
 
 
+def _check_rounding(rounding):
+    if rounding not in ("floor", "conv_even"):
+        raise ValueError(
+            f"q4nx_dequant: rounding must be 'floor' or 'conv_even', got {rounding!r}"
+        )
+
+
 def q4nx_dequant(
-    *, m_tile=32, k_tile=256, group=32, ct_k=128, s=8, t=8
+    *, m_tile=32, k_tile=256, group=32, ct_k=128, s=8, t=8, rounding="floor"
 ) -> ExternalFunction:
     """AIE2P-only q4nx dequantization into GEMM B-operand BFP storage.
 
@@ -170,10 +186,13 @@ def q4nx_dequant(
     Both arguments are uint8 byte buffers, including the bfp16ebs8 output,
     so the generic harness compares the complete encoded result byte for
     byte rather than decoding or quantizing it again. The kernel saves,
-    selects and restores floor rounding itself; no setup kernel is needed.
+    selects and restores its rounding mode itself; no setup kernel is needed.
+    ``rounding`` is that mode for both narrowings: ``floor``, which matches
+    FastFlowLM's packing, or ``conv_even``.
     """
     geometry = _geometry(m_tile, k_tile, group, ct_k, s, t)
     m_tile, k_tile, group, ct_k, s, t = geometry.values()
+    _check_rounding(rounding)
     if not _arch_traits().bfp16:
         raise NotImplementedError("q4nx_dequant() is only available on aie2p.")
     input_bytes = m_tile * k_tile // 2 + 4 * m_tile * k_tile // group
@@ -190,14 +209,15 @@ def q4nx_dequant(
         compile_flags=[
             f"-DQ4NX_{name.upper()}={value}" for name, value in geometry.items()
         ]
-        + ["-mllvm", "--aie-pipeliner-max-stagecount=5"],
+        + ["-mllvm", "--aie-pipeliner-max-stagecount=5"]
+        + (["-DROUND_CONV_EVEN"] if rounding == "conv_even" else []),
         contract=KernelContract(
             trace=Trace.whole_call(),
             roles=(In, Out),
-            reference=partial(q4nx_dequant_ref, **geometry),
+            reference=partial(q4nx_dequant_ref, **geometry, rounding=rounding),
             sample=partial(_q4nx_sample, **geometry),
             tolerance=Tolerance.exact(
-                note="floor bf16 narrowing and bfp16ebs8 conversion, byte for byte"
+                note=f"{rounding} bf16 and bfp16ebs8 narrowings, byte for byte"
             ),
             ops_per_call=2 * m_tile * k_tile,
             acc_dtype=np.float32,

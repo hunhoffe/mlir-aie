@@ -29,7 +29,7 @@ def _pack(scales, mins, nibbles):
     return np.frombuffer(result, dtype=np.uint8)
 
 
-def _oracle(scales, mins, nibbles, *, group, ct_k):
+def _oracle(scales, mins, nibbles, *, group, ct_k, rounding="floor"):
     """Scalar arithmetic and block traversal, independent of the vector codec."""
     m, k = nibbles.shape
     out = []
@@ -44,16 +44,25 @@ def _oracle(scales, mins, nibbles, *, group, ct_k):
                             + float(mins[col // group, n])
                         )
                         nearest = bfloat16(x)
-                        if float(nearest) > float(x):
+                        if rounding == "floor" and float(nearest) > float(x):
                             nearest = np.nextafter(nearest, bfloat16(-np.inf))
                         values.append(float(nearest))
                     exponent = max(
                         int(np.float32(v).view(np.uint32) >> 23) & 255 for v in values
                     )
+                    if rounding == "floor":
+                        mants = [
+                            math.floor(math.ldexp(v, 133 - exponent)) for v in values
+                        ]
+                    else:
+                        mants = [round(math.ldexp(v, 133 - exponent)) for v in values]
+                        if max(mants) > 127:
+                            exponent += 1
+                            mants = [
+                                round(math.ldexp(v, 133 - exponent)) for v in values
+                            ]
                     out.append(exponent)
-                    out.extend(
-                        math.floor(math.ldexp(v, 133 - exponent)) & 255 for v in values
-                    )
+                    out.extend(max(m, -128) & 255 for m in mants)
     return np.array(out, dtype=np.uint8)
 
 
@@ -75,11 +84,12 @@ def test_literal_default_payload():
     np.testing.assert_array_equal(kernels.q4nx_dequant_ref(payload), expected)
 
 
+@pytest.mark.parametrize("rounding", ["floor", "conv_even"])
 @pytest.mark.parametrize(
     "m,k,group,ct_k",
     [(16, 8, 8, 8), (32, 256, 32, 128), (48, 96, 24, 32), (16, 48, 16, 24)],
 )
-def test_group_row_slice_and_batch_layout(m, k, group, ct_k):
+def test_group_row_slice_and_batch_layout(m, k, group, ct_k, rounding):
     rng = np.random.default_rng(6)
     payloads, expected = [], []
     for _ in range(2):
@@ -87,13 +97,15 @@ def test_group_row_slice_and_batch_layout(m, k, group, ct_k):
         mins = rng.uniform(-8, 8, (k // group, m)).astype(bfloat16)
         q = rng.integers(0, 16, (m, k), dtype=np.uint8)
         payloads.append(_pack(scales, mins, q))
-        expected.append(_oracle(scales, mins, q, group=group, ct_k=ct_k))
+        expected.append(
+            _oracle(scales, mins, q, group=group, ct_k=ct_k, rounding=rounding)
+        )
     payloads = np.array(payloads)
     # Accept non-contiguous host views without reinterpreting their strides.
     storage = np.empty((2, 2 * payloads.shape[1]), dtype=np.uint8)
     storage[:, ::2] = payloads
     actual = kernels.q4nx_dequant_ref(
-        storage[:, ::2], m_tile=m, k_tile=k, group=group, ct_k=ct_k
+        storage[:, ::2], m_tile=m, k_tile=k, group=group, ct_k=ct_k, rounding=rounding
     )
     assert actual.dtype == np.uint8
     assert actual.shape == (2, m * k * 9 // 8)
@@ -114,9 +126,29 @@ def test_bf16_floor_before_bfp_rounding_for_both_signs():
     np.testing.assert_array_equal(actual[1], [127] + [191] * 8)
 
 
+def test_conv_even_carries_into_the_exponent_and_keeps_minus_128():
+    """A mantissa rounding to +128 takes the next exponent; -128 fits."""
+    scales = np.zeros((1, 16), dtype=bfloat16)
+    mins = np.full((1, 16), 1.0, dtype=bfloat16)
+    mins[0, 0] = 1.9921875  # 255/128: mantissa 127.5 rounds to 128
+    mins[0, 8] = -1.9921875
+    q = np.zeros((16, 8), dtype=np.uint8)
+    actual = kernels.q4nx_dequant_ref(
+        _pack(scales, mins, q),
+        m_tile=16,
+        k_tile=8,
+        group=8,
+        ct_k=8,
+        rounding="conv_even",
+    ).reshape(16, 9)
+    np.testing.assert_array_equal(actual[0], [128] + [64] * 8)
+    np.testing.assert_array_equal(actual[8], [127] + [128] * 8)
+
+
 @pytest.mark.parametrize(
     "kwargs,match",
     [
+        (dict(rounding="nearest"), "rounding"),
         (dict(m_tile=0), "m_tile"),
         (dict(k_tile=-8), "k_tile"),
         (dict(group=0), "group"),

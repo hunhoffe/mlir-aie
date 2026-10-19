@@ -100,10 +100,15 @@ extern "C" {
 void q4nx_dequant_bfp(const uint8_t *__restrict qw, bfp16ebs8 *__restrict out) {
   event0();
   // The mode is core-global and sticky, so a kernel that converts must pick
-  // one. Floor is what a core powers up in, and matches the truncation the
-  // operator's byte-exact reference models.
+  // one for its bf16 and bfp16 narrowings. Floor, what a core powers up in,
+  // matches FastFlowLM's packing; -DROUND_CONV_EVEN rounds to nearest even.
+#ifdef ROUND_CONV_EVEN
+  aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+#else
   aie::rounding_mode saved_rounding =
       aie::swap_rounding(aie::rounding_mode::floor);
+#endif
 
   const bfloat16 *scales = (const bfloat16 *)qw;
   const bfloat16 *mins = scales + SCALES;
