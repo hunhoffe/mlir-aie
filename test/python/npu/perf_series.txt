@@ -581,6 +581,8 @@ tanh/1024x16/bfloat16
 tanh/1024x16/bfloat16/use_lut=True/lut
 tanh/1024x256/bfloat16
 tanh/1056x4/bfloat16/tail
+ternary_dequant/2176x4/uint8_bfloat16
+ternary_gemv/2176x4/uint8_float32
 threshold/1920x16/int16
 threshold/1920x16/uint8
 threshold/1920x16/uint8/tozero-inv

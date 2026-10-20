@@ -959,6 +959,8 @@ CASES: list[Case] = [
         for unshuffle in (False, True)
     ],
     Case("q4nx_dequant", calls=4, devices=("npu2",), smoke=True),
+    Case("ternary_dequant", calls=4, devices=("npu2",), smoke=True),
+    Case("ternary_gemv", calls=4, devices=("npu2",), smoke=True),
     # Gemma 4's FastFlowLM kernels: the entry point each factory returns.
     Case("flm_gemma4_attn_prefill", calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_bf16_proj_core", calls=4, devices=("npu2",), smoke=True),

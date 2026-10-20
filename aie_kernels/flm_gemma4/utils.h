@@ -4,12 +4,13 @@ Copyright (C) 2022-2026 Advanced Micro Devices, Inc.
     SPDX-License-Identifier: MIT
 */
 
-// Lock helpers and the vector zero, copy, narrow and scale templates that the
+// Lock helpers and the vector zero, copy and scale templates that the
 // flm_gemma4 kernels share. Independent of the model geometry.
 #ifndef AIE_KERNELS_FLM_GEMMA4_UTILS_H
 #define AIE_KERNELS_FLM_GEMMA4_UTILS_H
 
 #include "../aie_kernel_utils.h" // AIE_LOOP_*
+#include "../common/narrow.h"    // narrow_to_bf16
 
 #include <aie_api/aie.hpp>
 #include <cstdint>
@@ -116,23 +117,6 @@ void scale_vectorized(bf16 *y, const bf16 scale) {
         aie::mul(y_vec, aie::broadcast<bf16, 16>(scale));
     aie::store_v(y, out_vec);
     y += 16;
-  }
-}
-
-// Narrows N floats to bf16 through an accfloat accumulator. The attention
-// kernels narrow in place, with the same buffer as source and destination: the
-// bf16 pointer advances at half the byte rate of the float one and so trails
-// it. The pointers must not be `restrict`, because they may alias.
-template <int N>
-void narrow_to_bf16(bf16 *out, const float *in) {
-  constexpr int vec_factor = 16;
-  static_assert(N % vec_factor == 0);
-  for (int i = 0; i < N / vec_factor; i++) {
-    aie::accum<accfloat, vec_factor> acc;
-    acc.from_vector(aie::load_v<vec_factor>(in));
-    aie::store_v(out, acc.template to_vector<bf16>());
-    in += vec_factor;
-    out += vec_factor;
   }
 }
 

@@ -39,6 +39,7 @@ from ._common import (
     _include_dirs,
     _kernel_source,
     _make_extern,
+    _on_object,
     _portable_flags,
     _runtime_lib_include,
     dtypes,
@@ -72,24 +73,6 @@ def _prefill_sibling(symbol, head_dim, contract) -> ExternalFunction:
         raise ValueError(f"head_dim must be 256 or 512, not {head_dim}")
     base = flm_gemma4_swa_prefill() if head_dim == 256 else flm_gemma4_attn_prefill()
     return _on_object(base, symbol, getattr(base, symbol).arg_types(), contract)
-
-
-def _on_object(base, symbol, arg_types, contract) -> ExternalFunction:
-    """``symbol`` of ``base``'s object, judged by ``contract``.
-
-    It names ``base``'s object and compile recipe, so a design that uses both
-    compiles and links one copy of the source.
-    """
-    return ExternalFunction(
-        symbol,
-        object_file_name=base.object_file_name,
-        source_file=base.source_file,
-        arg_types=arg_types,
-        include_dirs=base.include_dirs,
-        compile_flags=base.compile_flags,
-        symbol_prefix=base.object_file.symbol_prefix,
-        contract=contract,
-    )
 
 
 def _prefill(name, dh, lq, chunk, reference) -> ExternalFunction:

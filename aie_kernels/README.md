@@ -137,6 +137,7 @@ Kernels extracted from FastFlowLM's Gemma 4 implementation, each one core's kern
 | Name | Coding style | Purpose | Datatypes |
 |-|-|-|-|
 | [q4nx_dequant.cc](./quant/q4nx_dequant.cc) | AIE API | Dequantize packed q4nx scales, minima and 4-bit codes into GEMM-ordered BFP blocks (AIE2P only); geometry via `-DQ4NX_*` | `uint8_t` → `bfp16ebs8` |
+| [ternary.cc](./quant/ternary.cc) | AIE API | GEMV over ternary weights (2-bit codes, a bf16 scale per 128 columns), and their dequantization to bf16; geometry via `-DTERNARY_*` | `uint8_t`, `bfloat16` |
 
 ## reduce
 | Name | Coding style | Purpose | Datatypes |
