@@ -102,10 +102,6 @@ class BenchmarkResult:
     npu: Stats | None  # None when the callable does not expose NPU time
 
 
-def _stats(samples_us: list[float]) -> Stats:
-    return Stats.from_samples(samples_us)
-
-
 def _extract_npu_time_ns(ret) -> int | None:
     """Pull npu_time (ns) from a kernel callable's return value.
 
@@ -163,8 +159,8 @@ def run_iters(
             npu_samples.append(npu_ns / 1_000.0)
 
     return BenchmarkResult(
-        e2e=_stats(e2e_samples),
-        npu=_stats(npu_samples) if npu_samples else None,
+        e2e=Stats.from_samples(e2e_samples),
+        npu=Stats.from_samples(npu_samples) if npu_samples else None,
     )
 
 
