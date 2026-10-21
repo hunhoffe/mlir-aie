@@ -30,7 +30,7 @@ class Scale(Operator):
 
 
 op = Scale(M=1024)          # Scale(M=1024, factor=1.0, tile=None)
-done = op.resolved(device)  # tile=16; done.is_resolved, done.resolved_for
+done = op.resolved(device)  # tile=16
 ```
 
 A per-call value is an expression in one integer the host gives each call

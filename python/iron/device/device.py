@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 
+import functools
 import math
 import re
 
@@ -27,6 +28,12 @@ from ...helpers.taplib import TensorAccessPattern
 from ...helpers.util import np_dtype_to_mlir_type
 from ..resolvable import Resolvable
 from .tile import Tile
+
+
+@functools.cache
+def _context() -> ir.Context:
+    """Return the one MLIR context ``dma_bd_fits`` builds element types in."""
+    return ir.Context()
 
 
 class Device(Resolvable):
@@ -224,7 +231,7 @@ class Device(Resolvable):
             strides = [0] * pad + list(tap.strides)
         if len(sizes) > 4:
             return False
-        with ir.Context(), ir.Location.unknown():
+        with _context(), ir.Location.unknown():
             return dma_bd_fits(
                 self._device.value,
                 col,

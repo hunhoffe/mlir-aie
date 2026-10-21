@@ -5,6 +5,7 @@
 #
 """Kernel and ExternalFunction: wrappers for pre-compiled and C++ AIE compute kernels."""
 
+import functools
 import hashlib
 import logging
 import re
@@ -33,6 +34,15 @@ from .buffer import Buffer
 from .resolvable import Resolvable
 
 logger = logging.getLogger(__name__)
+
+
+@functools.cache
+def _warn_no_peano() -> None:
+    logger.warning(
+        "Peano is not installed: kernel frames read as 0 bytes, so designs "
+        "are sized as if their kernels took no core memory"
+    )
+
 
 # One declared argument: a tensor type, or a scalar. Numpy spells a scalar as a
 # type rather than a dtype instance (``np.int32``, not ``np.dtype(np.int32)``),
@@ -1187,7 +1197,8 @@ class ExternalFunction(Kernel):
         Returns:
             Its object's static data plus its stack, or plus a declared
             ``stack_size_override`` for its own entry; 0 for what ``measure``
-            cannot read.
+            cannot read, which without Peano is every kernel, and the first
+            such read logs a warning.
         """
         found = self.measure(
             target_arch,
@@ -1232,6 +1243,7 @@ class ExternalFunction(Kernel):
         try:
             config.peano_cxx_path()
         except RuntimeError:
+            _warn_no_peano()
             return None
         if self.use_chess or self.link_with_mode is not None:
             return None

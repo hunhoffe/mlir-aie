@@ -724,7 +724,7 @@ struct AIELowerScratchpadParametersPass
         p.emitError("parameter '")
             << p.getSymName() << "' finds no free state-table entry among "
             << kMaxStateTableEntries
-            << ": the commands reading it hold every one";
+            << ": the parameters it cannot share an entry with hold them all";
         return signalPassFailure();
       }
       auto hold = [slot](llvm::SmallBitVector &bits) {
