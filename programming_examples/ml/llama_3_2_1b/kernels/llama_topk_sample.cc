@@ -134,11 +134,10 @@ static void residual_seed(const int8_t *restrict row, float embed_sc,
 
 extern "C" {
 
-// Finalize: sample over the resident set -> token id + next-token embed seed.
+// Finalize: sample the resident set (see the header).
 //   params : [temperature bits f32 | top_k i32 | seed u32]
-// Sampling draws from the set's best top_k members (by logit, then lower
-// gidx); top_k 0, or past the set, means the whole set (hosts reject values
-// past KSET). Greedy (temperature <= 0) is the argmax whatever top_k is.
+// top_k 0, or past the set, means the whole set (hosts reject values past
+// KSET); temperature <= 0 takes the argmax whatever top_k is.
 //   token  : out int32[1] (global token id)
 //   record : out int8[kD + 4] (the winner's embed row, then its embed_sc)
 void llama_topk_finalize(float *restrict set_logit, int32_t *restrict set_gidx,
@@ -242,14 +241,11 @@ void llama_topk_finalize(float *restrict set_logit, int32_t *restrict set_gidx,
   __builtin_memcpy(record + kD, &set_scale[winner], 4);
 }
 
-// Packed-output finalize: identical sampling, but writes the winner's embed
-// row AND the token id into ONE buffer out[kD + 12]:
+// As above, writing the winner's row and id into one buffer out[kD + 12]:
 //   [0..kD)        int8 embed row
 //   [kD..kD+4)     fp32 embed_sc
 //   [kD+4..kD+8)   int32 token id
 //   [kD+8..kD+12)  pad
-// The seed feeds back as the next layer-0 input and the token rides along for
-// the host to read.
 void llama_topk_finalize_packed(float *restrict set_logit,
                                 int32_t *restrict set_gidx,
                                 float *restrict set_scale,
