@@ -20,6 +20,7 @@ from ._common import (
     Param,
     Trace,
     _arch_traits,
+    _detect_arch,
     _kernel_source,
     _make_extern,
     _on_object,
@@ -234,7 +235,7 @@ TERNARY_GROUP = 128
 
 
 def _ternary_geometry(name, m_tile, k_tile) -> int:
-    """The bytes of one ``(m_tile, k_tile)`` ternary block."""
+    """Return the bytes of one ``(m_tile, k_tile)`` ternary block."""
     if m_tile <= 0 or m_tile % 16:
         raise ValueError(f"{name}: m_tile must be a positive multiple of 16")
     if k_tile <= 0 or k_tile % TERNARY_GROUP:
@@ -268,8 +269,10 @@ def ternary_dequant_ref(w, *, m_tile=32, k_tile=256) -> np.ndarray:
 
 
 def ternary_gemv_ref(w, x, *, m_tile=32, k_tile=256):
-    """Numpy reference for one ``ternary_gemv_block`` call: the float32
-    accumulator, zero before the call, plus ``w`` times slice 0 of ``x``.
+    """Numpy reference for one ``ternary_gemv_block`` call.
+
+    That is the float32 accumulator, zero before the call, plus ``w`` times
+    slice 0 of ``x``.
     """
     weights = ternary_dequant_ref(w, m_tile=m_tile, k_tile=k_tile).astype(np.float64)
     x = np.asarray(x, np.float32).reshape(-1)[:k_tile].astype(np.float64)
@@ -296,8 +299,9 @@ class _TernaryGemvKernel(_ZeroInitializedKernel):
 def ternary_gemv(
     *, dim: int = 512, m_tile: int = 32, k_tile: int = 256
 ) -> _TernaryGemvKernel:
-    """``y = w x`` for one bf16 row ``x`` of ``dim`` values and ternary
-    weights ``w``, from ``quant/ternary.cc``; see ``ternary_dequant_ref`` for a
+    """Compute ``y = w x`` for a bf16 row ``x`` of ``dim`` values and ternary weights ``w``.
+
+    The kernel is ``quant/ternary.cc``; ``ternary_dequant_ref`` gives a
     block's layout.
 
     The returned kernel is ``ternary_gemv_block(w, x, y_acc, k)``, which adds
@@ -310,6 +314,9 @@ def ternary_gemv(
       in the core's rounding mode (floor on a fresh core).
     """
     nbytes = _ternary_geometry("ternary_gemv", m_tile, k_tile)
+    # Run only on npu2 so far.
+    if _detect_arch() == "aie2":
+        raise NotImplementedError("ternary_gemv() is only available on aie2p.")
     if dim <= 0 or dim % k_tile:
         raise ValueError("ternary_gemv: dim must be a positive multiple of k_tile")
     y_acc = np.ndarray[(m_tile,), np.dtype[np.float32]]
@@ -367,11 +374,16 @@ def ternary_gemv(
 
 
 def ternary_dequant(*, m_tile: int = 32, k_tile: int = 256) -> ExternalFunction:
-    """One ternary block as its bf16 weights, ``(m_tile, k_tile)`` row-major,
-    from ``quant/ternary.cc``; each is a signed copy of its scale, exact. See
-    ``ternary_dequant_ref`` for the block's layout.
+    """Expand one ternary block to its bf16 weights, ``(m_tile, k_tile)`` row-major.
+
+    The kernel is ``quant/ternary.cc``. Each weight is a signed copy of its
+    scale, so the expansion is exact. ``ternary_dequant_ref`` gives the
+    block's layout.
     """
     nbytes = _ternary_geometry("ternary_dequant", m_tile, k_tile)
+    # Run only on npu2 so far.
+    if _detect_arch() == "aie2":
+        raise NotImplementedError("ternary_dequant() is only available on aie2p.")
     return _make_extern(
         "ternary_dequant",
         _kernel_source("quant/ternary.cc"),
