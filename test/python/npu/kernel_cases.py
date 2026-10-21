@@ -959,9 +959,12 @@ CASES: list[Case] = [
         for unshuffle in (False, True)
     ],
     Case("q4nx_dequant", calls=4, devices=("npu2",), smoke=True),
+    Case("ternary_dequant", calls=4, devices=("npu2",), smoke=True),
+    Case("ternary_gemv", calls=4, devices=("npu2",), smoke=True),
     # Gemma 4's FastFlowLM kernels: the entry point each factory returns.
     Case("flm_gemma4_attn_prefill", calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_bf16_proj_core", calls=4, devices=("npu2",), smoke=True),
+    Case("flm_gemma4_q4nx_gemv", dict(dim=512), calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_q4nx_lm_head", calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_q4nx_lm_head_epilogue", calls=4, devices=("npu2",), smoke=True),
     Case("flm_gemma4_q4nx_lm_head_rms", calls=4, devices=("npu2",), smoke=True),
@@ -1097,6 +1100,7 @@ CASES: list[Case] = [
         calls=2,
         devices=("npu2",),
     ),
+    check("q4nx_dequant", dict(rounding="conv_even"), devices=("npu2",), smoke=True),
     # Quantization groups need not divide the GEMM K slice.
     check(
         "q4nx_dequant",

@@ -39,6 +39,7 @@ from ._common import (
     _include_dirs,
     _kernel_source,
     _make_extern,
+    _on_object,
     _portable_flags,
     _runtime_lib_include,
     dtypes,
@@ -72,24 +73,6 @@ def _prefill_sibling(symbol, head_dim, contract) -> ExternalFunction:
         raise ValueError(f"head_dim must be 256 or 512, not {head_dim}")
     base = flm_gemma4_swa_prefill() if head_dim == 256 else flm_gemma4_attn_prefill()
     return _on_object(base, symbol, getattr(base, symbol).arg_types(), contract)
-
-
-def _on_object(base, symbol, arg_types, contract) -> ExternalFunction:
-    """``symbol`` of ``base``'s object, judged by ``contract``.
-
-    It names ``base``'s object and compile recipe, so a design that uses both
-    compiles and links one copy of the source.
-    """
-    return ExternalFunction(
-        symbol,
-        object_file_name=base.object_file_name,
-        source_file=base.source_file,
-        arg_types=arg_types,
-        include_dirs=base.include_dirs,
-        compile_flags=base.compile_flags,
-        symbol_prefix=base.object_file.symbol_prefix,
-        contract=contract,
-    )
 
 
 def _prefill(name, dh, lq, chunk, reference) -> ExternalFunction:
@@ -2569,25 +2552,21 @@ class _LmHeadKernel(_ZeroInitializedKernel):
     q4nx_lm_head_epilogue: Kernel
 
 
-def _lm_head_geometry(dim, m_tile, k_tile, group):
-    for name, value in dict(dim=dim, m_tile=m_tile, k_tile=k_tile, group=group).items():
+def _lm_head_geometry(name, dim, m_tile, k_tile, group):
+    for arg, value in dict(dim=dim, m_tile=m_tile, k_tile=k_tile, group=group).items():
         if not isinstance(value, (int, np.integer)) or value <= 0:
-            raise ValueError(
-                f"flm_gemma4_q4nx_lm_head: {name} must be a positive integer"
-            )
+            raise ValueError(f"{name}: {arg} must be a positive integer")
     if group != 32:
-        raise ValueError(
-            "flm_gemma4_q4nx_lm_head: group must be 32, the span of one column sum"
-        )
+        raise ValueError(f"{name}: group must be 32, the span of one column sum")
     if k_tile % group:
-        raise ValueError("flm_gemma4_q4nx_lm_head: k_tile must be a multiple of group")
+        raise ValueError(f"{name}: k_tile must be a multiple of group")
     if m_tile % 16:
-        raise ValueError("flm_gemma4_q4nx_lm_head: m_tile must be a multiple of 16")
+        raise ValueError(f"{name}: m_tile must be a multiple of 16")
     if dim % k_tile:
-        # The RMS entry point and the block loop both cover whole k_tile
-        # blocks, so a partial block would read past the token and write
-        # past its column sums.
-        raise ValueError("flm_gemma4_q4nx_lm_head: dim must be a multiple of k_tile")
+        # The column sums and the block loop both cover whole k_tile blocks,
+        # so a partial block would read past the token and write past its
+        # column sums.
+        raise ValueError(f"{name}: dim must be a multiple of k_tile")
 
 
 def _f32(x):
@@ -2710,16 +2689,38 @@ def flm_gemma4_q4nx_lm_head(
         k_tile: In-features per block, a multiple of ``group``.
         group: In-features per scale and minimum; must be 32.
     """
-    _lm_head_geometry(dim, m_tile, k_tile, group)
+    fn = _q4nx_block(
+        "flm_gemma4_q4nx_lm_head",
+        (2, dim),
+        _LmHeadKernel,
+        _q4nx_lm_head_sample,
+        dim=dim,
+        m_tile=m_tile,
+        k_tile=k_tile,
+        group=group,
+    )
+    _, x, y_acc, sums, _ = fn.arg_types()
+    bind = fn.object_file.bind
+    fn.q4nx_lm_head_block = fn
+    fn.q4nx_lm_head_rms = bind("q4nx_lm_head_rms", [x, sums])
+    fn.q4nx_lm_head_zero = bind("q4nx_lm_head_zero", [y_acc])
+    rtp = np.ndarray[(_LM_HEAD_RTP_WORDS,), _RTP_WORD]
+    fn.q4nx_lm_head_epilogue = bind(
+        "q4nx_lm_head_epilogue", [np.ndarray[(m_tile,), _BF16], y_acc, rtp]
+    )
+    return fn
+
+
+def _q4nx_block(name, x_shape, cls, sample, *, dim, m_tile, k_tile, group):
+    """``q4nx_lm_head_block`` of a ``q4nx_lm_head.cc`` build whose token is ``x_shape``."""
+    _lm_head_geometry(name, dim, m_tile, k_tile, group)
     if not _arch_traits().bfp16:
-        raise NotImplementedError(
-            "flm_gemma4_q4nx_lm_head() is only available on aie2p."
-        )
+        raise NotImplementedError(f"{name}() is only available on aie2p.")
     geometry = dict(m_tile=m_tile, k_tile=k_tile, group=group)
-    x = np.ndarray[(2, dim), _BF16]
+    x = np.ndarray[x_shape, _BF16]
     sums = np.ndarray[(dim // group,), _BF16]
     y_acc = np.ndarray[(m_tile,), _F32]
-    fn = _make_extern(
+    return _make_extern(
         "q4nx_lm_head_block",
         _kernel_source("flm_gemma4/q4nx_lm_head.cc"),
         [np.ndarray[(m_tile * k_tile * 5 // 8 // 2,), _BF16], x, y_acc, sums, np.int32],
@@ -2731,7 +2732,7 @@ def flm_gemma4_q4nx_lm_head(
             # Without it the bf16 mmul emulation runs about 8x slower.
             "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16",
         ],
-        cls=_LmHeadKernel,
+        cls=cls,
         contract=KernelContract(
             trace=Trace.whole_call(),
             # The token and its sums are fixed while the blocks stream past.
@@ -2739,7 +2740,7 @@ def flm_gemma4_q4nx_lm_head(
             parameter_bindings=((4, 0),),
             initializers=((2, _lm_head_zero),),
             reference=partial(flm_gemma4_q4nx_lm_head_ref, **geometry),
-            sample=partial(_q4nx_lm_head_sample, dim=dim, **geometry),
+            sample=partial(sample, dim=dim, **geometry),
             tolerance=Tolerance.exact(
                 note="the sample keeps every sum exact in float32; the floor "
                 "bf16 narrowing of each dot product is modeled"
@@ -2749,15 +2750,6 @@ def flm_gemma4_q4nx_lm_head(
             reduction=k_tile,
         ),
     )
-    bind = fn.object_file.bind
-    fn.q4nx_lm_head_block = fn
-    fn.q4nx_lm_head_rms = bind("q4nx_lm_head_rms", [x, sums])
-    fn.q4nx_lm_head_zero = bind("q4nx_lm_head_zero", [y_acc])
-    rtp = np.ndarray[(_LM_HEAD_RTP_WORDS,), _RTP_WORD]
-    fn.q4nx_lm_head_epilogue = bind(
-        "q4nx_lm_head_epilogue", [np.ndarray[(m_tile,), _BF16], y_acc, rtp]
-    )
-    return fn
 
 
 def _lm_head_softcap(rtp):
@@ -2891,6 +2883,86 @@ def flm_gemma4_q4nx_lm_head_rms(
         k_tile=k_tile,
         group=group,
     )
+
+
+class _GemvKernel(_ZeroInitializedKernel):
+    q4nx_gemv_sums: ExternalFunction
+    q4nx_lm_head_zero: ExternalFunction
+    q4nx_lm_head_block: ExternalFunction
+    q4nx_gemv_store: ExternalFunction
+
+
+def _q4nx_gemv_sample(rng, calls, **geometry):
+    w, x, sums = _q4nx_lm_head_sample(rng, calls, **geometry)
+    return [w, x[: geometry["dim"]], sums]
+
+
+def _group_sums(x):
+    return np.asarray(x, np.float64).reshape(len(x), -1, 32).sum(axis=2)
+
+
+def flm_gemma4_q4nx_gemv(
+    *, dim: int = 1536, m_tile: int = 32, k_tile: int = 256, group: int = 32
+) -> ExternalFunction:
+    """AIE2P ``y = w x`` for one bf16 row ``x`` and q4nx weights ``w``, from ``flm_gemma4/q4nx_lm_head.cc``.
+
+    The LM head of [`flm_gemma4_q4nx_lm_head`][iron.kernels.flm_gemma4.flm_gemma4_q4nx_lm_head]
+    without its RMS norm and softcap: the returned kernel is the same
+    ``q4nx_lm_head_block``, over a token of ``dim`` values. The other entry
+    points, attributes of the kernel:
+
+    - ``q4nx_gemv_sums(x, sums)``: once per token; the per-32 column sums of ``x``.
+    - ``q4nx_lm_head_zero(y_acc)``: before a tile's k loop.
+    - ``q4nx_gemv_store(y, y_acc)``: after the k loop, ``y_acc`` floored to bf16.
+
+    Args:
+        dim: The token's length, a multiple of ``k_tile``.
+        m_tile: Out-features per block, a multiple of 16.
+        k_tile: In-features per block, a multiple of ``group``.
+        group: In-features per scale and minimum; must be 32.
+    """
+    fn = _q4nx_block(
+        "flm_gemma4_q4nx_gemv",
+        (dim,),
+        _GemvKernel,
+        _q4nx_gemv_sample,
+        dim=dim,
+        m_tile=m_tile,
+        k_tile=k_tile,
+        group=group,
+    )
+    _, x, y_acc, sums, _ = fn.arg_types()
+    fn.q4nx_lm_head_block = fn
+    fn.q4nx_lm_head_zero = _lm_head_zero(fn)
+    fn.q4nx_gemv_sums = _on_object(
+        fn,
+        "q4nx_gemv_sums",
+        [x, sums],
+        KernelContract(
+            trace=Trace.whole_call(),
+            roles=(In, Out),
+            reference=lambda x: _group_sums(x).astype(np.float32),
+            tolerance=Tolerance.bounded(
+                lambda x: 2.0**-7 * _group_sums(np.abs(x)),
+                note="the kernel floors each sum to bf16, within 2**-7 of the "
+                "sum of |x|",
+            ),
+            ops_per_call=dim,
+        ),
+    )
+    fn.q4nx_gemv_store = _on_object(
+        fn,
+        "q4nx_gemv_store",
+        [np.ndarray[(m_tile,), _BF16], y_acc],
+        KernelContract(
+            trace=Trace.whole_call(),
+            roles=(Out, In),
+            reference=lambda y_acc: _bf16_floor(y_acc).astype(bfloat16),
+            tolerance=Tolerance.exact(note="the floor rounding a fresh core uses"),
+            ops_per_call=0,
+        ),
+    )
+    return fn
 
 
 def flm_gemma4_attn_prefill_ref(l_bf16, y):

@@ -19,10 +19,13 @@ def _aie2p_device(npu2_device):
     yield
 
 
-def test_the_lm_head_takes_whole_k_tiles():
+@pytest.mark.parametrize("factory", ["flm_gemma4_q4nx_lm_head", "flm_gemma4_q4nx_gemv"])
+def test_the_q4nx_blocks_take_whole_k_tiles(factory):
     """A partial last block would read past the token and its sums."""
-    with pytest.raises(ValueError, match="multiple of k_tile"):
-        kernels.flm_gemma4_q4nx_lm_head(dim=272)
+    with pytest.raises(
+        ValueError, match=f"{factory}: dim must be a multiple of k_tile"
+    ):
+        getattr(kernels, factory)(dim=272)
 
 
 def test_decode_kernels_build_only_the_gemma4_presets():

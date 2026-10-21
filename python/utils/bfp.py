@@ -41,6 +41,7 @@ __all__ = [
     "BLOCK",
     "BLOCK_BYTES",
     "encode",
+    "encode_core_even",
     "decode",
     "quantize",
     "shuffle",
@@ -149,8 +150,8 @@ def quantize(x, *, rounding: str = "floor") -> np.ndarray:
     Which mode applies is a property of who converts, not of where. ``floor``
     is ``decode(encode(x))``: this module's encoder truncates toward negative
     infinity, and a *core* converting in floor mode agrees with it -- the
-    ``q4nx_dequant`` kernel pins floor and its reference matches the device
-    byte for byte. ``conv_even`` models a core converting with
+    ``q4nx_dequant`` kernel's floor default matches the device byte for byte.
+    ``conv_even`` models a core converting with
     round-to-nearest-ties-to-even, which is what ``mm_bfp``'s mixed kernel
     pins so its K reduction does not accumulate a one-sided bias.
 
@@ -170,19 +171,34 @@ def quantize(x, *, rounding: str = "floor") -> np.ndarray:
         raise ValueError(
             f"bfp.quantize: rounding must be 'floor' or 'conv_even', got {rounding!r}"
         )
+    return decode(encode_core_even(x)).reshape(np.shape(x))
+
+
+def encode_core_even(x) -> np.ndarray:
+    """``encode``, as a core converting in ``conv_even`` mode stores the bytes.
+
+    Unlike ``encode(x, rounding="conv_even")``, a block with a mantissa that
+    rounds up to +128 takes the next exponent, as ``quantize`` describes.
+    """
     x = np.ascontiguousarray(x, dtype=np.float32)
     n = x.shape[-1]
     if n % BLOCK:
-        raise ValueError(f"bfp.quantize: last axis {n} is not a multiple of {BLOCK}")
+        raise ValueError(
+            f"bfp.encode_core_even: last axis {n} is not a multiple of {BLOCK}"
+        )
     blocks = x.reshape(*x.shape[:-1], n // BLOCK, BLOCK)
-    exp = (blocks.view(np.uint32) >> 23) & 0xFF
-    scale = np.ldexp(1.0, exp.max(axis=-1, keepdims=True).astype(np.int32) - 127 - 6)
+    exp = ((blocks.view(np.uint32) >> 23) & 0xFF).max(axis=-1, keepdims=True)
+    scale = np.ldexp(1.0, exp.astype(np.int32) - 127 - 6)
     mant = np.rint(blocks.astype(np.float64) / scale)
-    carry = (mant.max(axis=-1, keepdims=True) > 127)[..., 0]
+    carry = mant.max(axis=-1, keepdims=True) > 127
     if carry.any():
-        scale = np.where(carry[..., None], scale * 2, scale)
+        exp = exp + carry
+        scale = np.where(carry, scale * 2, scale)
         mant = np.rint(blocks.astype(np.float64) / scale)
-    return (np.clip(mant, -128, 127) * scale).astype(np.float32).reshape(x.shape)
+    out = np.empty(x.shape[:-1] + (n // BLOCK,), dtype=_BLOCK_DTYPE)
+    out["exponent"] = exp[..., 0]
+    out["mantissas"] = np.clip(mant, -128, 127)
+    return out.view(np.uint8).reshape(*x.shape[:-1], n // BLOCK * BLOCK_BYTES)
 
 
 def shuffle(

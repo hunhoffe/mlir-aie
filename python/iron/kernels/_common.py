@@ -646,6 +646,24 @@ def _arg_type_key(t):
 _KernelT = TypeVar("_KernelT", bound=ExternalFunction)
 
 
+def _on_object(base, symbol, arg_types, contract) -> ExternalFunction:
+    """``symbol`` of ``base``'s object, judged by ``contract``.
+
+    It names ``base``'s object and compile recipe, so a design that uses both
+    compiles and links one copy of the source.
+    """
+    return ExternalFunction(
+        symbol,
+        object_file_name=base.object_file_name,
+        source_file=base.source_file,
+        arg_types=arg_types,
+        include_dirs=base.include_dirs,
+        compile_flags=base.compile_flags,
+        symbol_prefix=base.object_file.symbol_prefix,
+        contract=contract,
+    )
+
+
 @overload
 def _make_extern(
     func_name: str,

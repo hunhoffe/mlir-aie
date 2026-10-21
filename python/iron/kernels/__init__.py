@@ -13,7 +13,7 @@ Submodules:
 - `vision` — rgba2hue, threshold, bitwise_or, bitwise_and, gray2rgba, rgba2gray, filter2d, add_weighted, resample_peak, resample_quantize, resize
 - `activation` — softmax, gelu, gelu_erf, silu, swiglu, bf16_exp, exp2f_vec, log_f32, log10_clamp_f32, tanh, sigmoid, leaky_relu
 - `norm` — rms_norm, rms_norm_eps, layer_norm, layer_norm_eps
-- `quant` — q4nx_dequant (AIE2P packed q4nx to bfp16ebs8)
+- `quant` — q4nx_dequant (AIE2P packed q4nx to bfp16ebs8), ternary_gemv and ternary_dequant (2-bit ternary weights)
 - `sample` — sample_select, sample_combine (exact top-k sampling, split across columns)
 - `moe` — router_top_k (a mixture-of-experts router's top-k ids and softmax
   weights, deterministic, from a `sample_select` summary), experts (a
@@ -217,6 +217,7 @@ from .flm_gemma4 import (
     flm_gemma4_prefill_round_begin_ref,
     flm_gemma4_prefill_rounds,
     flm_gemma4_prefill_rounds_ref,
+    flm_gemma4_q4nx_gemv,
     flm_gemma4_q4nx_lm_head,
     flm_gemma4_q4nx_lm_head_epilogue,
     flm_gemma4_q4nx_lm_head_epilogue_ref,
@@ -280,7 +281,14 @@ from .norm import (
     rms_norm_eps,
     rms_norm_ref,
 )
-from .quant import q4nx_dequant, q4nx_dequant_ref
+from .quant import (
+    q4nx_dequant,
+    q4nx_dequant_ref,
+    ternary_dequant,
+    ternary_dequant_ref,
+    ternary_gemv,
+    ternary_gemv_ref,
+)
 from .reduce import (
     argmax,
     argmax_combine,
@@ -362,6 +370,10 @@ __all__ = [
     "rms_norm",
     "q4nx_dequant",
     "q4nx_dequant_ref",
+    "ternary_dequant",
+    "ternary_dequant_ref",
+    "ternary_gemv",
+    "ternary_gemv_ref",
     "sample_select",
     "sample_combine",
     "sample_ref",
@@ -411,6 +423,7 @@ __all__ = [
     "flm_gemma4_prefill_fv_core_ref",
     "flm_gemma4_prefill_block_mid_core",
     "flm_gemma4_prefill_block_mid_core_ref",
+    "flm_gemma4_q4nx_gemv",
     "flm_gemma4_q4nx_lm_head",
     "flm_gemma4_q4nx_lm_head_epilogue",
     "flm_gemma4_q4nx_lm_head_epilogue_ref",
