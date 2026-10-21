@@ -12,13 +12,12 @@ is read into a ``Declaration`` as its body finishes.
 
 from __future__ import annotations
 
-import copy
 import sys
 from collections.abc import Mapping
 from dataclasses import MISSING
 from enum import Enum
 from types import FunctionType, MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if sys.version_info >= (3, 11):
     from typing import Self, dataclass_transform
@@ -196,31 +195,6 @@ class Operator:
     def bound(self) -> Mapping[str, Any]:
         """What each present member reads as on this operator."""
         return MappingProxyType(self._bound)
-
-    def with_bound(self, bind: Callable[[Self], Mapping[str, Any]]) -> Self:
-        """Return a shallow copy whose members read as ``bind`` says.
-
-        Args:
-            bind: Called with the copy, so what it binds reads through the
-                copy; returns each member's binding by name. A member it
-                leaves out reads as not bound.
-
-        Returns:
-            The copy, sharing every other attribute with this operator.
-        """
-        new = copy.copy(self)
-        vars(new)["_bound"] = bind(new)
-        return new
-
-    @property
-    def is_resolved(self) -> bool:
-        """Whether ``resolved`` made this operator, for ``resolved_for``."""
-        return self._resolved
-
-    @property
-    def resolved_for(self) -> Device | None:
-        """The device this operator's tunables were resolved for, or None."""
-        return self._resolved_for
 
     def validate(self) -> None:
         """Check the parameters on their own; raise ``ValueError``. Runs at construction."""

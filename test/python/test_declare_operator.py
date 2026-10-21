@@ -83,23 +83,6 @@ def test_a_library_binds_each_present_member_as_its_own_type():
     assert view.y == ("y", view)
 
 
-def test_a_copy_with_other_bindings_binds_through_the_copy():
-    op = Scale(M=8)
-    other = op.with_bound(lambda new: {**op.bound, "count": new})
-    assert other.count is other and op.count.op is op and other.y is op.y
-    with pytest.raises(AttributeError, match="y is not bound yet"):
-        op.with_bound(lambda new: {}).y
-
-
-def test_an_operator_says_whether_and_for_what_it_is_resolved():
-    op = Scale(M=8)
-    assert not op.is_resolved and op.resolved_for is None
-    done = op.resolved(DEV)
-    assert done.is_resolved and done.resolved_for is DEV
-    again = done.replace(factor=2.0)
-    assert not again.is_resolved and again.resolved_for is DEV
-
-
 @pytest.mark.parametrize(
     "given, error, message",
     [
