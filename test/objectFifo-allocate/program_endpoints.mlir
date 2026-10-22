@@ -21,16 +21,16 @@ module @parity {
     %shim = aie.tile(0, 0)
     %mt = aie.tile(0, 1)
     %core = aie.tile(0, 2)
-    aie.objectfifo.pool @heavy_pool(%mt) {depth = 10 : i32} : memref<16xi32> {
+    aie.objectfifo.pool @heavy__pool(%mt) {depth = 10 : i32} : memref<16xi32> {
       aie.objectfifo.segment @hs {offset = 0 : i32, size = 16 : i32}
     }
-    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy_pool {channelIndex = 1 : i32}
-    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy_pool {channelIndex = 3 : i32}
-    aie.objectfifo.pool @light_pool(%mt) {depth = 2 : i32} : memref<16xi32> {
+    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy__pool {channelIndex = 1 : i32}
+    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy__pool {channelIndex = 3 : i32}
+    aie.objectfifo.pool @light__pool(%mt) {depth = 2 : i32} : memref<16xi32> {
       aie.objectfifo.segment @ls {offset = 0 : i32, size = 16 : i32}
     }
-    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light_pool {channelIndex = 0 : i32}
-    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light_pool {channelIndex = 0 : i32}
+    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light__pool {channelIndex = 0 : i32}
+    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light__pool {channelIndex = 0 : i32}
     aie.route_endpoint @heavy_src(%shim) DMA {fifoName = "heavy"}
     aie.route_endpoint @heavy_dst(%shim) DMA {fifoName = "heavy_out"}
     aie.route_endpoint @light_src(%shim) DMA {fifoName = "light"}
@@ -78,14 +78,14 @@ module @parity {
 // CHECK: aie.mem(%[[CORE]]) {
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK: aie.runtime_sequence
-// CHECK:   %[[T0:.*]] = aiex.dma_configure_task_for @b_shim_alloc {
+// CHECK:   %[[T0:.*]] = aiex.dma_configure_task_for @b__shim_alloc {
 // CHECK:   aiex.dma_start_task(%[[T0]])
 // CHECK:   %[[T1:.*]] = aiex.dma_configure_task(%[[MT]], S2MM, 3) {
 // CHECK:     aie.dma_bd(%{{.*}} : memref<64xi32> offset = 0 len = 64)
 // CHECK:   } {repeat_count = 3 : i32}
 // CHECK:   aiex.dma_start_task(%[[T1]])
 // CHECK:   aiex.dma_free_task(%[[T1]])
-// CHECK: aie.shim_dma_allocation @b_shim_alloc(%[[SHIM]], MM2S, 1)
+// CHECK: aie.shim_dma_allocation @b__shim_alloc(%[[SHIM]], MM2S, 1)
 module @programs_and_tasks {
   aie.device(npu2) {
     %shim = aie.tile(0, 0)
@@ -93,21 +93,21 @@ module @programs_and_tasks {
     %mt = aie.tile(0, 1)
     %core = aie.tile(0, 2)
 
-    aie.objectfifo.pool @heavy_pool(%mt) {depth = 20 : i32} : memref<16xi32> {
+    aie.objectfifo.pool @heavy__pool(%mt) {depth = 20 : i32} : memref<16xi32> {
       aie.objectfifo.segment @hs {offset = 0 : i32, size = 16 : i32}
     }
-    aie.objectfifo.pool @light_pool(%mt) {depth = 2 : i32} : memref<16xi32> {
+    aie.objectfifo.pool @light__pool(%mt) {depth = 2 : i32} : memref<16xi32> {
       aie.objectfifo.segment @ls {offset = 0 : i32, size = 16 : i32}
     }
     aie.route_endpoint @heavy_shim(%shim1) DMA {fifoName = "heavy"}
-    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy_pool {channelIndex = 1 : i32}
-    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy_pool {channelIndex = 0 : i32}
+    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy__pool {channelIndex = 1 : i32}
+    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy__pool {channelIndex = 0 : i32}
     aie.route_endpoint @heavy_sink(%shim1) DMA {fifoName = "heavy_out"}
     aie.route from @heavy_shim to [@heavy_in]
     aie.route from @heavy_out to [@heavy_sink]
     aie.route_endpoint @light_shim(%shim) DMA {fifoName = "light"}
-    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light_pool
-    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light_pool
+    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light__pool
+    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light__pool
     aie.route_endpoint @light_sink(%shim) DMA {fifoName = "light_out"}
     aie.route from @light_shim to [@light_in]
     aie.route from @light_out to [@light_sink]
@@ -310,16 +310,16 @@ module @task_size_one {
     %mt = aie.tile(0, 1)
     %shim1 = aie.tile(1, 0)
     %core = aie.tile(0, 2)
-    aie.objectfifo.pool @heavy_pool(%mt) {depth = 6 : i32} : memref<16xi32> {
+    aie.objectfifo.pool @heavy__pool(%mt) {depth = 6 : i32} : memref<16xi32> {
       aie.objectfifo.segment @hs {offset = 0 : i32, size = 16 : i32}
     }
-    aie.objectfifo.pool @light_pool(%mt) {depth = 2 : i32} : memref<16xi32> {
+    aie.objectfifo.pool @light__pool(%mt) {depth = 2 : i32} : memref<16xi32> {
       aie.objectfifo.segment @ls {offset = 0 : i32, size = 16 : i32}
     }
-    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy_pool {channelIndex = 0 : i32}
-    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy_pool {channelIndex = 0 : i32}
-    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light_pool {channelIndex = 1 : i32}
-    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light_pool {channelIndex = 1 : i32}
+    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy__pool {channelIndex = 0 : i32}
+    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy__pool {channelIndex = 0 : i32}
+    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light__pool {channelIndex = 1 : i32}
+    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light__pool {channelIndex = 1 : i32}
     aie.route_endpoint @heavy_src(%shim) DMA {fifoName = "heavy"}
     aie.route_endpoint @heavy_dst(%shim) DMA {fifoName = "heavy_out"}
     aie.route_endpoint @light_src(%shim) DMA {fifoName = "light"}
@@ -363,16 +363,16 @@ module @task_size_eight {
     %mt = aie.tile(0, 1)
     %shim1 = aie.tile(1, 0)
     %core = aie.tile(0, 2)
-    aie.objectfifo.pool @heavy_pool(%mt) {depth = 6 : i32} : memref<16xi32> {
+    aie.objectfifo.pool @heavy__pool(%mt) {depth = 6 : i32} : memref<16xi32> {
       aie.objectfifo.segment @hs {offset = 0 : i32, size = 16 : i32}
     }
-    aie.objectfifo.pool @light_pool(%mt) {depth = 2 : i32} : memref<16xi32> {
+    aie.objectfifo.pool @light__pool(%mt) {depth = 2 : i32} : memref<16xi32> {
       aie.objectfifo.segment @ls {offset = 0 : i32, size = 16 : i32}
     }
-    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy_pool {channelIndex = 0 : i32}
-    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy_pool {channelIndex = 0 : i32}
-    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light_pool {channelIndex = 1 : i32}
-    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light_pool {channelIndex = 1 : i32}
+    aie.objectfifo.dma_endpoint @heavy_in(%mt) fills @heavy__pool {channelIndex = 0 : i32}
+    aie.objectfifo.dma_endpoint @heavy_out(%mt) drains @heavy__pool {channelIndex = 0 : i32}
+    aie.objectfifo.dma_endpoint @light_in(%mt) fills @light__pool {channelIndex = 1 : i32}
+    aie.objectfifo.dma_endpoint @light_out(%mt) drains @light__pool {channelIndex = 1 : i32}
     aie.route_endpoint @heavy_src(%shim) DMA {fifoName = "heavy"}
     aie.route_endpoint @heavy_dst(%shim) DMA {fifoName = "heavy_out"}
     aie.route_endpoint @light_src(%shim) DMA {fifoName = "light"}

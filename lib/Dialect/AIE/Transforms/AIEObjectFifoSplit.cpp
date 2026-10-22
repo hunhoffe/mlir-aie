@@ -524,16 +524,17 @@ void AIEObjectFifoSplitPass::createLinkPools() {
     std::string name;
     int depth;
     if (ownerIsOutput) {
-      name = (owner.name().getValue() + "_pool").str();
+      name = (owner.name().getValue() + "__pool").str();
       depth = owner.size();
     } else {
       auto consumers = owner.getConsumerTiles();
       int index =
           std::distance(consumers.begin(), llvm::find(consumers, *sharedTile));
-      name = (owner.name().getValue() +
-              (consumers.size() > 1 ? "_" + std::to_string(index) + "_cons_pool"
-                                    : "_cons_pool"))
-                 .str();
+      name =
+          (owner.name().getValue() +
+           (consumers.size() > 1 ? "__cons" + std::to_string(index) + "__pool"
+                                 : "__cons__pool"))
+              .str();
       depth = isa<ArrayAttr>(owner.getElemNumber())
                   ? owner.size(index + 1)
                   : objectCountOn(device, *sharedTile, owner);
@@ -616,7 +617,7 @@ void AIEObjectFifoSplitPass::runOnOperation() {
         }
         // Both ends address the one pool, so it needs the deeper end's depth
         // even when init_values fill only the producer's share of it.
-        ref = PoolRef{createPool(loc, (fifoName + "_pool").str(), tile,
+        ref = PoolRef{createPool(loc, (fifoName + "__pool").str(), tile,
                                  sharedObjectCount(fifo), elemType, fifo,
                                  {{0, elemType.getNumElements()}},
                                  /*holdsInitialContents=*/true,
@@ -626,7 +627,7 @@ void AIEObjectFifoSplitPass::runOnOperation() {
 
       if (hasCoreAccess(device, fifo.getProducerTile(), fifo,
                         ObjectFifoPort::Produce)) {
-        auto name = (fifoName + "_prod").str();
+        auto name = (fifoName + "__prod").str();
         createCoreEndpoint(loc, name, fifo.getProducerTile(), ref,
                            ObjectFifoRole::Fill);
         retargetCoreAccesses(fifo, ObjectFifoPort::Produce,
@@ -634,7 +635,7 @@ void AIEObjectFifoSplitPass::runOnOperation() {
       }
       if (hasCoreAccess(device, fifo.getConsumerTiles()[0], fifo,
                         ObjectFifoPort::Consume)) {
-        auto name = (fifoName + "_cons").str();
+        auto name = (fifoName + "__cons").str();
         createCoreEndpoint(loc, name, fifo.getConsumerTiles()[0], ref,
                            ObjectFifoRole::Drain);
         retargetCoreAccesses(fifo, ObjectFifoPort::Consume,
@@ -664,27 +665,27 @@ void AIEObjectFifoSplitPass::runOnOperation() {
       prodRef = linked->second;
     } else if (prodIsShim) {
       if (!fifo.getPlio()) {
-        prodRef = registeredPool(fifo, prodTile, (fifoName + "_pool").str(),
+        prodRef = registeredPool(fifo, prodTile, (fifoName + "__pool").str(),
                                  elemType);
       }
     } else if (!prodStreamPort) {
       int depth = fifo.getInitValues() ? fifo.size()
                                        : objectCountOn(device, prodTile, fifo);
       auto pool =
-          createPool(loc, (fifoName + "_pool").str(), prodTile, depth, elemType,
-                     fifo, {{0, elemType.getNumElements()}},
+          createPool(loc, (fifoName + "__pool").str(), prodTile, depth,
+                     elemType, fifo, {{0, elemType.getNumElements()}},
                      /*holdsInitialContents=*/true, fifo.getRepeatCount());
       prodRef = PoolRef{pool, {0}};
     }
 
     if (prodRef &&
         hasCoreAccess(device, prodTile, fifo, ObjectFifoPort::Produce)) {
-      auto name = (fifoName + "_prod").str();
+      auto name = (fifoName + "__prod").str();
       createCoreEndpoint(loc, name, prodTile, *prodRef, ObjectFifoRole::Fill);
       retargetCoreAccesses(fifo, ObjectFifoPort::Produce, prodTile, name);
     }
 
-    std::string prodDmaName = (fifoName + "_prod_dma").str();
+    std::string prodDmaName = (fifoName + "__prod__dma").str();
     if (prodRef) {
       createDmaEndpoint(
           loc, prodDmaName, prodTile, *prodRef, ObjectFifoRole::Drain, fifo,
@@ -707,8 +708,8 @@ void AIEObjectFifoSplitPass::runOnOperation() {
     int consumerIndex = 0;
     for (Value consumerTile : fifo.getConsumerTiles()) {
       std::string suffix = fifo.getConsumerTiles().size() > 1
-                               ? ("_" + std::to_string(consumerIndex) + "_cons")
-                               : "_cons";
+                               ? ("__cons" + std::to_string(consumerIndex))
+                               : "__cons";
       bool consIsShim = cast<TileOp>(consumerTile.getDefiningOp()).isShimTile();
 
       std::optional<PoolRef> consRef;
@@ -718,15 +719,15 @@ void AIEObjectFifoSplitPass::runOnOperation() {
         consRef = linked->second;
       } else if (consIsShim) {
         if (!fifo.getPlio()) {
-          consRef =
-              registeredPool(fifo, consumerTile,
-                             (fifoName + suffix + "_pool").str(), consElemType);
+          consRef = registeredPool(fifo, consumerTile,
+                                   (fifoName + suffix + "__pool").str(),
+                                   consElemType);
         }
       } else if (!consStreamPort) {
         int depth = isa<ArrayAttr>(fifo.getElemNumber())
                         ? fifo.size(consumerIndex + 1)
                         : objectCountOn(device, consumerTile, fifo);
-        auto pool = createPool(loc, (fifoName + suffix + "_pool").str(),
+        auto pool = createPool(loc, (fifoName + suffix + "__pool").str(),
                                consumerTile, depth, consElemType, fifo,
                                {{0, consElemType.getNumElements()}},
                                /*holdsInitialContents=*/false,
@@ -749,7 +750,7 @@ void AIEObjectFifoSplitPass::runOnOperation() {
         pinned = (*consChannels)[consumerIndex];
       }
 
-      std::string consDmaName = (fifoName + suffix + "_dma").str();
+      std::string consDmaName = (fifoName + suffix + "__dma").str();
       if (consRef) {
         createDmaEndpoint(loc, consDmaName, consumerTile, *consRef,
                           ObjectFifoRole::Fill, fifo,
