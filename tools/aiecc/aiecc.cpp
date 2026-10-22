@@ -40,6 +40,7 @@
 #include "Items.h"
 #include "SidecarFiles.h"
 #include "Tools.h"
+#include "TraceElfs.h"
 #include "Utils.h"
 
 #include "aie/Conversion/Passes.h"
@@ -1555,6 +1556,27 @@ buildMainGraph(mlir::MLIRContext &context, Graph &g,
                           return checkStackSizeRequirements(out.value->get(),
                                                             elfLookup(elfs));
                         });
+  }
+  // The compile trace's view of each core's ELF: its sections, its symbols
+  // and the object each came from.
+  if (xilinx::AIE::trace::enabled()) {
+    measured =
+        &bundle(compiledElfs.out, objects.out, measured->out)
+             .join<ModRef>("traced_elfs.mlir",
+                           [elfLookup, inputFile, workDirStr](
+                               const Node<Directory> &elfs,
+                               const Node<Directory> &coreObjects,
+                               const Node<ModRef> &physicalN,
+                               Item<ModRef> &out) -> mlir::LogicalResult {
+                             out.value = ModRef(physicalN.get().get().clone());
+                             traceCoreElfs(out.value->get(), elfLookup(elfs),
+                                           elfLookup(coreObjects),
+                                           [&](llvm::StringRef p) {
+                                             return resolveExternalPath(
+                                                 p, inputFile, workDirStr);
+                                           });
+                             return mlir::success();
+                           });
   }
   if (!noMeasureDataSize.getValue()) {
     measured = &bundle(compiledElfs.out, measured->out)

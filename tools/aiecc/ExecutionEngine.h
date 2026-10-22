@@ -591,11 +591,19 @@ struct Engine {
           stage += "#" + std::to_string(task.item);
         auto taskStart = std::chrono::steady_clock::now();
         xilinx::AIE::trace::setStage(stage);
-        AIE_TRACE("stage.begin", [&](llvm::json::OStream &j) {});
+        // A per-item stage names its item (a core, a device) by its key.
+        std::string key =
+            task.item >= 0 ? s.edge->itemKey((size_t)task.item).str() : "";
+        AIE_TRACE("stage.begin", [&](llvm::json::OStream &j) {
+          if (!key.empty())
+            j.attribute("key", key);
+        });
         mlir::LogicalResult r = task.item < 0
                                     ? s.edge->execute()
                                     : s.edge->executeForItem((size_t)task.item);
         AIE_TRACE("stage.end", [&](llvm::json::OStream &j) {
+          if (!key.empty())
+            j.attribute("key", key);
           j.attribute("ok", mlir::succeeded(r));
           xilinx::AIE::trace::attributeNumber(
               j, "ms",

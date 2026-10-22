@@ -167,17 +167,20 @@ struct AIEAssignBufferDescriptorIDsPass
     // here -- key the generator by tile, not by op, or two ops on the same
     // tile hand out the same ids and silently collide.
     std::map<std::pair<int, int>, BdIdGenerator> gens;
-    // Trace: each tile's BDs as [channel, id, buffer, assigned here].
-    std::map<std::pair<int, int>, llvm::json::Array> tracedBds;
+    // Trace: each tile's BDs in the order they got ids, as [channel, id,
+    // buffer, assigned here, next BD in its chain]; written once the chains
+    // are linked below.
+    struct TracedBd {
+      int channel;
+      DMABDOp bd;
+      int id;
+      bool fresh;
+    };
+    std::map<std::pair<int, int>, SmallVector<TracedBd>> tracedBds;
     auto traceBd = [&](int col, int row, int channel, DMABDOp bd, int id,
                        bool fresh) {
-      if (!trace::enabled())
-        return;
-      std::string buf;
-      if (auto b = bd.getBuffer().getDefiningOp<BufferOp>())
-        buf = b.name().str();
-      tracedBds[{col, row}].push_back(
-          llvm::json::Array{channel, id, buf, fresh});
+      if (trace::enabled())
+        tracedBds[{col, row}].push_back({channel, bd, id, fresh});
     };
     for (TileElement memOp : memOps) {
       int col = memOp.getTileID().col;
@@ -303,15 +306,6 @@ struct AIEAssignBufferDescriptorIDsPass
         }
       }
     }
-    AIE_TRACE("alloc.bds", [&](llvm::json::OStream &j) {
-      j.attributeArray("tiles", [&] {
-        for (auto &[tile, bds] : tracedBds)
-          j.object([&] {
-            j.attribute("tile", llvm::json::Array{tile.first, tile.second});
-            j.attribute("bds", std::move(bds));
-          });
-      });
-    });
     for (TileElement memOp : memOps) {
       auto dmaOps = memOp.getOperation()->getRegion(0).getOps<DMAOp>();
       if (!dmaOps.empty()) {
@@ -370,6 +364,26 @@ struct AIEAssignBufferDescriptorIDsPass
         }
       }
     }
+
+    AIE_TRACE("alloc.bds", [&](llvm::json::OStream &j) {
+      j.attributeArray("tiles", [&] {
+        for (auto &[tile, bds] : tracedBds)
+          j.object([&] {
+            j.attribute("tile", llvm::json::Array{tile.first, tile.second});
+            j.attributeArray("bds", [&] {
+              for (TracedBd &t : bds) {
+                std::string buf;
+                if (auto b = t.bd.getBuffer().getDefiningOp<BufferOp>())
+                  buf = b.name().str();
+                auto next = t.bd.getNextBdId();
+                j.value(llvm::json::Array{t.channel, t.id, buf, t.fresh,
+                                          next ? llvm::json::Value(*next)
+                                               : llvm::json::Value(nullptr)});
+              }
+            });
+          });
+      });
+    });
 
     populateRearmBindings(targetOp);
   }
