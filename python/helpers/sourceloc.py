@@ -57,9 +57,9 @@ def _depth() -> int:
 
 def _is_user_frame(filename: str) -> bool:
     # "<frozen runpy>", "<string>": no file a reader could open.
-    return not filename.startswith("<") and not os.path.normcase(
-        filename
-    ).startswith(_PASSTHROUGH)
+    return not filename.startswith("<") and not os.path.normcase(filename).startswith(
+        _PASSTHROUGH
+    )
 
 
 class SourceSite:

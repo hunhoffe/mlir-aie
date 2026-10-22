@@ -544,10 +544,10 @@ void AIEObjectFifoSplitPass::createLinkPools() {
     SmallVector<Location> locs{linkOp.getLoc()};
     for (ObjectFifoCreateOp fifo : llvm::concat<ObjectFifoCreateOp>(ins, outs))
       locs.push_back(fifo.getLoc());
-    auto pool = createPool(
-        FusedLoc::get(linkOp.getContext(), locs), name, *sharedTile, depth,
-        elemType, owner, extents,
-        /*holdsInitialContents=*/ownerIsOutput, linkOp.getRepeatCount());
+    auto pool = createPool(FusedLoc::get(linkOp.getContext(), locs), name,
+                           *sharedTile, depth, elemType, owner, extents,
+                           /*holdsInitialContents=*/ownerIsOutput,
+                           linkOp.getRepeatCount());
     linkPoolOwner.insert(owner);
 
     SmallVector<int32_t> allSegments;
