@@ -635,8 +635,8 @@ module @shared_source_bd_packet_ops {
 // the channel through the shim allocation, which carries none.
 
 // CHECK-LABEL: @shared_source_memcpy_header
-// CHECK: aiex.npu.dma_memcpy_nd({{.*}}packet = <pkt_type = 0, pkt_id = 2>) {{{.*}}metadata = @host_shim_alloc}
-// CHECK: aie.shim_dma_allocation @host_shim_alloc(%{{.*}}, MM2S, [[#]]){{$}}
+// CHECK: aiex.npu.dma_memcpy_nd({{.*}}packet = <pkt_type = 0, pkt_id = 2>) {{{.*}}metadata = @host__shim_alloc}
+// CHECK: aie.shim_dma_allocation @host__shim_alloc(%{{.*}}, MM2S, [[#]]){{$}}
 module @shared_source_memcpy_header {
   aie.device(npu2) {
     %shim = aie.tile(0, 0)
@@ -660,8 +660,8 @@ module @shared_source_memcpy_header {
 // CHECK-LABEL: @shared_source_bd_chain_headers
 // CHECK: aie.dma_bd({{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>}
 // CHECK: aie.dma_bd({{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>}
-// CHECK: aiex.dma_start_bd_chain_for @chain(%{{.*}}) : (memref<64xi32>) for @host_shim_alloc
-// CHECK: aie.shim_dma_allocation @host_shim_alloc(%{{.*}}, MM2S, [[#]]){{$}}
+// CHECK: aiex.dma_start_bd_chain_for @chain(%{{.*}}) : (memref<64xi32>) for @host__shim_alloc
+// CHECK: aie.shim_dma_allocation @host__shim_alloc(%{{.*}}, MM2S, [[#]]){{$}}
 module @shared_source_bd_chain_headers {
   aie.device(npu2) {
     %shim = aie.tile(0, 0)
@@ -693,9 +693,9 @@ module @shared_source_bd_chain_headers {
 
 // CHECK-LABEL: @shared_then_single_source
 // CHECK: aie.device(npu2) @first
-// CHECK: aie.shim_dma_allocation @host_shim_alloc(%{{.*}}, MM2S, [[#]]){{$}}
+// CHECK: aie.shim_dma_allocation @host__shim_alloc(%{{.*}}, MM2S, [[#]]){{$}}
 // CHECK: aie.device(npu2) @second
-// CHECK: aie.shim_dma_allocation @host_shim_alloc(%{{.*}}, MM2S, [[#]], <pkt_type = 0, pkt_id = 3>)
+// CHECK: aie.shim_dma_allocation @host__shim_alloc(%{{.*}}, MM2S, [[#]], <pkt_type = 0, pkt_id = 3>)
 module @shared_then_single_source {
   aie.device(npu2) @first {
     %shim = aie.tile(0, 0)
