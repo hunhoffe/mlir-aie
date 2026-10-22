@@ -1234,108 +1234,6 @@ LogicalResult SAPlacer::mergeMemShimTiles(DeviceOp device) {
 // Compile trace
 //===----------------------------------------------------------------------===//
 
-static StringRef traceTileType(AIETileType type) {
-  switch (type) {
-  case AIETileType::CoreTile:
-    return "core";
-  case AIETileType::MemTile:
-    return "mem";
-  case AIETileType::ShimNOCTile:
-    return "shim";
-  case AIETileType::ShimPLTile:
-    return "shim_pl";
-  }
-  return "other";
-}
-
-// The device as a grid of tile types, a string per row from row 0, a letter
-// per column: c core, m mem, s shim (NOC), p shim (PL), . anything else.
-static void traceGrid(json::OStream &j, const AIETargetModel &tm) {
-  j.attribute("cols", tm.columns());
-  j.attribute("rows", tm.rows());
-  j.attributeArray("grid", [&] {
-    for (int r = 0; r < tm.rows(); r++) {
-      std::string row;
-      for (int c = 0; c < tm.columns(); c++) {
-        switch (tm.getTileType(c, r)) {
-        case AIETileType::CoreTile:
-          row += 'c';
-          break;
-        case AIETileType::MemTile:
-          row += 'm';
-          break;
-        case AIETileType::ShimNOCTile:
-          row += 's';
-          break;
-        case AIETileType::ShimPLTile:
-          row += 'p';
-          break;
-        default:
-          row += '.';
-        }
-      }
-      j.value(row);
-    }
-  });
-}
-
-void SAPlacer::traceModel() const {
-  // What each core calls, which is how a designer knows its worker.
-  DenseMap<Operation *, SmallVector<StringRef>> kernels;
-  if (!collected.logicalTiles.empty())
-    collected.logicalTiles.front()->getParentOp()->walk([&](CoreOp core) {
-      Operation *tile = core.getTile().getDefiningOp();
-      core.walk([&](Operation *op) {
-        if (auto callee = op->getAttrOfType<FlatSymbolRefAttr>("callee"))
-          if (!llvm::is_contained(kernels[tile], callee.getValue()))
-            kernels[tile].push_back(callee.getValue());
-      });
-    });
-  AIE_TRACE("place.model", [&](json::OStream &j) {
-    traceGrid(j, *targetModel);
-    j.attributeArray("tiles", [&] {
-      for (auto lt : collected.logicalTiles) {
-        Operation *op = lt.getOperation();
-        j.object([&] {
-          j.attribute("id", traceIds.lookup(op));
-          j.attribute("type", traceTileType(lt.getTileType()));
-          j.attribute("loc", trace::locString(op->getLoc()));
-          j.attribute("fixed", constrainedTiles.contains(op));
-          j.attribute("mem", computeTileMemoryWeight(op));
-          if (auto it = kernels.find(op); it != kernels.end())
-            j.attributeArray("calls", [&] {
-              for (StringRef k : it->second)
-                j.value(k);
-            });
-        });
-      }
-    });
-    auto idOf = [&](Value tile) -> int {
-      Operation *op = tile.getDefiningOp();
-      auto it = op ? traceIds.find(op) : traceIds.end();
-      return it == traceIds.end() ? -1 : it->second;
-    };
-    j.attributeArray("fifos", [&] {
-      for (auto of : collected.objectFifos) {
-        j.object([&] {
-          j.attribute("name", of.getSymName());
-          j.attribute("loc", trace::locString(of.getLoc()));
-          j.attribute("prod", idOf(of.getProducerTile()));
-          j.attributeArray("cons", [&] {
-            for (Value c : of.getConsumerTiles())
-              j.value(idOf(c));
-          });
-        });
-      }
-    });
-    j.attributeArray("cascades", [&] {
-      for (auto [a, b] : cascadeAdjacency.edges)
-        j.value(json::Array{traceIds.lookup(a.getOperation()),
-                            traceIds.lookup(b.getOperation())});
-    });
-  });
-}
-
 void SAPlacer::traceCost(json::OStream &j) const {
   j.attributeObject("cost", [&] {
     j.attribute("total", totalCost);
@@ -1348,9 +1246,9 @@ void SAPlacer::traceCost(json::OStream &j) const {
 
 // `key`: [[id, col, row], ...], with only the tiles that moved since `since`
 // (which then becomes `placement`) when it is given.
-void SAPlacer::tracePositions(json::OStream &j, StringRef key,
-                              const PlacementResult &placement,
-                              PlacementResult *since) {
+void SAPlacer::traceMoved(json::OStream &j, StringRef key,
+                          const PlacementResult &placement,
+                          PlacementResult *since) {
   j.attributeArray(key, [&] {
     for (auto lt : collected.logicalTiles) {
       Operation *op = lt.getOperation();
@@ -1388,16 +1286,17 @@ LogicalResult SAPlacer::place(DeviceOp device) {
   // Phase 4: Initialize bounding boxes, resource tracking, initial cost.
   initializeSAState();
   if (trace::enabled()) {
-    for (auto [i, lt] : llvm::enumerate(collected.logicalTiles))
-      traceIds[lt.getOperation()] = i;
-    traceModel();
+    traceModel(
+        "sa", collected, cascadeAdjacency,
+        [&](Operation *op) { return constrainedTiles.contains(op); },
+        [&](Operation *op) { return computeTileMemoryWeight(op); });
     AIE_TRACE("place.init", [&](json::OStream &j) {
       j.attribute("seed", rngSeed);
       j.attribute("effort", config.effort);
       j.attribute("movable", static_cast<int64_t>(movableTiles.size()));
       j.attribute("nets", static_cast<int64_t>(nets.size()));
       traceCost(j);
-      tracePositions(j, "pos", currentPlacement, nullptr);
+      traceMoved(j, "pos", currentPlacement, nullptr);
     });
   }
   // Phase 5: SA main loop (skip if nothing to optimize).
@@ -1880,11 +1779,11 @@ void SAPlacer::runSAMainLoop() {
       j.attribute("uphill", acceptedUphill - itUphill);
       j.attribute("rej", rejectedMoves - itRej);
       traceCost(j);
-      tracePositions(j, "pos", currentPlacement, &tracedPlacement);
+      traceMoved(j, "pos", currentPlacement, &tracedPlacement);
       // The best legal placement, when it changed: what the placer would
       // keep if it stopped here.
       if (bestCost != INT_MAX && bestCost != tracedBestCost) {
-        tracePositions(j, "bestPos", bestPlacement, &tracedBest);
+        traceMoved(j, "bestPos", bestPlacement, &tracedBest);
         tracedBestCost = bestCost;
       }
     });
@@ -2105,7 +2004,7 @@ LogicalResult SAPlacer::finalizePlacement(DeviceOp device) {
                                             config.cascadeWeightPerDist) == 0);
     j.attribute("finalCost", finalCost);
     traceCost(j);
-    tracePositions(j, "pos", currentPlacement, nullptr);
+    traceMoved(j, "pos", currentPlacement, nullptr);
   });
 
   // SA optimizes for legality but is not guaranteed to reach it (e.g. a very

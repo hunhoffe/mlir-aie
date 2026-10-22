@@ -65,6 +65,13 @@ static thread_local std::string currentStage;
 
 void trace::setStage(llvm::StringRef stage) { currentStage = stage.str(); }
 
+static thread_local std::optional<std::string> currentDevice;
+
+void trace::setDevice(std::optional<llvm::StringRef> device) {
+  currentDevice =
+      device ? std::optional<std::string>(device->str()) : std::nullopt;
+}
+
 bool trace::enabled() { return sink().on.load(std::memory_order_relaxed); }
 
 void trace::open(llvm::StringRef path) { sink().openPath(path); }
@@ -90,6 +97,8 @@ void trace::emit(llvm::StringRef ev, const char *file, int line,
           (llvm::sys::path::filename(file) + ":" + llvm::Twine(line)).str());
       if (!currentStage.empty())
         j.attribute("stage", currentStage);
+      if (currentDevice)
+        j.attribute("dev", *currentDevice);
       fields(j);
     });
   }

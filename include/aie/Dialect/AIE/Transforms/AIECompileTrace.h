@@ -27,6 +27,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
 
+#include <optional>
+
 #include <string>
 
 namespace xilinx::AIE::trace {
@@ -43,6 +45,11 @@ void open(llvm::StringRef path);
 /// The aiecc stage this thread is running, which each event it writes names
 /// (as "stage") until it is cleared with "".
 void setStage(llvm::StringRef stage);
+
+/// The aie.device this thread is compiling, which each event it writes names
+/// (as "dev", the device's symbol or "" for an unnamed one) until it is
+/// cleared with std::nullopt.
+void setDevice(std::optional<llvm::StringRef> device);
 
 /// Write one event; `fields` adds the event's own members.
 void emit(llvm::StringRef ev, const char *file, int line,

@@ -166,14 +166,35 @@ struct CompileTracePasses : mlir::PassInstrumentation {
       j.attribute("ops", ops);
     });
   }
-  void runBeforePass(mlir::Pass *, mlir::Operation *) override {
+  // The devices whose passes this thread is in, so each event a device pass
+  // writes names its device ("dev").
+  static inline thread_local std::vector<std::string> devices;
+  static bool isDevice(mlir::Operation *op) {
+    return op->getName().getStringRef() == "aie.device";
+  }
+  static void leave(mlir::Operation *op) {
+    if (!isDevice(op))
+      return;
+    devices.pop_back();
+    xilinx::AIE::trace::setDevice(
+        devices.empty() ? std::nullopt
+                        : std::optional<llvm::StringRef>(devices.back()));
+  }
+  void runBeforePass(mlir::Pass *, mlir::Operation *op) override {
+    if (isDevice(op)) {
+      auto sym = op->getAttrOfType<mlir::StringAttr>("sym_name");
+      devices.push_back(sym ? sym.getValue().str() : "");
+      xilinx::AIE::trace::setDevice(llvm::StringRef(devices.back()));
+    }
     starts.push_back(std::chrono::steady_clock::now());
   }
   void runAfterPass(mlir::Pass *pass, mlir::Operation *op) override {
     record("pass", pass, op);
+    leave(op);
   }
   void runAfterPassFailed(mlir::Pass *pass, mlir::Operation *op) override {
     record("pass.failed", pass, op);
+    leave(op);
   }
 };
 
