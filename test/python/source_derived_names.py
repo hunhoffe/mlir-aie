@@ -9,7 +9,6 @@
 # object that is not assigned to a name falls back to of<N> / worker<N>.
 
 import numpy as np
-
 from aie.iron import ObjectFifo, Program, Runtime, Worker
 from aie.iron.device import NPU1Col1
 

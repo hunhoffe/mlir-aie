@@ -8,7 +8,6 @@
 # deterministic name.
 
 import numpy as np
-
 from aie.iron import Buffer, ObjectFifo, Program, Runtime, Worker
 from aie.iron.device import NPU1Col1
 

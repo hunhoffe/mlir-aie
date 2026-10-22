@@ -160,7 +160,7 @@ def _contains(node: ast.AST, line: int, col: int) -> bool:
 
 
 def _spine(value: ast.AST) -> list:
-    """The calls `value` is a chain of: `a.cons().forward()` gives both."""
+    """Return the calls `value` chains: both calls of `a.cons().forward()`."""
     calls = []
     while isinstance(value, (ast.Call, ast.Attribute)):
         if isinstance(value, ast.Call):
