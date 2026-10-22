@@ -30,6 +30,12 @@ each skill below covers one:
 | [`aie-kernel-opt`](aie-kernel-opt/SKILL.md) | Phase 4 (micro) — making one Peano-compiled kernel faster: the remarks report and its base-arm diff, a mutation-proven gate, a back-to-back traced A/B on the NPU, the levers that measured faster and the Peano traps. |
 | [`aie-dataflow-opt`](aie-dataflow-opt/SKILL.md) | Phase 4 (macro) — optimizing the dataflow around already-correct kernels: NOOP-ablation-driven prioritization, regime-aware placement/overlays, and DMA bandwidth/compression modeling. |
 
+At any phase, when the compiler itself fails or is slow:
+
+| Skill | What it covers |
+|-------|----------------|
+| [`aie-compile-repro`](aie-compile-repro/SKILL.md) | Turning a placement, routing or allocation failure into a traced, minimal reproducer: a compile trace, the failing phase's input file, `router_shrink.py --trace-dir`, and a compile replay page. |
+
 ## Using a skill
 
 **With Claude Code.** Symlink this whole `skills/` directory into a
