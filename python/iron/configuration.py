@@ -334,6 +334,21 @@ class DeviceConfiguration(DeviceResources):
         taken = set(claimed)
         taken.update(flow.name for flow in self._flows if flow.name is not None)
         taken.update(worker.name for worker in self._workers if worker.name)
+        # Symbols the device holds besides the objects named here: kernels,
+        # runtime sequences and scratchpad parameters. A variable that shares
+        # one's name is numbered past it.
+        taken.update(
+            arg._name
+            for worker in self._workers
+            for arg in worker.flat_fn_args
+            if isinstance(arg, Kernel)
+        )
+        taken.update(runtime.name for runtime in self._runtimes if runtime.name)
+        taken.update(
+            parameter.name
+            for runtime in self._runtimes
+            for parameter in runtime.scratchpad_parameters
+        )
         # Buffers and locks a Worker, a TileDma or the configuration holds.
         # Unnamed ones stay unnamed (the compiler names them) unless their
         # statement names them.
