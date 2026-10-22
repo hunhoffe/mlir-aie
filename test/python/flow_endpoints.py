@@ -147,13 +147,13 @@ def build(bad=None):
 # ALLOC: aie.dma_start(MM2S, 0,
 
 # ALLOC-LABEL: aie.runtime_sequence
-# ALLOC: aiex.dma_configure_task_for @flow0_src_shim_alloc
+# ALLOC: aiex.dma_configure_task_for @flow0_src__shim_alloc
 # ALLOC: aiex.dma_configure_task(%[[MEM:.*]], MM2S, [[B:[0-9]]])
-# ALLOC: aiex.dma_configure_task_for @flow2_dst_shim_alloc
+# ALLOC: aiex.dma_configure_task_for @flow2_dst__shim_alloc
 # ALLOC: aie.route_endpoint @flow1_src(%[[MEM]]) DMA {channelIndex = [[B]] : i32}
 # ALLOC-COUNT-2: aie.flow(%[[MEM]], DMA : [[B]], %{{.*}}, DMA : {{[0-9]}})
-# ALLOC-DAG: aie.shim_dma_allocation @flow0_src_shim_alloc(%{{.*}}, MM2S, {{[0-9]}})
-# ALLOC-DAG: aie.shim_dma_allocation @flow2_dst_shim_alloc(%{{.*}}, S2MM, {{[0-9]}})
+# ALLOC-DAG: aie.shim_dma_allocation @flow0_src__shim_alloc(%{{.*}}, MM2S, {{[0-9]}})
+# ALLOC-DAG: aie.shim_dma_allocation @flow2_dst__shim_alloc(%{{.*}}, S2MM, {{[0-9]}})
 print(build())
 
 
