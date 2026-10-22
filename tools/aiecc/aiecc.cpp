@@ -43,6 +43,7 @@
 #include "Utils.h"
 
 #include "aie/Conversion/Passes.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 #include "aie/Dialect/AIEVec/Pipelines/Passes.h"
 #include "aie/Dialect/AIEVec/TransformOps/DialectExtension.h"
@@ -2703,6 +2704,15 @@ int main(int argc, char **argv) {
     return 1;
   }
   verifyEachPass = verifyEach;
+  if (!compileTrace.empty())
+    xilinx::AIE::trace::open(compileTrace);
+  AIE_TRACE("aiecc.begin", [&](llvm::json::OStream &j) {
+    j.attribute("version", xilinx::AIE::trace::kVersion);
+    j.attributeArray("argv", [&] {
+      for (int i = 1; i < effArgc; ++i)
+        j.value(effArgv[i]);
+    });
+  });
 
   if (checkLutBanks && (xchesscc || xbridge)) {
     llvm::errs() << "aiecc: --check-lut-banks requires Peano compilation and "

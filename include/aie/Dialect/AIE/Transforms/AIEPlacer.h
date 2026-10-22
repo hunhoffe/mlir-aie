@@ -10,7 +10,9 @@
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIE/IR/AIETargetModel.h"
+#include "llvm/Support/JSON.h"
 
+#include <chrono>
 #include <deque>
 #include <random>
 
@@ -723,6 +725,16 @@ private:
   int zeroDeltaMoves = 0, posDeltaMoves = 0, negDeltaMoves = 0;
   int acceptedUphill = 0, rejectedMoves = 0;
   std::chrono::steady_clock::time_point startTime;
+
+  // Compile trace (AIECompileTrace.h): each logical tile's id in its events
+  // (its index in collected.logicalTiles), and the placement it last
+  // recorded, so an iteration records only the tiles that moved.
+  llvm::DenseMap<mlir::Operation *, int> traceIds;
+  PlacementResult tracedPlacement;
+  void traceModel() const;
+  void traceCost(llvm::json::OStream &j) const;
+  void tracePositions(llvm::json::OStream &j, const PlacementResult &placement,
+                      bool onlyMoved);
 
   // Phase methods
   mlir::LogicalResult collectAndBuildModel(DeviceOp device);

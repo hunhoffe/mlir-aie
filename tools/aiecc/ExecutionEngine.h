@@ -11,6 +11,7 @@
 #include "Graph.h"
 #include "Utils.h"
 
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -585,9 +586,24 @@ struct Engine {
         lock.unlock();
 
         // Run the task without the scheduler lock.
+        std::string stage = displayName(s.edge).str();
+        if (task.item >= 0)
+          stage += "#" + std::to_string(task.item);
+        auto taskStart = std::chrono::steady_clock::now();
+        xilinx::AIE::trace::setStage(stage);
+        AIE_TRACE("stage.begin", [&](llvm::json::OStream &j) {});
         mlir::LogicalResult r = task.item < 0
                                     ? s.edge->execute()
                                     : s.edge->executeForItem((size_t)task.item);
+        AIE_TRACE("stage.end", [&](llvm::json::OStream &j) {
+          j.attribute("ok", mlir::succeeded(r));
+          xilinx::AIE::trace::attributeNumber(
+              j, "ms",
+              std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - taskStart)
+                  .count());
+        });
+        xilinx::AIE::trace::setStage("");
 
         lock.lock();
         --s.running;

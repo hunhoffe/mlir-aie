@@ -539,6 +539,13 @@ inline cl::opt<bool> dryRun("n", cl::desc("Dry run"));
 inline cl::opt<bool> profile(
     "profile",
     cl::desc("Print a per-edge time and resident-memory summary at the end"));
+// Structured record of the compiler's decisions (AIECompileTrace.h).
+inline cl::opt<std::string> compileTrace(
+    "compile-trace",
+    cl::desc("Write a JSON-lines trace of what the compiler did: each stage "
+             "and pass, placement moves, routing iterations and allocations "
+             "(also enabled by the AIE_COMPILE_TRACE environment variable)"),
+    cl::value_desc("path"), cl::init(""));
 inline cl::opt<bool> progress(
     "progress",
     cl::desc("Show single-line execution progress: overwrite one status line "

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "aie/Dialect/AIE/Transforms/AIEPathFinder.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIERoutingDiagnostics.h"
 #include "d_ary_heap.h"
 
@@ -16,6 +17,9 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 
+#include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <iterator>
 #include <limits>
 
@@ -524,18 +528,27 @@ bool Pathfinder::relax() {
     case RelaxStep::ShareChannels:
       if (shareAllChannels()) {
         LLVM_DEBUG(llvm::dbgs() << "Relax: share channels\n");
+        AIE_TRACE("route.relax", [&](llvm::json::OStream &j) {
+          j.attribute("step", "share_channels");
+        });
         return true;
       }
       break;
     case RelaxStep::CapCrowdedTiles:
       if (capCrowdedFanOut()) {
         LLVM_DEBUG(llvm::dbgs() << "Relax: cap crowded tiles\n");
+        AIE_TRACE("route.relax", [&](llvm::json::OStream &j) {
+          j.attribute("step", "cap_crowded");
+        });
         return true;
       }
       break;
     case RelaxStep::RouteIdsApart:
       if (routeIdsApart()) {
         LLVM_DEBUG(llvm::dbgs() << "Relax: route ids apart\n");
+        AIE_TRACE("route.relax", [&](llvm::json::OStream &j) {
+          j.attribute("step", "ids_apart");
+        });
         return true;
       }
       // With one id per source, the steps up to the last would only repeat.
@@ -544,6 +557,9 @@ bool Pathfinder::relax() {
     case RelaxStep::SplitSharedIds:
       if (splitSharedIds()) {
         LLVM_DEBUG(llvm::dbgs() << "Relax: split shared ids\n");
+        AIE_TRACE("route.relax", [&](llvm::json::OStream &j) {
+          j.attribute("step", "split_shared_ids");
+        });
         return true;
       }
       relaxStep = std::size(relaxLadder) - 1;
@@ -551,6 +567,9 @@ bool Pathfinder::relax() {
     case RelaxStep::StopMeeting:
       if (stopMeeting()) {
         LLVM_DEBUG(llvm::dbgs() << "Relax: stop meeting\n");
+        AIE_TRACE("route.relax", [&](llvm::json::OStream &j) {
+          j.attribute("step", "stop_meeting");
+        });
         return true;
       }
       break;
@@ -2433,6 +2452,33 @@ int Pathfinder::applyRoutingFaults(RouteState &st,
 }
 
 // Perform congestion-aware routing for all flows which have been added.
+//===----------------------------------------------------------------------===//
+// Compile trace
+//===----------------------------------------------------------------------===//
+
+namespace {
+namespace json = llvm::json;
+
+std::string tracePort(Port p) {
+  return (stringifyWireBundle(p.bundle) + llvm::Twine(p.channel)).str();
+}
+
+void traceEnd(json::OStream &j, const PathEndPoint &pep) {
+  j.value(json::Array{pep.coords.col, pep.coords.row, tracePort(pep.port)});
+}
+
+// A hop as [col, row, port, col, row, port]: across a switchbox's crossbar
+// when the two tiles are the same, along a wire to a neighbour otherwise.
+json::Array traceHop(const SwitchboxConnect &sb, int i, int j) {
+  return json::Array{sb.srcCoords.col,          sb.srcCoords.row,
+                     tracePort(sb.srcPorts[i]), sb.dstCoords.col,
+                     sb.dstCoords.row,          tracePort(sb.dstPorts[j])};
+}
+
+// Each findPaths call is one routing run; a pass may route several times.
+std::atomic<int> traceRuns{0};
+} // namespace
+
 // Use Dijkstra's shortest path to find routes, and use "demand" as the
 // weights. If the routing finds too much congestion, update the demand
 // weights and repeat the process until a valid solution is found. Returns
@@ -2467,6 +2513,45 @@ llvm::Expected<Routing> Pathfinder::findPaths(const int maxIterations) {
 
   RouteState st(*this);
 
+  // Trace: the flows as routed so far (parts can split off mid-run), and each
+  // flow's hops at the last iteration, so an iteration records only the
+  // flows whose route changed.
+  int traceRun = trace::enabled() ? traceRuns++ : -1;
+  size_t tracedParts = 0;
+  std::vector<std::string> tracedHops;
+  auto traceFlows = [&](json::OStream &j) {
+    j.attributeArray("flows", [&] {
+      for (; tracedParts < st.parts.size(); tracedParts++) {
+        const Flow &f = st.parts[tracedParts];
+        j.object([&] {
+          j.attribute("id", static_cast<int64_t>(tracedParts));
+          j.attributeArray("src", [&] {
+            j.value(f.src.coords.col);
+            j.value(f.src.coords.row);
+            j.value(tracePort(f.src.port));
+          });
+          j.attributeArray("dsts", [&] {
+            for (const PathEndPoint &d : f.dsts)
+              traceEnd(j, d);
+          });
+          j.attribute("packet", f.packetId ? json::Value(*f.packetId)
+                                           : json::Value(nullptr));
+          if (f.isPriorityFlow)
+            j.attribute("priority", true);
+          if (auto loc = flowLoc(f.src, nullptr))
+            j.attribute("loc", trace::locString(*loc));
+        });
+      }
+    });
+  };
+  AIE_TRACE("route.begin", [&](json::OStream &j) {
+    j.attribute("run", traceRun);
+    j.attribute("maxIters", maxIterations);
+    j.attribute("cols", columns);
+    j.attribute("rows", rows);
+    traceFlows(j);
+  });
+
   int iterationCount = -1;
   int illegalEdges = 0;
   std::optional<Routing> usable;
@@ -2495,6 +2580,15 @@ llvm::Expected<Routing> Pathfinder::findPaths(const int maxIterations) {
                          ? "circuit trees routed first stopped helping"
                          : "the overuse stalled")
                  << ")...unable to find routing for flows.\n");
+      AIE_TRACE("route.end", [&](json::OStream &j) {
+        j.attribute("run", traceRun);
+        j.attribute("ok", false);
+        j.attribute("iters", iterationCount);
+        j.attribute("why", iterationCount >= maxIterations ? "iteration_limit"
+                           : reorderedStall >= maxReorderedStall
+                               ? "reorder_stopped_helping"
+                               : "overuse_stalled");
+      });
       packetsFailed =
           !checkReason.empty() || llvm::any_of(graph, [](const auto &entry) {
             ArrayRef<SwitchboxConnect::Cell> cells = entry.second.cells;
@@ -2674,6 +2768,68 @@ llvm::Expected<Routing> Pathfinder::findPaths(const int maxIterations) {
                    << " , illegal edges count = " << illegalEdges
                    << ", total path length = " << totalPathLength << "---\n";
     });
+    AIE_TRACE("route.iter", [&](json::OStream &j) {
+      j.attribute("run", traceRun);
+      j.attribute("i", iterationCount);
+      j.attribute("illegal", illegalEdges);
+      j.attribute("stall", sinceFewest);
+      if (!checkReason.empty())
+        j.attribute("rejected", checkReason);
+      int length = 0;
+      for (const auto &[_, sb] : graph)
+        if (sb.srcCoords != sb.dstCoords)
+          for (const SwitchboxConnect::Cell &c : sb.cells)
+            length += c.usedCapacity;
+      j.attribute("length", length);
+      traceFlows(j);
+      // [hop..., used, iterations over capacity, demand]
+      j.attributeArray("over", [&] {
+        for (const auto &[_, sb] : graph)
+          for (size_t a = 0; a < sb.srcPorts.size(); a++)
+            for (size_t b = 0; b < sb.dstPorts.size(); b++) {
+              const SwitchboxConnect::Cell &c = sb.at(a, b);
+              if (c.usedCapacity <= maxCircuitStreamCapacity)
+                continue;
+              j.array([&] {
+                for (const json::Value &v : traceHop(sb, a, b))
+                  j.value(v);
+                j.value(c.usedCapacity);
+                j.value(c.overCapacity);
+                char demand[32];
+                std::snprintf(demand, sizeof(demand), "%.3g", c.demand);
+                j.rawValue(demand);
+              });
+            }
+      });
+      // {"<flow>": [hop, ...]} for the flows whose route changed.
+      tracedHops.resize(st.parts.size());
+      j.attributeObject("routes", [&] {
+        for (size_t f = 0; f < st.parts.size(); f++) {
+          json::Array hops;
+          auto add = [&](const Edge &e) {
+            hops.push_back(traceHop(*e.sb, e.i, e.j));
+          };
+          if (st.parts[f].packetId) {
+            std::vector<std::pair<int, Edge>> tree;
+            for (const auto &[state, hop] : st.treeOf[f])
+              tree.push_back({state, hop.second});
+            llvm::sort(tree,
+                       [](auto &a, auto &b) { return a.first < b.first; });
+            for (auto &[_, e] : tree)
+              add(e);
+          } else {
+            for (const Edge &e : st.circuitHops[f])
+              add(e);
+          }
+          std::string key;
+          llvm::raw_string_ostream(key) << json::Value(json::Array(hops));
+          if (key == tracedHops[f])
+            continue;
+          tracedHops[f] = std::move(key);
+          j.attribute(std::to_string(f), std::move(hops));
+        }
+      });
+    });
     if (stuck && usable) {
       llvm::consumeError(std::move(unmoved));
       return std::move(*usable);
@@ -2693,5 +2849,10 @@ llvm::Expected<Routing> Pathfinder::findPaths(const int maxIterations) {
   } while (illegalEdges > 0);
 
   LLVM_DEBUG(llvm::dbgs() << "\t---End Pathfinder::findPaths---\n");
+  AIE_TRACE("route.end", [&](json::OStream &j) {
+    j.attribute("run", traceRun);
+    j.attribute("ok", true);
+    j.attribute("iters", iterationCount + 1);
+  });
   return std::move(st.routing);
 }

@@ -10,6 +10,7 @@
 #include "aie/Dialect/AIE/IR/AIECoreSymbols.h"
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIE/Transforms/AIEBufferAllocation.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 
 #include "mlir/IR/Attributes.h"
@@ -1402,8 +1403,54 @@ placementOrder(ArrayRef<BufferOp> buffersToAlloc,
   return order;
 }
 
+// One tile's layout as the allocator left it, for the compile trace: each
+// buffer as [name, address, size, bank, kind, placement order (-1 when it was
+// not this pass's to place)], and `failed` naming the one with no room.
+static void traceTileLayout(TileOp tile, bool ok, ArrayRef<BufferOp> placed,
+                            ArrayRef<BufferOp> preAllocated,
+                            const BankAwareContext &ctx,
+                            const PlacementStats &before,
+                            const PlacementStats &after, BufferOp failed) {
+  AIE_TRACE("alloc.tile", [&](llvm::json::OStream &j) {
+    j.attribute("tile", llvm::json::Array{tile.getCol(), tile.getRow()});
+    j.attribute("ok", ok);
+    j.attribute("size", ctx.maxDataMemorySize);
+    j.attribute("banks", ctx.numBanks);
+    if (ctx.stackRun.size)
+      j.attribute("stack",
+                  llvm::json::Array{ctx.stackRun.start, ctx.stackRun.size});
+    j.attribute("backtracks", after.backtracks - before.backtracks);
+    j.attribute("searched", after.tilesSearched != before.tilesSearched);
+    j.attribute("compacted", after.tilesCompacted != before.tilesCompacted);
+    if (failed)
+      j.attribute("failed", mapLabel(failed));
+    auto kind = [](BufferOp b) {
+      return b.getCoreData()       ? "core_data"
+             : b.getBankReserved() ? "bank_reserved"
+                                   : "buffer";
+    };
+    j.attributeArray("buffers", [&] {
+      auto row = [&](BufferOp b, int order) {
+        j.value(llvm::json::Array{
+            mapLabel(b),
+            b.getAddress() ? llvm::json::Value(*b.getAddress())
+                           : llvm::json::Value(nullptr),
+            b.getAllocationSize(),
+            b.getMemBank() ? llvm::json::Value(*b.getMemBank())
+                           : llvm::json::Value(nullptr),
+            kind(b), order});
+      };
+      for (BufferOp b : preAllocated)
+        row(b, -1);
+      for (auto [k, b] : llvm::enumerate(placed))
+        row(b, k);
+    });
+  });
+}
+
 static LogicalResult allocateTile(TileOp tile, int64_t budget,
                                   PlacementStats &stats) {
+  PlacementStats statsBefore = stats;
   auto device = tile->getParentOfType<AIE::DeviceOp>();
   if (!device) {
     return failure();
@@ -1560,11 +1607,15 @@ static LogicalResult allocateTile(TileOp tile, int64_t budget,
                            "it with placement-budget)";
     }
     // Print before rollback, while the addresses are still set.
+    traceTileLayout(tile, false, allocatedBuffers, preAllocatedBuffers, ctx,
+                    statsBefore, stats, failed);
     printMemMap(tile, allocatedBuffers, preAllocatedBuffers, ctx);
     deAllocationBuffers(allocatedBuffers, requiredBanks);
     return failure();
   }
   assert(allocatedBuffers.size() == buffersToAlloc.size());
+  traceTileLayout(tile, true, allocatedBuffers, preAllocatedBuffers, ctx,
+                  statsBefore, stats, nullptr);
 
   sortBuffersByAddress(allBuffers_on_tile);
   // Every placement came from free space in the tile, so overflow cannot happen
