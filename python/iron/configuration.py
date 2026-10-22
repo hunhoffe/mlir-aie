@@ -228,6 +228,7 @@ class DeviceConfiguration(DeviceResources):
             claimed[name] = kind
         taken = set(claimed)
         taken.update(flow.name for flow in self._flows if flow.name is not None)
+        taken.update(worker.name for worker in self._workers if worker.name)
 
         def fresh(prefix):
             name = next(
@@ -249,6 +250,10 @@ class DeviceConfiguration(DeviceResources):
                 flow._name = fresh(
                     "packetflow" if isinstance(flow, PacketFlow) else "flow"
                 )
+        # A Worker's name is not a symbol; it names the core's location.
+        for worker in self._workers:
+            if worker.name is None:
+                worker.name = fresh("worker")
 
     def resolve(
         self,
