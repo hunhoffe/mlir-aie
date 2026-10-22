@@ -18,4 +18,4 @@ module @spill_no_orphan_tiles {
 }
 // CHECK-LABEL: module @spill_no_orphan_tiles
 // CHECK-DAG: %[[M0:.*]] = aie.tile(0, 1)
-// CHECK-DAG: aie.buffer(%[[M0]]) {sym_name = "spill_buff_0"}
+// CHECK-DAG: aie.buffer(%[[M0]]) {sym_name = "spill__buf0"}
