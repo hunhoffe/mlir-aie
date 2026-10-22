@@ -74,7 +74,7 @@ from aie.utils.compile.utils import (
     _copy_object_files,
 )
 
-from . import _manifest
+from . import _explore, _manifest
 from ._dispatch_compile import (
     compile_dispatch_bridge,
     dispatch_scalar_c_type,
@@ -172,6 +172,7 @@ class _CompileConfig:
     object_files: tuple[Path, ...]
     full_elf: bool
     insts_only: bool
+    explore: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +281,11 @@ class CompilableDesign:
             "full" ELF (PDIs + TXN control code) instead of an
             ``xclbin`` + ``insts.bin`` pair.  The ELF is loaded standalone by
             ``XRTHostRuntime`` via ``pyxrt.hw_context(dev, pyxrt.elf(path))``.
+        explore: When ``True``, each `compile` also writes the design's page
+            in IRON Design Explorer beside the build and prints its path;
+            ``False`` never does. ``None`` (default) follows the
+            ``IRON_EXPLORE`` environment variable. Needs the explorer
+            installed; see `explore`. Not part of the cache key.
     """
 
     def __init__(
@@ -295,6 +301,7 @@ class CompilableDesign:
         object_files: list[str | Path] | None = None,
         full_elf: bool = False,
         insts_only: bool = False,
+        explore: bool | None = None,
     ):
         self.mlir_generator = mlir_generator
         self._inferred_full_elf = False
@@ -315,6 +322,7 @@ class CompilableDesign:
             object_files=tuple(Path(path) for path in (object_files or ())),
             full_elf=full_elf,
             insts_only=insts_only,
+            explore=explore,
         )
 
         # Cached artifact paths (set after compile()).
@@ -700,7 +708,36 @@ class CompilableDesign:
         fails, listing each differing resource and what to pin, rather than
         producing a stream that would program resources the image does not
         have.
+
+        With ``explore`` (or ``IRON_EXPLORE=1``), the design's page in IRON
+        Design Explorer is then written beside the build, and its path
+        printed the first time; see `explore`.
         """
+        explore = _explore.requested(self._compile_config.explore)
+        try:
+            result = self._compile(
+                xclbin_path, inst_path, elf_path, full_elf_path, pdi_path, image
+            )
+        except Exception:
+            if explore:
+                self._explore_failure()
+            raise
+        if explore and self._kernel_dir:
+            _explore.write_page(
+                Path(self._kernel_dir), self.generator_name, list(self.aiecc_flags)
+            )
+        return result
+
+    def _compile(
+        self,
+        xclbin_path: Path | str | None = None,
+        inst_path: Path | str | None = None,
+        elf_path: Path | str | None = None,
+        full_elf_path: Path | str | None = None,
+        pdi_path: Path | str | None = None,
+        image: "CompilableDesign | Path | str | None" = None,
+    ) -> tuple[Path | None, Path | None]:
+        """`compile`, without the explorer page."""
         has_dispatch = bool(self.dispatch_params)
 
         requested_full_elf = self.full_elf_requested or full_elf_path is not None
@@ -1496,6 +1533,70 @@ class CompilableDesign:
             dispatch_library=present(self._dispatch_lib_path),
         )
 
+    def explore(self):
+        """This design's page in IRON Design Explorer, which Jupyter shows inline.
+
+        The page draws the design layer by layer, from its ObjectFIFOs down to
+        the switchboxes they are routed through, each element linked back to
+        its Python line. ``page.path`` is the file and ``page.show()`` opens
+        it in a browser. A design already compiled is drawn from that build;
+        otherwise only what the page reads is built (the MLIR and the kernel
+        objects, in ``<NPU_CACHE_HOME>/explore/<hash>/``), so no xclbin is
+        made and no NPU is needed.
+
+        Needs IRON Design Explorer: ``pip install
+        git+https://github.com/hunhoffe/iron-design-explorer``.
+        """
+        self._bind_generation_device()
+        build_dir = self._built_dir() or self._explore_build()
+        return _explore.write_page(
+            build_dir, self.generator_name, list(self.aiecc_flags), required=True
+        )
+
+    def _explore_build(self, *, kernels_required: bool = True) -> Path:
+        """What the explorer reads, built without aiecc: the MLIR and the
+        kernel objects, in ``<NPU_CACHE_HOME>/explore/<hash>/``."""
+        generated = self._generated_for(full_elf=False)
+        build_dir = NPU_CACHE_HOME / "explore" / self._compute_cache_hash()
+        with file_lock(
+            build_dir / ".lock", timeout_seconds=COMPILE_LOCK_TIMEOUT_SECONDS
+        ):
+            (build_dir / "aie.mlir").write_text(generated.mlir_text)
+            try:
+                self._build_kernels(build_dir, generated.external_kernels, {})
+            except Exception:
+                # Placement and routing need no kernel; only addresses do.
+                if kernels_required:
+                    raise
+        return build_dir
+
+    def _explore_failure(self) -> None:
+        """After a failed compile, the page that opens on aiecc's first error.
+
+        The failed build's directory is gone by now, so the explorer lowers
+        the design afresh and meets the same error, with its log."""
+        try:
+            build_dir = self._explore_build(kernels_required=False)
+        except Exception:
+            return  # the design never generated: there is nothing to draw
+        _explore.write_page(
+            build_dir, self.generator_name, list(self.aiecc_flags), failed=True
+        )
+
+    def _built_dir(self) -> Path | None:
+        """The directory of this design's finished build, if it has one: the
+        last `compile`'s, or the JIT cache entry another process left."""
+        candidates = [self._kernel_dir]
+        if self.use_cache:
+            candidates.append(NPU_CACHE_HOME / self._compute_cache_hash())
+        for directory in candidates:
+            if directory is not None and all(
+                (Path(directory) / name).exists()
+                for name in ("aie.mlir", "input_with_addresses.mlir")
+            ):
+                return Path(directory)
+        return None
+
     def get_dispatch_lib_path(self) -> Path | None:
         """Return the immutable dispatch library selected by the last compile().
 
@@ -1769,6 +1870,7 @@ class CompilableDesign:
             "object_files": [of.as_posix() for of in self.object_files],
             "full_elf": self.full_elf,
             "insts_only": self.insts_only,
+            "explore": self._compile_config.explore,
             "cache_hash": self._compute_cache_hash(),
         }
         return json.dumps(data)
@@ -1808,6 +1910,7 @@ class CompilableDesign:
             object_files=data.get("object_files", []),
             full_elf=data.get("full_elf", False),
             insts_only=data.get("insts_only", False),
+            explore=data.get("explore"),
         )
 
     # ------------------------------------------------------------------
