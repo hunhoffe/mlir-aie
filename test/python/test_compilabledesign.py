@@ -2580,6 +2580,7 @@ def test_config_param_names_matches_construction():
         "object_files",
         "full_elf",
         "insts_only",
+        "explore",
     }
 
 

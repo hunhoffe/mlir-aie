@@ -99,6 +99,9 @@ class CallableDesign:
         full_elf: When ``True``, the design compiles to a single self-contained
             full ELF (PDIs + TXN control code) and runs through the full-ELF
             ``XRTHostRuntime`` path.  Forwarded to ``CompilableDesign``.
+        explore: When ``True``, each compile also writes the design's page in
+            IRON Design Explorer and prints its path; ``None`` follows
+            ``IRON_EXPLORE``. Forwarded to ``CompilableDesign``.
     """
 
     def __init__(
@@ -114,6 +117,7 @@ class CallableDesign:
         object_files: list[str | Path] | None = None,
         trace_config=None,
         full_elf: bool = False,
+        explore: bool | None = None,
     ):
         if isinstance(mlir_generator, CompilableDesign):
             self.compilable = mlir_generator
@@ -128,6 +132,7 @@ class CallableDesign:
                 include_paths=include_paths,
                 object_files=object_files,
                 full_elf=full_elf,
+                explore=explore,
             )
 
         self.trace_config = trace_config
@@ -634,6 +639,22 @@ class CallableDesign:
         )
         compilable = self._build_compilable(call_compile_kwargs, tensor_args)
         return str(compilable.generate_mlir())
+
+    def explore(self, *runtime_args, **runtime_kwargs):
+        """Return this design's page in IRON Design Explorer.
+
+        Accepts the same arguments as ``__call__`` (as ``as_mlir`` does), to
+        pick the specialization to draw; tensors are read only for their
+        types. In Jupyter the page shows inline. See
+        ``CompilableDesign.explore``.
+        """
+        call_compile_kwargs, scalar_runtime_kwargs, _ = self._extract_compile_kwargs(
+            runtime_kwargs
+        )
+        tensor_args, _ = self.compilable.split_runtime_args(
+            runtime_args, scalar_runtime_kwargs
+        )
+        return self._build_compilable(call_compile_kwargs, tensor_args).explore()
 
     def __repr__(self) -> str:
         return f"CallableDesign({self.compilable!r})"
