@@ -7,6 +7,7 @@
 
 import argparse
 import importlib.util
+import json
 import shutil
 import subprocess
 import sys
@@ -163,6 +164,23 @@ def test_an_unbounded_shrink_finishes_on_what_fails():
     assert finished
     assert len(small.flows) == 7
     assert holds(small)
+
+
+def test_a_traced_shrink_saves_each_kept_design_and_its_trace(tmp_path):
+    d = rp.load_design(OVER_CUT)
+    holds = router_shrink.holds_fn(OVERUSED, True)
+    record = router_shrink.TraceRecorder(tmp_path, True)
+    record(d, 0)
+    small, finished = router_shrink.shrink(
+        d, holds, lambda e: record(e, holds.calls[0])
+    )
+    assert finished
+    steps = json.loads((tmp_path / "steps.json").read_text())
+    assert len(steps) >= 2 and steps[0]["size"] > steps[-1]["size"]
+    assert steps[-1]["flows"] == len(small.flows)
+    assert (
+        rp.load_design((tmp_path / steps[-1]["mlir"]).read_text()).flows == small.flows
+    )
 
 
 @pytest.fixture
