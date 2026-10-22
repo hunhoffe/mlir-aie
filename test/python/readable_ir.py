@@ -21,6 +21,7 @@ module {
       aie.end loc(#loc4)
     } {link_with = "has loc(inside).o"} loc(unknown)
     %b = aie.buffer(%tile_0_2) {sym_name = "b"} : memref<4xi32> loc("/abs/path/inline.py":9:1)
+    func.call @get_loc(%b) : (memref<4xi32>) -> () loc("d\\C3\\A9sign.py":5:0)
   } loc(#loc)
 } loc(#loc)
 #loc = loc("design.py":1:0)
@@ -47,5 +48,7 @@ print(readable(IR))
 # "loc(" inside a string is left alone; unknown has nothing to show.
 # CHECK-NEXT: } {link_with = "has loc(inside).o"}{{$}}
 # CHECK-NEXT: %b = aie.buffer(%tile_0_2) {sym_name = "b"} : memref<4xi32>  // inline.py:9
+# Only a whole `loc(` starts a location; MLIR's escapes are undone.
+# CHECK-NEXT: func.call @get_loc(%b) : (memref<4xi32>) -> ()  // désign.py:5
 # Alias definitions are gone.
 # CHECK-NOT: #loc

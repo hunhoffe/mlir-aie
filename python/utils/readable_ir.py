@@ -103,7 +103,7 @@ class _Parser:
                 self.take()
             return ("fused", children)
         if kind == "str":
-            text = bytes(value[1:-1], "utf-8").decode("unicode_escape")
+            text = _unescape(value[1:-1])
             if self.peek(":"):
                 self.take()
                 line = int(self.take()[1]) if self.peek() else 0
@@ -121,6 +121,28 @@ class _Parser:
                 return ("name", text, child)
             return ("name", text, None)
         return ("unknown",)
+
+
+_ESCAPE = re.compile(r"\\(?:([0-9A-Fa-f]{2})|(.))", re.DOTALL)
+
+
+def _unescape(text: str) -> str:
+    """Undo MLIR's string escapes: `\\XX` hex bytes, `\\n`, `\\t`, `\\"`, `\\\\`.
+
+    A non-ASCII path prints as its UTF-8 bytes, `d\\C3\\A9sign.py`.
+    """
+    out = bytearray()
+    pos = 0
+    for m in _ESCAPE.finditer(text):
+        out += text[pos : m.start()].encode()
+        hex_byte, char = m.groups()
+        if hex_byte is not None:
+            out.append(int(hex_byte, 16))
+        else:
+            out += {"n": "\n", "t": "\t"}.get(char, char).encode()
+        pos = m.end()
+    out += text[pos:].encode()
+    return out.decode("utf-8", "replace")
 
 
 def _parse(text: str):
@@ -181,7 +203,11 @@ def _locs(line: str):
                 in_string = False
         elif c == '"':
             in_string = True
-        elif line.startswith("loc(", i) and (i == 0 or not line[i - 1].isalnum()):
+        elif line.startswith("loc(", i) and (
+            # Not the end of another name, as in `@get_loc(`.
+            i == 0
+            or not (line[i - 1].isalnum() or line[i - 1] in "_.$@")
+        ):
             depth, j, quoted = 0, i + 3, False
             while j < len(line):
                 ch = line[j]
