@@ -2494,6 +2494,42 @@ llvm::Expected<Routing> Pathfinder::findPaths(const int maxIterations) {
     buildRoutingGraph();
   if (llvm::Error err = cutOverflow()) {
     packetsFailed = false;
+    // Trace: a run that ends before its first iteration, with the flows that
+    // could not all cross, so a replay still shows what was asked of it.
+    if (trace::enabled()) {
+      int traceRun = traceRuns++;
+      AIE_TRACE("route.begin", [&](json::OStream &j) {
+        j.attribute("run", traceRun);
+        j.attribute("maxIters", maxIterations);
+        j.attribute("cols", columns);
+        j.attribute("rows", rows);
+        j.attributeArray("flows", [&] {
+          for (auto [k, f] : llvm::enumerate(flows))
+            j.object([&] {
+              j.attribute("id", static_cast<int64_t>(k));
+              j.attributeArray("src", [&] {
+                j.value(f.src.coords.col);
+                j.value(f.src.coords.row);
+                j.value(tracePort(f.src.port));
+              });
+              j.attributeArray("dsts", [&] {
+                for (const PathEndPoint &d : f.dsts)
+                  traceEnd(j, d);
+              });
+              j.attribute("packet", f.packetId ? json::Value(*f.packetId)
+                                               : json::Value(nullptr));
+              if (auto loc = flowLoc(f.src, nullptr))
+                j.attribute("loc", trace::locString(*loc));
+            });
+        });
+      });
+      AIE_TRACE("route.end", [&](json::OStream &j) {
+        j.attribute("run", traceRun);
+        j.attribute("ok", false);
+        j.attribute("iters", 0);
+        j.attribute("why", "cut_overflow");
+      });
+    }
     return std::move(err);
   }
   crowdedTiles.clear();
