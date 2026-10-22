@@ -30,6 +30,7 @@ from .dataflow.flow import PacketFlow
 from .dataflow.objectfifo import ObjectFifoLink
 from .device import Device, NamedDevice
 from .kernel import Kernel
+from .lock import Lock
 from .resolvable import DeviceResources, PerDeviceConfiguration, Resolvable
 from .runtime import Runtime
 from .runtime._context import active_configuration, active_configuration_scope
@@ -335,27 +336,65 @@ class DeviceConfiguration(DeviceResources):
             claimed[name] = kind
         taken = set(claimed)
         taken.update(flow.name for flow in self._flows if flow.name is not None)
+        taken.update(worker.name for worker in self._workers if worker.name)
+        # Buffers and locks a Worker, a TileDma or the configuration holds.
+        # Unnamed ones stay unnamed (the compiler names them) unless their
+        # statement names them.
+        buffers, locks = [], list(self._locks)
+        for worker in self._workers:
+            buffers += worker.buffers
+            locks += [arg for arg in worker.flat_fn_args if isinstance(arg, Lock)]
+        for tile_dma in self._tile_dmas:
+            dma_buffers, dma_locks = tile_dma.all_buffers_and_locks()
+            buffers += dma_buffers
+            locks += dma_locks
+        buffers = [b for b in dict.fromkeys(buffers) if b not in rtps]
+        locks = list(dict.fromkeys(locks))
+        taken.update(b._name for b in buffers if b._name is not None)
+        taken.update(lock._name for lock in locks if lock._name is not None)
 
-        def fresh(prefix):
+        def fresh(prefix, start=0):
             name = next(
                 candidate
-                for index in itertools.count()
+                for index in itertools.count(start)
                 if (candidate := f"{prefix}{index}") not in taken
             )
             taken.add(name)
             return name
 
+        def from_source(obj, prefix):
+            # Named after the variable the user's statement assigns it to,
+            # numbered when several share one, else after its kind (or left
+            # unnamed, with no kind).
+            base = obj._site.assigned_name()
+            if base is None:
+                return fresh(prefix) if prefix else None
+            if base not in taken:
+                taken.add(base)
+                return base
+            return fresh(base + "_", start=1)
+
         for fifo in fifos:
             if fifo.name is None:
-                fifo.name = fresh("of")
+                fifo.name = from_source(fifo, "of")
         for buffer in rtps:
             if buffer._name is None:
-                buffer._name = fresh("rtp")
+                buffer._name = from_source(buffer, "rtp")
+        for buffer in buffers:
+            if buffer._name is None:
+                buffer._name = from_source(buffer, None)
+        for lock in locks:
+            if lock._name is None:
+                lock._name = from_source(lock, None)
         for flow in self._flows:
             if flow.name is None:
-                flow._name = fresh(
-                    "packetflow" if isinstance(flow, PacketFlow) else "flow"
+                flow._name = from_source(
+                    flow, "packetflow" if isinstance(flow, PacketFlow) else "flow"
                 )
+        # A Worker's name is not a symbol; it names the core's location.
+        for worker in self._workers:
+            if worker.name is None:
+                worker.name = from_source(worker, "worker")
 
     def resolve(
         self,

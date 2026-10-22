@@ -7,6 +7,7 @@ from functools import partial
 
 from aie.extras import types as T
 from aie.extras.dialects.arith import constant
+from aie.ir import CallSiteLoc
 from aie.iron import Program, Runtime, Worker
 from aie.iron.device import NPU1Col1
 
@@ -56,7 +57,13 @@ def check_synthesized_body():
     loops = [op for op in walk(core) if op.name == "scf.while"]
     assert len(loops) == 2
     for op in walk(core):
-        loc = op.location
+        # A synthesized body takes the Worker's site, named after the Worker
+        # (here, after the variable it is assigned to).
+        assert op.location.name_str == "iron:worker", (op.name, op.location)
+        loc = op.location.child_loc
+        # #52: the statement is the callee of the calls that led to it.
+        if isinstance(loc, CallSiteLoc):
+            loc = loc.callee
         assert loc.filename == __file__, (op.name, loc)
         assert "Worker(None)" in SOURCE[loc.start_line - 1], (op.name, loc)
 
