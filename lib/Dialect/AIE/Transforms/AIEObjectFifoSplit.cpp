@@ -539,8 +539,14 @@ void AIEObjectFifoSplitPass::createLinkPools() {
                   : objectCountOn(device, *sharedTile, owner);
     }
 
+    // The pool holds every participant's objects, so it is located at the
+    // link and at each of them, not at the link alone.
+    SmallVector<Location> locs{linkOp.getLoc()};
+    for (ObjectFifoCreateOp fifo : llvm::concat<ObjectFifoCreateOp>(ins, outs))
+      locs.push_back(fifo.getLoc());
     auto pool = createPool(
-        linkOp.getLoc(), name, *sharedTile, depth, elemType, owner, extents,
+        FusedLoc::get(linkOp.getContext(), locs), name, *sharedTile, depth,
+        elemType, owner, extents,
         /*holdsInitialContents=*/ownerIsOutput, linkOp.getRepeatCount());
     linkPoolOwner.insert(owner);
 
