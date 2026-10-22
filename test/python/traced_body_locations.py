@@ -56,8 +56,9 @@ def check_synthesized_body():
     loops = [op for op in walk(core) if op.name == "scf.while"]
     assert len(loops) == 2
     for op in walk(core):
-        # A synthesized body takes the Worker's site, named after the Worker.
-        assert op.location.name_str == "iron:worker0", (op.name, op.location)
+        # A synthesized body takes the Worker's site, named after the Worker
+        # (here, after the variable it is assigned to).
+        assert op.location.name_str == "iron:worker", (op.name, op.location)
         loc = op.location.child_loc
         assert loc.filename == __file__, (op.name, loc)
         assert "Worker(None)" in SOURCE[loc.start_line - 1], (op.name, loc)
