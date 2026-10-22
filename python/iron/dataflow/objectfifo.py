@@ -26,7 +26,7 @@ from ...helpers.npdtypes import (
     pack_pad_value,
     single_elem_or_list_to_list,
 )
-from ...helpers.sourceloc import SourceSite
+from ...helpers.sourceloc import SourceSite, iron_name
 from ...helpers.taplib import TensorAccessPattern
 from ...helpers.taplib._symbolic import sprod
 from ...helpers.util import np_ndarray_type_to_memref_type
@@ -519,7 +519,9 @@ class ObjectFifo(PerDeviceConfigurationResolvable):
                 consumer_datatype=consumer_datatype,
                 packet=self._packet or None,
                 packet_id=self._packet_id,
-                loc=ir.Location.name(self.name, childLoc=loc or self._site.location()),
+                loc=ir.Location.name(
+                    iron_name(self.name), childLoc=loc or self._site.location()
+                ),
                 ip=ip,
             )
             self._op = op
