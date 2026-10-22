@@ -1280,6 +1280,17 @@ static void traceGrid(json::OStream &j, const AIETargetModel &tm) {
 }
 
 void SAPlacer::traceModel() const {
+  // What each core calls, which is how a designer knows its worker.
+  DenseMap<Operation *, SmallVector<StringRef>> kernels;
+  if (!collected.logicalTiles.empty())
+    collected.logicalTiles.front()->getParentOp()->walk([&](CoreOp core) {
+      Operation *tile = core.getTile().getDefiningOp();
+      core.walk([&](Operation *op) {
+        if (auto callee = op->getAttrOfType<FlatSymbolRefAttr>("callee"))
+          if (!llvm::is_contained(kernels[tile], callee.getValue()))
+            kernels[tile].push_back(callee.getValue());
+      });
+    });
   AIE_TRACE("place.model", [&](json::OStream &j) {
     traceGrid(j, *targetModel);
     j.attributeArray("tiles", [&] {
@@ -1291,6 +1302,11 @@ void SAPlacer::traceModel() const {
           j.attribute("loc", trace::locString(op->getLoc()));
           j.attribute("fixed", constrainedTiles.contains(op));
           j.attribute("mem", computeTileMemoryWeight(op));
+          if (auto it = kernels.find(op); it != kernels.end())
+            j.attributeArray("calls", [&] {
+              for (StringRef k : it->second)
+                j.value(k);
+            });
         });
       }
     });
