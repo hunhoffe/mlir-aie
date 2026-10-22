@@ -28,6 +28,10 @@
 // CHECK-LABEL: aie.switchbox(%tile_0_2)
 // CHECK-DAG: aie.masterset(DMA : 0, %{{[0-9]+}}) loc("iron:act_in"("design.py":10:0))
 // CHECK-DAG: aie.masterset(DMA : 1, %{{[0-9]+}}) loc("iron:wts_in"("design.py":11:0))
+// Their rules still share the slave port's one packet_rules, which names both.
+// CHECK-DAG: aie.rule({{[0-9]+}}, 1, %{{[0-9]+}}) loc("iron:act_in"("design.py":10:0))
+// CHECK-DAG: aie.rule({{[0-9]+}}, 2, %{{[0-9]+}}) loc("iron:wts_in"("design.py":11:0))
+// CHECK-DAG: } loc(fused["iron:act_in"("design.py":10:0), "iron:wts_in"("design.py":11:0)])
 
 module {
   aie.device(npu1_1col) {

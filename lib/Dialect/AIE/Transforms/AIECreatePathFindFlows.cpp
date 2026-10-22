@@ -2486,9 +2486,9 @@ void PacketFlowRouting::planTiles() {
       for (const SlaveFlow &f : flows)
         for (const SlaveFlow &g : flows)
           if (f.slave == g.slave && f.id < g.id && f.masters != g.masters &&
-              llvm::any_of(f.masters, [&](Port m) {
-                return llvm::is_contained(g.masters, m);
-              })) {
+              llvm::any_of(
+                  f.masters,
+                  [&](Port m) { return llvm::is_contained(g.masters, m); })) {
             FlowKey keys[] = {{f.slave, f.id}, {g.slave, g.id}};
             splitFlow(tileId, keys[0], keys);
           }
@@ -2957,8 +2957,11 @@ LogicalResult PacketPlan::emit(DeviceOp device, OpBuilder &builder,
                                         tileLoc);
         slaveRules[slave] = packetrules;
       } else {
-        // After the amsels its new rules use.
+        // After the amsels its new rules use, and located at their flows too.
         packetrules->moveBefore(b.getTerminator());
+        if (Location more = locOf(group, tileLoc); more != tileLoc)
+          packetrules->setLoc(FusedLoc::get(builder.getContext(),
+                                            {packetrules->getLoc(), more}));
       }
 
       Block &rules = packetrules.getRules().front();
