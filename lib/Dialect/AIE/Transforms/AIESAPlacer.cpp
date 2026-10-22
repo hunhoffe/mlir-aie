@@ -1346,25 +1346,27 @@ void SAPlacer::traceCost(json::OStream &j) const {
   });
 }
 
-// "pos": [[id, col, row], ...], for the tiles that moved since the last
-// recorded placement when `onlyMoved`.
-void SAPlacer::tracePositions(json::OStream &j,
+// `key`: [[id, col, row], ...], with only the tiles that moved since `since`
+// (which then becomes `placement`) when it is given.
+void SAPlacer::tracePositions(json::OStream &j, StringRef key,
                               const PlacementResult &placement,
-                              bool onlyMoved) {
-  j.attributeArray("pos", [&] {
+                              PlacementResult *since) {
+  j.attributeArray(key, [&] {
     for (auto lt : collected.logicalTiles) {
       Operation *op = lt.getOperation();
       auto it = placement.find(op);
       if (it == placement.end())
         continue;
-      auto prev = tracedPlacement.find(op);
-      if (onlyMoved && prev != tracedPlacement.end() &&
-          prev->second == it->second)
-        continue;
+      if (since) {
+        auto prev = since->find(op);
+        if (prev != since->end() && prev->second == it->second)
+          continue;
+      }
       j.value(json::Array{traceIds.lookup(op), it->second.col, it->second.row});
     }
   });
-  tracedPlacement = placement;
+  if (since)
+    *since = placement;
 }
 
 LogicalResult SAPlacer::place(DeviceOp device) {
@@ -1395,7 +1397,7 @@ LogicalResult SAPlacer::place(DeviceOp device) {
       j.attribute("movable", static_cast<int64_t>(movableTiles.size()));
       j.attribute("nets", static_cast<int64_t>(nets.size()));
       traceCost(j);
-      tracePositions(j, currentPlacement, /*onlyMoved=*/false);
+      tracePositions(j, "pos", currentPlacement, nullptr);
     });
   }
   // Phase 5: SA main loop (skip if nothing to optimize).
@@ -1839,6 +1841,9 @@ void SAPlacer::runSAMainLoop() {
   zeroDeltaMoves = posDeltaMoves = negDeltaMoves = 0;
   acceptedUphill = rejectedMoves = 0;
   int itNeg = 0, itZero = 0, itPos = 0, itUphill = 0, itRej = 0;
+  int tracedBestCost = INT_MAX;
+  tracedPlacement = currentPlacement;
+  tracedBest = currentPlacement;
 
   while (!schedule.limitReached()) {
     for (int m = 0; m < schedule.getMovesPerIter(); m++) {
@@ -1875,7 +1880,13 @@ void SAPlacer::runSAMainLoop() {
       j.attribute("uphill", acceptedUphill - itUphill);
       j.attribute("rej", rejectedMoves - itRej);
       traceCost(j);
-      tracePositions(j, currentPlacement, /*onlyMoved=*/true);
+      tracePositions(j, "pos", currentPlacement, &tracedPlacement);
+      // The best legal placement, when it changed: what the placer would
+      // keep if it stopped here.
+      if (bestCost != INT_MAX && bestCost != tracedBestCost) {
+        tracePositions(j, "bestPos", bestPlacement, &tracedBest);
+        tracedBestCost = bestCost;
+      }
     });
     itNeg = negDeltaMoves;
     itZero = zeroDeltaMoves;
@@ -2094,7 +2105,7 @@ LogicalResult SAPlacer::finalizePlacement(DeviceOp device) {
                                             config.cascadeWeightPerDist) == 0);
     j.attribute("finalCost", finalCost);
     traceCost(j);
-    tracePositions(j, currentPlacement, /*onlyMoved=*/false);
+    tracePositions(j, "pos", currentPlacement, nullptr);
   });
 
   // SA optimizes for legality but is not guaranteed to reach it (e.g. a very

@@ -727,14 +727,15 @@ private:
   std::chrono::steady_clock::time_point startTime;
 
   // Compile trace (AIECompileTrace.h): each logical tile's id in its events
-  // (its index in collected.logicalTiles), and the placement it last
-  // recorded, so an iteration records only the tiles that moved.
+  // (its index in collected.logicalTiles), and the current and best legal
+  // placements it last recorded, so an iteration records only what moved.
   llvm::DenseMap<mlir::Operation *, int> traceIds;
-  PlacementResult tracedPlacement;
+  PlacementResult tracedPlacement, tracedBest;
   void traceModel() const;
   void traceCost(llvm::json::OStream &j) const;
-  void tracePositions(llvm::json::OStream &j, const PlacementResult &placement,
-                      bool onlyMoved);
+  void tracePositions(llvm::json::OStream &j, llvm::StringRef key,
+                      const PlacementResult &placement,
+                      PlacementResult *since);
 
   // Phase methods
   mlir::LogicalResult collectAndBuildModel(DeviceOp device);
