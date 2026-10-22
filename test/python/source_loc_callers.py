@@ -47,7 +47,7 @@ def build():
 
 
 def frames(loc):
-    """The file locations of `loc`, innermost first."""
+    """Return the file locations of `loc`, innermost first."""
     if isinstance(loc, NameLoc):
         return frames(loc.child_loc)
     if isinstance(loc, CallSiteLoc):
@@ -68,7 +68,10 @@ fifos = {
     for op in module.body.operations[0].regions[0].blocks[0].operations
     if op.operation.name == "aie.objectfifo"
 }
-for name, call in (("first", 'first = stage("first")'), ("second", 'second = stage("second")')):
+for name, call in (
+    ("first", 'first = stage("first")'),
+    ("second", 'second = stage("second")'),
+):
     stack = frames(fifos[name])
     assert "ObjectFifo(line_type, name=name)" in cited(stack[0]), stack
     if DEPTH == 1:
