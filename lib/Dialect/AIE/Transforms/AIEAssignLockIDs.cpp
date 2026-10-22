@@ -14,6 +14,7 @@
 // and only assigns lock IDs to locks without an ID.
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 
 #include "mlir/Pass/Pass.h"
@@ -99,6 +100,35 @@ struct AIEAssignLockIDsPass
         ++nextID;
       }
     }
+
+    // Each tile's locks in id order: [id, name, assigned here].
+    AIE_TRACE("alloc.locks", [&](llvm::json::OStream &j) {
+      j.attributeArray("tiles", [&] {
+        for (auto &[tileOp, locks] : tileToLocks) {
+          SmallVector<std::tuple<int, std::string, bool>> rows;
+          device.walk([&](LockOp lockOp) {
+            if (lockOp.getTileOp() != tileOp || !lockOp.getLockID())
+              return;
+            std::string name;
+            if (auto sym = lockOp.getSymName())
+              name = sym->str();
+            rows.push_back({*lockOp.getLockID(), name,
+                            !locks.assigned.contains(*lockOp.getLockID())});
+          });
+          llvm::sort(rows);
+          j.object([&] {
+            j.attribute("tile",
+                        llvm::json::Array{tileOp.getCol(), tileOp.getRow()});
+            j.attribute("limit", getTargetModel(tileOp).getNumLocks(
+                                     tileOp.getCol(), tileOp.getRow()));
+            j.attributeArray("locks", [&] {
+              for (auto &[id, name, fresh] : rows)
+                j.value(llvm::json::Array{id, name, fresh});
+            });
+          });
+        }
+      });
+    });
   }
 };
 

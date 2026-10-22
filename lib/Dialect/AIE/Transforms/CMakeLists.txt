@@ -6,6 +6,7 @@
 
 add_mlir_dialect_library(
   AIETransforms
+  AIECompileTrace.cpp
   AIEPlacer.cpp
   AIEStructuralRank.cpp
   AIEPlaceTiles.cpp

@@ -40,9 +40,11 @@
 #include "Items.h"
 #include "SidecarFiles.h"
 #include "Tools.h"
+#include "TraceElfs.h"
 #include "Utils.h"
 
 #include "aie/Conversion/Passes.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 #include "aie/Dialect/AIEVec/Pipelines/Passes.h"
 #include "aie/Dialect/AIEVec/TransformOps/DialectExtension.h"
@@ -1555,6 +1557,27 @@ buildMainGraph(mlir::MLIRContext &context, Graph &g,
                                                             elfLookup(elfs));
                         });
   }
+  // The compile trace's view of each core's ELF: its sections, its symbols
+  // and the object each came from.
+  if (xilinx::AIE::trace::enabled()) {
+    measured =
+        &bundle(compiledElfs.out, objects.out, measured->out)
+             .join<ModRef>("traced_elfs.mlir",
+                           [elfLookup, inputFile, workDirStr](
+                               const Node<Directory> &elfs,
+                               const Node<Directory> &coreObjects,
+                               const Node<ModRef> &physicalN,
+                               Item<ModRef> &out) -> mlir::LogicalResult {
+                             out.value = ModRef(physicalN.get().get().clone());
+                             traceCoreElfs(out.value->get(), elfLookup(elfs),
+                                           elfLookup(coreObjects),
+                                           [&](llvm::StringRef p) {
+                                             return resolveExternalPath(
+                                                 p, inputFile, workDirStr);
+                                           });
+                             return mlir::success();
+                           });
+  }
   if (!noMeasureDataSize.getValue()) {
     measured = &bundle(compiledElfs.out, measured->out)
                     .join<ModRef>(
@@ -2703,6 +2726,15 @@ int main(int argc, char **argv) {
     return 1;
   }
   verifyEachPass = verifyEach;
+  if (!compileTrace.empty())
+    xilinx::AIE::trace::open(compileTrace);
+  AIE_TRACE("aiecc.begin", [&](llvm::json::OStream &j) {
+    j.attribute("version", xilinx::AIE::trace::kVersion);
+    j.attributeArray("argv", [&] {
+      for (int i = 1; i < effArgc; ++i)
+        j.value(effArgv[i]);
+    });
+  });
 
   if (checkLutBanks && (xchesscc || xbridge)) {
     llvm::errs() << "aiecc: --check-lut-banks requires Peano compilation and "

@@ -21,8 +21,11 @@
 #include "Graph.h"
 #include "Utils.h"
 
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassInstrumentation.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallString.h"
@@ -110,9 +113,96 @@ inline mlir::OwningOpRef<mlir::ModuleOp> asModule(const Item<File> &in,
 // names the pass that broke the IR.
 inline bool verifyEachPass = false;
 
+// Records each pass in the compile trace: its time, the op it ran on and how
+// many ops that op held after it, so a viewer can show where a stage's time
+// went and which pass grew or shrank the IR.
+struct CompileTracePasses : mlir::PassInstrumentation {
+  // Passes nest (a module pass's pipeline runs device passes), so starts are a
+  // stack per thread.
+  static inline thread_local std::vector<std::chrono::steady_clock::time_point>
+      starts;
+
+  // The pass managers instrumented, so one run more than once (a prebuilt
+  // pipeline runs once per input) is instrumented once. Each leaves the set
+  // when it frees its instrumentation, so a later one at its address is not
+  // mistaken for it.
+  static inline std::mutex mu;
+  static inline llvm::DenseSet<mlir::PassManager *> instrumented;
+  mlir::PassManager *pm;
+
+  explicit CompileTracePasses(mlir::PassManager *pm) : pm(pm) {}
+  ~CompileTracePasses() override {
+    std::lock_guard<std::mutex> lock(mu);
+    instrumented.erase(pm);
+  }
+  static void instrument(mlir::PassManager &pm) {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      if (!instrumented.insert(&pm).second)
+        return;
+    }
+    pm.addInstrumentation(std::make_unique<CompileTracePasses>(&pm));
+  }
+
+  static void record(llvm::StringRef ev, mlir::Pass *pass,
+                     mlir::Operation *op) {
+    double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - starts.back())
+                    .count();
+    starts.pop_back();
+    // The adaptors that nest a pipeline under an op have no argument; their
+    // passes are recorded themselves.
+    llvm::StringRef arg = pass->getArgument();
+    if (arg.empty())
+      return;
+    int64_t ops = 0;
+    op->walk([&](mlir::Operation *) { ++ops; });
+    AIE_TRACE(ev, [&](llvm::json::OStream &j) {
+      j.attribute("pass", arg);
+      j.attribute("on", op->getName().getStringRef());
+      if (auto sym = op->getAttrOfType<mlir::StringAttr>("sym_name"))
+        j.attribute("sym", sym.getValue());
+      xilinx::AIE::trace::attributeNumber(j, "ms", ms);
+      j.attribute("ops", ops);
+    });
+  }
+  // The devices whose passes this thread is in, so each event a device pass
+  // writes names its device ("dev").
+  static inline thread_local std::vector<std::string> devices;
+  static bool isDevice(mlir::Operation *op) {
+    return op->getName().getStringRef() == "aie.device";
+  }
+  static void leave(mlir::Operation *op) {
+    if (!isDevice(op))
+      return;
+    devices.pop_back();
+    xilinx::AIE::trace::setDevice(
+        devices.empty() ? std::nullopt
+                        : std::optional<llvm::StringRef>(devices.back()));
+  }
+  void runBeforePass(mlir::Pass *, mlir::Operation *op) override {
+    if (isDevice(op)) {
+      auto sym = op->getAttrOfType<mlir::StringAttr>("sym_name");
+      devices.push_back(sym ? sym.getValue().str() : "");
+      xilinx::AIE::trace::setDevice(llvm::StringRef(devices.back()));
+    }
+    starts.push_back(std::chrono::steady_clock::now());
+  }
+  void runAfterPass(mlir::Pass *pass, mlir::Operation *op) override {
+    record("pass", pass, op);
+    leave(op);
+  }
+  void runAfterPassFailed(mlir::Pass *pass, mlir::Operation *op) override {
+    record("pass.failed", pass, op);
+    leave(op);
+  }
+};
+
 inline mlir::LogicalResult runPasses(mlir::PassManager &pm,
                                      mlir::Operation *op) {
   pm.enableVerifier(verifyEachPass);
+  if (xilinx::AIE::trace::enabled())
+    CompileTracePasses::instrument(pm);
   if (mlir::failed(pm.run(op))) {
     return mlir::failure();
   }

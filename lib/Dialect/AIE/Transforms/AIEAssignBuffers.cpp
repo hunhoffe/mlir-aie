@@ -10,12 +10,14 @@
 #include "aie/Dialect/AIE/IR/AIECoreSymbols.h"
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIE/Transforms/AIEBufferAllocation.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 
 #include "mlir/IR/Attributes.h"
 
 #include "llvm/ADT/BitVector.h"
 
+#include <array>
 #include <limits>
 #include <optional>
 #include <set>
@@ -990,6 +992,26 @@ rankedPlacements(BufferOp buffer, const BankAwareContext &ctx,
 }
 
 namespace {
+// The compile trace's record of one tile's search, in order: [op, index into
+// the placement order, address, bank], op 0 placed, 1 undone (backtrack),
+// 2 no candidate left, 3 out of budget, 4 placed by the exhaustive search.
+// Capped, since a hard tile can try a great many placements.
+struct SearchLog {
+  static constexpr size_t kMaxSteps = 20000;
+  std::vector<std::array<int64_t, 4>> steps;
+  bool truncated = false;
+};
+thread_local SearchLog *searchLog = nullptr;
+void traceStep(int op, size_t index, int64_t addr, int64_t bank) {
+  if (!searchLog)
+    return;
+  if (searchLog->steps.size() >= SearchLog::kMaxSteps) {
+    searchLog->truncated = true;
+    return;
+  }
+  searchLog->steps.push_back({op, static_cast<int64_t>(index), addr, bank});
+}
+
 // What the search cost on one device, for --mlir-pass-statistics.
 struct PlacementStats {
   int64_t backtracks = 0; // placements undone because a later buffer had none
@@ -1059,11 +1081,14 @@ struct PlacementSearch {
 
     SmallVector<Placement> candidates = rankedPlacements(
         buffer, ctx, startBankIndex, requiredBanks, occupancy, rest);
-    if (candidates.empty() && (!deepest || index > deepestIndex)) {
-      recordDeepest(index, buffer);
+    if (candidates.empty()) {
+      traceStep(2, index, -1, -1);
+      if (!deepest || index > deepestIndex)
+        recordDeepest(index, buffer);
     }
     for (const Placement &candidate : candidates) {
       if (budget <= 0) {
+        traceStep(3, index, -1, -1);
         // Out of budget before this buffer had an address: it is where the
         // search stopped, so it is the one to report.
         if (!deepest || index > deepestIndex) {
@@ -1074,6 +1099,7 @@ struct PlacementSearch {
       }
       --budget;
       placeBuffer(buffer, candidate.addr, candidate.bank, occupancy);
+      traceStep(0, index, candidate.addr, candidate.bank);
       placed.push_back(buffer);
       // A pinned buffer leaves the cursor alone; see rankedPlacements.
       int nextBank = requiredBanks.count(buffer)
@@ -1084,6 +1110,7 @@ struct PlacementSearch {
       }
       placed.pop_back();
       ++stats.backtracks;
+      traceStep(1, index, candidate.addr, candidate.bank);
       occupancy.markFree(candidate.addr, candidate.addr + size);
       buffer->removeAttr("address");
       auto required = requiredBanks.find(buffer);
@@ -1314,10 +1341,11 @@ placeFreeBuffers(ArrayRef<BufferOp> buffersToAlloc, const BankAwareContext &ctx,
                             budget);
   if (complete.run()) {
     ++stats.tilesCompacted;
-    for (auto [buffer, addr] : llvm::zip(buffersToAlloc, complete.addrs)) {
-      placeBuffer(buffer, addr,
-                  getBankContaining(addr, ctx.numBanks, ctx.bankLimits),
-                  occupancy);
+    for (auto [k, buffer, addr] :
+         llvm::enumerate(buffersToAlloc, complete.addrs)) {
+      int bank = getBankContaining(addr, ctx.numBanks, ctx.bankLimits);
+      placeBuffer(buffer, addr, bank, occupancy);
+      traceStep(4, k, addr, bank);
       placed.push_back(buffer);
     }
     return nullptr;
@@ -1402,8 +1430,75 @@ placementOrder(ArrayRef<BufferOp> buffersToAlloc,
   return order;
 }
 
+// One tile's layout as the allocator left it, for the compile trace: each
+// buffer as [name, address, size, bank, kind, placement order (-1 when it was
+// not this pass's to place)], and `failed` naming the one with no room.
+// `order` is the order the search placed buffers in, which `search` (each
+// try and undo, see SearchLog) indexes.
+static void traceTileLayout(TileOp tile, bool ok, ArrayRef<BufferOp> placed,
+                            ArrayRef<BufferOp> preAllocated,
+                            const BankAwareContext &ctx,
+                            const PlacementStats &before,
+                            const PlacementStats &after, BufferOp failed,
+                            ArrayRef<BufferOp> order = {}) {
+  AIE_TRACE("alloc.tile", [&](llvm::json::OStream &j) {
+    j.attribute("tile", llvm::json::Array{tile.getCol(), tile.getRow()});
+    j.attribute("ok", ok);
+    j.attribute("size", ctx.maxDataMemorySize);
+    j.attribute("banks", ctx.numBanks);
+    if (ctx.stackRun.size)
+      j.attribute("stack",
+                  llvm::json::Array{ctx.stackRun.start, ctx.stackRun.size});
+    j.attribute("backtracks", after.backtracks - before.backtracks);
+    j.attribute("searched", after.tilesSearched != before.tilesSearched);
+    j.attribute("compacted", after.tilesCompacted != before.tilesCompacted);
+    if (failed)
+      j.attribute("failed", mapLabel(failed));
+    auto kind = [](BufferOp b) {
+      return b.getCoreData()       ? "core_data"
+             : b.getBankReserved() ? "bank_reserved"
+                                   : "buffer";
+    };
+    j.attributeArray("buffers", [&] {
+      auto row = [&](BufferOp b, int order) {
+        j.value(llvm::json::Array{
+            mapLabel(b),
+            b.getAddress() ? llvm::json::Value(*b.getAddress())
+                           : llvm::json::Value(nullptr),
+            b.getAllocationSize(),
+            b.getMemBank() ? llvm::json::Value(*b.getMemBank())
+                           : llvm::json::Value(nullptr),
+            kind(b), order});
+      };
+      for (BufferOp b : preAllocated)
+        row(b, -1);
+      for (auto [k, b] : llvm::enumerate(placed))
+        row(b, k);
+    });
+    if (searchLog) {
+      j.attributeArray("order", [&] {
+        for (BufferOp b : order)
+          j.value(mapLabel(b));
+      });
+      j.attributeArray("search", [&] {
+        for (auto &step : searchLog->steps)
+          j.value(llvm::json::Array{step[0], step[1], step[2], step[3]});
+      });
+      if (searchLog->truncated)
+        j.attribute("truncated", true);
+    }
+  });
+}
+
 static LogicalResult allocateTile(TileOp tile, int64_t budget,
                                   PlacementStats &stats) {
+  PlacementStats statsBefore = stats;
+  // Record this tile's search for the compile trace, if one is open.
+  SearchLog log;
+  struct LogScope {
+    explicit LogScope(SearchLog *log) { searchLog = log; }
+    ~LogScope() { searchLog = nullptr; }
+  } logScope(trace::enabled() ? &log : nullptr);
   auto device = tile->getParentOfType<AIE::DeviceOp>();
   if (!device) {
     return failure();
@@ -1528,6 +1623,8 @@ static LogicalResult allocateTile(TileOp tile, int64_t budget,
             << " bytes, but no contiguous aligned space remains within allowed "
                "banks "
             << banks.front() << " and " << banks.back();
+        traceTileLayout(tile, false, allocatedBuffers, preAllocatedBuffers, ctx,
+                        statsBefore, stats, failed, order);
         deAllocationBuffers(allocatedBuffers, requiredBanks);
         return failure();
       }
@@ -1546,6 +1643,8 @@ static LogicalResult allocateTile(TileOp tile, int64_t budget,
                                    bankLimits[bank].end())
             << " of " << bankCapacity << " bytes are free there";
       }
+      traceTileLayout(tile, false, allocatedBuffers, preAllocatedBuffers, ctx,
+                      statsBefore, stats, failed, order);
       deAllocationBuffers(allocatedBuffers, requiredBanks);
       return failure();
     }
@@ -1560,11 +1659,15 @@ static LogicalResult allocateTile(TileOp tile, int64_t budget,
                            "it with placement-budget)";
     }
     // Print before rollback, while the addresses are still set.
+    traceTileLayout(tile, false, allocatedBuffers, preAllocatedBuffers, ctx,
+                    statsBefore, stats, failed, order);
     printMemMap(tile, allocatedBuffers, preAllocatedBuffers, ctx);
     deAllocationBuffers(allocatedBuffers, requiredBanks);
     return failure();
   }
   assert(allocatedBuffers.size() == buffersToAlloc.size());
+  traceTileLayout(tile, true, allocatedBuffers, preAllocatedBuffers, ctx,
+                  statsBefore, stats, nullptr, order);
 
   sortBuffersByAddress(allBuffers_on_tile);
   // Every placement came from free space in the tile, so overflow cannot happen

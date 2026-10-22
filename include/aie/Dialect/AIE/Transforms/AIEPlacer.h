@@ -10,7 +10,10 @@
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIE/IR/AIETargetModel.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
+#include "llvm/Support/JSON.h"
 
+#include <chrono>
 #include <deque>
 #include <random>
 
@@ -159,6 +162,20 @@ protected:
   llvm::SmallVector<AllocateInfo> allocates;
   const AIETargetModel *targetModel = nullptr;
   TileAvailability availability;
+
+  // Compile trace (AIECompileTrace.h): each logical tile's id in its events,
+  // its index in `ops.logicalTiles`, assigned by traceModel.
+  llvm::DenseMap<mlir::Operation *, int> traceIds;
+  // The `place.model` event both placers start with: the device, the logical
+  // tiles, the ObjectFIFOs between them and the cascades.
+  void traceModel(llvm::StringRef placer, const CollectedOps &ops,
+                  const Adjacency &cascades,
+                  llvm::function_ref<bool(mlir::Operation *)> fixed,
+                  llvm::function_ref<int64_t(mlir::Operation *)> mem);
+  // `key`: [[id, col, row], ...] for every placed logical tile.
+  void tracePositions(llvm::json::OStream &j, llvm::StringRef key,
+                      const CollectedOps &ops,
+                      const PlacementResult &placement) const;
 };
 
 // Invoke `fn(peer, thisIsFirst)` for each edge in `adjacency` that
@@ -269,6 +286,21 @@ private:
   enum class PlacementOrigin { Pinned, Selected };
 
   void limitCoresPerColumn(int maxCoresPerCol, int numColumns);
+
+  // Compile trace: the candidates the current LTO's search turned down,
+  // [col, row, reason], emitted with its `seq.place` and then cleared.
+  llvm::SmallVector<std::tuple<int, int, llvm::StringRef>> traceRejected;
+  void traceRejection(TileID tile, llvm::StringRef reason) {
+    if (trace::enabled())
+      traceRejected.push_back({tile.col, tile.row, reason});
+  }
+  void tracePlace(mlir::Operation *logicalTile, TileID tile,
+                  llvm::StringRef how,
+                  llvm::function_ref<void(llvm::json::OStream &)> more = {});
+  mlir::LogicalResult placeImpl(DeviceOp device);
+  // The ops the trace's ids index, and the LTO being placed (named on failure).
+  CollectedOps traceOps;
+  mlir::Operation *traceCurrent = nullptr;
 
   // targetCol == nullopt means no routing anchor is known, so candidates are
   // ranked by DMA load rather than by distance to a column. `withinBudgets`
@@ -723,6 +755,14 @@ private:
   int zeroDeltaMoves = 0, posDeltaMoves = 0, negDeltaMoves = 0;
   int acceptedUphill = 0, rejectedMoves = 0;
   std::chrono::steady_clock::time_point startTime;
+
+  // Compile trace (AIECompileTrace.h): each logical tile's id in its events
+  // (its index in collected.logicalTiles), and the current and best legal
+  // placements it last recorded, so an iteration records only what moved.
+  PlacementResult tracedPlacement, tracedBest;
+  void traceCost(llvm::json::OStream &j) const;
+  void traceMoved(llvm::json::OStream &j, llvm::StringRef key,
+                  const PlacementResult &placement, PlacementResult *since);
 
   // Phase methods
   mlir::LogicalResult collectAndBuildModel(DeviceOp device);

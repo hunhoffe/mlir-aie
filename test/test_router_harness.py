@@ -178,6 +178,11 @@ def test_a_traced_shrink_saves_each_kept_design_and_its_trace(tmp_path):
     steps = json.loads((tmp_path / "steps.json").read_text())
     assert len(steps) >= 2 and steps[0]["size"] > steps[-1]["size"]
     assert steps[-1]["flows"] == len(small.flows)
+    events = [
+        json.loads(line)
+        for line in (tmp_path / steps[-1]["trace"]).read_text().splitlines()
+    ]
+    assert any(e["ev"] == "route.begin" for e in events)
     assert (
         rp.load_design((tmp_path / steps[-1]["mlir"]).read_text()).flows == small.flows
     )

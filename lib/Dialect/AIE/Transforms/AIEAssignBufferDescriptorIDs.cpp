@@ -9,6 +9,7 @@
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIE/IR/AIEEnums.h"
 #include "aie/Dialect/AIE/IR/AIETargetModel.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIEPasses.h"
 
 #include "mlir/IR/Block.h"
@@ -166,6 +167,21 @@ struct AIEAssignBufferDescriptorIDsPass
     // here -- key the generator by tile, not by op, or two ops on the same
     // tile hand out the same ids and silently collide.
     std::map<std::pair<int, int>, BdIdGenerator> gens;
+    // Trace: each tile's BDs in the order they got ids, as [channel, id,
+    // buffer, assigned here, next BD in its chain]; written once the chains
+    // are linked below.
+    struct TracedBd {
+      int channel;
+      DMABDOp bd;
+      int id;
+      bool fresh;
+    };
+    std::map<std::pair<int, int>, SmallVector<TracedBd>> tracedBds;
+    auto traceBd = [&](int col, int row, int channel, DMABDOp bd, int id,
+                       bool fresh) {
+      if (trace::enabled())
+        tracedBds[{col, row}].push_back({channel, bd, id, fresh});
+    };
     for (TileElement memOp : memOps) {
       int col = memOp.getTileID().col;
       int row = memOp.getTileID().row;
@@ -225,6 +241,7 @@ struct AIEAssignBufferDescriptorIDsPass
               int channelIndex = dmaOp.getChannelIndex();
               if (!checkBdChannelAccessible(bd, *existingBdId, channelIndex))
                 return signalPassFailure();
+              traceBd(col, row, channelIndex, bd, *existingBdId, false);
             } else {
               std::optional<int32_t> nextId =
                   gen.nextBdId(dmaOp.getChannelIndex());
@@ -237,6 +254,7 @@ struct AIEAssignBufferDescriptorIDsPass
                 return signalPassFailure();
               }
               bd.setBdId(nextId);
+              traceBd(col, row, dmaOp.getChannelIndex(), bd, *nextId, true);
             }
           }
         }
@@ -270,6 +288,7 @@ struct AIEAssignBufferDescriptorIDsPass
             int channelIndex = blockChannelMap[&block];
             if (!checkBdChannelAccessible(bd, *existingBdId, channelIndex))
               return signalPassFailure();
+            traceBd(col, row, channelIndex, bd, *existingBdId, false);
           } else {
             std::optional<int32_t> nextId =
                 gen.nextBdId(blockChannelMap[&block]);
@@ -282,6 +301,7 @@ struct AIEAssignBufferDescriptorIDsPass
               return signalPassFailure();
             }
             bd.setBdId(nextId);
+            traceBd(col, row, blockChannelMap[&block], bd, *nextId, true);
           }
         }
       }
@@ -344,6 +364,26 @@ struct AIEAssignBufferDescriptorIDsPass
         }
       }
     }
+
+    AIE_TRACE("alloc.bds", [&](llvm::json::OStream &j) {
+      j.attributeArray("tiles", [&] {
+        for (auto &[tile, bds] : tracedBds)
+          j.object([&] {
+            j.attribute("tile", llvm::json::Array{tile.first, tile.second});
+            j.attributeArray("bds", [&] {
+              for (TracedBd &t : bds) {
+                std::string buf;
+                if (auto b = t.bd.getBuffer().getDefiningOp<BufferOp>())
+                  buf = b.name().str();
+                auto next = t.bd.getNextBdId();
+                j.value(llvm::json::Array{t.channel, t.id, buf, t.fresh,
+                                          next ? llvm::json::Value(*next)
+                                               : llvm::json::Value(nullptr)});
+              }
+            });
+          });
+      });
+    });
 
     populateRearmBindings(targetOp);
   }

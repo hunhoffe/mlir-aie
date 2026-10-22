@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "aie/Dialect/AIE/Transforms/AIEPlacer.h"
+#include "aie/Dialect/AIE/Transforms/AIECompileTrace.h"
 #include "aie/Dialect/AIE/Transforms/AIEStructuralRank.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 #include "aie/Dialect/AIEX/Utils/DmaDecomposition.h"
@@ -17,10 +18,12 @@
 #include "llvm/Support/Debug.h"
 
 #include <algorithm>
+#include <chrono>
 #include <numeric>
 
 using namespace mlir;
 using namespace xilinx::AIE;
+namespace json = llvm::json;
 
 #define DEBUG_TYPE "aie-placer"
 
@@ -105,6 +108,151 @@ bool Placer::satisfiesConstraints(Operation *tile, TileID pos) {
   return true;
 }
 
+//===----------------------------------------------------------------------===//
+// Compile trace
+//===----------------------------------------------------------------------===//
+
+static StringRef traceTileType(AIETileType type) {
+  switch (type) {
+  case AIETileType::CoreTile:
+    return "core";
+  case AIETileType::MemTile:
+    return "mem";
+  case AIETileType::ShimNOCTile:
+    return "shim";
+  case AIETileType::ShimPLTile:
+    return "shim_pl";
+  }
+  return "other";
+}
+
+// The device as a grid of tile types, a string per row from row 0, a letter
+// per column: c core, m mem, s shim (NOC), p shim (PL), . anything else.
+static void traceGrid(json::OStream &j, const AIETargetModel &tm) {
+  j.attribute("cols", tm.columns());
+  j.attribute("rows", tm.rows());
+  j.attributeArray("grid", [&] {
+    for (int r = 0; r < tm.rows(); r++) {
+      std::string row;
+      for (int c = 0; c < tm.columns(); c++) {
+        switch (tm.getTileType(c, r)) {
+        case AIETileType::CoreTile:
+          row += 'c';
+          break;
+        case AIETileType::MemTile:
+          row += 'm';
+          break;
+        case AIETileType::ShimNOCTile:
+          row += 's';
+          break;
+        case AIETileType::ShimPLTile:
+          row += 'p';
+          break;
+        default:
+          row += '.';
+        }
+      }
+      j.value(row);
+    }
+  });
+}
+
+void Placer::traceModel(StringRef placer, const CollectedOps &ops,
+                        const Adjacency &cascades,
+                        function_ref<bool(Operation *)> fixed,
+                        function_ref<int64_t(Operation *)> mem) {
+  for (auto [i, lt] : llvm::enumerate(ops.logicalTiles))
+    traceIds[LogicalTileOp(lt).getOperation()] = i;
+  // What each core calls, which is how a designer knows its worker.
+  DenseMap<Operation *, SmallVector<StringRef>> kernels;
+  if (!ops.logicalTiles.empty())
+    ops.logicalTiles.front()->getParentOp()->walk([&](CoreOp core) {
+      Operation *tile = core.getTile().getDefiningOp();
+      core.walk([&](Operation *op) {
+        if (auto callee = op->getAttrOfType<FlatSymbolRefAttr>("callee"))
+          if (!llvm::is_contained(kernels[tile], callee.getValue()))
+            kernels[tile].push_back(callee.getValue());
+      });
+    });
+  AIE_TRACE("place.model", [&](json::OStream &j) {
+    j.attribute("placer", placer);
+    traceGrid(j, *targetModel);
+    j.attributeArray("tiles", [&] {
+      for (auto lt : ops.logicalTiles) {
+        Operation *op = lt.getOperation();
+        j.object([&] {
+          j.attribute("id", traceIds.lookup(op));
+          j.attribute("type", traceTileType(lt.getTileType()));
+          j.attribute("loc", trace::locString(op->getLoc()));
+          j.attribute("fixed", fixed(op));
+          j.attribute("mem", mem(op));
+          if (auto it = kernels.find(op); it != kernels.end())
+            j.attributeArray("calls", [&] {
+              for (StringRef k : it->second)
+                j.value(k);
+            });
+        });
+      }
+    });
+    auto idOf = [&](Value tile) -> int {
+      Operation *op = tile.getDefiningOp();
+      auto it = op ? traceIds.find(op) : traceIds.end();
+      return it == traceIds.end() ? -1 : it->second;
+    };
+    j.attributeArray("fifos", [&] {
+      for (auto of : ops.objectFifos) {
+        j.object([&] {
+          j.attribute("name", of.getSymName());
+          j.attribute("loc", trace::locString(of.getLoc()));
+          j.attribute("prod", idOf(of.getProducerTile()));
+          j.attributeArray("cons", [&] {
+            for (Value c : of.getConsumerTiles())
+              j.value(idOf(c));
+          });
+        });
+      }
+    });
+    j.attributeArray("cascades", [&] {
+      for (auto [a, b] : cascades.edges)
+        j.value(json::Array{traceIds.lookup(a.getOperation()),
+                            traceIds.lookup(b.getOperation())});
+    });
+  });
+}
+
+void Placer::tracePositions(json::OStream &j, StringRef key,
+                            const CollectedOps &ops,
+                            const PlacementResult &placement) const {
+  j.attributeArray(key, [&] {
+    for (auto lt : ops.logicalTiles) {
+      auto it = placement.find(lt.getOperation());
+      if (it != placement.end())
+        j.value(json::Array{traceIds.lookup(lt.getOperation()), it->second.col,
+                            it->second.row});
+    }
+  });
+}
+
+void SequentialPlacer::tracePlace(Operation *logicalTile, TileID tile,
+                                  StringRef how,
+                                  function_ref<void(json::OStream &)> more) {
+  AIE_TRACE("seq.place", [&](json::OStream &j) {
+    j.attribute("id", traceIds.lookup(logicalTile));
+    j.attributeArray("at", [&] {
+      j.value(tile.col);
+      j.value(tile.row);
+    });
+    j.attribute("how", how);
+    if (more)
+      more(j);
+    j.attributeArray("rejected", [&] {
+      for (auto [c, r, why] : traceRejected)
+        j.value(json::Array{c, r, why});
+    });
+  });
+  traceRejected.clear();
+}
+
 void SequentialPlacer::initialize(const AIETargetModel &targetModel) {
   Placer::initialize(targetModel);
 
@@ -166,6 +314,33 @@ void SequentialPlacer::limitCoresPerColumn(int maxCoresPerCol, int numColumns) {
 }
 
 LogicalResult SequentialPlacer::place(DeviceOp device) {
+  auto start = std::chrono::steady_clock::now();
+  traceCurrent = nullptr;
+  LogicalResult placed = placeImpl(device);
+  if (trace::enabled() && !traceIds.empty()) {
+    auto ms = std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - start)
+                  .count();
+    AIE_TRACE("place.final", [&](json::OStream &j) {
+      j.attribute("placer", "sequential");
+      j.attribute("legal", succeeded(placed));
+      trace::attributeNumber(j, "ms", ms);
+      tracePositions(j, "pos", traceOps, result);
+      if (failed(placed) && traceCurrent) {
+        // The LTO it could not place, and the candidates it turned down.
+        j.attribute("failed", traceIds.lookup(traceCurrent));
+        j.attributeArray("rejected", [&] {
+          for (auto [c, r, why] : traceRejected)
+            j.value(json::Array{c, r, why});
+        });
+      }
+    });
+  }
+  traceRejected.clear();
+  return placed;
+}
+
+LogicalResult SequentialPlacer::placeImpl(DeviceOp device) {
   // Phase 0: Validate options
   if (!targetModel)
     return device.emitError() << "SequentialPlacer::place called before "
@@ -234,6 +409,16 @@ LogicalResult SequentialPlacer::place(DeviceOp device) {
   }
   PlacementContext ctx{*targetModel, computePeerAdjacency, needNeighborIn,
                        needNeighborOut};
+  if (trace::enabled()) {
+    traceOps = collected;
+    traceModel(
+        "sequential", collected, cascadeAdjacency,
+        [](Operation *op) {
+          auto lt = cast<LogicalTileOp>(op);
+          return lt.tryGetCol().has_value() && lt.tryGetRow().has_value();
+        },
+        [](Operation *) -> int64_t { return 0; });
+  }
 
   // Phase 2d: group cores by the non-core tile they share the most flows
   // with, so each group can be placed in one column and its hub's centroid
@@ -331,7 +516,26 @@ LogicalResult SequentialPlacer::place(DeviceOp device) {
            ctx.neighborDemand(b.getOperation());
   });
 
+  // The order the cores are placed in, which is most of what this placer
+  // decides: [id, constraint rank, priority, neighbour demand, core group].
+  AIE_TRACE("seq.order", [&](json::OStream &j) {
+    j.attributeArray("order", [&] {
+      for (auto lt : orderedTiles) {
+        Operation *op = lt.getOperation();
+        int rank = lt.tryGetCol() && lt.tryGetRow()   ? 0
+                   : lt.tryGetCol() || lt.tryGetRow() ? 1
+                                                      : 2;
+        auto group = coreGroups.groupOf.find(op);
+        j.value(json::Array{
+            traceIds.lookup(op), rank, ctx.placementPriority(op),
+            ctx.neighborDemand(op),
+            group == coreGroups.groupOf.end() ? -1 : int(group->second)});
+      }
+    });
+  });
+
   for (auto logicalTile : orderedTiles) {
+    traceCurrent = logicalTile.getOperation();
     // Place fully constrained tiles at their specified coordinates
     auto col = logicalTile.tryGetCol();
     auto row = logicalTile.tryGetRow();
@@ -346,6 +550,8 @@ LogicalResult SequentialPlacer::place(DeviceOp device) {
         return failure();
 
       recordPlacement(logicalTile, tile, ctx, "pinned");
+      if (trace::enabled())
+        tracePlace(logicalTile, tile, "pinned");
       continue;
     }
 
@@ -418,6 +624,14 @@ LogicalResult SequentialPlacer::place(DeviceOp device) {
         return failure();
 
       recordPlacement(logicalTile, *placement, ctx, "unconstrained");
+      if (trace::enabled())
+        tracePlace(logicalTile, *placement, col || row ? "partial" : "free",
+                   [&](json::OStream &j) {
+                     j.attributeArray("preferredCols", [&] {
+                       for (int c : preferredCols)
+                         j.value(c);
+                     });
+                   });
     }
 
     if (logicalTile.getTileType() == AIETileType::ShimPLTile) {
@@ -550,6 +764,7 @@ LogicalResult SequentialPlacer::placeNonCoreLogicalTiles(
   });
 
   for (auto logicalTile : nonCoreOrdered) {
+    traceCurrent = logicalTile.getOperation();
     if (failed(placeNonCoreTileByCentroid(logicalTile, flowIndex,
                                           channelRequirements)))
       return failure();
@@ -655,20 +870,27 @@ SequentialPlacer::findUnconstrainedCoreCandidate(
       if (row && candidate.row != *row)
         continue;
       if (!allowReserved &&
-          inputs.isReservedForOther(logicalTile.getOperation(), candidate))
+          inputs.isReservedForOther(logicalTile.getOperation(), candidate)) {
+        traceRejection(candidate, "reserved");
         continue;
+      }
       result.sawConstraintMatch = true;
       if (!satisfiesAdjacency(logicalTile, candidate, inputs.bufferAdjacency,
-                              inputs.bufferPred))
+                              inputs.bufferPred)) {
+        traceRejection(candidate, "shared-buffer");
         continue;
+      }
       result.allConstraintMatchesFailedAdjacency = false;
       if (!satisfiesAdjacency(logicalTile, candidate, inputs.cascadeAdjacency,
-                              inputs.cascadePred))
+                              inputs.cascadePred)) {
+        traceRejection(candidate, "cascade");
         continue;
+      }
       if (!satisfiesComputePeer(
               logicalTile, candidate, inputs.computePeerAdjacency,
               inputs.needNeighborIn, inputs.needNeighborOut)) {
         result.computePeerWasCause = true;
+        traceRejection(candidate, "compute-peer");
         continue;
       }
       result.placement = candidate;
@@ -1430,6 +1652,7 @@ LogicalResult SequentialPlacer::placeNonCoreTileByCentroid(
                                         numInputChannels, numOutputChannels,
                                         logicalTile.getTileType(), logicalTile,
                                         /*withinBudgets=*/true);
+  bool relaxed = !maybeTile;
   if (!maybeTile)
     maybeTile = findTileWithCapacity(targetCol, availability.nonCompTiles,
                                      numInputChannels, numOutputChannels,
@@ -1483,6 +1706,17 @@ LogicalResult SequentialPlacer::placeNonCoreTileByCentroid(
                  << maybeTile->row << ") (centroid col=" << showCol(centroidCol)
                  << ", target col=" << showCol(targetCol) << ")\n";
   });
+  if (trace::enabled())
+    tracePlace(logicalTile, *maybeTile, "centroid", [&](json::OStream &j) {
+      if (centroidCol)
+        j.attribute("centroid", *centroidCol);
+      if (targetCol)
+        j.attribute("target", *targetCol);
+      j.attribute("in", numInputChannels);
+      j.attribute("out", numOutputChannels);
+      // No tile fit the stream and BD budgets too, so they were dropped.
+      j.attribute("relaxed", relaxed);
+    });
   if (!mergeLogicalTiles)
     assignedNonCoreTiles.insert(*maybeTile);
   if (numInputChannels > 0)
@@ -1519,19 +1753,27 @@ std::optional<TileID> SequentialPlacer::findTileWithCapacity(
     if (targetModel->getTileType(tile.col, tile.row) != requestedType)
       continue;
     if (!hasAvailableChannels(tile, requiredInputChannels,
-                              requiredOutputChannels))
+                              requiredOutputChannels)) {
+      traceRejection(tile, "dma-channels");
       continue;
+    }
     // When merge-logical-tiles is disabled, a tile that already hosts a
     // non-core aie.logical_tile is off-limits even if it has spare DMA
     // capacity.
-    if (!mergeLogicalTiles && assignedNonCoreTiles.contains(tile))
+    if (!mergeLogicalTiles && assignedNonCoreTiles.contains(tile)) {
+      traceRejection(tile, "taken");
       continue;
-    if (withinBudgets && !fitsStreamAndBdBudgets(logicalTile, tile))
+    }
+    if (withinBudgets && !fitsStreamAndBdBudgets(logicalTile, tile)) {
+      traceRejection(tile, "stream-bd-budget");
       continue;
+    }
     if (llvm::any_of(namedChannels.lookup(logicalTile), [&](auto named) {
           return availability.namedChannelsUsed[tile].contains(named);
-        }))
+        })) {
+      traceRejection(tile, "named-channel");
       continue;
+    }
     int dist = targetCol ? std::abs(tile.col - *targetCol) : 0;
     int load;
     if (targetCol ||
