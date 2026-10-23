@@ -377,7 +377,7 @@ struct AIEObjectFifoAllocatePass
     for (int i = 0; i < pool.getDepth(); i++) {
       ElementsAttr init =
           i < filled ? cast<ElementsAttr>(initValues[i]) : nullptr;
-      std::string name = (base + "_buff_" + std::to_string(i)).str();
+      std::string name = (base + "__buf" + std::to_string(i)).str();
       Value placement = bufferPlacements[pool][i];
       setInsertionPointOn(placement);
       lastPlaced[placement] = BufferOp::create(
@@ -523,7 +523,7 @@ struct AIEObjectFifoAllocatePass
       }
       SmallVector<Attribute> names;
       for (int i = 0; i < depth; i++) {
-        std::string name = (base + "_lock_" + std::to_string(i)).str();
+        std::string name = (base + "__lock" + std::to_string(i)).str();
         createLock(pool, lockPlacement(pool, pool), name, i < filled ? 1 : 0);
         names.push_back(FlatSymbolRefAttr::get(builder.getContext(), name));
       }
@@ -535,10 +535,8 @@ struct AIEObjectFifoAllocatePass
       if (segment.getProduceLock() && segment.getConsumeLock()) {
         continue;
       }
-      std::string produce =
-          (base + "_prod_lock_" + std::to_string(index)).str();
-      std::string consume =
-          (base + "_cons_lock_" + std::to_string(index)).str();
+      std::string produce = (base + "__prodlock" + std::to_string(index)).str();
+      std::string consume = (base + "__conslock" + std::to_string(index)).str();
       Value tile = lockPlacement(pool, segment);
       createLock(pool, tile, produce, (depth - filled) * repeat);
       createLock(pool, tile, consume, filled * repeat);
@@ -1317,10 +1315,10 @@ struct AIEObjectFifoAllocatePass
         return failure();
       }
 
-      std::string name = (fifoName + "_rearm").str();
+      std::string name = (fifoName + "__rearm").str();
       for (unsigned suffix = 0; lookupNamedOpIn(device, StringRef(name));
            suffix++) {
-        name = (fifoName + "_rearm_" + std::to_string(suffix)).str();
+        name = (fifoName + "__rearm" + std::to_string(suffix + 1)).str();
       }
 
       // head_bd_ids and repeat_counts are filled in by --aie-assign-bd-ids.
@@ -1495,7 +1493,7 @@ struct AIEObjectFifoAllocatePass
       if (!tileOf(endpoint).isShimTile() || !fifoName || !channel) {
         continue;
       }
-      std::string name = (*fifoName + "_shim_alloc").str();
+      std::string name = (*fifoName + "__shim_alloc").str();
       if (!SymbolTable::lookupNearestSymbolFrom<ShimDMAAllocationOp>(
               device, builder.getStringAttr(name))) {
         ShimDMAAllocationOp::create(
