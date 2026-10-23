@@ -5,9 +5,9 @@
 #
 """An optional view of each compiled design in IRON Design Explorer.
 
-IRON Design Explorer (https://github.com/hunhoffe/iron-design-explorer) draws
-a design layer by layer, from its ObjectFIFOs down to the switchboxes they are
-routed through, as one static HTML page. Where it is installed,
+IRON Design Explorer (the ``iron_explorer`` package) draws a design layer
+by layer, from its ObjectFIFOs down to the switchboxes they are routed
+through, as one static HTML page. Where it is installed,
 ``IRON_EXPLORE=1`` or ``@iron.jit(explore=True)`` writes that page beside each
 build after every compile and prints where, and ``design.explore()`` returns
 it (Jupyter shows it inline). Where it is not, nothing here runs and nothing
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 ENV = "IRON_EXPLORE"
 OFF = ("", "0", "false", "no", "off")
-INSTALL = "pip install git+https://github.com/hunhoffe/iron-design-explorer"
+MISSING = "IRON Design Explorer (the iron_explorer package) is not installed"
 
 # What this process has already said, so a design called in a loop prints
 # its page (or the missing explorer) once rather than on every cache hit.
@@ -60,14 +60,10 @@ def write_page(
         import iron_explorer
     except ImportError:
         if required:
-            raise ImportError(
-                f"design.explore() needs IRON Design Explorer: {INSTALL}"
-            ) from None
-        if INSTALL not in _announced:
-            _announced.add(INSTALL)
-            logger.warning(
-                "%s is set, but IRON Design Explorer is not installed: %s", ENV, INSTALL
-            )
+            raise ImportError(f"design.explore(): {MISSING}") from None
+        if MISSING not in _announced:
+            _announced.add(MISSING)
+            logger.warning("%s is set, but %s", ENV, MISSING)
         return None
     try:
         page = iron_explorer.explore(build_dir, name=name, flags=list(flags))

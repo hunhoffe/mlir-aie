@@ -1544,8 +1544,7 @@ class CompilableDesign:
         objects, in ``<NPU_CACHE_HOME>/explore/<hash>/``), so no xclbin is
         made and no NPU is needed.
 
-        Needs IRON Design Explorer: ``pip install
-        git+https://github.com/hunhoffe/iron-design-explorer``.
+        Needs IRON Design Explorer, the ``iron_explorer`` package.
         """
         self._bind_generation_device()
         build_dir = self._built_dir() or self._explore_build()

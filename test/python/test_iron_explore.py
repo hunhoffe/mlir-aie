@@ -128,7 +128,7 @@ def test_a_missing_explorer_never_fails_a_compile(monkeypatch, tmp_path, caplog)
     design.compile()
     design.compile()
     assert caplog.text.count("not installed") == 1
-    with pytest.raises(ImportError, match="pip install"):
+    with pytest.raises(ImportError, match="not installed"):
         _explore.write_page(tmp_path, "_gemm", [], required=True)
 
 
