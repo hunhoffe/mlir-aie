@@ -5,16 +5,23 @@
 """Delta-debug a design that shows a router problem down to a minimal repro.
 
     python utils/router_testing/router_shrink.py case.mlir --match "reaches .* twice"
-        [--hops-off] [--out repros/name.mlir]
+        [--hops-off] [--out repros/name.mlir] [--trace-dir repros/name.trace]
 
 The property holds when routing the design fails with stderr matching, or
 succeeds with a verifier problem matching, the --match regex. Each step
 removes a flow, a source or destination, a program, a core, the runtime
 sequence, a pre-placed switchbox op, or an attribute, or moves to a smaller
 device, and keeps the change when the property still holds.
+
+With --trace-dir, each design the shrink keeps (the input first) is routed
+once more with AIE_COMPILE_TRACE set, and saved beside its trace as
+step_NNN.mlir and step_NNN.jsonl, with steps.json listing them; a compile
+replay can then show the failure as it shrinks.
 """
 
 import argparse
+import json
+import os
 import re
 import sys
 import time
@@ -173,6 +180,49 @@ def shrink(d, holds, log=None, budget_s=None):
     return d, True
 
 
+class TraceRecorder:
+    """Saves each kept design and a compile trace of routing it."""
+
+    def __init__(self, out, hops_on, timeout=60):
+        self.out, self.hops_on, self.timeout = out, hops_on, timeout
+        self.steps = []
+        out.mkdir(parents=True, exist_ok=True)
+
+    def __call__(self, d, runs):
+        k = len(self.steps)
+        text = d.emit()
+        mlir, trace = self.out / f"step_{k:03d}.mlir", self.out / f"step_{k:03d}.jsonl"
+        mlir.write_text(text)
+        trace.unlink(missing_ok=True)
+        before = os.environ.get("AIE_COMPILE_TRACE")
+        os.environ["AIE_COMPILE_TRACE"] = str(trace)
+        try:
+            t0 = time.monotonic()
+            p = rp.aie_opt(text, self.hops_on, timeout=self.timeout)
+            ms = round((time.monotonic() - t0) * 1000, 1)
+        finally:
+            if before is None:
+                del os.environ["AIE_COMPILE_TRACE"]
+            else:
+                os.environ["AIE_COMPILE_TRACE"] = before
+        err = (p.stderr or "") if p is not None else ""
+        self.steps.append(
+            {
+                "step": k,
+                "mlir": mlir.name,
+                "trace": trace.name,
+                "size": size(d),
+                "flows": len(d.flows),
+                "packet_flows": len(d.packet_flows),
+                "device": d.dev,
+                "runs": runs,
+                "ms": ms,
+                "error": next((ln for ln in err.splitlines() if "error:" in ln), ""),
+            }
+        )
+        (self.out / "steps.json").write_text(json.dumps(self.steps, indent=1) + "\n")
+
+
 def size(d):
     return (
         len(d.flows)
@@ -190,6 +240,9 @@ def main():
     cli.add_argument("--hops-off", action="store_true")
     cli.add_argument("--out", type=Path)
     cli.add_argument("--budget-s", type=float, default=None)
+    cli.add_argument(
+        "--trace-dir", type=Path, help="save each kept design and a compile trace of it"
+    )
     cli.add_argument("-v", action="store_true")
     args = cli.parse_args()
     d = rp.load_design(args.design.read_text())
@@ -197,7 +250,15 @@ def main():
     if not holds(d):
         sys.exit("the property does not hold on the input")
 
+    record = (
+        TraceRecorder(args.trace_dir, not args.hops_off) if args.trace_dir else None
+    )
+    if record:
+        record(d, holds.calls[0])
+
     def log(d):
+        if record:
+            record(d, holds.calls[0])
         if args.v:
             print(f"  size {size(d)} after {holds.calls[0]} runs", file=sys.stderr)
 
