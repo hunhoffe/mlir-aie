@@ -10,6 +10,12 @@ a tensor of known shape. The tilings designs use can be built from
 `TensorAccessPattern.full(dims)` (the row-major walk over the whole tensor)
 with a few operations on those integers.
 
+For a guided tour with a picture for every step, see
+[part 1](../../programming_examples/basic/tiling_exploration/introduction/README.md)
+(building patterns) and
+[part 2](../../programming_examples/basic/tiling_exploration/introduction/part2.md)
+(hierarchies, padding and data paths).
+
 ## Building patterns
 
 | To | Use |

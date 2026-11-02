@@ -21,7 +21,7 @@ At a high level, the code does the following (in order):
 
 1. [**Defining External Data Transfer Sequences:**](#5-defining-external-data-transfer-sequences) A `sequence()` function handed to `Runtime(...)` sets up matrix data movement from the host into the AIE compute cores, and back to the host after computation, via `handle.fill()` / `handle.drain()` calls that consume `TensorAccessPattern` tilings.
 
-1. **Generating the Design:** The `@iron.jit`-decorated `whole_array()` builds the IRON design and resolves it to an MLIR module; it is the single entry point for compilation. `main()` either compiles + runs on hardware or compiles ahead-of-time to caller-specified xclbin/insts paths (used by the Makefile so `test.cpp` + `sweep.sh` can drive the design). `tile_matrices()` builds the access patterns and `step_transfers()` lists one row block's shim transfers; the runtime sequence issues them, and the visualization notebook plots them without building the design.
+1. **Generating the Design:** The `@iron.jit`-decorated `whole_array()` builds the IRON design and resolves it to an MLIR module; it is the single entry point for compilation. `main()` either compiles + runs on hardware or compiles ahead-of-time to caller-specified xclbin/insts paths (used by the Makefile so `test.cpp` + `sweep.sh` can drive the design). `tile_matrices()` builds the access patterns and `step_transfers()` lists one row block's shim transfers; the runtime sequence issues them, and [tiling.md](./tiling.md) draws them without building the design.
 
 In summary, this design leverages an AI Engine accelerator to accomplish matrix multiplication efficiently by breaking large matrices into smaller, manageable submatrices. The design uses parallelism, pipelining, and efficient data movement strategies to minimize computation time on the AI Engine array.
 
@@ -58,7 +58,7 @@ All paths share one design body and one set of `@iron.jit` compile machinery —
 
 ## Detailed Design Explanation
 
-The configuration of the AI Engine array is described in the [`whole_array.py`](./whole_array.py) file, which uses the IRON high-level builders (`Worker` / `Runtime` / `Program`) and is decorated with `@iron.jit`. The design is linked against a compute microkernel which is implemented in C++. The accompanying [notebook](./mat_mul_whole_array_visualization.ipynb) provides data-movement visualization for the runtime sequence (driven by the same `tile_matrices()` and `step_transfers()`).
+The configuration of the AI Engine array is described in the [`whole_array.py`](./whole_array.py) file, which uses the IRON high-level builders (`Worker` / `Runtime` / `Program`) and is decorated with `@iron.jit`. The design is linked against a compute microkernel which is implemented in C++. The accompanying [tiling page](./tiling.md) shows the runtime sequence's data movement in pictures, drawn from the same `tile_matrices()` and `step_transfers()`.
 The following sections elaborate on each of the steps outlined in the high-level summary above.
 
 > Note: The term "tile" has two distinct meanings in the following discussion that should be distinguishable from context:
@@ -143,23 +143,9 @@ A_l2l1_fifos.extend(
 
 We assume our data are stored in **row-major format** in the host's memory. For processing on the AIE compute cores, we need to transform the data layouts, such the above listed *sub-matrix tiles* are laid out contiguously in AIE compute core memory. Thankfully, AIE hardware has extensive support for transforming data using the DMAs as it is received and sent with zero cost. In the following, we will explain how we make use of this hardware feature to transform our data.
 
-#### Runtime Sequence Tiling and Data Layout Transformations Notebook
+#### Runtime Sequence Tiling and Data Layout Transformations
 
-There is a notebook that includes visualization for the runtime sequence's `handle.fill` / `handle.drain` shim DMA transfers for matrices A, B, and C — it plots the tilings from the same `tile_matrices()` and `step_transfers()` the runtime sequence issues, so the notebook needs neither a compiler nor an NPU.
-
-To run the notebook:
-* Start a jupyter server at the root directory of your clone of `mlir-aie`.
-  Make sure you use a terminal that has run the `utils/setup_env.sh` script
-  so that the correct environment variables are percolated to jupyter.
-  Below is an example of how to start a jupyter server:
-  ```bash
-  python3 -m jupyter notebook --no-browser --port=8080
-  ```
-* In your browser, navigate to the URL (which includes a token) which is found
-  in the output of the above command.
-* Navigate to `programming_examples/basic/matrix_multiplication/whole_array`
-* Double click `mat_mul_whole_array_visualization.ipynb` to start the notebook; choose the ipykernel called `ironenv`.
-* You should now be good to go! Note that generating the animations in the notebook can take several minutes.
+[tiling.md](./tiling.md) shows the runtime sequence's `handle.fill` / `handle.drain` shim DMA transfers for matrices A, B, and C in pictures and animations. They are drawn from the same `tile_matrices()` and `step_transfers()` the runtime sequence issues, so the page needs neither a compiler nor an NPU. `make tiling` runs its code.
 
 ##### Tiling to Vector Intrinsic Size
 

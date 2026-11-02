@@ -29,3 +29,8 @@ runargs+=--b_col_maj ${b_col_maj} --c_col_maj ${c_col_maj}
 target_suffix=${M}x${K}x${N}_${m}x${k}x${n}_${n_aie_cols}c
 
 include ${srcdir}/../makefile-common
+
+# Runs the code blocks of tiling.md, the pictures of how A, B and C are tiled.
+.PHONY: tiling
+tiling: ${srcdir}/tiling.md
+	python3 ${srcdir}/../../tiling_exploration/run_markdown.py ${srcdir}/tiling.md

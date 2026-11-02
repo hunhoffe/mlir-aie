@@ -1,16 +1,15 @@
-# Copyright (C) 2024 Advanced Micro Devices, Inc.
+# Copyright (C) 2024-2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-.PHONY: all clean
+.PHONY: all run clean
 
 all: run
 
-run: ${srcdir}/taplib.ipynb
-	mkdir -p build
-	cd build && jupyter nbconvert --to script ${srcdir}/taplib.ipynb --output-dir .
-	cd build && ipython taplib.py
+# Runs the code blocks of both taplib pages, in order.
+run: ${srcdir}/README.md ${srcdir}/part2.md
+	python3 ${srcdir}/../run_markdown.py ${srcdir}/README.md ${srcdir}/part2.md
 
 clean:
 	rm -rf build
