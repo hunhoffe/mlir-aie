@@ -1671,6 +1671,22 @@ Location PacketPlan::locOf(ArrayRef<std::pair<PhysPort, int>> slaveFlows,
 // The rules the flows through `slaveFlow` state. A full-width mask selects the
 // id alone, which the cover states just as well, so only a wider claim becomes
 // a rule of its own.
+Location PacketPlan::locOf(ArrayRef<std::pair<PhysPort, int>> slaveFlows,
+                           Location fallback) const {
+  SmallVector<Location, 2> locs;
+  for (const auto &flow : slaveFlows)
+    if (auto found = slaveFlowLocs.find(flow); found != slaveFlowLocs.end())
+      for (Location loc : found->second)
+        if (!llvm::is_contained(locs, loc))
+          locs.push_back(loc);
+  if (locs.empty())
+    return fallback;
+  llvm::sort(locs, [&](Location a, Location b) {
+    return flowLocOrder.lookup(a) < flowLocOrder.lookup(b);
+  });
+  return FusedLoc::get(fallback.getContext(), locs);
+}
+
 SmallVector<std::pair<int, int>, 2>
 PacketPlan::statedCubes(const std::pair<PhysPort, int> &slaveFlow,
                         int idMask) const {
