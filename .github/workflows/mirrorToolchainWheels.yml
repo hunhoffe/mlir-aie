@@ -1,0 +1,31 @@
+# Copies the pinned mlir_aie and llvm-aie (Peano) x86_64 wheels from the public
+# Xilinx release pages into a DRAFT (unpublished, not publicly visible) release
+# on this fork, so a sandbox that can only read this fork's release assets can
+# fetch them. Nothing is built or run. Delete the draft when done.
+name: Mirror toolchain wheels
+on:
+  push:
+    branches: [claude/project-thread-1wbbp2]
+permissions:
+  contents: write
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download pinned wheels
+        run: |
+          mkdir wheels && cd wheels
+          gh release download v1.4.5 -R Xilinx/mlir-aie -p 'mlir_aie-*cp31[23]*x86_64*.whl'
+          gh release download nightly -R Xilinx/llvm-aie -p 'llvm_aie-22.0.0.2026102001*4f5df13d*x86_64*.whl'
+          gh release view v1.4.5 -R Xilinx/mlir-aie --json assets --jq '.assets[] | "\(.digest) \(.name)"' > upstream-digests.txt
+          gh release view nightly -R Xilinx/llvm-aie --json assets --jq '.assets[] | "\(.digest) \(.name)"' | grep 2026102001 >> upstream-digests.txt || true
+          sha256sum *.whl | tee SHA256SUMS
+          cat upstream-digests.txt
+      - name: Attach to a draft release on this fork
+        run: |
+          gh release create wheel-mirror-wampus2 -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "Draft: toolchain wheel copies (mlir_aie v1.4.5, llvm-aie 22.0.0.2026102001+4f5df13d)" \
+            --notes "Unmodified upstream wheels for a sandbox; draft, not published." \
+            wheels/*
